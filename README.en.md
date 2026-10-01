@@ -5,9 +5,9 @@
 Version 0.1.0
 
 A desktop workbench for the zikaron/1 ledger law. It keeps a signed, append-only ledger of content
-hashes, anchors the ledger on an Ethereum chain, issues and checks grants on recorded works, and
-verifies what others hand over. One app serves two seats: the recorder, who records works and grants
-rights, and the user, who holds grants and checks what they received.
+hashes, anchors the ledger on an Ethereum chain, issues and checks grants on recorded evidences and works,
+and verifies what others hand over. One app serves two seats: the recorder, who records evidences and
+works and grants rights, and the user, who holds grants and checks what they received.
 
 The command line `zikaron` offers the same ledger actions as the window, one verb per action.
 
