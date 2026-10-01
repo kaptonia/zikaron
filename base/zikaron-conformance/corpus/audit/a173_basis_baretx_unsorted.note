@@ -1,0 +1,1 @@
+sec 9.4: bareTx is ordered by (chainId, tx) ascending.

@@ -1,0 +1,1 @@
+9.4: two chains objects of one chainId cover one range (equal objects overlap, and are not ordered by (chainId, fromBlock)); the scan has no label and consults no node.

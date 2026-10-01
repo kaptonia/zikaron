@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s029_att_extra_member.bin",
+ "note": "sec 6.10/6.6: an extra member inside an anchors element sits inside C",
+ "predicted": {
+  "digest": "0xedaa37949006691158d5aea71d1a7e1b19b20d0783a03b047a238ca57a6bd5dd",
+  "presig": "0x469f88d2b0407ff110f295218aa40a9de03888c6a067484420177222a0ba3c27",
+  "sig": "0xd82da5fa77b766ed49da31ded7f21a2d85116e8c4a0f37bbb999270a219765dc2f57b3e8c4074e668faf431f37aa79110fc370695924e64a1cab75b5763a37791c",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

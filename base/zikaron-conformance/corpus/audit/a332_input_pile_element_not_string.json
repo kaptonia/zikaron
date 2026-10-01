@@ -1,0 +1,14 @@
+{
+ "anchors": [],
+ "basis": {
+  "adoptionChains": [],
+  "bareTx": [],
+  "chains": []
+ },
+ "evidence": [],
+ "pile": [
+  1
+ ],
+ "root": "0x01187a68996839920363a58d942b2c51df0da731",
+ "unavailable": []
+}

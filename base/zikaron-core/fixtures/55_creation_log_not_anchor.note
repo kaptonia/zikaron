@@ -1,0 +1,1 @@
+9.1: a log of the registry form emitted during a contract creation (the transaction has no recipient) is not an anchor whatever its topics hold: the transaction carries init code and no calldata, so the containment test has no field to run against. The log names the sender and a word the init code carries at offset 0, and is still refused.

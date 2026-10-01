@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s028_att_repeated_anchor.bin",
+ "note": "sec 6.6: C where the anchors array repeats one element",
+ "predicted": {
+  "digest": "0xa73a4cd00fa4ffcdb7f5ae133bad2e1c8ead53be78a02c388b73ee05dadd00a8",
+  "presig": "0x73c58ad916e378f1771b4e99426a09e384b60fb6bad13a90eced73163fd77e55",
+  "sig": "0x077c863ec07c42b9a1d6de709d412ef8e2bc4940a2cc044409a23300d4745aa74c17d066f52be4be2ad77f6d0d48c33e7907140530be1a8c0a161583ea62240c1b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

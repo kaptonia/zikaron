@@ -1,0 +1,1 @@
+9.1: the sender of an EIP-2930 transaction (type 1) with an access list is recovered over that type's signing payload, and the self-directed 32-byte transaction is a bare anchor of that sender.

@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s016_key_n_minus_1.bin",
+ "note": "sec 5: private key n - 1",
+ "predicted": {
+  "digest": "0xde4a011db051b17699c99f4b4c3e08e5a512bfefe9ddbe10ea3b05a8e4824646",
+  "presig": "0x14e4fe734ef58e86004a9318e9109bc3d06fb08aac4010fb1ec5590e1eace56f",
+  "sig": "0xaa9ac0716d4c5998a3380547a87f42a2b0613024d3b3aa4f2cacb176199dc8350c6c3635396fd62c7aed054ab0b3ab916df5e41670701dfb3f40854d9b2233f11b",
+  "signer": "0x80c0dbf239224071c59dd8970ab9d542e3414ab2"
+ },
+ "privkey": "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"
+}

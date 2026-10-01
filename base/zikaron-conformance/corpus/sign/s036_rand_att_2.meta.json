@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s036_rand_att_2.bin",
+ "note": "randomized attestation preimage C",
+ "predicted": {
+  "digest": "0x1098df2b15cc2e206e0380f3214f6c2b88ae29b580dd4848bee9d8617a3eba22",
+  "presig": "0x10fcada22f5594f547f12176202f52f0ccfa72ae1502f01e7dca8068151203f9",
+  "sig": "0xaf4ec77c72ddecca7263684504b0f94b11176072fe33a4ceefcfe6225fee744d550abcc35ed6f4cea8bbebdf4641e8b87763c0321c006a84563d9839e149f9b21b",
+  "signer": "0xa8cf4f33ba0c81393ac11f087462524bc9ac0006"
+ },
+ "privkey": "0xc54e2b6c6cb6703ce1ccdf00787e3597e2e410d6ecb87e904f0db106abaaefd0"
+}

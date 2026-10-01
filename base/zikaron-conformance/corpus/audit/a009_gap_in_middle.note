@@ -1,0 +1,1 @@
+seq 2 is absent. sec 8.2: SEQ_GAP(2, 3), and across the gap the link is unverifiable so no PREV_MISMATCH is recorded.

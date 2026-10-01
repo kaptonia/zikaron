@@ -1,0 +1,17 @@
+[package]
+name = "zikaron-glue"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Behavior glue: disclosure kit export (module `pack`).
+# Only assembles inputs, calls the base crates and renders state; decides nothing. No third-party crates.
+[dependencies]
+zikaron = { path = "../zikaron" }
+zikaron-kit = { path = "../zikaron-kit" }
+zikaron-store = { path = "../zikaron-store" }
+
+# A small helper binary for exercising this crate end to end; kept apart from the CLI's fixed verb list.
+[[bin]]
+name = "zkg"
+path = "src/bin/zkg.rs"

@@ -1,0 +1,4 @@
+Section 9.1 registry form. A declared registry emits Anchored(sender, hash) in a
+status-1 transaction from a sender the basis declares; topic 2 sits in the
+calldata at offset 4. One anchor record, verdict counted (9.3: no code at either
+boundary).

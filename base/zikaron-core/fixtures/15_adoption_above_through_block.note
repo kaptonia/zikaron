@@ -1,0 +1,4 @@
+Section 9.4: that a transaction not included at or below throughBlock enters no
+evidence record is an obligation on whoever produces the evidence set. The later
+transaction exists and is included; the basis was read only through an earlier
+height, so the evidence set carries one record and not two.

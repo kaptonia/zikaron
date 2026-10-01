@@ -1,0 +1,16 @@
+[package]
+name = "zikaron"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Third-party cryptography lives only in src/cryptox.rs.
+# JSON parsing and canonical form are written here (law §3.4 / §3.5), with no third-party JSON crate.
+[dependencies]
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha2 = "0.10"
+sha3 = "0.10"
+
+[[bin]]
+name = "zk1"
+path = "src/bin/zk1.rs"

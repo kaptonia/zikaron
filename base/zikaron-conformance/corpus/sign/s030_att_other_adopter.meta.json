@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s030_att_other_adopter.bin",
+ "note": "sec 6.6: the same anchors under a different adopter",
+ "predicted": {
+  "digest": "0x90ae87c20b63bb2a85af07af06877b146b730994dbb265b3da1d3adeab688a41",
+  "presig": "0xc75d5160df3dcde6732b4094698e7c5828dd8fc8d329fbbededc4fc920231c1a",
+  "sig": "0xcf3c9562a5c85a63ddc1a566ffc95b54364606a98369e5bb214ab4109ed73bf2633384725daa9e55fd2974b317be60e31e974043fec18134a173dbe566be26cf1b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

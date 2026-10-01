@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s033_att_key_one.bin",
+ "note": "sec 5: attestation preimage under private key 1",
+ "predicted": {
+  "digest": "0x502a226e94d62122e3e4824a948f01d3c6f02f53948f075178416458367dab95",
+  "presig": "0x612cf7763b0d10f99f94bf327d92401e660b3e9bfed3d7fbfd6b5efb1aebe4c8",
+  "sig": "0x9708e1c2e99762c4cf0ae0c12c4a4c90931419aeee50c879d42e4345f7548b5c466cbe70de86aa1913b8ac4500d28a07c572c5a2c5747741ffa32dc26977f3f41c",
+  "signer": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+ },
+ "privkey": "0x0000000000000000000000000000000000000000000000000000000000000001"
+}

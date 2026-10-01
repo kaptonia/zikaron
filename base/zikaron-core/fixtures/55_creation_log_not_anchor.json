@@ -1,0 +1,161 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [],
+    "chains": [
+      {
+        "chainId": 31337,
+        "fromBlock": 0,
+        "registries": [
+          "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        ],
+        "senders": [
+          "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        ],
+        "toBlock": 3
+      }
+    ]
+  },
+  "expected": "{\"anchors\":[],\"basis\":{\"adoptionChains\":[],\"bareTx\":[],\"chains\":[{\"chainId\":31337,\"fromBlock\":0,\"registries\":[\"0x5fbdb2315678afecb367f032d93f642f64180aa3\"],\"senders\":[\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\"],\"toBlock\":3}]},\"evidence\":[]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      },
+      {
+        "method": "eth_getLogs",
+        "params": [
+          {
+            "address": [
+              "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+            ],
+            "fromBlock": "0x0",
+            "toBlock": "0x3",
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147"
+            ]
+          }
+        ],
+        "result": [
+          {
+            "address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+            "blockHash": "0xb6310b0b1cc0f08a6b76e9878844c29b2e32fa09aa8c793a99c0a04cb10c1e7e",
+            "blockNumber": "0x2",
+            "data": "0x",
+            "logIndex": "0x0",
+            "removed": false,
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147",
+              "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+            ],
+            "transactionHash": "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2",
+            "transactionIndex": "0x0"
+          }
+        ]
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2"
+        ],
+        "result": {
+          "accessList": [
+            {
+              "address": "0x7777777777777777777777777777777777777777",
+              "storageKeys": [
+                "0x0101010101010101010101010101010101010101010101010101010101010101"
+              ]
+            }
+          ],
+          "blockHash": "0xb6310b0b1cc0f08a6b76e9878844c29b2e32fa09aa8c793a99c0a04cb10c1e7e",
+          "blockNumber": "0x2",
+          "chainId": "0x7a69",
+          "from": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+          "gas": "0x30d40",
+          "hash": "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2",
+          "input": "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c060016000f3",
+          "maxFeePerGas": "0x2",
+          "maxPriorityFeePerGas": "0x1",
+          "nonce": "0x0",
+          "r": "0xcc3f1c9378d7f28f2696cd9a76c9e96ad08c0f48c2009f20b7dd6b1e6d530627",
+          "s": "0x1ea93a852797f74705964d6acfed5ddb82216115bace61652a8143a3919da74a",
+          "to": null,
+          "transactionIndex": "0x0",
+          "type": "0x2",
+          "v": "0x1",
+          "value": "0x0",
+          "yParity": "0x1"
+        }
+      },
+      {
+        "method": "eth_getTransactionReceipt",
+        "params": [
+          "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2"
+        ],
+        "result": {
+          "blockHash": "0xb6310b0b1cc0f08a6b76e9878844c29b2e32fa09aa8c793a99c0a04cb10c1e7e",
+          "blockNumber": "0x2",
+          "contractAddress": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "cumulativeGasUsed": "0x5208",
+          "effectiveGasPrice": "0x1",
+          "from": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+          "gasUsed": "0x5208",
+          "logs": [
+            {
+              "address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+              "blockHash": "0xb6310b0b1cc0f08a6b76e9878844c29b2e32fa09aa8c793a99c0a04cb10c1e7e",
+              "blockNumber": "0x2",
+              "data": "0x",
+              "logIndex": "0x0",
+              "removed": false,
+              "topics": [
+                "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147",
+                "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+                "0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+              ],
+              "transactionHash": "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2",
+              "transactionIndex": "0x0"
+            }
+          ],
+          "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "status": "0x1",
+          "to": null,
+          "transactionHash": "0x7d6df0f2eb8b7f86a2097ba32781bf1742e24f566b2af795e38fa35646a6cad2",
+          "transactionIndex": "0x0",
+          "type": "0x2"
+        }
+      },
+      {
+        "method": "eth_getBlockByNumber",
+        "params": [
+          "0x2",
+          false
+        ],
+        "result": {
+          "number": "0x2",
+          "timestamp": "0x6a000002"
+        }
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+          "0x1"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+          "0x2"
+        ],
+        "result": "0x"
+      }
+    ]
+  }
+}

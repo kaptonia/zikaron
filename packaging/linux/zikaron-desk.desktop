@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ZIKARON
+Comment=Signed, append-only ledger of your works, anchored on chain
+Exec=zikaron-desk
+Icon=zikaron-desk
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=zikaron-desk

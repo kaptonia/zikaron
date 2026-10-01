@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s012_deep_body.bin",
+ "note": "sec 3.4: a deeply nested body inside B6",
+ "predicted": {
+  "digest": "0x4b17e73d7fea8b39b5a5dd19593180a219b436f9a487c8871a26ec7fbf1bb138",
+  "presig": "0xaa5b91aa8f192df485c0cc082493fc35438afeccc8ea94ee4080423f6c23203b",
+  "sig": "0xbedb7e1ccea3dae48309af7190adcffe6cd4c7b11a7833d2e6acf173bd91c9ca3c8996f566dea23106ef4383defbc8c4a71317cdd5ff18dfb13ac6c5c125874b1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.2 and sec 8.7 item 8: a twelve-entry ledger is walked in numeric seq order (0, 1, 2, ..., 11, never 0, 1, 10, 11, 2), so no gap is found, and the two ADOPTION_UNPROVEN rows sort seq 2 before seq 10; label COMPLETE.

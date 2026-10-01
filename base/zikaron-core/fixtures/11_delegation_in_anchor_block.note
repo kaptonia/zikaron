@@ -1,0 +1,4 @@
+Section 9.3, the second boundary alone: the sender was codeless at the end of the
+block before and carries a designator at the end of the anchor's own block. The
+verdict is VOID, and an author who delegates in the block of their own anchor
+buys no deniability for the bytes the chain shows.

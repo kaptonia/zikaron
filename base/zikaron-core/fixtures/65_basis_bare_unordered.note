@@ -1,0 +1,1 @@
+9.4: bareTx is not ascending by (chainId, tx); the scan has no label and consults no node.

@@ -1,0 +1,1 @@
+sec 9.3/8.5: a VOID record takes no part in the reconciliation, so the entry it names is UNANCHORED and no MISSING row follows.

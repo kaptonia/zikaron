@@ -1,0 +1,1 @@
+9.4: a bareTx tx is not hex32; the scan has no label and consults no node.

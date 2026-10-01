@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.4: adoptionChains ids compare numerically, so 2 before 10 is ascending and the basis stands (bytewise, 10 would precede 2).

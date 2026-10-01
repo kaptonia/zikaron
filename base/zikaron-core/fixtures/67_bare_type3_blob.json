@@ -1,0 +1,110 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [
+      {
+        "chainId": 31337,
+        "tx": "0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc"
+      }
+    ],
+    "chains": []
+  },
+  "expected": "{\"anchors\":[{\"blockNumber\":6,\"blockTimestamp\":1778384902,\"chainId\":31337,\"hash\":\"0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\",\"sender\":\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"tx\":\"0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc\",\"verdict\":\"counted\"}],\"basis\":{\"adoptionChains\":[],\"bareTx\":[{\"chainId\":31337,\"tx\":\"0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc\"}],\"chains\":[]},\"evidence\":[]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc"
+        ],
+        "result": {
+          "accessList": [
+            {
+              "address": "0x7777777777777777777777777777777777777777",
+              "storageKeys": [
+                "0x0101010101010101010101010101010101010101010101010101010101010101"
+              ]
+            }
+          ],
+          "blobVersionedHashes": [
+            "0x01ababababababababababababababababababababababababababababababab"
+          ],
+          "blockHash": "0xdc2a54bc61e90665488877c6dead0ac53ea3bae19259d6b72ddbfaa13bbf01e1",
+          "blockNumber": "0x6",
+          "chainId": "0x7a69",
+          "from": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "gas": "0x30d40",
+          "hash": "0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc",
+          "input": "0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "maxFeePerBlobGas": "0x1",
+          "maxFeePerGas": "0x2",
+          "maxPriorityFeePerGas": "0x1",
+          "nonce": "0x3",
+          "r": "0x5c64067a952c64abceb747c47a8559cb210071b1a53cdaddbe1899466d06aad5",
+          "s": "0x11c51e723bac5878629c414d8ac559d981f32b4c983c9051cd93658f89f74e1c",
+          "to": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "transactionIndex": "0x0",
+          "type": "0x3",
+          "v": "0x0",
+          "value": "0x0",
+          "yParity": "0x0"
+        }
+      },
+      {
+        "method": "eth_getTransactionReceipt",
+        "params": [
+          "0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc"
+        ],
+        "result": {
+          "blockHash": "0xdc2a54bc61e90665488877c6dead0ac53ea3bae19259d6b72ddbfaa13bbf01e1",
+          "blockNumber": "0x6",
+          "contractAddress": null,
+          "cumulativeGasUsed": "0x5208",
+          "effectiveGasPrice": "0x1",
+          "from": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "gasUsed": "0x5208",
+          "logs": [],
+          "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "status": "0x1",
+          "to": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "transactionHash": "0x682ae6ae24b0ca3e590902047950c50d83302e198b3d377acbc3bc5774a7dbfc",
+          "transactionIndex": "0x0",
+          "type": "0x3"
+        }
+      },
+      {
+        "method": "eth_getBlockByNumber",
+        "params": [
+          "0x6",
+          false
+        ],
+        "result": {
+          "number": "0x6",
+          "timestamp": "0x6a000006"
+        }
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "0x5"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "0x6"
+        ],
+        "result": "0x"
+      }
+    ]
+  }
+}

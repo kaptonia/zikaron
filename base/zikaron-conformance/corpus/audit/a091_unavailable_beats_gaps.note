@@ -1,0 +1,1 @@
+sec 8.7 label order: rule 2 fires before rule 3 even though a SEQ_GAP was recorded.

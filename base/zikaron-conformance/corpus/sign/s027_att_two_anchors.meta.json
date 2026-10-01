@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s027_att_two_anchors.bin",
+ "note": "sec 6.6: C over two elements on two chains",
+ "predicted": {
+  "digest": "0x469bd3904670f357f6ff26b92e102e893c52ad5943bbd05f1005f3e1a3ced3fc",
+  "presig": "0xbc4eef3f8075a42eb0993654000e169ff7310ca22206b0944b82bcc545b8920d",
+  "sig": "0xfc127a5b0e8c232f6626d6a7a7f509ea9febccd9a41dc9b480ab5e9b7ebbc16c797ad1c321ee0024865fcac8683396641c126158d2fdf7ea93ac8928291b5e6d1b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

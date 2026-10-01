@@ -1,0 +1,211 @@
+{
+  "basis": {
+    "chains": [
+      {
+        "chainId": 1,
+        "fromBlock": 0,
+        "toBlock": 3000,
+        "registries": [
+          "0x1111111111111111111111111111111111111111"
+        ],
+        "senders": [
+          "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    "bareTx": [
+      {
+        "chainId": 1,
+        "tx": "0x2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "adoptionChains": [
+      {
+        "chainId": 1,
+        "throughBlock": 5000
+      }
+    ]
+  },
+  "adoptions": [
+    {
+      "chainId": 1,
+      "tx": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "chainId": 1,
+      "tx": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "chainId": 7,
+      "tx": "0x9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  ],
+  "rpc": {
+    "1": [
+      {
+        "method": "eth_getLogs",
+        "params": [
+          {
+            "fromBlock": "0x0",
+            "toBlock": "0x7cf",
+            "address": [
+              "0x1111111111111111111111111111111111111111"
+            ],
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147"
+            ]
+          }
+        ],
+        "result": [
+          {
+            "address": "0x1111111111111111111111111111111111111111",
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147",
+              "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "0xabababababababababababababababababababababababababababababababab"
+            ],
+            "data": "0x",
+            "blockNumber": "0x64",
+            "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "logIndex": "0x0",
+            "removed": false
+          }
+        ]
+      },
+      {
+        "method": "eth_getLogs",
+        "params": [
+          {
+            "fromBlock": "0x7d0",
+            "toBlock": "0xbb8",
+            "address": [
+              "0x1111111111111111111111111111111111111111"
+            ],
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147"
+            ]
+          }
+        ],
+        "result": []
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "result": {
+          "hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "input": "0xeecdf927abababababababababababababababababababababababababababababababab",
+          "blockNumber": "0x64"
+        }
+      },
+      {
+        "method": "eth_getTransactionReceipt",
+        "params": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "result": {
+          "status": "0x1",
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "blockNumber": "0x64"
+        }
+      },
+      {
+        "method": "eth_getBlockByNumber",
+        "params": [
+          "0x64",
+          false
+        ],
+        "result": {
+          "number": "0x64",
+          "timestamp": "0x64a1b2c3"
+        }
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "0x63"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "0x64"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "result": {
+          "hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "input": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "blockNumber": "0x200"
+        }
+      },
+      {
+        "method": "eth_getTransactionReceipt",
+        "params": [
+          "0x2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "result": {
+          "status": "0x1",
+          "from": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x200"
+        }
+      },
+      {
+        "method": "eth_getBlockByNumber",
+        "params": [
+          "0x200",
+          false
+        ],
+        "result": {
+          "number": "0x200",
+          "timestamp": "0x64a1c000"
+        }
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0xcccccccccccccccccccccccccccccccccccccccc",
+          "0x1ff"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getCode",
+        "params": [
+          "0xcccccccccccccccccccccccccccccccccccccccc",
+          "0x200"
+        ],
+        "result": "0x"
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x3333333333333333333333333333333333333333333333333333333333333333"
+        ],
+        "result": {
+          "hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+          "from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "to": "0x1111111111111111111111111111111111111111",
+          "input": "0x12345678efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "blockNumber": "0x12c"
+        }
+      }
+    ]
+  },
+  "expected": null
+}

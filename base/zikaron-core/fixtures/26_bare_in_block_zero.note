@@ -1,0 +1,1 @@
+9.3: block 0 has one boundary, so a codeless sender there is counted on that single state. Hand-written recording (a legacy EIP-155 transaction signed with a test key): no node includes a transaction in its genesis block.

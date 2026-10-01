@@ -1,0 +1,1 @@
+sec 8.1: a hash that is the hash of no record at all meets the first of the two discard conditions and leaves the unavailable set; the two conditions are a union.

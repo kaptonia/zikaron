@@ -1,0 +1,1 @@
+sec 8.7 item 14: five discarded records differing first at each of sender, chainId, tx and hash; the rows sort by (sender, chainId, blockNumber, tx, hash).

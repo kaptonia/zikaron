@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.2/9.4: the record lacks sender under a basis whose bareTx names its transaction, so the absent member alone refuses it.

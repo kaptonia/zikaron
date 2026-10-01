@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s008_unknown_type.bin",
+ "note": "sec 6.9: B6 of an unknown type with an empty body",
+ "predicted": {
+  "digest": "0x63dd758292e1c6ad2c2e7e2309a165b40f1766c9e688e356b720ced58afa3afd",
+  "presig": "0x70c2c4fde8ed10ea093af35e33ecb6d3a69f62683a0448f277a7282a257f1e16",
+  "sig": "0xb985e9e9c0e39a657e8c0536ebe6bc8007775528cfa0581be99d1ac3f86f0e6c58f069271f14f82bdf3816c92ab32fd835d3bf7ee407df16d8401f7fd485e2021c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,0 +1,1 @@
+sec 8.7 item 7: seq compares numerically, so the row at 9 precedes the row at 10.

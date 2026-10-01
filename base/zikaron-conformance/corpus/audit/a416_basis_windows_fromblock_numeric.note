@@ -1,0 +1,1 @@
+sec 9.4: two windows ordered by fromBlock numerically, 9 then 10, and adjacent only where 9 plus 1 is 10, which it is, their lists equal; no label.

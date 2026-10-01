@@ -1,0 +1,63 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [],
+    "chains": [
+      {
+        "chainId": 31337,
+        "fromBlock": 4,
+        "registries": [
+          "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        ],
+        "senders": [
+          "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+        ],
+        "toBlock": 4
+      }
+    ]
+  },
+  "expected": "{\"anchors\":[],\"basis\":{\"adoptionChains\":[],\"bareTx\":[],\"chains\":[{\"chainId\":31337,\"fromBlock\":4,\"registries\":[\"0x5fbdb2315678afecb367f032d93f642f64180aa3\"],\"senders\":[\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\"],\"toBlock\":4}]},\"evidence\":[]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      },
+      {
+        "method": "eth_getLogs",
+        "params": [
+          {
+            "address": [
+              "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+            ],
+            "fromBlock": "0x4",
+            "toBlock": "0x4",
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147"
+            ]
+          }
+        ],
+        "result": [
+          {
+            "address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+            "blockHash": "0x086f92c0bf0d64731e6a9161cd32ddf2b3512c35ff1df6776e74885702aea987",
+            "blockNumber": "0x4",
+            "blockTimestamp": "0x6a9a5532",
+            "data": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "logIndex": "0x0",
+            "removed": false,
+            "topics": [
+              "0xee1610244dfc4b116b1433dd4459fd7b1d3d2bf737a05fc3f6d8f173005d7147",
+              "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+              "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ],
+            "transactionHash": "0x0f84fea986baa78fa9944b3c6ebb6f34b9172601237469fb15b743c6a9cef89a",
+            "transactionIndex": "0x0"
+          }
+        ]
+      }
+    ]
+  }
+}

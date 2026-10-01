@@ -1,0 +1,1 @@
+9.1: the sender of an EIP-7702 transaction (type 4) carrying an authorization; the chain's answer to the codeless test, not the list, decides the verdict is recovered over that type's signing payload, and the self-directed 32-byte transaction is a bare anchor of that sender.

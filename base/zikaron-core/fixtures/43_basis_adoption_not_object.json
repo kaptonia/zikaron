@@ -1,0 +1,12 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [
+      1
+    ],
+    "bareTx": [],
+    "chains": []
+  },
+  "expected": "{\"ok\":false,\"reason\":\"NO_LABEL\"}",
+  "rpc": {}
+}

@@ -1,0 +1,1 @@
+sec 7.4/9.5: the sender is in the whole-set lineage but not in the prefix lineage at k; a key that joins later never retroactively authorizes an earlier adoption.

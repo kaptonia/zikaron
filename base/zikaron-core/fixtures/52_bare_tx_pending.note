@@ -1,0 +1,1 @@
+9.1: a self-directed 32-byte transaction that is known to the node but not included in any block has no receipt and no status; it is not a bare anchor, and the recording holds it with a null blockNumber.

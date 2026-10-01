@@ -1,0 +1,4 @@
+Section 9.3: a delegation voids anchors while the designator stands and voids none
+sent before or after it is gone. The sender installed a designator and revoked it
+in an earlier block; both boundaries of the anchor's block are codeless, so the
+verdict is counted.

@@ -1,0 +1,1 @@
+sec 8.7 item 5 with sec 9.4: two chains carry one entry_id; the dedup key holds chainId, so records differing only there are two records, and the row's anchors sort by chainId first.

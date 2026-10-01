@@ -1,0 +1,1 @@
+9.1: a log from a declared registry carrying two topics (the hash travels in the data) is not an anchor, whatever its topics hold. The hash sits in the calldata at offset 4, so the log's shape is the only thing the scan objects to.

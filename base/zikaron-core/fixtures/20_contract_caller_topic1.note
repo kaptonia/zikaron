@@ -1,0 +1,6 @@
+Section 9.1 registry form: topic 1 must be the transaction's sender's 20 bytes
+preceded by 12 zero bytes. A contract calls the declared registry, which names
+msg.sender, so topic 1 is the contract. Everything else about the log is
+well-formed and the hash does sit in the transaction's calldata at a readable
+offset; the log is still no anchor, and nobody is charged for a third party's
+call under their own transaction.

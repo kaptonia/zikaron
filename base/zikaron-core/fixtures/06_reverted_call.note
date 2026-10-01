@@ -1,0 +1,4 @@
+Section 9.1: a reverted transaction emits no log and anchors nothing. A contract
+calls the registry and then reverts; the receipt carries status 0 and no log, and
+the hash it tried to anchor appears in no record. The one counted record is the
+ordinary anchor sent alongside it.

@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.3/8.7: an UNPROVEN record takes no part in the reconciliation and is carried in the UNPROVEN list; its hash is in have, so label rule 2 does not fire.

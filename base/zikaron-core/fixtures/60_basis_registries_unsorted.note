@@ -1,0 +1,1 @@
+9.4: registries is not bytewise ascending; the scan has no label and consults no node.

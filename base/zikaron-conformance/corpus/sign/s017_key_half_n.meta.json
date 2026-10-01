@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s017_key_half_n.bin",
+ "note": "sec 5: private key (n - 1) / 2",
+ "predicted": {
+  "digest": "0x7490bfd4724733c4bcc3377f1ec8006168cb1b1e5664855efa1597e725849f36",
+  "presig": "0xc37aa5e34a3a6564de75e547daf53d952b4d77389fbd62dcf7447d67c3680801",
+  "sig": "0x455a29cb854867bff2716d3e541c74eade1e6c3976211cb682b301daf5d5faf926842c6a6d1e6260272cbf9af22ce2770e94c86a6ec7416e0904f596dae17c621c",
+  "signer": "0x3b3c67f57f74ce72a02978b0492620b1a661da43"
+ },
+ "privkey": "0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"
+}

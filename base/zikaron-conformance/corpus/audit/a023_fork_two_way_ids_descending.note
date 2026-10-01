@@ -1,0 +1,1 @@
+sec 8.4: two ledger entries with different entry_id at one seq. One EQUIVOCATION, hard, naming the bytewise-smaller id first. Here the entry met first has the larger id.

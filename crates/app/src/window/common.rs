@@ -1,0 +1,229 @@
+//! Page parts shared by every page, laid out from the kit's controls: labelled fields, the location row,
+//! detail heads, the details fold, key rows. Nothing here sets a size or a color of its own.
+
+use super::*;
+
+/// A field: its label (14, second ink, 8 above the control; an optional word after it in the quiet ink),
+/// then the control.
+pub(super) fn field<R>(ui: &mut egui::Ui, label: &str, optional: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = tk::S2;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = tk::S2;
+            paint::text(ui, label, Type::Note, c(C::Ink2));
+            if let Some(o) = optional {
+                paint::text(ui, o, Type::Note, c(C::Ink3));
+            }
+        });
+        add(ui)
+    })
+    .inner
+}
+
+/// The location row: the label (132), the chosen folder's name in monospace (the whole path on hover), or a
+/// quiet "not chosen", and a key at the right. Returns whether the key was pressed.
+pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &str, key_label: &str, none: &str) -> bool {
+    let mut hit = false;
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = tk::S3;
+        if !label.is_empty() {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(tk::LABEL_W - tk::S3 + tk::S2, tk::KEY_H), egui::Sense::hover());
+            paint::at(ui.painter(), ui, egui::pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, Type::Note, c(C::Ink2), r.width());
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            hit = key::key(ui, key_label, Role::Secondary, true).clicked();
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let room = ui.available_width();
+                let p = path.trim();
+                if p.is_empty() {
+                    paint::line(ui, none, Type::Body, c(C::Ink3), room);
+                } else {
+                    let r = paint::line(ui, &width::file_name(p), Type::Mono, c(C::Ink2), room);
+                    r.on_hover_text(p);
+                }
+            });
+        });
+    });
+    hit
+}
+
+/// A path picker in a field: the location row without a label. Returns whether the path changed.
+pub(super) fn pick_path(ui: &mut egui::Ui, slot: &mut String, kind: crate::platform::Pick) -> bool {
+    let key_label = match kind {
+        crate::platform::Pick::File => t(Key::PickFile),
+        _ => t(Key::PickFolder),
+    };
+    if path_row(ui, "", slot, key_label, t(Key::PickNone)) {
+        if let Some(p) = crate::platform::choose_path(kind) {
+            *slot = p;
+            return true;
+        }
+    }
+    false
+}
+
+/// A row of keys, 8 apart, wrapping when narrow.
+pub(super) fn keys_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(tk::S2, tk::S2);
+        add(ui)
+    })
+    .inner
+}
+
+/// A titled card of key-value rows ("basic information").
+pub(super) fn kv_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, Val)]) {
+    card::section(ui, title, "", |ui| {
+        card::card(ui, |ui| kv::kv(ui, rows));
+    });
+}
+
+/// The details fold in its own card: raw values (addresses, digests, ids, transactions) live only here.
+pub(super) fn details_card(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)]) {
+    card::card(ui, |ui| {
+        fold::fold(ui, id_salt, t(Key::SetEvidence), |ui| kv::kv(ui, rows));
+    });
+}
+
+/// The details fold inline (inside a card or a sheet).
+pub(super) fn details(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)]) {
+    fold::fold(ui, id_salt, t(Key::SetEvidence), |ui| kv::kv(ui, rows));
+}
+
+/// A hint line (14), second ink.
+pub(super) fn hint(ui: &mut egui::Ui, s: &str) {
+    states::hint(ui, s);
+}
+
+/// A card's small title.
+pub(super) fn card_title(ui: &mut egui::Ui, s: &str) {
+    card::card_title(ui, s);
+}
+
+/// A pill for an anchoring state.
+pub(super) fn lamp_pill_ui(ui: &mut egui::Ui, l: crate::ledgerx::Lamp, at: Option<u64>) {
+    let (tone, live) = lamp_pill(l);
+    let words = lamp_label(l, false, at);
+    if live {
+        mark::pill_live(ui, &words, tone);
+    } else {
+        mark::pill(ui, &words, tone);
+    }
+}
+
+impl Win {
+    /// A record's name: the name of the entry in my ledger that anchored it; without a name, "unnamed record".
+    pub(super) fn work_label(&self, work: &str) -> String {
+        self.shell
+            .rows
+            .as_ref()
+            .and_then(|(rows, _)| {
+                rows.iter()
+                    .filter(|r| r.kind == zikaron::tokens::EntryType::History)
+                    .find(|r| r.work.as_deref().map(|w| w.eq_ignore_ascii_case(work)).unwrap_or(false))
+                    .and_then(|r| r.facts.note.clone())
+            })
+            .unwrap_or_else(|| t(Key::UnnamedRecord).to_string())
+    }
+
+    /// Recently dealt-with addresses: the address book plus those granted in the register, deduplicated.
+    pub(super) fn recent_addresses(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.shell.settings.book.clone();
+        if let Some(g) = self.shell.grants.as_ref() {
+            for r in g.iter().rev() {
+                if !v.iter().any(|x| x.eq_ignore_ascii_case(&r.grantee)) {
+                    v.push(r.grantee.clone());
+                }
+            }
+        }
+        v
+    }
+
+    /// The phase of a long key started by an action of kind `k`: busy while that kind runs (with its
+    /// fraction when counted), a check or a cross for a moment after it lands.
+    pub(super) fn phase_of(&self, k: crate::task::Kind) -> Phase {
+        if self.shell.tasks.in_flight(k) {
+            return Phase::Busy { frac: crate::task::stage(k).and_then(|s| s.frac()) };
+        }
+        match self.ux.landed.get(&k) {
+            Some((true, at)) => Phase::Done { at: *at },
+            Some((false, at)) => Phase::Fail { at: *at },
+            None => Phase::Idle,
+        }
+        .now(self.ux.now)
+    }
+
+    /// A long key: its phase follows the task of kind `k`. Returns whether it was pressed.
+    pub(super) fn long_key(&self, ui: &mut egui::Ui, text: &str, role: Role, enabled: bool, k: crate::task::Kind) -> bool {
+        key::show(ui, key::Key::new(text, role).enabled(enabled).phase(self.phase_of(k))).clicked()
+    }
+
+    /// The stage line under a long key: the stage the task says it is in, the one before it checked; a
+    /// counted stage shows its count. Nothing while the task is not running.
+    pub(super) fn stage_line(&self, ui: &mut egui::Ui, k: crate::task::Kind) {
+        let words = stage_words(k);
+        let running = self.shell.tasks.in_flight(k);
+        let id = ui.id().with(("zikaron-stage", k as u8));
+        let open = motion::flag(ui.ctx(), id.with("open"), running && !words.is_empty(), tk::MID);
+        if open <= 0.0 {
+            return;
+        }
+        let st = crate::task::stage(k).unwrap_or_default();
+        let at = (st.at as usize).min(words.len().saturating_sub(1));
+        let h = 22.0 * open;
+        let w = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+        let p = ui.painter().with_clip_rect(rect);
+        let cy = rect.top() + 11.0;
+        let mut x = rect.left();
+        let a = open;
+        if at > 0 {
+            // The stage just passed, checked.
+            zikaron_ui::icons::glyph_at(&p, Glyph::Ok, egui::pos2(x + 6.0, cy), 12.0, c(C::Ok).gamma_multiply(a));
+            x += 12.0 + 6.0;
+            let r = p.text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, t(words[at - 1]), Type::Small.font(), c(C::Ink3).gamma_multiply(a));
+            x = r.right() + 12.0;
+        }
+        // The current stage: a breathing dot, the words fading in when they change.
+        let ph = motion::cycle(ui.ctx(), tk::CYCLE);
+        let breath = motion::Curve::InOut.at(if ph < 0.5 { ph * 2.0 } else { 2.0 - ph * 2.0 });
+        p.circle_filled(egui::pos2(x + 3.0, cy), 3.0 * (0.8 + 0.2 * breath), c(C::Accent).gamma_multiply(a * (0.35 + 0.65 * breath)));
+        x += 6.0 + 6.0;
+        let age = motion::age(ui.ctx(), id.with("words"), at as u64);
+        let wa = (age / tk::FAST).clamp(0.0, 1.0);
+        let r = p.text(egui::pos2(x, cy + 3.0 * (1.0 - wa)), egui::Align2::LEFT_CENTER, t(words[at]), Type::Small.font(), c(C::Ink2).gamma_multiply(a * wa));
+        if st.total > 0 {
+            p.text(egui::pos2(r.right() + 6.0, cy), egui::Align2::LEFT_CENTER, format!("{} / {}", st.done, st.total), Type::MonoSmall.font(), c(C::Ink3).gamma_multiply(a));
+        }
+    }
+}
+
+/// The stage words of a long task, in the order the task says them (`task::stage_at` inside each task marks
+/// where it is; a task with one stage shows one line).
+pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
+    use crate::task::Kind;
+    match k {
+        Kind::Anchor => &[Key::StageSign, Key::StageBroadcast],
+        Kind::Check => &[Key::StageParseGrant, Key::StageReadChain, Key::OsSixChecks, Key::StageCompareFile, Key::StageCompareTerms],
+        Kind::Verify => &[Key::StageReadKit, Key::StageReadChain, Key::StageCompareEach],
+        Kind::Book => &[Key::StageConnect, Key::StageScanBlocks],
+        Kind::Diligence => &[Key::StageConnect, Key::StageScanBlocks, Key::StageCheckLedger],
+        Kind::Kit => &[Key::StageGather, Key::StageCheckOriginals, Key::StageWriteKit],
+        Kind::Badge => &[Key::StageGrantChain, Key::StageWriteBadge],
+        Kind::Review => &[Key::StageReadChain, Key::StageReadUpstream],
+        Kind::Reconcile => &[Key::StageReconcile],
+        Kind::Archive => &[Key::DoMeasure],
+        Kind::Publish => &[Key::StageFetchFiles],
+        Kind::Chain => &[Key::StageReadChain],
+        Kind::Depth => &[Key::StageReadChain],
+        Kind::Gate => &[Key::StageReadChain],
+        _ => &[],
+    }
+}
+
+/// The one search rule: empty keeps everything; otherwise any field containing the text (case-insensitive).
+pub(super) fn matches(query: &str, fields: &[&str]) -> bool {
+    let q = query.trim().to_lowercase();
+    q.is_empty() || fields.iter().any(|f| f.to_lowercase().contains(&q))
+}

@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.7 item 4: one MISSING row carrying both anchoring transactions in ascending (chainId, blockNumber, tx) order; sec 9.2: the smaller blockTimestamp gives the existence bound and blockNumber never orders across chains.

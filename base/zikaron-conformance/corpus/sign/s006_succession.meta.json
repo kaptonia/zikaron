@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s006_succession.bin",
+ "note": "sec 5.1: B6 of a succession",
+ "predicted": {
+  "digest": "0x17e12b16b5e14de2022f586960b3e63230d308a3d71f37ad7bff4a13a7bf64c2",
+  "presig": "0x99e3c79bed42ae50c93e0ad80acdcb26fcf929736a2fd348d1f7033b14c5b7d0",
+  "sig": "0x8bb62c31628ba20ea34faa43e21a54530570d8f58fa3ace7c846992a13c1e3c0513dd979be76eb097dbaeae50c1008058ed37f9cbc2ce8067aee2d3dea6889a31b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

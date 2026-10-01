@@ -1,0 +1,4 @@
+Section 9.2: two records with equal hash on different chains are two anchors of one
+entry_id. Both are kept; the record with the smallest blockTimestamp gives the
+existence bound of section 9.6, and blockNumber orders anchors inside one chain and
+never across chains. The fixture's rpc map carries one exchange log per chainId.

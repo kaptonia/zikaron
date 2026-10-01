@@ -1,0 +1,1 @@
+input arrays reversed: sec 7.3/8.2: the retired root signs a competing succession at seq 3; it records AUTHORITY_MISMATCH and moves nothing, so the honest successor's entry at seq 4 records no finding, whichever succession has the smaller id. Here the entry met first has the smaller id.

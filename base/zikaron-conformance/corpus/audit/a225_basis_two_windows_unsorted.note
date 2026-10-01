@@ -1,0 +1,1 @@
+sec 9.4: chains is ordered by (chainId, fromBlock) ascending; two windows of one chain spelled in the other order are not a basis.

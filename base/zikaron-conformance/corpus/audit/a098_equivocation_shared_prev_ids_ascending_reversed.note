@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.4: two ledger entries share a prev at seqs 2 and 3; the finding names the bytewise-smaller entry_id first whichever entry the walk met first. Here the entry met first has the smaller id.

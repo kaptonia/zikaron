@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.7: the chainId and blockNumber of a MISSING row's anchors compare numerically, so chain 2 precedes chain 10 and block 9 precedes block 10.

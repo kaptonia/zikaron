@@ -1,0 +1,1 @@
+9.1: the sender of an EIP-4844 transaction (type 3) with a blob versioned hash is recovered over that type's signing payload, and the self-directed 32-byte transaction is a bare anchor of that sender.

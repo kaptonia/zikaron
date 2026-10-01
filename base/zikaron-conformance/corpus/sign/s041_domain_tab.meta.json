@@ -1,0 +1,12 @@
+{
+ "domain": "client.doc/1\t",
+ "input": "s041_domain_tab.bin",
+ "note": "HARNESS: a domain is any bytes below 0x80 without a line feed; a tab is signed as given",
+ "predicted": {
+  "digest": "0x6c9000fa3cfe85db68f70bbea8a39c51e6c4f24a5d0718bf96e49375ed8a4552",
+  "presig": "0x77fb4a4ebf3628cfdce27bb6417fd5f8f4f4b5db2fbeb24d0b5d23b014f18bae",
+  "sig": "0x89ee9bfff9104789fd2a14af00290a848fa1243ecaf506426905d7f0f3bace3e649d044193520d94c682dbb33807f67487ff0c9dff5368ce42728a509984fdb21c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

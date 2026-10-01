@@ -1,0 +1,14 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [
+      {
+        "chainId": 1
+      }
+    ],
+    "chains": []
+  },
+  "expected": "{\"ok\":false,\"reason\":\"NO_LABEL\"}",
+  "rpc": {}
+}

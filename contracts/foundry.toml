@@ -1,0 +1,14 @@
+# Registry variants used by tests of the anchoring path.
+# Same compiler settings as the base registry, so deployments share ZikaronRegistry's ABI and EVM version.
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = []
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false

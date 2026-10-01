@@ -1,0 +1,1 @@
+sec 8.1/8.7 item 12: a record whose sender is outside the lineage is discarded before the UNPROVEN list is built, so it moves no label; it is a DISCARDED row.

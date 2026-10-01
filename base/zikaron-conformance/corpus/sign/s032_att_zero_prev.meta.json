@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s032_att_zero_prev.bin",
+ "note": "sec 6.11: the all-zero prev is a legal hex32",
+ "predicted": {
+  "digest": "0x454e4709d3cc05eac71d7b38c6188e7bad36e48981b9914664c0c1b98100e36e",
+  "presig": "0xac2b9f33a92de32a77560962385c76cfe5bd7ba9845ef404c7f199759d5a616f",
+  "sig": "0x8ba823dde7cc6fd3dfd54c447c1e159ce870b15808e7c88b3b119d88d3db6b6d63dce077ce0a26c3760f7c486df91c565c0b8162f5ff4b34c6500bd2f21a24d71b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

@@ -1,0 +1,3 @@
+Section 9.1 bare form: recipient equal to sender, calldata exactly 2 x 32 bytes,
+status 1. Each word is an anchored hash; no contract anywhere. The basis's
+chains array is empty and bareTx alone names the transaction.

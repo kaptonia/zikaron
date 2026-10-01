@@ -1,0 +1,13 @@
+# Build output
+target/
+# Python caches (the reference checks in base/ are Python)
+__pycache__/
+# forge build output of the base/ contracts
+base/zikaron-core/contracts/out/
+base/zikaron-core/contracts/cache/
+# OS noise
+.DS_Store
+
+
+# Packaging output
+dist/

@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s009_max_seq.bin",
+ "note": "sec 3.2: seq at 2^53 - 1 inside the preimage",
+ "predicted": {
+  "digest": "0x864c23be9f32bd28ebd50a92b5ee2cfa999ccb8210584b7d2cc172c7017a3afe",
+  "presig": "0xf511c2d52a11544e85a140d3dd20b42540e060fbdc9cd7d1ee7bd318fca06249",
+  "sig": "0xfb6bd5c8b17f7f1c449949358c82971baebd0d90de5d097167b135bab51b737c2c85fd8ba1835c132d0bf6f39d333982097c600658d779fc9d11b11a8d6f6ce71c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

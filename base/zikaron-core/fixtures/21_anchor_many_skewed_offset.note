@@ -1,0 +1,6 @@
+Section 9.1: the 32 bytes of topic 2 must appear in the calldata beginning at an
+offset that is a multiple of 32 or 4 plus a multiple of 32. Solidity does not
+require a calldata array's head offset to be a multiple of 32, so the declared
+registry can be made to emit a perfectly formed Anchored log for an element the
+caller placed at offset 101. The log is not an anchor: the hash a sender is
+charged with is a hash the sender's own bytes carried at a readable offset.

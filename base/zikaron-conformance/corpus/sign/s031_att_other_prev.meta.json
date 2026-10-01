@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s031_att_other_prev.bin",
+ "note": "sec 6.6: the same anchors written against a different head",
+ "predicted": {
+  "digest": "0x54e55eb5abe02e742e1d4010b148eca47e643306b27b160c3696eda5b3f88a2f",
+  "presig": "0x4486f9d66c7d4d9b1d2ba3adb0ce67872cac21eaf802e2fae78dc4a1c12fe170",
+  "sig": "0xe2d61c6a1e77b3cb4d3437c37b078043f5d16f838c5e1e1fd49b889483d9941443ca8de77fb49a75715d4616637460645377843a39e524a5f3cc38aa51e8e47b1c",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

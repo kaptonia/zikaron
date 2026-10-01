@@ -1,0 +1,3 @@
+Section 9.1 bare form: a transaction whose recipient is not the sender is not a
+bare anchor. Here exactly 32 bytes of calldata sent to another address and named
+in bareTx: no record.

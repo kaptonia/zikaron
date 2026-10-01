@@ -1,0 +1,61 @@
+{
+  "adoptions": [
+    {
+      "chainId": 31337,
+      "tx": "0x35fc93451f3670b5db1833e0d5e190a901d09fa82e10d8f7ee920cf6ac88e285"
+    },
+    {
+      "chainId": 31337,
+      "tx": "0x35fc93451f3670b5db1833e0d5e190a901d09fa82e10d8f7ee920cf6ac88e285"
+    }
+  ],
+  "basis": {
+    "adoptionChains": [
+      {
+        "chainId": 31337,
+        "throughBlock": 7
+      }
+    ],
+    "bareTx": [],
+    "chains": []
+  },
+  "expected": "{\"anchors\":[],\"basis\":{\"adoptionChains\":[{\"chainId\":31337,\"throughBlock\":7}],\"bareTx\":[],\"chains\":[]},\"evidence\":[{\"calldata\":\"0x1e376b3f0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000211111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111\",\"chainId\":31337,\"sender\":\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"tx\":\"0x35fc93451f3670b5db1833e0d5e190a901d09fa82e10d8f7ee920cf6ac88e285\"}]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x35fc93451f3670b5db1833e0d5e190a901d09fa82e10d8f7ee920cf6ac88e285"
+        ],
+        "result": {
+          "accessList": [],
+          "blockHash": "0x99189848e5b143eb7f13ef768cc39eb0e100f9c213906b044babb508e50db736",
+          "blockNumber": "0x7",
+          "blockTimestamp": "0x6a9a55d1",
+          "chainId": "0x7a69",
+          "from": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "gas": "0x64d2",
+          "gasPrice": "0x1ad857f1",
+          "hash": "0x35fc93451f3670b5db1833e0d5e190a901d09fa82e10d8f7ee920cf6ac88e285",
+          "input": "0x1e376b3f0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000211111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+          "maxFeePerGas": "0x3d4c484f",
+          "maxPriorityFeePerGas": "0x1",
+          "nonce": "0x3",
+          "r": "0xe077911b864816ba86b4c7f918245a0c64d01c0a69ff66675e0789ee6d3be201",
+          "s": "0x62321fa3b3ffdbedf83f2f6ef5807945bc77ff6669117d29b5671b15061ccbc4",
+          "to": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+          "transactionIndex": "0x0",
+          "type": "0x2",
+          "v": "0x0",
+          "value": "0x0",
+          "yParity": "0x0"
+        }
+      }
+    ]
+  }
+}

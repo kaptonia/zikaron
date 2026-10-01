@@ -1,0 +1,4 @@
+Section 9.3: an account carrying an EIP-7702 delegation designator has code, and
+an anchor sent from an address with code at either boundary is VOID. The record
+enters the anchor set carrying that verdict and is never silently dropped.
+Section 5.7 is why an author's key signs no such authorization at all.

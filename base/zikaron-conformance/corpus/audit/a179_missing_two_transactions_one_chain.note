@@ -1,0 +1,1 @@
+sec 9.2/8.7 item 4: two anchors of one hash in two transactions of one chain; one MISSING row whose transactions sort by (chainId, blockNumber, tx).

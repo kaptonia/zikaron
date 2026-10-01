@@ -1,0 +1,4 @@
+Section 9.5: an element whose chainId is in no adoptionChains object is unproven
+for want of a chain the basis does not reach, and the evidence set carries no
+record for it. Unprovenness has one report form and one only
+(ADOPTION_UNPROVEN). The offline core decides that; the scanner never does.

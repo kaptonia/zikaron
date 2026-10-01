@@ -1,0 +1,1 @@
+sec 8.7 item 15 rule 2: an UNPROVEN record whose hash is the entry_id of an excluded entry in the pile is over bytes in hand (the whole pile, as in sec 8.1), so the label is not UNAVAILABLE.

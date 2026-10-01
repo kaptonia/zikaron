@@ -1,0 +1,15 @@
+[package]
+name = "zikaron-anchor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Depends only on the core. No third-party chain crates: RLP, transaction encoding, JSON-RPC transport
+# and MPT proofs are written here; cryptography goes only through the core's cryptox.
+[dependencies]
+zikaron = { path = "../zikaron" }
+
+# A small helper binary for exercising this crate end to end.
+[[bin]]
+name = "zka"
+path = "src/bin/zka.rs"

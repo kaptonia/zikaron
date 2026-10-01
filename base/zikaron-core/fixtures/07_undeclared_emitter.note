@@ -1,0 +1,4 @@
+Section 9.1: a log with the Anchored signature from an address the basis does not
+declare is not an anchor. Two identical registries are deployed and the same key
+anchors through both; the basis declares one. The undeclared contract's log is a
+well-formed Anchored log and is never read.

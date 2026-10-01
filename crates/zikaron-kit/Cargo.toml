@@ -1,0 +1,14 @@
+[package]
+name = "zikaron-kit"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# The kit core embeds the zikaron/1 core (kit law §13.4): canon, acceptance, signing and audit all go
+# through zikaron's public surface, with no second copy here. No third-party cryptography or JSON.
+[dependencies]
+zikaron = { path = "../zikaron" }
+
+[[bin]]
+name = "zkk"
+path = "src/bin/zkk.rs"

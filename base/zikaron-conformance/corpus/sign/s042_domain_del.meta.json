@@ -1,0 +1,12 @@
+{
+ "domain": "client.doc/1\u007f",
+ "input": "s042_domain_del.bin",
+ "note": "HARNESS: a domain is any bytes below 0x80 without a line feed; 0x7F is signed as given",
+ "predicted": {
+  "digest": "0xc7b2101c9ce146f3b95770d5b826e0dc23c8a5002ab322aed91f2bf1ad385a17",
+  "presig": "0x77fb4a4ebf3628cfdce27bb6417fd5f8f4f4b5db2fbeb24d0b5d23b014f18bae",
+  "sig": "0x7246290c77400db54bdc7afa1ce37e0bdc7f38e3ba52ff9871c6210b9c5b708b7f5879701a029999ea10e8cc76b840490bf08420affb7933eba084b6ed5f339e1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

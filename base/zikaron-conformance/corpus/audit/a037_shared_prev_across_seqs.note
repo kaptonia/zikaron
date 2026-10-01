@@ -1,0 +1,1 @@
+sec 8.4: two entries at different seq sharing a non-null prev. The finding's seq is the smaller of the two, and PREV_MISMATCH also fires at seq 2.

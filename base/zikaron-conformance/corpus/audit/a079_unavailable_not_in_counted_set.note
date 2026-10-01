@@ -1,0 +1,1 @@
+sec 8.1: the audit discards from the unavailable set every hash that is not the hash of a remaining counted record.

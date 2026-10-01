@@ -1,0 +1,4 @@
+Section 9.1: a log whose topic 2 appears nowhere in the calldata at an offset that
+is a multiple of 32 or 4 plus a multiple of 32 is not an anchor, whatever address
+emitted it and whatever the basis declares. The basis here declares the emitting
+contract, and the sender is charged with nothing its own bytes did not carry.

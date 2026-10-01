@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.3/8.7: a VOID record is informational, takes no part in the reconciliation, and no label turns on it, even when its hash is in no ledger entry.

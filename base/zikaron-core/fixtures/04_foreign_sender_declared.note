@@ -1,0 +1,4 @@
+Section 9.4: `senders` declares the reach of the scan and is never a filter on the
+audit. A sender outside the audited lineage is recorded here because the basis
+names it; section 8.1 is what later discards a record whose sender is outside the
+lineage, and the scanner never judges that.

@@ -1,0 +1,12 @@
+{
+ "domain": "client.doc/1",
+ "input": "s040_other_literal.bin",
+ "note": "sec 5.6/5.7: a document under a literal no domain of this law spells",
+ "predicted": {
+  "digest": "0xdae74e15a44e144b3fd4355487b8dee2e6b1b16f7d9903a568a962407d6c0ea4",
+  "presig": "0x77fb4a4ebf3628cfdce27bb6417fd5f8f4f4b5db2fbeb24d0b5d23b014f18bae",
+  "sig": "0x412ef084d7a6bd08d98c8bbbeefd09db21fa365f4cf2b356def1d1e0ff439b685cf18aa3220a01873e7a5cadcbdc40c8efd2541d254fdbac1b2194b49e9c88b51c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

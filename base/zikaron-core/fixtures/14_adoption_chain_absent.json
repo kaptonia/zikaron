@@ -1,0 +1,61 @@
+{
+  "adoptions": [
+    {
+      "chainId": 31337,
+      "tx": "0x097968342fcba973cfa299f0454edf725b11b5badba7dbb8cf0c6ce9dcb57cc5"
+    },
+    {
+      "chainId": 8453,
+      "tx": "0xe142b1ccbe46b28fe2fa103703bb355640b31b3f251586fb8c367a2657b307d5"
+    }
+  ],
+  "basis": {
+    "adoptionChains": [
+      {
+        "chainId": 31337,
+        "throughBlock": 2
+      }
+    ],
+    "bareTx": [],
+    "chains": []
+  },
+  "expected": "{\"anchors\":[],\"basis\":{\"adoptionChains\":[{\"chainId\":31337,\"throughBlock\":2}],\"bareTx\":[],\"chains\":[]},\"evidence\":[{\"calldata\":\"0x9b84ef061c6c39f1cc16b1f4d104e93f8b76391e42e11262e5d18390d7fc5ca4\",\"chainId\":31337,\"sender\":\"0x14dc79964da2c08b23698b3d3cc7ca32193d9955\",\"tx\":\"0x097968342fcba973cfa299f0454edf725b11b5badba7dbb8cf0c6ce9dcb57cc5\"}]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      },
+      {
+        "method": "eth_getTransactionByHash",
+        "params": [
+          "0x097968342fcba973cfa299f0454edf725b11b5badba7dbb8cf0c6ce9dcb57cc5"
+        ],
+        "result": {
+          "accessList": [],
+          "blockHash": "0x7418fb3f9c238263b1fb0013e6346438ecad316ce0aa45ee82630ba1857f71cb",
+          "blockNumber": "0x2",
+          "blockTimestamp": "0x6a99f870",
+          "chainId": "0x7a69",
+          "from": "0x14dc79964da2c08b23698b3d3cc7ca32193d9955",
+          "gas": "0x5708",
+          "gasPrice": "0x342e6768",
+          "hash": "0x097968342fcba973cfa299f0454edf725b11b5badba7dbb8cf0c6ce9dcb57cc5",
+          "input": "0x9b84ef061c6c39f1cc16b1f4d104e93f8b76391e42e11262e5d18390d7fc5ca4",
+          "maxFeePerGas": "0x77359401",
+          "maxPriorityFeePerGas": "0x1",
+          "nonce": "0x0",
+          "r": "0x5de05a205384b88450a505b400e2bfa8f8f6b6e84375c85ac787d05a219ee7f",
+          "s": "0x262deffa2331382fd4c740913da13e81cd93ad9ff9472bdf4fd29dbab8dfb493",
+          "to": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+          "transactionIndex": "0x0",
+          "type": "0x2",
+          "v": "0x1",
+          "value": "0x0",
+          "yParity": "0x1"
+        }
+      }
+    ]
+  }
+}

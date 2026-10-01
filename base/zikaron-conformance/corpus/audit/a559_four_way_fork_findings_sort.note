@@ -1,0 +1,1 @@
+sec 8.7 item 3: six EQUIVOCATIONs at one position sort by (entry_id, second entry_id), (A,B),(A,C),(A,D),(B,C),(B,D),(C,D), where sorting by the second id alone would put (B,C) before (A,D); BROKEN_CHAIN.

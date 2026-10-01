@@ -1,0 +1,1 @@
+sec 6.9/8.7 item 9: every ledger entry of a type outside the seven is listed with its seq and type, sorted by (seq, entryType, entry_id).

@@ -1,0 +1,1 @@
+9.1: a self-directed transaction of exactly 32 calldata bytes whose receipt has status 0 (the sender had delegated to code that reverts) is not a bare anchor. Status is tested before the codeless test of 9.3, so the record is absent rather than VOID.

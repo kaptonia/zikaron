@@ -1,0 +1,1 @@
+sec 8.2: at seq 2^53 - 1 the walk leaves `expected` at that value, since no entry can occupy a position beyond the universe of sec 3.1.

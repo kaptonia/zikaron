@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1-adoption",
+ "input": "s026_att_one_anchor.bin",
+ "note": "sec 6.6: C over one anchor element; the 85-byte message",
+ "predicted": {
+  "digest": "0xe9b78cf77c11f62285ba119b46a0871427e5db8a84107418a24c8de58c745d82",
+  "presig": "0x9ed97a389849237bb04575c1f2ab027de5b0aab46c537f9209e3fe424b8909fd",
+  "sig": "0x0b8f5f9c03aa8b4020f3b9a7b8b5ce826444a2f4da2684cc4abd0aa81b3ccd104bc93c2ad63c1f5c30c67babf1e4f3ac489ecf7154a937ae819422c429c60b2d1b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "0x24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

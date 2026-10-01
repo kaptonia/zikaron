@@ -1,0 +1,1 @@
+9.1: a transaction of a type this scanner does not encode (0x10) has no signing payload the scanner can rebuild, so whatever r and s it carries it has no sender in this grammar and is not a bare anchor.

@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.1: byte-identical copies collapse to one entry, and the report does not depend on the order in which any input was supplied.

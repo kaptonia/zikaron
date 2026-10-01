@@ -1,0 +1,1 @@
+9.1: a log from a declared registry with three well-formed topics and 32 data bytes is not an anchor: any data byte disqualifies it.

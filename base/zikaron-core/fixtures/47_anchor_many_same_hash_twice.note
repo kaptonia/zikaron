@@ -1,0 +1,1 @@
+9.4: anchorMany with one hash twice emits two logs and yields one record, since a record is at most one per (chainId, tx, hash).

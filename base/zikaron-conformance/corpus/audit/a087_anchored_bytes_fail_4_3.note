@@ -1,0 +1,1 @@
+sec 8.6: a byte string that was retrieved and fails sec 4.3 is not unavailable; it is not input, and its anchor lands in MISSING.

@@ -1,0 +1,1 @@
+sec 8.1/9.3: the hash leaves the unavailable set because its record is not counted, and the UNPROVEN list still moves the label.

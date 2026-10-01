@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s021_rand_b6_3.bin",
+ "note": "randomized B6 with a randomized private key",
+ "predicted": {
+  "digest": "0x1993f08a16db77c7cc3278dbd3a48e82d7256db8ad47d44db58b86c18ff3fe7c",
+  "presig": "0x43128697ca1b29d0c4dac3c2f0d8875e055a04dbe466a6aa5778d7544df9e1dd",
+  "sig": "0x54027c6495b3a4b4d77eebd0e079b4595f0d4e17fe33ca8c4528636817709d2165eefbe5589fe695d39fc99ae7bd4acd9d2c285d07e8b7e64dadafe306107eb71c",
+  "signer": "0x5c869c282484c0e1e1d1b7d0a39830815d8909a9"
+ },
+ "privkey": "0xaccd9984b88c61128e91e0d972ed9bb39520978238319570fed732a3a55dad19"
+}

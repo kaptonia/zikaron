@@ -1,0 +1,1 @@
+HARNESS: the reader's first restriction, valid UTF-8 over the whole file, is the only rule the two bytes C3 28 inside an ignored member's string reach; the file is unreadable and gives no label.

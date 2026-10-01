@@ -1,0 +1,54 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "app"
+path = "src/lib.rs"
+
+# The shipped binary: the window. Zero arguments, zero doors.
+[[bin]]
+name = "app"
+path = "src/bin/app.rs"
+
+[dependencies]
+zikaron-ui = { path = "../zikaron-ui" }
+# The public surfaces of the core, kit, store and anchoring crates: the app only consumes them.
+# Cryptography, canonical bytes, hex spelling and domain literals are never rewritten in the app.
+zikaron = { path = "../zikaron" }
+zikaron-kit = { path = "../zikaron-kit" }
+zikaron-store = { path = "../zikaron-store" }
+zikaron-anchor = { path = "../zikaron-anchor" }
+# The only exit for writing files (the landing seam). A second atomic write here would be a copy.
+zikaron-glue = { path = "../zikaron-glue" }
+# Third party: the egui family. On the app side only the `window` module touches it.
+eframe = { version = "0.31.1", default-features = false, features = ["glow"] }
+# Third-party cryptography: on the app side only the `cryptx` module touches these.
+scrypt = { version = "0.11", default-features = false }
+aes = "0.8"
+ctr = "0.9"
+bip39 = { version = "2", default-features = false, features = ["alloc"] }
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+# Local data sealing: XChaCha20-Poly1305 for every sealed file and the backup body, HKDF-SHA256 to derive the
+# local data key from the master key. Also confined to `cryptx`.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+# TLS for https nodes: `rustls` with `ring` cryptography, roots from `webpki-roots` (the Mozilla root table is
+# compiled in and the system trust store is not read, so one binary trusts the same roots on every machine).
+# Certificate chain and host name are always verified. Also confined to `cryptx`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+
+# H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
+# portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["glow", "x11", "wayland"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+log = "0.4"
+# The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).
+winit = { version = "0.30", default-features = false, features = ["x11"] }

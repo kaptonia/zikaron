@@ -1,0 +1,21 @@
+[package]
+name = "zikaron-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# A thin shell: assembles inputs, calls the base crates and renders state; it invents no byte format and
+# decides nothing. No third-party crates: entries come from the core, directories from the store crate,
+# chain access from the anchoring crate, documents, payloads, kits, depth and checks from the kit crate.
+# Randomness comes only from the system entropy source (standard library).
+[dependencies]
+zikaron = { path = "../zikaron" }
+zikaron-kit = { path = "../zikaron-kit" }
+zikaron-store = { path = "../zikaron-store" }
+zikaron-anchor = { path = "../zikaron-anchor" }
+# Laying out disclosure kits belongs to zikaron-glue; the `kit-export` verb calls its surface.
+zikaron-glue = { path = "../zikaron-glue" }
+
+[[bin]]
+name = "zikaron"
+path = "src/bin/zikaron.rs"

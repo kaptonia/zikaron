@@ -1,0 +1,5 @@
+Section 9.3: when either state cannot be consulted the verdict is UNPROVEN. The
+endpoint refuses eth_getCode; the record enters the anchor set carrying that
+verdict, takes no part in the reconciliation of section 8.5, and is carried in the
+UNPROVEN list of section 8.7. The recording holds the node's error verbatim, so a
+replay meets the same refusal.

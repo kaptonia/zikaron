@@ -1,0 +1,1 @@
+HARNESS: a file whose root value is not an object gives no label, and is no misuse.

@@ -1,0 +1,1 @@
+sec 8.1: the sender trim runs first, so the record is discarded and the hash is the hash of no undiscarded counted record and leaves the unavailable set.

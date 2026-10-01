@@ -1,0 +1,19 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [],
+    "chains": [
+      {
+        "chainId": 1,
+        "extra": 1,
+        "fromBlock": 0,
+        "registries": [],
+        "senders": [],
+        "toBlock": 10
+      }
+    ]
+  },
+  "expected": "{\"ok\":false,\"reason\":\"NO_LABEL\"}",
+  "rpc": {}
+}

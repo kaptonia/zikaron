@@ -1,0 +1,1 @@
+sec 9.4: the anchor set holds at most one record per (chainId, blockNumber, tx, hash); two records that agree on every remaining member are one record.

@@ -1,0 +1,3 @@
+Section 9.1 bare form: a transaction whose calldata is not a positive multiple of
+32 bytes is not a bare anchor, whatever words it contains. Here 33 bytes from the
+sender to itself, status 1, named in bareTx: no record.

@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.5: the 32 bytes begin at offset 32 and end at the calldata's last byte, lying wholly within it; proven.

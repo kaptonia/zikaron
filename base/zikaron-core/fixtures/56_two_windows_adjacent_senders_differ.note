@@ -1,0 +1,1 @@
+9.4: two chains objects of one chain over adjacent windows (0..2 and 3..5) whose senders differ form a basis; each window's senders bound that window alone, so the first sender's anchor in block 2 and the second sender's in block 4 are records, and the first sender's anchor in block 4 is outside the basis.

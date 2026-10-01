@@ -1,0 +1,3 @@
+Section 9.1 bare form: a transaction with no recipient (a contract creation) is
+not a bare anchor, whatever words its calldata contains. Named in bareTx: no
+record.

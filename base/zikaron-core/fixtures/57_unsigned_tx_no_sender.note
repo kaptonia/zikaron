@@ -1,0 +1,1 @@
+9.1: a transaction that carries no secp256k1 signature (a system or deposit transaction; r and s are zero and the node asserts a from field) has no sender in this grammar. A registry-form log it carries is not an anchor whatever its topics hold, and an adoption element naming it gets no evidence record, so the element is unproven.

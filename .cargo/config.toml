@@ -1,0 +1,5 @@
+# Byte cap of the trace sink file, defined once: the three `trace.rs` copies in `app`, `zikaron` and
+# `zikaron-store` each read it into `TRACE_CAP_BYTES` with `env!`. The three crates have no dependency
+# edge between them, so the value lives where cargo reads it, instead of adding an edge for one constant.
+[env]
+ZIKARON_TRACE_CAP_BYTES = "8388608"

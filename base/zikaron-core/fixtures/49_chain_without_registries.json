@@ -1,0 +1,28 @@
+{
+  "adoptions": [],
+  "basis": {
+    "adoptionChains": [],
+    "bareTx": [],
+    "chains": [
+      {
+        "chainId": 31337,
+        "fromBlock": 7,
+        "registries": [],
+        "senders": [
+          "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+        ],
+        "toBlock": 7
+      }
+    ]
+  },
+  "expected": "{\"anchors\":[],\"basis\":{\"adoptionChains\":[],\"bareTx\":[],\"chains\":[{\"chainId\":31337,\"fromBlock\":7,\"registries\":[],\"senders\":[\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\"],\"toBlock\":7}]},\"evidence\":[]}",
+  "rpc": {
+    "31337": [
+      {
+        "method": "eth_chainId",
+        "params": [],
+        "result": "0x7a69"
+      }
+    ]
+  }
+}

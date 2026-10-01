@@ -1,0 +1,3 @@
+The same chain as fixture 04 under a basis whose `senders` omits the foreign
+address. Section 9.4: a basis whose senders omit an address says nothing about
+that address's anchors, and the anchor set carries no record for it.

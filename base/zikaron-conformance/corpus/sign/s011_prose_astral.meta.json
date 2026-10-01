@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s011_prose_astral.bin",
+ "note": "sec 3.4 item 3: astral and bidi scalars raw in the preimage",
+ "predicted": {
+  "digest": "0xc41281901f089ed84b5703ae52ba7363620ef647acf9687a252c3a2027b8ff77",
+  "presig": "0x7feb3943fb7c8d94b4787d218a30e761e5593faae3a7d0c98c76ca61db8b55d5",
+  "sig": "0x062c60e7f7ce2267f1bb5de50ba5ca4ff9b0b034e9749e1a48396b660b036d9754c2f705647ee5a09f17f480679b2e5c4bd726667ad8e5582234cc79c2e5670d1c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,0 +1,1 @@
+input arrays reversed: sec 9.4: bareTx is ordered by (chainId, tx); the tx components ascend, so chainId alone decides.

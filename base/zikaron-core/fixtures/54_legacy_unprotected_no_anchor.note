@@ -1,0 +1,1 @@
+9.1: a self-directed transaction of exactly 32 calldata bytes whose legacy signature carries v = 27 or 28 names no chain, so it has no sender in this grammar and is not a bare anchor; the node's from field is never read.

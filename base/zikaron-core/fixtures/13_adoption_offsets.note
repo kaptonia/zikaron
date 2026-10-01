@@ -1,0 +1,6 @@
+Section 9.5 evidence records. Six transactions carry a 32-byte content at offsets
+0, 4, 32, 36, at 5 (off alignment), and truncated to 20 bytes. The evidence record
+carries the calldata and nothing else: the scanner never decides provenness. The
+offline core proves the first four and leaves the last two unproven, since section
+9.5 reads the content only at a multiple of 32 or 4 plus a multiple of 32, wholly
+within the calldata.

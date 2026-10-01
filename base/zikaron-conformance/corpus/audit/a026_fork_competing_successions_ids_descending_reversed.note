@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.2: two successions compete at seq 3; authority after 3 follows the one with the bytewise-smallest entry_id, so exactly one of the two seq-4 entries is an AUTHORITY_MISMATCH, and which one turns on the id order. Here the entry met first has the larger id.

@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["../../contracts/lib"]
+
+# Pinned so the deployed runtime bytecode is reproducible to an exact
+# codeHash; readers that pin a registry by codeHash depend on every one of
+# these settings staying as they are.
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false
+
+[fuzz]
+runs = 10000

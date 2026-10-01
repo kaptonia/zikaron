@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s005_adoption.bin",
+ "note": "sec 5.1: B6 of an adoption",
+ "predicted": {
+  "digest": "0x1dac4541295aa2f43dfa8cfb605120b66cb7c790787426e184315dcdcd61dd7a",
+  "presig": "0x276c22e939e8ea1098dff556e81559757573e981eb11d7fa459ab1f151b45b42",
+  "sig": "0xf0782086c96c8aacbfc689f2770bbac29f927faa49fd82da6c04e9dfce5838eb5f749f6d9db56c96d4da2eee2db48adb3dea2a94f8097df5f0f8636becb3dc821b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

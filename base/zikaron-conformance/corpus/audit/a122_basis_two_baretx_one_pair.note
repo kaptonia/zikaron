@@ -1,0 +1,1 @@
+sec 9.4: at most one bareTx object per (chainId, tx).

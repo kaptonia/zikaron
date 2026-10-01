@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.1: the audit discards every anchor record whose sender is not in the lineage, so no key outside it can put a hash into this ledger's reconciliation.

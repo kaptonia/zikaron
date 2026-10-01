@@ -1,0 +1,1 @@
+sec 9.4: two records agreeing on (chainId, blockNumber, tx, hash) and disagreeing on blockTimestamp are not a zikaron/1 audit input.

@@ -1,0 +1,1 @@
+9.1/9.4: the declared registry list bounds which logs are read; a chains object with an empty registries array reads no log at all, and the recording holds no eth_getLogs exchange.

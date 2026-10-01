@@ -1,0 +1,1 @@
+sec 8.1/8.7: the empty byte string fails sec 4.3 as E_JSON and lands in MALFORMED with its token; nothing else changes.

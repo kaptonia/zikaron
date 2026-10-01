@@ -1,0 +1,1 @@
+input arrays reversed: The seq-0 entry is absent. sec 8.2: a ledger whose smallest seq is not 0 records SEQ_GAP(0, s) first; the entry at seq 1 records no prev finding because no entry at seq 0 is held.
