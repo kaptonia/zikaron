@@ -58,7 +58,27 @@ ZIKARON Desk 是一个本机桌面应用：把你的作品或文件记进一本�
 
 - `ZIKARON-0.1.0-macos-arm64.dmg`：打开后把 `ZIKARON.app` 拖进「应用程序」。命令行 `zikaron` 在应用包内的 `ZIKARON.app/Contents/MacOS/zikaron`。
 - `ZIKARON-0.1.0-macos-arm64.pkg`：安装包，把应用装进 `/Applications`，把命令行装到 `/usr/local/bin/zikaron`。
-- 应用用自签证书（Kaptonia）签名，未经公证（没有经过 Apple 的公证）。第一次打开应用或安装包时 macOS 会拦下，处理方法：先试着打开一次，再到「系统设置 > 隐私与安全性」拉到底，点「仍要打开」。
+- 应用用自签证书（Kaptonia）签名，未经公证（没有经过 Apple 的公证）。从浏览器下载的文件带有 macOS 的隔离标记，系统会拒绝打开；在较新的 macOS 上，「系统设置 > 隐私与安全性」里的「仍要打开」也不一定有效。先用 `shasum -a 256 <文件>` 核对 SHA-256，再在「终端」里去掉隔离标记：
+
+  - 用 dmg：打开 dmg 之前先运行下面这条，再打开 dmg，把 `ZIKARON.app` 拖进「应用程序」：
+
+    ```
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.dmg
+    ```
+
+    如果已经拖进去了，改为运行：
+
+    ```
+    xattr -dr com.apple.quarantine /Applications/ZIKARON.app
+    ```
+
+  - 用 pkg：先运行下面这条，再双击安装：
+
+    ```
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.pkg
+    ```
+
+  命令里的路径按你实际下载的位置改。
 
 **Linux**
 

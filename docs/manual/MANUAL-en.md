@@ -58,7 +58,27 @@ Version 0.1.0 comes as packages for macOS with Apple silicon. There are no prebu
 
 - `ZIKARON-0.1.0-macos-arm64.dmg`: open it and drag `ZIKARON.app` to Applications. The `zikaron` command line is inside the app bundle at `ZIKARON.app/Contents/MacOS/zikaron`.
 - `ZIKARON-0.1.0-macos-arm64.pkg`: an installer that puts the app in `/Applications` and the command line at `/usr/local/bin/zikaron`.
-- The app is signed with a self-signed certificate (Kaptonia) and is not notarized by Apple, so macOS blocks it the first time you open the app or the installer. Try to open it once, then go to System Settings > Privacy & Security, scroll to the bottom and click "Open Anyway".
+- The app is signed with a self-signed certificate (Kaptonia) and is not notarized by Apple. Files downloaded in a browser carry macOS's quarantine flag, and macOS refuses to open them; on recent macOS, "Open Anyway" in System Settings > Privacy & Security does not always work either. Check the SHA-256 with `shasum -a 256 <file>` first, then remove the quarantine flag in Terminal:
+
+  - With the dmg: before opening the dmg, run the command below, then open the dmg and drag `ZIKARON.app` to Applications:
+
+    ```
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.dmg
+    ```
+
+    If you have already dragged the app in, run this instead:
+
+    ```
+    xattr -dr com.apple.quarantine /Applications/ZIKARON.app
+    ```
+
+  - With the pkg: run the command below, then double-click the pkg to install:
+
+    ```
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.pkg
+    ```
+
+  Change the paths to wherever you downloaded the files.
 
 **Linux**
 

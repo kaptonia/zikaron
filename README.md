@@ -33,10 +33,27 @@ contract and nodes can also be set in Settings.
 The 0.1.0 release provides macOS packages. On Linux, build from source (see below).
 
 **macOS.** Install `ZIKARON.app` from the `.dmg` (drag it into Applications) or with the `.pkg`
-installer. The app is signed with a self-signed certificate (Kaptonia) and is not notarized, so
-macOS refuses to open it (or the `.pkg`) the first time. Try to open it once, then go to System Settings >
-Privacy & Security and click "Open Anyway". The `.pkg` can also be opened after running
-`xattr -d com.apple.quarantine <file>.pkg` on it.
+installer. The app is signed with a self-signed certificate (Kaptonia) and is not notarized. Files downloaded in a browser carry macOS's quarantine flag, and macOS refuses to open them; on recent macOS, "Open Anyway" in System Settings > Privacy & Security does not always work either. Check the SHA-256 with `shasum -a 256 <file>` first, then remove the quarantine flag in Terminal:
+
+- With the dmg: before opening the dmg, run the command below, then open the dmg and drag `ZIKARON.app` to Applications:
+
+  ```
+  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.dmg
+  ```
+
+  If you have already dragged the app in, run this instead:
+
+  ```
+  xattr -dr com.apple.quarantine /Applications/ZIKARON.app
+  ```
+
+- With the pkg: run the command below, then double-click the pkg to install:
+
+  ```
+  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.pkg
+  ```
+
+Change the paths to wherever you downloaded the files.
 
 **Linux.** There are no prebuilt packages for 0.1.0. Build from source as described below; on Linux,
 `packaging/linux/build.sh` also makes a `.deb` and an AppImage. The window program is `zikaron-desk`.
