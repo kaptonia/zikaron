@@ -92,6 +92,7 @@ Version 0.1.1 comes as packages for macOS with Apple silicon and for x86_64 Linu
 **Windows**
 
 - `ZIKARON-0.1.1-windows-x86_64.zip`: for Windows 10 and 11 on x86_64. Nothing to install: unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder. The programs carry their own runtime; nothing else is needed.
+- `zikaron.exe` is a command line and runs in a terminal: in its folder, hold Shift, right-click an empty spot and choose "Open in Terminal" ("Open PowerShell window here" on Windows 10), then type `.\zikaron.exe` with a verb and its flags. Double-clicked in Explorer, it opens a window, prints its usage and closes at once, which looks like a crash but is not one.
 - Check the SHA-256 first in PowerShell with `Get-FileHash <file> -Algorithm SHA256`.
 - The programs are not signed. On first start Windows says "Windows protected your PC"; click "More info", then "Run anyway". On Windows 11 with Smart App Control on, unsigned programs are blocked outright: there is no "Run anyway" and no way to allow this one program; to use it, first turn Smart App Control off in Windows Security › App & browser control › Smart App Control settings.
 - To upgrade, replace the folder with the new version's. Machine data is not in the unpacked folder but in `%LOCALAPPDATA%\ZIKARON\` (see Appendix B); deleting the unpacked folder does not delete it.

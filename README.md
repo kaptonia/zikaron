@@ -59,7 +59,7 @@
 
 **Linux。** x86_64 用 `.deb`（`sudo apt install ./zikaron-desk_0.1.1_amd64.deb`，装上窗口程序 `zikaron-desk` 与命令行 `zikaron`）或 AppImage（`chmod +x` 后直接运行，只启动窗口程序，命令行在包内但不直接暴露；系统没有 FUSE 时加 `--appimage-extract-and-run`）。两者都要求 glibc 2.31 或更新，包没有签名，先用 `sha256sum <文件>` 核对。在 aarch64 的 Linux 上，`packaging/linux/build.sh` 也能打出这两种包；其他架构只能按下文从源码构建。系统文件对话框经由桌面门户，所以要装 `xdg-desktop-portal` 和一个后端，如 `xdg-desktop-portal-gtk`。
 
-**Windows。** x86_64 的 Windows 10 或 11 用 `ZIKARON-0.1.1-windows-x86_64.zip`：先在 PowerShell 里用 `Get-FileHash <文件> -Algorithm SHA256` 核对 SHA-256，解压到任意文件夹，双击 `zikaron-desk.exe` 即开，命令行是同一文件夹里的 `zikaron.exe`。不用安装，也不需另装运行库。程序没有签名，首次打开时 Windows 会提示「Windows 已保护你的电脑」，按「更多信息」再按「仍要运行」。Windows 11 开着「智能应用控制」时，未签名的程序会被直接拦下、不能单独放行，要先在「Windows 安全中心 › 应用和浏览器控制 › 智能应用控制设置」里关掉它。机器数据默认在 `%LOCALAPPDATA%\ZIKARON\`，删掉解压的文件夹不会删掉它。
+**Windows。** x86_64 的 Windows 10 或 11 用 `ZIKARON-0.1.1-windows-x86_64.zip`：先在 PowerShell 里用 `Get-FileHash <文件> -Algorithm SHA256` 核对 SHA-256，解压到任意文件夹，双击 `zikaron-desk.exe` 即开，命令行是同一文件夹里的 `zikaron.exe`（要在终端里运行，双击它会一闪而过）。不用安装，也不需另装运行库。程序没有签名，首次打开时 Windows 会提示「Windows 已保护你的电脑」，按「更多信息」再按「仍要运行」。Windows 11 开着「智能应用控制」时，未签名的程序会被直接拦下、不能单独放行，要先在「Windows 安全中心 › 应用和浏览器控制 › 智能应用控制设置」里关掉它。机器数据默认在 `%LOCALAPPDATA%\ZIKARON\`，删掉解压的文件夹不会删掉它。
 
 用户手册在 [`docs/manual/`](docs/manual/)（[中文](docs/manual/MANUAL-zh.md)、[English](docs/manual/MANUAL-en.md)）。
 

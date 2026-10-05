@@ -92,6 +92,7 @@ ZIKARON Desk 是一个本机桌面应用：把你的作品或文件记进一本�
 **Windows**
 
 - `ZIKARON-0.1.1-windows-x86_64.zip`：用于 x86_64 的 Windows 10 与 11。不用安装：解压到任意文件夹，双击 `zikaron-desk.exe` 即开；命令行是同一文件夹里的 `zikaron.exe`。程序自带运行库，不需另装。
+- `zikaron.exe` 是命令行，要在终端里运行：在它所在文件夹的空白处按住 Shift 再右键，选「在终端中打开」（Windows 10 为「在此处打开 PowerShell 窗口」），输入 `.\zikaron.exe` 加动词和参数。在资源管理器里双击它，会打开一个窗口、打印用法后立刻关掉，看起来像闪退，这不是出错。
 - 先在 PowerShell 里用 `Get-FileHash <文件> -Algorithm SHA256` 核对 SHA-256。
 - 程序没有签名。首次打开时 Windows 会提示「Windows 已保护你的电脑」，按「更多信息」，再按「仍要运行」。Windows 11 开着「智能应用控制」时，未签名的程序会被直接拦下，没有「仍要运行」，也不能单独放行这一个程序；要用就先在「Windows 安全中心 › 应用和浏览器控制 › 智能应用控制设置」里把它关掉。
 - 升级：用新版的文件夹替换旧的。机器数据不在解压的文件夹里，而在 `%LOCALAPPDATA%\ZIKARON\`（见附录 B），删掉解压的文件夹不会删掉它。
