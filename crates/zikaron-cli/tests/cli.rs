@@ -386,16 +386,14 @@ fn the_output_key_table_and_the_reason_table_have_no_twin_spellings() {
 fn the_entropy_well_is_read_by_length_and_has_no_fallback() {
     let text = src("entropy.rs");
     // The source never ends, so reading to end would hang; reading exactly the length is the only way.
-    assert!(text.contains("read_exact"));
+    // The command line reads the system's source only through the operating-system crate, which reads exactly
+    // the length (the source never ends, so reading to end would hang).
+    assert!(text.contains("zikaron_os::fill_random("), "熵只经 zikaron_os 那一处取");
     assert!(!text.contains("fs::read("), "整档读一个无尽的档会挂住");
     // Unavailable is said: no second source and no makeshift fallback.
     assert!(!text.to_lowercase().contains("fallback"));
-    let in_code = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .filter(|l| l.contains("/dev/urandom"))
-        .count();
-    assert_eq!(in_code, 1, "熵源那条路在码里只该写一次");
+    let os = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zikaron-os/src/lib.rs")).expect("zikaron-os");
+    assert!(os.contains("imp::fill_random(buf)"), "取熵在 zikaron-os 里每个系统一份实现");
 }
 
 #[test]
@@ -578,7 +576,6 @@ fn a_refused_kit_export_answers_in_the_shape_the_cli_schema_names() {
 
 #[test]
 fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
-    use std::os::unix::fs::PermissionsExt;
     let w = scratch("landing");
     let rows = format!(
         "[{{\"recipient\":\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"variant\":\"0x{}\"}}]",
@@ -613,7 +610,11 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
     assert!(t.contains("E_OCCUPIED") && t.contains("fpm.json"), "{t}");
     assert_eq!(before, std::fs::read(w.join("fpm.json")).expect("读不出"), "原有的档被动了");
 
-    // Refusal two: a landing that fails leaves nothing at the target.
+    // Refusal two (unix only: the folder is made unwritable with unix permission bits): a landing that fails
+    // leaves nothing at the target.
+    #[cfg(unix)]
+    {
+    use std::os::unix::fs::PermissionsExt;
     let locked = w.join("locked");
     std::fs::create_dir_all(&locked).expect("建不出");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("改不了权限");
@@ -627,6 +628,7 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
         .collect();
     assert!(leftovers.is_empty(), "临时地留在盘上:{leftovers:?}");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
+    }
 }
 
 #[test]
@@ -665,7 +667,7 @@ fn stdout_has_one_writer_and_that_writer_never_returns() {
     let out_rs = src("out.rs");
     // The writer never returns.
     assert!(out_rs.contains("pub fn emit(a: Answer) -> !"), "emit 不再是不返回的:两个出口就不互斥了");
-    assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: &str) -> !"));
+    assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: &str, said: Said) -> !"));
     // Exactly two exits.
     assert_eq!(out_rs.matches("std::process::exit").count(), 2, "out.rs 里的退出口不是两处");
     // `Exit::Misuse` appears only in out.rs and codes.rs, so no answer can claim to be misuse.
@@ -887,6 +889,36 @@ fn init_on_a_ledger_that_already_holds_two_roots_names_the_fork() {
     assert!(matches!(member_of(&r, "count"), Some(zikaron::json::Value::Int(2))));
     assert!(member_of(&r, "author").is_none(), "几个根时不挑一位作者");
     assert_eq!(files_of(&w.join("b")), before, "零条目落地");
+}
+
+#[test]
+fn a_write_by_hand_into_a_ledger_that_already_holds_two_roots_is_refused() {
+    // The write gate audits under one root; a pile that already holds two (two keys each wrote a genesis)
+    // cannot be judged, and the gate refuses what it cannot judge, `--seq` and `--prev` given by hand (no tip
+    // asked) included.
+    let w = scratch("write-fork");
+    let other_key = format!("0x{}", "17".repeat(32));
+    let one = run_in(&w, &["init", "--ledger", "one", "--key", A_KEY, "--statement", "开端"]);
+    assert_eq!(one.code, 0);
+    assert_eq!(run_in(&w, &["init", "--ledger", "two", "--key", &other_key, "--statement", "x"]).code, 0);
+    std::fs::create_dir_all(w.join("b")).expect("建目录");
+    for from in ["one", "two"] {
+        for (name, bytes) in files_of(&w.join(from)) {
+            std::fs::write(w.join("b").join(name), bytes).expect("拷条目档");
+        }
+    }
+    let before = files_of(&w.join("b"));
+    let h32 = format!("0x{}", "ab".repeat(32));
+    let root = text_of(&one, "entryId");
+    let r = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--seq", "1", "--prev", &root, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
+    assert_eq!(r.code, 1, "两个根的账本该拒:{}", String::from_utf8_lossy(&r.out));
+    assert_eq!(reason_of(&r), "E_TIP_FORKED");
+    assert_eq!(files_of(&w.join("b")), before, "零条目落地");
+    // Naming the root (`--root`) is how a writer picks its line in such a ledger: the gate audits under that
+    // root, the same one the tip is asked under, and the write by the key that holds it lands.
+    let author = files_of(&w.join("one")).into_iter().find_map(|(_, b)| zikaron::entry::check(&b).ok()).map(|e| e.author).expect("创世作者");
+    let named = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--root", &author, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
+    assert_eq!(named.code, 0, "点名根之后照写:{}", String::from_utf8_lossy(&named.out));
 }
 
 #[test]

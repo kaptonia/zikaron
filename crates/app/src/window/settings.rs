@@ -136,7 +136,7 @@ impl Win {
         rows.push((
             t(Key::IdGas),
             match &self.shell.chain {
-                Some(Done::Chain { gas_wei: Some(w), .. }) => Val::Mark(if *w > 0 { Mark::Ok } else { Mark::Bad }, fill1(Key::SetGasSay, &eth(*w))),
+                Some(Done::Chain { gas_wei: Some(w), .. }) => Val::Mark(if *w > 0 { Mark::Ok } else { Mark::Bad }, fill1(Key::SetGasSay, &eth_held(*w))),
                 _ => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
             },
         ));
@@ -198,7 +198,7 @@ impl Win {
         });
         // The passcode group, four rows in order: the passcode, the auto-lock switch, the idle time (only while
         // on), change passcode. Changing takes effect at once; nothing to save.
-        let pin_set = !matches!(self.shell.vault, crate::keybox::State::Absent);
+        let pin_set = !self.shell.vault.absent();
         let lock_on = self.shell.machine.auto_lock;
         let lock_now = self.shell.machine.auto_lock_secs;
         let lock_items: Vec<String> = crate::machine::LOCK_CHOICES.iter().map(|x| fill1(Key::MinutesN, &(x / 60).to_string())).collect();
@@ -347,10 +347,14 @@ impl Win {
     fn set_network(&mut self, ui: &mut egui::Ui, now: f64) {
         let s = self.shell.settings.clone();
         let bare = s.chain_id.is_none() && s.registry.is_none() && s.endpoints.is_empty();
-        let network = match &s.network {
-            Some(n) => Val::text(fill1(Key::SetNetworkFromMachine, &network_label(n))),
-            None if bare => Val::Mark(Mark::Warn, t(Key::SetNetworkNone).to_string()),
-            None => Val::text(t(Key::U3Custom)),
+        // What this home's own settings say: filled from a preset row (whichever identity or choice put it
+        // there; an identity choosing again later does not move a home that has a network), or saved by hand
+        // with every cell equal to a row of today (`deploy::same_as_row`), else custom. Only this line reads it.
+        let row = s.network.as_deref().and_then(crate::deploy::named).or_else(|| crate::deploy::same_as_row(s.chain_id, s.registry, s.from_block, &s.endpoints));
+        let network = match row {
+            Some(d) if !bare => Val::text(network_label(d.name)),
+            _ if bare => Val::Mark(Mark::Warn, t(Key::SetNetworkNone).to_string()),
+            _ => Val::text(t(Key::U3Custom)),
         };
         let read = match &self.shell.chain {
             Some(Done::Chain { sources, single_source, .. }) => {
@@ -386,15 +390,15 @@ impl Win {
         if flip {
             self.act(Action::SetAutoAnchor { on: !s.auto_anchor }, now);
         }
-        let (mut use_machine, mut read_chain, mut save_nodes, mut save_basis) = (false, false, false, false);
+        let (mut read_chain, mut save_nodes, mut save_basis) = (false, false, false);
         stagger(ui, 2, |ui| {
             card::card(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = tk::S3;
+                // A home without a network is filled here, by hand or from a preset (the only way).
+                if bare {
+                    hint(ui, t(Key::SetNetworkNoneSay));
+                }
                 keys_row(ui, |ui| {
-                    // Older homes (settings present, the three fields empty) join the network this Mac chose.
-                    if bare {
-                        use_machine = key::key(ui, t(Key::DoUseMachineNetwork), Role::Secondary, true).clicked();
-                    }
                     if key::key(ui, t(Key::SetEditNodes), Role::Secondary, true).clicked() {
                         self.ux.open_nodes = !self.ux.open_nodes;
                     }
@@ -406,6 +410,17 @@ impl Win {
                     ui.scope(|ui| {
                         ui.multiply_opacity(open);
                         paint::rule(ui, 0.0);
+                        // A preset fills the four cells from the known table; saving still goes through the
+                        // two keys below.
+                        if let Some(i) = field(ui, t(Key::ReadNetPreset), None, |ui| preset_menu(ui, "network-preset", self.ux.basis_preset)) {
+                            self.ux.basis_preset = i;
+                            if let Some(c) = preset_cells(i) {
+                                self.typed.endpoints = c.endpoints;
+                                self.ux.basis_chain = c.chain;
+                                self.ux.basis_registry = c.registry;
+                                self.ux.basis_from = c.from;
+                            }
+                        }
                         let (_, save) = width::line_then(ui, &mut self.typed.endpoints, t(Key::EndpointHint), true, |ui| key::key(ui, t(Key::DoSetEndpoints), Role::Secondary, true).clicked());
                         save_nodes = save;
                         card::grid(ui, "network-basis", 3, 120.0, |ui, i| {
@@ -422,9 +437,6 @@ impl Win {
                 }
             });
         });
-        if use_machine {
-            self.act(Action::UseMachineNetwork, now);
-        }
         if read_chain {
             self.act(Action::ReadChain, now);
         }
@@ -436,7 +448,155 @@ impl Win {
             let a = Action::SetBasis { chain: self.ux.basis_chain.clone(), registry: self.ux.basis_registry.clone(), from_block: self.ux.basis_from.clone() };
             self.act(a, now);
         }
-        stagger(ui, 3, |ui| card::section(ui, t(Key::SetPublish), "", |ui| card::card(ui, |ui| self.set_publish(ui, now))));
+        stagger(ui, 3, |ui| self.set_read_nets(ui, now));
+        stagger(ui, 4, |ui| card::section(ui, t(Key::SetPublish), "", |ui| card::card(ui, |ui| self.set_publish(ui, now))));
+    }
+
+    /// The read-only networks (machine-wide): one row each, its name and its reading; a row opens to its four
+    /// cells and three keys. "Add" starts one new row (none while one is unsaved), from a preset or by hand.
+    fn set_read_nets(&mut self, ui: &mut egui::Ui, now: f64) {
+        let nets = self.shell.read_nets.clone().unwrap_or_default();
+        let reads = self.shell.net_reads.clone();
+        let rn = &mut self.ux.readnet;
+        // Rows of networks no longer in the table are forgotten.
+        rn.open.retain(|k| nets.iter().any(|n| n.is(k.0, &k.1)));
+        rn.drafts.retain(|(k, _)| nets.iter().any(|n| n.is(k.0, &k.1)));
+        let mut act: Option<Action> = None;
+        let mut add = false;
+        let unsaved = rn.new.is_some();
+        ui.horizontal(|ui| {
+            card::group_title(ui, t(Key::ReadNetTitle));
+            if !unsaved {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| add = key::key(ui, t(Key::ReadNetAdd), Role::Secondary, true).clicked());
+            }
+        });
+        if nets.is_empty() && !unsaved {
+            return self.read_nets_added(add);
+        }
+        card::card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = tk::S2;
+            for (i, n) in nets.iter().enumerate() {
+                if i > 0 {
+                    paint::rule(ui, 0.0);
+                }
+                let k = (n.chain_id, n.registry);
+                let open = rn.open.contains(&k);
+                let badge = reads.iter().find(|(c, r, _)| *c == k.0 && *r == k.1).map(|(_, _, x)| (t(x.key()), read_tone(*x)));
+                if net_row(ui, &format!("{}-{}", k.0, k.1.hex()), &n.name(), badge, open).clicked() {
+                    if open {
+                        rn.open.retain(|x| *x != k);
+                        rn.drafts.retain(|(x, _)| *x != k);
+                        if rn.armed == Some(k) {
+                            rn.armed = None;
+                        }
+                    } else {
+                        rn.open.push(k);
+                        rn.drafts.push((k, Draft::of(n)));
+                    }
+                }
+                if !rn.open.contains(&k) {
+                    continue;
+                }
+                let Some(d) = rn.drafts.iter_mut().find(|(x, _)| *x == k).map(|(_, d)| d) else { continue };
+                ui.push_id(("readnet-body", k.0, k.1.hex()), |ui| net_cells(ui, d, false));
+                keys_row(ui, |ui| {
+                    if rn.armed == Some(k) {
+                        paint::text(ui, t(Key::ReadNetRemoveAsk), Type::Body, c(C::Ink));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked() {
+                                rn.armed = None;
+                            }
+                            if page::Guide::key(ui, t(Key::KitRemove), true).clicked() {
+                                act = Some(Action::RemoveReadNetwork { chain: k.0, registry: k.1.hex() });
+                            }
+                        });
+                    } else {
+                        if key::key(ui, t(Key::ReadNetSave), Role::Primary, true).clicked() {
+                            act = Some(d.save(Some(k)));
+                        }
+                        if key::key(ui, t(Key::StageReadChain), Role::Secondary, true).clicked() {
+                            act = Some(Action::ReadReadNetwork { chain: k.0, registry: k.1.hex() });
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if page::Guide::key(ui, t(Key::KitRemove), true).clicked() {
+                                rn.armed = Some(k);
+                            }
+                        });
+                    }
+                });
+            }
+            if let Some(d) = rn.new.as_mut() {
+                if !nets.is_empty() {
+                    paint::rule(ui, 0.0);
+                }
+                net_row(ui, "readnet-new", t(Key::ReadNetNew), None, true);
+                ui.push_id("readnet-new-body", |ui| net_cells(ui, d, true));
+                let mut drop = false;
+                keys_row(ui, |ui| {
+                    if key::key(ui, t(Key::ReadNetSave), Role::Primary, true).clicked() {
+                        act = Some(d.save(None));
+                    }
+                    if key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked() {
+                        drop = true;
+                    }
+                });
+                if drop {
+                    rn.new = None;
+                }
+            }
+        });
+        if let Some(a) = act {
+            let was = match &a {
+                Action::SaveReadNetwork { was, .. } => Some(was.clone()),
+                _ => None,
+            };
+            let removed = match &a {
+                Action::RemoveReadNetwork { chain, registry } => crate::key::Address::parse(registry).map(|r| (*chain, r)),
+                _ => None,
+            };
+            if let Applied::ReadNets(_) = self.act(a, now) {
+                let rn = &mut self.ux.readnet;
+                match was {
+                    // Saved: the row closes (a new one leaves the list of drafts).
+                    Some(None) => rn.new = None,
+                    Some(Some((c, r))) => {
+                        if let Some(r) = crate::key::Address::parse(&r) {
+                            rn.open.retain(|x| *x != (c, r));
+                            rn.drafts.retain(|(x, _)| *x != (c, r));
+                        }
+                    }
+                    None => {}
+                }
+                if let Some(k) = removed {
+                    rn.open.retain(|x| *x != k);
+                    rn.drafts.retain(|(x, _)| *x != k);
+                    rn.armed = None;
+                }
+            }
+        }
+        self.read_nets_added(add);
+    }
+
+    /// "Add": one new, unsaved row, open.
+    fn read_nets_added(&mut self, add: bool) {
+        if add && self.ux.readnet.new.is_none() {
+            self.ux.readnet.new = Some(Draft::default());
+        }
+    }
+
+    /// From the verify page: a kit names a network that is not added. The settings' network page opens with a
+    /// new row holding the kit's chain, registry and start block (an unsaved row is replaced); the nodes are
+    /// the person's to fill.
+    pub(super) fn add_stated_network(&mut self, at: &crate::kitsindex::AnchoredOn, now: f64) {
+        self.ux.readnet.new = Some(Draft {
+            preset: 0,
+            name: String::new(),
+            chain: at.chain_id.to_string(),
+            registry: at.registry.clone(),
+            from: at.from_block.to_string(),
+            nodes: String::new(),
+        });
+        self.go(Place::Settings(Section::Network), now);
     }
 
     /// The publish address (https only, said at once) and "check publication" against a local kit, with a
@@ -685,11 +845,24 @@ impl Win {
                 }
             });
         });
+        // Display only, for the recorder's two lists: leave out what a deletion leaves on this machine only.
+        if self.shell.settings.role == crate::roles::Role::Author {
+            let on = self.shell.settings.hide_local_deletions;
+            let mut flip = false;
+            stagger(ui, 3, |ui| {
+                card::form(ui, |ui, f| {
+                    f.row_with(ui, None, t(Key::SetHideLocalDeletions), "", card::Value::None, |ui| flip = toggle::switch(ui, on, seat_ok).clicked());
+                });
+            });
+            if flip {
+                self.act(Action::SetHideLocalDeletions { on: !on }, now);
+            }
+        }
         if measure {
             self.act(Action::Measure, now);
         }
         if open_home {
-            let a = Action::OpenHome { root: self.typed.home.clone() };
+            let a = Action::ChangeHome { root: self.typed.home.clone() };
             self.act(a, now);
             // Another home may have chosen another language: decided again next frame.
             self.ux.lang_applied = false;
@@ -706,6 +879,7 @@ impl Win {
         };
         let miss = self.shell.home.as_ref().map(|h| h.missing()).unwrap_or_default();
         let mut reconcile = false;
+        let mut recheck = false;
         stagger(ui, 4, |ui| {
             card::card(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = tk::S2;
@@ -730,7 +904,11 @@ impl Win {
                             hint(ui, &fill1(k, &width::file_name(&p.at.display().to_string())));
                         }
                     }
-                    migrate = key::key(ui, t(Key::DoMigrate), Role::Secondary, seat_ok && picked.as_ref().map(|p| Self::landing_ok(&p.at.display().to_string())).unwrap_or(false)).clicked();
+                    // While the whole tree is copied (`Kind::Migrate`) the key says so with a turning ring and
+                    // takes no press.
+                    let moving = if self.shell.tasks.in_flight(crate::task::Kind::Migrate) { Phase::Busy { frac: None } } else { Phase::Idle };
+                    let can = seat_ok && picked.as_ref().map(|p| Self::landing_ok(&p.at.display().to_string())).unwrap_or(false);
+                    migrate = key::show(ui, key::Key::new(t(Key::DoMigrate), Role::Secondary).enabled(can).phase(moving).busy_text(t(Key::SetMigrating))).clicked();
                     field(ui, t(Key::AdoptGroup), None, |ui| pick_path(ui, &mut self.typed.adopt, crate::platform::Pick::Folder));
                     adopt = key::key(ui, t(Key::DoAdopt), Role::Secondary, seat_ok && !self.typed.adopt.trim().is_empty()).clicked();
                     // After adopting a ledger, reconcile once: only a match gives the pen back.
@@ -742,6 +920,10 @@ impl Win {
                     kv::kv(ui, &[(t(Key::SetPen), pen), (t(Key::LastAudit), last)]);
                     reconcile = self.long_key(ui, t(Key::DoReconcile), Role::Secondary, true, crate::task::Kind::Reconcile);
                     self.stage_line(ui, crate::task::Kind::Reconcile);
+                    // Anchors several nodes already confirmed alike are not asked about again (`checkedx`); this
+                    // drops that record, and the next sync asks about every anchor.
+                    hint(ui, t(Key::RecheckAllNote));
+                    recheck = key::key(ui, t(Key::DoRecheckAll), Role::Secondary, true).clicked();
                 });
                 details(
                     ui,
@@ -781,6 +963,9 @@ impl Win {
         }
         if reconcile {
             self.act(Action::Reconcile, now);
+        }
+        if recheck {
+            self.act(Action::RecheckAll, now);
         }
     }
 
@@ -871,6 +1056,25 @@ impl Win {
                 });
             });
         });
+        // The third-party licences carried in the binary (made from Cargo.lock at build time): the crates, then
+        // each licence text; only the lines in view are laid out.
+        stagger(ui, 4, |ui| {
+            card::card(ui, |ui| {
+                fold::fold(ui, "about-notices", t(Key::SetNotices), |ui| {
+                    ui.spacing_mut().item_spacing.y = tk::S3;
+                    hint(ui, &fill1(Key::SetNoticesCount, &crate::about::count().to_string()));
+                    let lines: Vec<&str> = crate::about::NOTICES.lines().collect();
+                    let row_h = Type::MonoSmall.line();
+                    // Scrolls both ways: a licence line is never cut short.
+                    egui::ScrollArea::both().id_salt("about-notices-text").max_height(320.0).auto_shrink([false, true]).show_rows(ui, row_h, lines.len(), |ui, range| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for l in &lines[range] {
+                            paint::line(ui, l, Type::MonoSmall, c(C::Ink2), f32::INFINITY);
+                        }
+                    });
+                });
+            });
+        });
         if self_check {
             self.act(Action::SelfCheck, now);
         }
@@ -879,7 +1083,7 @@ impl Win {
     /// The setup check for this seat: each point's mark, name and what to do (real state only).
     pub(super) fn checklist(&self) -> Vec<(Mark, &'static str, String)> {
         let key_mark = if self.shell.anchor.is_some() { Mark::Ok } else { Mark::Bad };
-        let pin_mark = if matches!(self.shell.vault, crate::keybox::State::Absent) { Mark::Bad } else { Mark::Ok };
+        let pin_mark = if self.shell.vault.absent() { Mark::Bad } else { Mark::Ok };
         let gas = self.gas_mark();
         let (backup, backup_say) = self.backup_point();
         match self.shell.settings.role {
@@ -918,4 +1122,121 @@ impl Win {
             _ => (Mark::Todo, t(Key::GuideGas)),
         }
     }
+}
+
+/// What the settings page keeps for the read-only networks while they are being edited (interface only).
+#[derive(Default)]
+pub(super) struct ReadNetUx {
+    /// The rows open now (chain id, registry).
+    open: Vec<(u64, crate::key::Address)>,
+    /// What is typed into each open row.
+    drafts: Vec<((u64, crate::key::Address), Draft)>,
+    /// The one new row not yet saved.
+    new: Option<Draft>,
+    /// The row whose "remove" asks its question.
+    armed: Option<(u64, crate::key::Address)>,
+}
+
+/// The cells of one row as typed.
+#[derive(Clone, Default)]
+pub(super) struct Draft {
+    /// Which preset filled it (0: by hand).
+    preset: usize,
+    name: String,
+    chain: String,
+    registry: String,
+    from: String,
+    nodes: String,
+}
+
+/// The preset menu of a network editor (the main network's and a new read-only network's): "by hand" first,
+/// then every row of the known deployments table (`deploy::KNOWN`), in order. One table for both.
+pub(super) fn preset_menu(ui: &mut egui::Ui, salt: &str, at: usize) -> Option<usize> {
+    let labels: Vec<String> = std::iter::once(t(Key::U3Custom).to_string()).chain(crate::deploy::KNOWN.iter().map(|d| t(d.label).to_string())).collect();
+    let at = at.min(labels.len() - 1);
+    let items: Vec<menu::Item> = labels.iter().enumerate().map(|(i, l)| menu::Item::Row(menu::Row { label: l, check: Some(i == at), ..Default::default() })).collect();
+    menu::menu_key(ui, salt, &labels[at], false, 160.0, &items)
+}
+
+/// The cells a preset fills (`None` for "by hand", which keeps what was typed).
+pub(super) fn preset_cells(i: usize) -> Option<crate::deploy::Cells> {
+    i.checked_sub(1).and_then(|k| crate::deploy::KNOWN.get(k)).map(|d| d.cells())
+}
+
+impl Draft {
+    fn of(n: &crate::readnets::Net) -> Draft {
+        Draft {
+            preset: 0,
+            name: n.name.clone().unwrap_or_default(),
+            chain: n.chain_id.to_string(),
+            registry: n.registry.hex(),
+            from: n.from_block.to_string(),
+            nodes: n.nodes.join("\n"),
+        }
+    }
+
+    fn save(&self, was: Option<(u64, crate::key::Address)>) -> Action {
+        Action::SaveReadNetwork {
+            was: was.map(|(c, r)| (c, r.hex())),
+            name: self.name.clone(),
+            chain: self.chain.clone(),
+            registry: self.registry.clone(),
+            from_block: self.from.clone(),
+            nodes: self.nodes.clone(),
+        }
+    }
+}
+
+/// A reading's tone.
+fn read_tone(r: crate::widex::Reading) -> PillTone {
+    use crate::widex::Reading as R;
+    match r {
+        R::Agreed(_) => PillTone::Ok,
+        R::Single => PillTone::Warn,
+        R::Down | R::Fingerprint => PillTone::Bad,
+    }
+}
+
+/// One network's row: the caret (a quarter turn when open), its name, its reading on the right.
+fn net_row(ui: &mut egui::Ui, salt: &str, name: &str, badge: Option<(&str, PillTone)>, open: bool) -> egui::Response {
+    use zikaron_ui::icons;
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, tk::FORM_ROW_H), egui::Sense::click());
+    let id = ui.id().with(("readnet-row", salt));
+    let turn = motion::flag(ui.ctx(), id, open, tk::MID) * std::f32::consts::FRAC_PI_2;
+    let p = ui.painter().clone();
+    icons::draw_glyph_turned(&p, Glyph::Fwd, egui::Rect::from_center_size(egui::pos2(rect.left() + 6.0, rect.center().y), egui::vec2(12.0, 12.0)), c(C::Ink3), turn);
+    let mut right = rect.right();
+    if let Some((s, tone)) = badge {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        right = mark::pill(&mut child, s, tone).rect.left() - tk::S2;
+    }
+    paint::at(&p, ui, egui::pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, name, Type::Body, c(C::Ink), (right - rect.left() - 20.0).max(0.0));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The cells of an open row: the preset (a new row only), the name (fixed for a chain the name table knows),
+/// chain id, registry, start block, nodes.
+fn net_cells(ui: &mut egui::Ui, d: &mut Draft, fresh: bool) {
+    ui.spacing_mut().item_spacing.y = tk::S3;
+    if fresh {
+        if let Some(i) = field(ui, t(Key::ReadNetPreset), None, |ui| preset_menu(ui, "readnet-preset", d.preset)) {
+            d.preset = i;
+            if let Some(c) = preset_cells(i) {
+                d.chain = c.chain;
+                d.registry = c.registry;
+                d.from = c.from;
+                d.nodes = c.nodes;
+            }
+        }
+    }
+    let known = d.chain.trim().parse::<u64>().ok().and_then(crate::readnets::known_name);
+    field(ui, t(Key::ReadNetName), None, |ui| match known {
+        Some(k) => paint::text(ui, t(k), Type::Body, c(C::Ink2)),
+        None => input::line(ui, &mut d.name, ""),
+    });
+    field(ui, t(Key::BasisChain), None, |ui| input::mono(ui, &mut d.chain, ""));
+    field(ui, t(Key::SetRegistry), None, |ui| input::mono(ui, &mut d.registry, ""));
+    field(ui, t(Key::BasisFrom), None, |ui| input::mono(ui, &mut d.from, ""));
+    field(ui, t(Key::SetNodes), None, |ui| input::area(ui, &mut d.nodes, 2));
 }

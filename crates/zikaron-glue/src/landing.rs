@@ -50,32 +50,48 @@ fn say(p: &Path) -> String {
 ///
 /// The name carries the process id and a random part read from the OS, so two processes landing on one path
 /// in the same second do not collide.
-fn beside(out: &Path, tag: &str) -> PathBuf {
+/// The tags a temporary sibling carries: a byte landing and a tree's staging.
+const TAGS: [&str; 2] = ["landing", "staging"];
+
+/// Whether a name is one of this crate's temporary siblings (`.{base}.{tag}-{pid}-{sixteen hex}`), by the name
+/// alone: the reading of the shape [`beside`] writes, kept beside it.
+pub fn is_beside_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else { return false };
+    let Some((base, tail)) = rest.rsplit_once('.') else { return false };
+    let mut parts = tail.splitn(3, '-');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(tag), Some(pid), Some(n)) => {
+            !base.is_empty()
+                && TAGS.contains(&tag)
+                && !pid.is_empty()
+                && pid.bytes().all(|b| b.is_ascii_digit())
+                && n.len() == 16
+                && n.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }
+        _ => false,
+    }
+}
+
+fn beside(out: &Path, tag: &str) -> Result<PathBuf, Trouble> {
     let parent = out.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let base = out
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_else(|| String::from("landing"));
-    parent.join(format!(".{base}.{tag}-{}-{}", std::process::id(), nonce()))
+    Ok(parent.join(format!(".{base}.{tag}-{}-{}", std::process::id(), nonce().map_err(|_| Trouble::Io(say(Path::new(zikaron_os::ENTROPY_SOURCE))))?)))
 }
 
-/// Sixteen random hex digits. Without entropy, falls back to the process id and a counter: the name only
-/// needs to be unique and nothing depends on it.
-fn nonce() -> String {
-    use std::io::Read;
+/// Sixteen random hex digits from the system's entropy source. When it cannot be read, that is said (the
+/// landing stops with the source named): no weaker name stands in for it.
+fn nonce() -> std::io::Result<String> {
     let mut b = [0u8; 8];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        if f.read_exact(&mut b).is_ok() {
-            return b.iter().map(|x| format!("{x:02x}")).collect();
-        }
-    }
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    format!("{:016x}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    zikaron_os::fill_random(&mut b)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// A temporary place beside the target (tree landings lay themselves out, so they need the name).
-pub fn staging_beside(out: &Path) -> PathBuf {
-    beside(out, "staging")
+pub fn staging_beside(out: &Path) -> Result<PathBuf, Trouble> {
+    beside(out, TAGS[1])
 }
 
 /// Land one file. An existing name is refused (the atomicity of `hard_link`); a failed write leaves no
@@ -104,7 +120,7 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
     if out.exists() {
         return Err(Trouble::Occupied(say(out)));
     }
-    let tmp = beside(out, "landing");
+    let tmp = beside(out, TAGS[0])?;
     let _ = std::fs::remove_file(&tmp);
     // Write in full and fsync: after the move the bytes must be on disk, not only in the page cache.
     let wrote = (|| -> std::io::Result<()> {
@@ -120,10 +136,7 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
     let linked = std::fs::hard_link(&tmp, out);
     let _ = std::fs::remove_file(&tmp);
     match linked {
-        Ok(()) => {
-            sync_parent(out);
-            Ok(())
-        }
+        Ok(()) => sync_parent(out),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Trouble::Occupied(say(out))),
         Err(_) => Err(Trouble::Io(say(out))),
     }
@@ -131,12 +144,10 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
 
 /// Create the temporary file for `readers`. Permissions are set here only.
 fn create_for(readers: Readers, tmp: &Path) -> std::io::Result<std::fs::File> {
-    let mut o = std::fs::OpenOptions::new();
+    let mut o = zikaron_os::Options::new();
     o.write(true).create(true).truncate(true);
-    #[cfg(unix)]
     if readers == Readers::Owner {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
+        zikaron_os::owner_only(&mut o);
     }
     o.open(tmp)
 }
@@ -148,10 +159,7 @@ pub fn land_tree(out: &Path, staged: &Path) -> Result<(), Trouble> {
         return Err(Trouble::Occupied(say(out)));
     }
     match std::fs::rename(staged, out) {
-        Ok(()) => {
-            sync_parent(out);
-            Ok(())
-        }
+        Ok(()) => sync_parent(out),
         Err(_) => Err(Trouble::Io(say(out))),
     }
 }
@@ -169,12 +177,14 @@ pub fn mkdir(path: &Path) -> Result<(), Trouble> {
     std::fs::create_dir_all(path).map_err(|_| Trouble::Io(say(path)))
 }
 
-/// fsync the parent after the move so the name is on disk too. Failure does not change the outcome (it only
-/// affects durability).
-fn sync_parent(out: &Path) {
-    if let Some(parent) = out.parent() {
-        if let Ok(d) = std::fs::File::open(parent) {
-            let _ = d.sync_all();
-        }
-    }
+/// Sync the parent after the move so the name is on disk too. Failing to is said (`E_IO` naming the parent):
+/// a name that may not survive a power cut is not reported as landed quietly. The bytes are in place by then;
+/// the caller is told the landing is not durable.
+fn sync_parent(out: &Path) -> Result<(), Trouble> {
+    // A bare name lands in the working directory: its parent is `.`.
+    let parent = match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    zikaron_os::sync_dir(parent, out).map_err(|_| Trouble::Io(say(parent)))
 }

@@ -124,6 +124,46 @@ pub fn read(
     read_scanned(&scanned, who, bytes)
 }
 
+/// [`read`] across networks: the main network and every read-only network (`widex`), each chain on its own.
+/// Returns the networks not read beside the ledger.
+pub fn read_wide(
+    eps: &[crate::chainx::Endpoint],
+    ground: &crate::auditx::Ground,
+    who: &crate::key::Address,
+    bytes: &[Vec<u8>],
+    nets: &[crate::readnets::Net],
+) -> Result<(Book, Vec<crate::widex::Missed>), Fault> {
+    let (scanned, missed) = scan_wide(eps, ground, who, bytes, nets)?;
+    let mut book = read_scanned(&scanned, who, bytes)?;
+    unread_where_missed(&mut book, &missed);
+    Ok((book, missed))
+}
+
+/// A pass that left a network out cannot say an entry no read chain reaches is not on chain: its anchor may be
+/// on the network not read. So with any network missed, every timeline row lit "not on chain" (`Landed`) reads
+/// "chain not read" (`ChainUnread`). A pass that read every network is left as it is.
+pub fn unread_where_missed(book: &mut Book, missed: &[crate::widex::Missed]) {
+    if missed.is_empty() {
+        return;
+    }
+    for row in book.timeline.iter_mut().filter(|r| r.lamp == crate::ledgerx::Lamp::Landed) {
+        row.lamp = crate::ledgerx::Lamp::ChainUnread;
+    }
+}
+
+/// One scan across networks, as one scan's reading (the diligence desk reads its fragment too).
+pub fn scan_wide(
+    eps: &[crate::chainx::Endpoint],
+    ground: &crate::auditx::Ground,
+    who: &crate::key::Address,
+    bytes: &[Vec<u8>],
+    nets: &[crate::readnets::Net],
+) -> Result<(crate::auditx::Scanned1, Vec<crate::widex::Missed>), Fault> {
+    let g = basis_for(ground, who, bytes);
+    let w = crate::widex::scan(Some((eps, &g)), nets, &g.senders, crate::widex::Ask::First)?;
+    Ok((crate::auditx::Scanned1 { anchors: w.anchors, asked: w.asked, fragment: w.fragment }, w.missed))
+}
+
 /// The after-scan half: read one scan's reading plus a stack of bytes as a ledger.
 ///
 /// Kept apart from [`read`] so the diligence desk can ask for depth with the same scan's fragment: the

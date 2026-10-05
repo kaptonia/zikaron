@@ -162,7 +162,7 @@ pub(super) fn read_claim(shell: &mut Shell, text: &str) -> Result<Option<Spawned
 pub(super) fn attest_for(shell: &mut Shell, text: &str) -> Result<(String, String), crate::fault::Fault> {
     let claim = crate::adoptx::claim_of(text)?;
     let missing = || crate::fault::Fault::known(crate::fault::Known::KeychainMissing, crate::lang::t(crate::lang::Key::SetNoKey).to_string());
-    let secret = crate::key::load()?.ok_or_else(missing)?;
+    let secret = crate::key::load(crate::register::account_now()?.as_deref())?.ok_or_else(missing)?;
     let who = secret.address().ok_or_else(missing)?;
     let sig = crate::sign::sign_adoption(&secret, &claim.preimage)?;
     shell.attested = Some((who.hex(), sig.clone()));

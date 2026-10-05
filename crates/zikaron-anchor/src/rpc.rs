@@ -7,6 +7,11 @@
 //! Answers are matched by (method, params), not by order: a scan may ask the same question twice and the
 //! order is up to the scan. The key is the method plus the canonical bytes of the params; two entries with
 //! the same key and different answers make the recording self-contradictory.
+//!
+//! One closed rule widens a question: a log question naming senders (a second topic) that the recording
+//! lacks is answered with what the recording holds for the same question without that topic, handed back as
+//! recorded. The replay does not filter it; the scan judges every log it gets. Recordings made before log
+//! questions named senders thus answer as they did. No other question is ever widened.
 
 use std::collections::BTreeMap;
 use crate::wire::{self, Body, W};
@@ -27,8 +32,8 @@ pub enum Trouble {
 
 // Transport sentences, spelled once.
 //
-// Timeout, answer too long and answer not JSON are said by the real endpoints (`Http` here, `Https` in the
-// app) and recognized by the chain client's closed "what the node said" type. Saying and recognizing go
+// Timeout, answer too long and answer not JSON are said by the real endpoints (`Http` here, the app's https
+// adapter) and recognized by the chain client's closed "what the node said" type. Saying and recognizing go
 // through the functions below only.
 
 /// This call's total deadline passed (`url` did not finish within `secs` seconds).
@@ -128,10 +133,36 @@ impl Replay {
     }
 }
 
+/// The one wider question a replay may answer in place of a log question naming senders: the same question
+/// with only its first topic (`None` for every other question).
+fn without_senders(method: &str, params: &Value) -> Option<Value> {
+    if method != "eth_getLogs" {
+        return None;
+    }
+    let Value::Arr(ps) = params else { return None };
+    let [Value::Obj(filter)] = ps.as_slice() else { return None };
+    let at = filter.iter().position(|(k, _)| k == "topics")?;
+    let Value::Arr(topics) = &filter[at].1 else { return None };
+    if topics.len() != 2 {
+        return None;
+    }
+    let mut wider = filter.clone();
+    wider[at].1 = Value::Arr(vec![topics[0].clone()]);
+    Some(Value::Arr(vec![Value::Obj(wider)]))
+}
+
 impl Endpoint for Replay {
     fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
         let k = key(method, params);
         self.asked.push(k.clone());
+        if !self.answers.contains_key(&k) {
+            if let Some(wider) = without_senders(method, params) {
+                let w = key(method, &wider);
+                if self.answers.contains_key(&w) {
+                    return self.answer(&w);
+                }
+            }
+        }
         self.answer(&k)
     }
     fn name(&self) -> String {
@@ -139,68 +170,28 @@ impl Endpoint for Replay {
     }
 }
 
-/// The environment names that override the limits below. One name, one home: the anchoring crate, the app's
-/// fetches and tests read or set them only through here.
-pub mod env {
-    pub const TIMEOUT_SECS: &str = "ZKA_TIMEOUT_SECS";
-    pub const TIMEOUT_MS: &str = "ZKA_TIMEOUT_MS";
-    pub const MAX_ANSWER_BYTES: &str = "ZKA_MAX_ANSWER_BYTES";
-}
+/// The environment names and the two bounds of one call live in the transport (`zikaron_net`); they are
+/// named here too, so the callers of this crate keep one path.
+pub use zikaron_net::{env, Limits};
 
-/// The two bounds of one call: total wall time and answer bytes.
+/// A real endpoint: JSON-RPC over the one transport (`zikaron_net`), `http` or `https`.
 ///
-/// A per-syscall timeout cannot stop an endpoint that sends one byte every two seconds forever: each byte
-/// resets the read timeout. So the deadline counts from the start of the call and the answer has an end. Both
-/// are product constants, overridable from the environment; zero means none.
-pub struct Limits {
-    pub deadline: std::time::Duration,
-    pub max_answer: usize,
-}
-
-impl Limits {
-    /// Default: 30 seconds, 64 MiB. `ZKA_TIMEOUT_MS` (milliseconds) overrides `ZKA_TIMEOUT_SECS`, for
-    /// deadlines shorter than a second.
-    pub fn from_env() -> Limits {
-        let secs: u64 = std::env::var(env::TIMEOUT_SECS).ok().and_then(|x| x.parse().ok()).unwrap_or(30);
-        let deadline = match std::env::var(env::TIMEOUT_MS).ok().and_then(|x| x.parse::<u64>().ok()) {
-            Some(ms) => std::time::Duration::from_millis(ms),
-            None => std::time::Duration::from_secs(secs),
-        };
-        let max: usize = std::env::var(env::MAX_ANSWER_BYTES).ok().and_then(|x| x.parse().ok()).unwrap_or(64 << 20);
-        Limits { deadline, max_answer: max }
-    }
-}
-
-/// A real endpoint: our own HTTP/1.1 client (no third-party chain crates).
-///
-/// Plain HTTP only. TLS would need a third-party crate or cryptography outside the core's `cryptox`; the app
-/// carries its own HTTPS endpoint for that.
+/// The address is read by `zikaron_net::parse` (scheme and host without regard to case), the exchange and the
+/// TLS configuration are the transport's; this side builds the JSON-RPC request and reads its answer.
 pub struct Http {
     url: String,
-    host: String,
-    port: u16,
-    path: String,
+    target: zikaron_net::Target,
     next_id: u64,
     limits: Limits,
 }
 
 impl Http {
-    /// `http://host:port/path`; any other spelling (https included) gives `None`.
+    /// `http://host[:port]/path` or `https://…`, the scheme in any case; any other spelling gives `None`.
     pub fn new(url: &str) -> Option<Http> {
-        let rest = url.strip_prefix("http://")?;
-        let (authority, path) = match rest.find('/') {
-            Some(i) => (&rest[..i], &rest[i..]),
-            None => (rest, "/"),
-        };
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((h, p)) => (h.to_string(), p.parse().ok()?),
-            None => (authority.to_string(), 80u16),
-        };
-        Some(Http { url: url.to_string(), host, port, path: path.to_string(), next_id: 1, limits: Limits::from_env() })
+        let target = zikaron_net::parse(url)?;
+        Some(Http { url: url.trim().to_string(), target, next_id: 1, limits: Limits::from_env() })
     }
-}
 
-impl Http {
     /// Replace the bounds (when the caller sets a deadline).
     pub fn with_limits(mut self, limits: Limits) -> Http {
         self.limits = limits;
@@ -208,10 +199,22 @@ impl Http {
     }
 }
 
+/// A transport failure as this crate says it: the deadline and the cap in their recognized sentences
+/// ([`late`], [`overlong`]), every other layer with the endpoint and the layer's own words.
+pub fn transport_said(url: &str, f: &zikaron_net::Fail) -> Trouble {
+    match f {
+        zikaron_net::Fail::Late(d) => late(url, *d),
+        zikaron_net::Fail::Overlong(max) => overlong(url, *max),
+        zikaron_net::Fail::Name(x)
+        | zikaron_net::Fail::Connect(x)
+        | zikaron_net::Fail::Handshake(x)
+        | zikaron_net::Fail::Certificate(x)
+        | zikaron_net::Fail::Stream(x) => Trouble::Transport(format!("{url}: {x}")),
+    }
+}
+
 impl Endpoint for Http {
     fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
-        use std::io::{Read, Write};
-        let began = std::time::Instant::now();
         let id = self.next_id;
         self.next_id += 1;
         let body = canon_bytes(&Value::Obj(vec![
@@ -220,64 +223,8 @@ impl Endpoint for Http {
             ("method".into(), Value::Str(method.into())),
             ("params".into(), params.clone()),
         ]));
-        let head = format!(
-            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            self.path,
-            self.host,
-            self.port,
-            body.len()
-        );
-        // A silent endpoint must not hang a scan: connect, read and write each have a bound, and the call has
-        // a total deadline.
-        let limit = self.limits.deadline;
-        let mut sock = match limit.is_zero() {
-            true => std::net::TcpStream::connect((self.host.as_str(), self.port))
-                .map_err(|e| Trouble::Transport(format!("{}: {e}", self.url)))?,
-            false => {
-                let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(self.host.as_str(), self.port))
-                    .map_err(|e| Trouble::Transport(format!("{}: {e}", self.url)))?
-                    .collect();
-                let first = addrs.first().ok_or_else(|| Trouble::Transport(format!("{}: 解不出地址", self.url)))?;
-                let sock = std::net::TcpStream::connect_timeout(first, limit)
-                    .map_err(|e| Trouble::Transport(format!("{}: {e}", self.url)))?;
-                let d = Some(limit);
-                sock.set_read_timeout(d).and_then(|_| sock.set_write_timeout(d))
-                    .map_err(|e| Trouble::Transport(format!("{}: {e}", self.url)))?;
-                sock
-            }
-        };
-        sock.write_all(head.as_bytes()).and_then(|_| sock.write_all(&body)).map_err(|e| Trouble::Transport(e.to_string()))?;
-        // Read in chunks; after each, check the total deadline and the answer size. `read_to_end` checks
-        // neither: it only knows the last read did not time out, and a trickling endpoint never times out.
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 16 << 10];
-        loop {
-            match sock.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    raw.extend_from_slice(&chunk[..n]);
-                    if self.limits.max_answer > 0 && raw.len() > self.limits.max_answer {
-                        return Err(overlong(&self.url, self.limits.max_answer));
-                    }
-                }
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted) => continue,
-                Err(e) => {
-                    // Read timeouts come here too: retry until the total deadline, then return by name.
-                    if !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
-                        return Err(Trouble::Transport(e.to_string()));
-                    }
-                }
-            }
-            if !limit.is_zero() && began.elapsed() >= limit {
-                return Err(late(&self.url, limit));
-            }
-        }
-        let split = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or_else(|| Trouble::Transport("答里没有头身分界".into()))?;
-        let payload = body_of(&raw[..split], &raw[split + 4..])?;
-        let v = wire::parse(&payload).ok_or(Trouble::Transport(NOT_JSON.into()))?;
+        let got = zikaron_net::post_json(&self.target, &body, &self.limits).map_err(|f| transport_said(&self.url, &f))?;
+        let v = wire::parse(&got.body).ok_or(Trouble::Transport(NOT_JSON.into()))?;
         if let Some(err) = v.member("error") {
             return Err(Trouble::Node(wire::write(err)));
         }
@@ -285,37 +232,6 @@ impl Endpoint for Http {
     }
     fn name(&self) -> String {
         self.url.clone()
-    }
-}
-
-/// The HTTP body: chunked transfer is unchunked, anything else taken by length.
-fn body_of(head: &[u8], rest: &[u8]) -> Result<Vec<u8>, Trouble> {
-    let h = String::from_utf8_lossy(head).to_lowercase();
-    if !h.contains("transfer-encoding: chunked") {
-        return Ok(rest.to_vec());
-    }
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    loop {
-        // Each step checks bounds first: a truncated chunked answer must not crash the process.
-        let tail = rest.get(i..).ok_or_else(|| Trouble::Transport("分块答被截断".into()))?;
-        let eol = tail
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .ok_or_else(|| Trouble::Transport("分块的长度行没收尾".into()))?;
-        let n = usize::from_str_radix(String::from_utf8_lossy(&tail[..eol]).trim(), 16)
-            .map_err(|_| Trouble::Transport("分块的长度读不出".into()))?;
-        i += eol + 2;
-        if n == 0 {
-            return Ok(out);
-        }
-        let chunk = rest.get(i..i + n).ok_or_else(|| Trouble::Transport("分块短了".into()))?;
-        out.extend_from_slice(chunk);
-        // The CRLF after a chunk must be there; without it the answer is broken.
-        if rest.get(i + n..i + n + 2) != Some(b"\r\n") {
-            return Err(Trouble::Transport("分块答被截断".into()));
-        }
-        i += n + 2;
     }
 }
 

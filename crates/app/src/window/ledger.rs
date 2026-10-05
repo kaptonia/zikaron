@@ -58,13 +58,14 @@ impl Win {
         let read = self.shell.rows.is_some();
         let reading = crate::retractx::read(&rows);
         let mut query = self.ux.search.get("ledger").cloned().unwrap_or_default();
-        stagger(ui, 1, |ui| {
-            let w = ui.available_width();
-            input::search(ui, &mut query, t(Key::SearchLedger), w);
-        });
+        let mut range = self.ux.range.get("ledger").cloned().unwrap_or_default();
+        let today = (self.shell.clock)();
+        stagger(ui, 1, |ui| search_row(ui, "ledger", &mut query, t(Key::SearchLedger), &mut range, today));
         // Newest on top (the table is read newest first).
+        let hide = self.shell.settings.hide_local_deletions;
         let shown: Vec<&crate::ledgerx::Row> = rows
             .iter()
+            .filter(|r| !(hide && r.lamp.local()))
             .filter(|r| match self.ux.u3.led_filter {
                 // Entries the last pass recorded as anchored are not listed as waiting.
                 1 => !r.lamp.confirmed(),
@@ -75,6 +76,7 @@ impl Win {
                 let (tag, summary, _) = row_face(&rows, &reading, row);
                 matches(&query, &[&format!("#{}", row.seq), tag, &summary, &row.id])
             })
+            .filter(|row| crate::when::within(row.anchored_at, &range.0, &range.1))
             .collect();
         let mut open: Option<String> = None;
         stagger(ui, 2, |ui| {
@@ -95,7 +97,7 @@ impl Win {
                 t(Key::WbNotRead)
             } else if rows.is_empty() {
                 t(Key::WbRecentNone)
-            } else if !query.trim().is_empty() {
+            } else if !query.trim().is_empty() || !range.0.is_empty() || !range.1.is_empty() {
                 t(Key::SearchNone)
             } else {
                 t(Key::U3NoneOfThisKind)
@@ -105,6 +107,7 @@ impl Win {
             }
         });
         self.ux.search.insert("ledger", query);
+        self.ux.range.insert("ledger", range);
         if let Some(id) = open {
             self.push(Route::Entry(id), now);
         }

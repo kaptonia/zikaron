@@ -84,7 +84,7 @@ impl Win {
                     if done {
                         if page::Page::new().primary(ui, t(if last { Key::WizFinish } else { Key::WizardNext })).1.clicked() {
                             // The network row was changed after choosing: next changes the choice.
-                            if step == Step::Network && self.shell.machine.network.as_deref() != Some(self.wiz_network_pick().as_str()) {
+                            if step == Step::Network && self.wiz_network_chosen().as_deref() != Some(self.wiz_network_pick().as_str()) {
                                 act = Some(Action::ChooseNetwork { name: self.wiz_network_pick() });
                             }
                             if last {
@@ -113,14 +113,14 @@ impl Win {
                                 (Some((_, picks)), true) => {
                                     if page::Page::new().primary_with(ui, t(Key::IdDoConfirm), !busy).1.clicked() {
                                         let answers = picks.iter().zip(self.ux.id_confirm.iter()).map(|(p, w)| (*p, w.clone())).collect();
-                                        act = Some(Action::ConfirmIdentity { answers, label: self.ux.id_new_label.clone() });
+                                        act = Some(Action::ConfirmIdentity { answers, label: self.ux.id_new_label.clone(), network: self.wiz_network_pick() });
                                     }
                                     if busy {
                                         paint::text(ui, t(Key::VaultBusy), Type::Small, c(C::Ink3));
                                     }
                                 }
                             },
-                            // The default row is chosen already: next writes it to this Mac's settings.
+                            // The default row is selected already: next makes it this identity's network.
                             Step::Network => {
                                 if page::Page::new().primary(ui, t(Key::WizardNext)).1.clicked() {
                                     act = Some(Action::ChooseNetwork { name: self.wiz_network_pick() });
@@ -282,8 +282,11 @@ impl Win {
                         self.vault_or(VaultSite::Wizard, r, now);
                     }
                     ui.add_space(8.0);
+                    if busy {
+                        sheet::busy_note(ui, t(Key::VaultBusy), true);
+                    }
                     let lines: Vec<&str> = if busy {
-                        vec![t(Key::VaultBusy)]
+                        Vec::new()
                     } else if self.ux.pin_again.is_empty() {
                         vec![t(Key::PinRules), t(Key::WizPinSay)]
                     } else {
@@ -334,14 +337,13 @@ impl Win {
                         self.ux.wiz_network = Some(name);
                     }
                 }
-                hint(ui, t(Key::WizNetNote));
             }
             Step::Genesis => {
                 field(ui, t(Key::WizGenesisSay), None, |ui| input::line(ui, &mut self.ux.wiz_statement, t(Key::StatementHint)));
             }
             Step::Gas => {
                 let gas = match &self.shell.chain {
-                    Some(Done::Chain { gas_wei: Some(w), .. }) => fill1(Key::SetGasSay, &eth(*w)),
+                    Some(Done::Chain { gas_wei: Some(w), .. }) => fill1(Key::SetGasSay, &eth_held(*w)),
                     _ => t(Key::SetNotRead).to_string(),
                 };
                 let addr = self.shell.anchor.map(|a| a.hex());

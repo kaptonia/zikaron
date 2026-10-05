@@ -34,20 +34,34 @@ pub(super) fn record_work(shell: &mut Shell, note_md: &str, target: Option<&crat
     Ok((id, n))
 }
 
-/// Batch signing: one `history` per file, each signed, queued and recorded in the local index; the first
-/// failure stops, returning those signed and which file it stopped at (signed ones are not rolled back: the
-/// bytes are in the ledger, and taking them back would be a lie).
+/// The background half of recording files (`Kind::Record`): each file's fingerprint, in the order given,
+/// stopping at the first that cannot be read (nothing past it is computed, as nothing past it was recorded).
+pub(super) fn hash_files(files: &[String]) -> Vec<(String, Result<crate::anchorx::Content, crate::fault::Fault>)> {
+    let mut out = Vec::new();
+    for p in files {
+        let c = crate::anchorx::of_file(std::path::Path::new(p.trim()));
+        let stop = c.is_err();
+        out.push((p.clone(), c));
+        if stop {
+            break;
+        }
+    }
+    out
+}
+
+/// The frame half of recording files: one history entry per file whose fingerprint came back, in order; the
+/// first refusal stops the batch there (the files before it are recorded, it and those after are not).
 pub(super) fn record_files(
     shell: &mut Shell,
     note_md: &str,
-    files: &[String],
+    files: Vec<(String, Result<crate::anchorx::Content, crate::fault::Fault>)>,
     target: Option<&crate::anchorx::For>,
 ) -> (Vec<String>, Option<(usize, String, crate::fault::Fault)>, Enqueued) {
     let mut ids = Vec::new();
     let mut n = Enqueued { queued: shell.queue.len(), next: Next::Held };
     let m = crate::anchorx::mode();
-    for (i, p) in files.iter().enumerate() {
-        let one = crate::anchorx::of_file(std::path::Path::new(p.trim())).and_then(|c| {
+    for (i, (p, c)) in files.into_iter().enumerate() {
+        let one = c.and_then(|c| {
             let body = crate::anchorx::history_body_for(&c.digest, &m, note_md, target);
             append_entry(shell, zikaron::tokens::EntryType::History, body).map(|id| (c, id))
         });
@@ -87,7 +101,7 @@ pub(super) fn index_record(shell: &mut Shell, c: &crate::anchorx::Content, id: &
             // If the file is still there at signing, take its real path; if not (just moved), still make it
             // absolute through `home::kept`, never storing a relative path.
             path: match std::fs::canonicalize(path) {
-                Ok(p) => p,
+                Ok(p) => crate::home::plain_path(p),
                 Err(_) => crate::home::kept(&c.subject)?,
             }
             .display()
@@ -98,15 +112,6 @@ pub(super) fn index_record(shell: &mut Shell, c: &crate::anchorx::Content, id: &
     if let Err(f) = row {
         shell.faults.push(f);
     }
-}
-
-/// "Verify a file": compute the digest now and read the current home's ledger now; anchors are told from this
-/// pass's audit report and fragment.
-pub(super) fn verify_file(shell: &mut Shell, path: &str) -> Result<crate::recordsx::Verdict, crate::fault::Fault> {
-    let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
-    let report = shell.audit.as_ref().map(|a| &a.report);
-    let fragment = shell.audit.as_ref().map(|a| &a.fragment);
-    crate::recordsx::verify(home, &crate::home::machine_dir()?, std::path::Path::new(path.trim()), report, fragment, shell.remembered.as_ref())
 }
 
 pub(super) fn set_kit_link(shell: &mut Shell, path: &str, link: &str) -> Result<Option<String>, crate::fault::Fault> {
@@ -130,10 +135,9 @@ pub(super) fn drop_kit_copy(shell: &mut Shell, path: &str) -> Result<(crate::kit
 ///
 /// This recognition lives in the action layer, not the frame: the window side reads no disk at all (checked
 /// by the self-check suite).
-pub(super) fn take_dropped(
-    shell: &mut Shell,
-    path: &str,
-) -> Result<(crate::anchorx::Source, String), crate::fault::Fault> {
+/// The frame half of taking a dropped or picked path: which kind of content it is (a file, a folder, a
+/// repository), read from its metadata; the fingerprint is computed in the background (`Kind::Take`).
+pub(super) fn dropped_source(path: &str) -> Result<(crate::anchorx::Source, std::path::PathBuf), crate::fault::Fault> {
     let p = std::path::Path::new(path.trim());
     let md = std::fs::symlink_metadata(p)
         .map_err(|e| crate::fault::classify(&e, &p.display().to_string()))?;
@@ -151,11 +155,16 @@ pub(super) fn take_dropped(
             crate::lang::filln(crate::lang::Key::Tail027, &[&(p.display()).to_string()]),
         ));
     };
-    let c = crate::anchorx::of(source, p)?;
+    Ok((source, p.to_path_buf()))
+}
+
+/// A content taken, its fingerprint computed: it is the shell's content now, and the previous three-step flow is
+/// void, since a half-green flow left on screen would be a silent failure.
+pub(super) fn took_landed(shell: &mut Shell, source: crate::anchorx::Source, c: crate::anchorx::Content) -> super::Applied {
     let hex = c.hex();
     shell.content = Some(c);
     shell.flow = crate::anchorx::Flow::default();
-    Ok((source, hex))
+    super::Applied::Took { source, hex }
 }
 
 pub(super) fn register_repo(shell: &mut Shell, path: &str) -> Result<String, crate::fault::Fault> {

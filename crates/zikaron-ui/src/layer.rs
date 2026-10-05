@@ -69,3 +69,18 @@ pub fn fade_out(ctx: &Context) {
     }
     ctx.data_mut(|d| d.insert_temp(table_id(), keep_going));
 }
+
+/// The guard under an open floating card (the date field's calendar): a clear area over the whole window, in
+/// the card's own order and drawn before it, that takes the press landing outside the card, so that press
+/// closes the card and does not fall through to the page. The guard is raised to the top each frame, and the
+/// card is raised above it after; so a card opened from inside another card lies, with its guard, above the
+/// outer one. Returns whether it was pressed this frame.
+pub fn menu_guard(ctx: &Context, menu: LayerId) -> bool {
+    let shown = egui::Area::new(menu.id.with("zikaron-menu-guard"))
+        .fade_in(false)
+        .order(menu.order)
+        .fixed_pos(egui::Pos2::ZERO)
+        .show(ctx, |g| g.allocate_rect(g.ctx().screen_rect(), egui::Sense::click()));
+    ctx.move_to_top(shown.response.layer_id);
+    shown.inner.clicked()
+}

@@ -17,6 +17,11 @@ TRIPLE=x86_64-unknown-linux-gnu
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 DIST="$ROOT/dist"
 WORK="$DIST/linux-work"
+PACK="$TARGET_DIR/release/zikaron-pack"
+NOTICE_TARGET="$TRIPLE"
+# Every date the packages record: the moment of the commit being built, unless SOURCE_DATE_EPOCH says another
+# (make_deb.py and mksquashfs read it).
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
 RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
 
 # Keep local paths (home directory, checkout, build directory) out of the shipped binaries.
@@ -26,9 +31,15 @@ export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME_DIR=/cargo --re
 rustup target add "$TRIPLE" >/dev/null
 cargo zigbuild --release --locked --target "$TRIPLE.2.31" -p app -p zikaron-cli
 BIN="$TARGET_DIR/$TRIPLE/release"
+# The packaging pieces run here, on the building machine.
+cargo build --release --locked -p zikaron-pack
 
 rm -rf "$WORK"
 mkdir -p "$WORK" "$DIST"
+# The notices for everything the packages install, with the licences of the three fonts this build embeds.
+"$PACK" notices --target "$NOTICE_TARGET" --root app --root zikaron-cli \
+  --with crates/zikaron-ui/fonts/OFL-Inter.txt --with crates/zikaron-ui/fonts/OFL-JetBrainsMono.txt \
+  --with crates/zikaron-ui/fonts/OFL-NotoSansSC.txt --out "$WORK/THIRD-PARTY-LICENSES.txt"
 
 stage() {
   local root="$1"
@@ -36,6 +47,8 @@ stage() {
     "$root/usr/share/icons/hicolor/scalable/apps"
   install -m755 "$BIN/app" "$root/usr/bin/zikaron-desk"
   install -m755 "$BIN/zikaron" "$root/usr/bin/zikaron"
+  # The toolchain words in each binary's `.comment` (not loaded at run time) zeroed in the staged copies.
+  "$PACK" elf-comment "$root/usr/bin/zikaron-desk" "$root/usr/bin/zikaron"
   install -m644 packaging/linux/zikaron-desk.desktop "$root/usr/share/applications/zikaron-desk.desktop"
   for s in 16 24 32 48 64 128 256 512; do
     install -d "$root/usr/share/icons/hicolor/${s}x${s}/apps"
@@ -43,6 +56,7 @@ stage() {
   done
   install -m644 packaging/icon/zikaron.svg "$root/usr/share/icons/hicolor/scalable/apps/zikaron-desk.svg"
   install -m644 LICENSE "$root/usr/share/doc/zikaron-desk/copyright"
+  install -m644 "$WORK/THIRD-PARTY-LICENSES.txt" "$root/usr/share/doc/zikaron-desk/THIRD-PARTY-LICENSES.txt"
 }
 
 # .deb: an ar archive of debian-binary, control.tar.gz and data.tar.gz, every file owned by root.

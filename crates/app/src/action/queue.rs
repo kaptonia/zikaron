@@ -31,10 +31,20 @@ pub(super) fn batch(shell: &Shell, count: usize) -> Result<Batch, crate::fault::
     Ok(Batch { ids, hashes, chain, registry, urls, backoff: shell.send_backoff.clone() })
 }
 
-/// Estimate gas once. The call data is byte-identical to the real transaction (both assembled by the
-/// anchoring crate's `registry_calldata`), so the estimate and the send are the same transaction; if it
-/// cannot be estimated, the transaction would revert, so it is refused by name at once and not sent.
-pub(super) fn estimate_gas(shell: &mut Shell, count: usize) -> Result<(u64, String, zikaron_anchor::send::Fees), crate::fault::Fault> {
+/// What estimating a batch needs, read in the frame without asking anyone: the batch it is for, its chain,
+/// the call the node is asked to estimate (byte-identical to the real transaction: both assembled by the
+/// anchoring crate's `registry_calldata`) and that chain's nodes.
+pub(super) struct GasAsk {
+    count: usize,
+    chain: u64,
+    call: zikaron::json::Value,
+    data: Vec<u8>,
+    eps: Vec<crate::chainx::Endpoint>,
+}
+
+/// The frame half of estimating gas: the batch, the anchor key's address and the nodes. Nothing here talks to
+/// the network; [`estimate_on`] does, on the task's thread.
+pub(super) fn gas_ask(shell: &Shell, count: usize) -> Result<GasAsk, crate::fault::Fault> {
     let b = batch(shell, count)?;
     let who = shell.anchor.ok_or_else(|| {
         crate::fault::Fault::known(
@@ -43,51 +53,56 @@ pub(super) fn estimate_gas(shell: &mut Shell, count: usize) -> Result<(u64, Stri
         )
     })?;
     let data = zikaron_anchor::send::registry_calldata(&b.hashes);
-    let params = zikaron::json::Value::Arr(vec![zikaron::json::Value::Obj(vec![
-        ("data".into(), zikaron::json::Value::Str(zikaron::hexfmt::encode(&data))),
-        ("from".into(), zikaron::json::Value::Str(who.hex())),
-        ("to".into(), zikaron::json::Value::Str(b.registry.hex())),
-    ])]);
+    let call = zikaron_anchor::send::estimate_call(&who.0, &b.registry.0, &data);
     let eps: Vec<crate::chainx::Endpoint> = shell
         .endpoints
         .iter()
         .filter(|e| e.chain == b.chain)
         .cloned()
         .collect();
+    Ok(GasAsk { count, chain: b.chain, call, data, eps })
+}
+
+/// Estimate gas once, on the task's thread, by the rule the command line takes too
+/// (`zikaron_anchor::send::estimate_gas`), asked through this side's endpoints. If it cannot be estimated, the
+/// transaction would revert, so it is refused by name at once and not sent.
+pub(super) fn estimate_on(a: GasAsk) -> Result<crate::task::Done, crate::fault::Fault> {
+    use zikaron_anchor::send::NoGas;
+    let GasAsk { count, chain, call, data, eps } = a;
     // A failed estimate speaks only of the form where the node answered and refused: unreachable, timeout and
     // rate limiting are handed out with the codes the chain-read exit dispatches, never said as "this
     // transaction will revert" (a person whose node is down would otherwise be told the transaction will
-    // fail).
-    let r = crate::chainx::ask(&eps, "eth_estimateGas", &params).map_err(|f| {
-        if crate::watchx::is_network(&f) {
-            f
-        } else {
-            crate::fault::Fault::known(crate::fault::Known::GasRefused, f.evidence())
-        }
+    // fail). The block asked at is the smallest head every endpoint has reached (`head_block`).
+    let n = zikaron_anchor::send::estimate_gas(
+        || crate::chainx::head_block(&eps, chain).map(|(height, _)| height),
+        |params| crate::chainx::ask(&eps, "eth_estimateGas", params).map(|r| r.value),
+        call,
+        crate::watchx::is_network,
+    )
+    .map_err(|no| match no {
+        NoGas::Network(f) => f,
+        NoGas::Refused(f) => crate::fault::Fault::known(crate::fault::Known::GasRefused, f.evidence()),
+        NoGas::NotText(other) => crate::fault::Fault::known(
+            crate::fault::Known::ChainShape,
+            crate::lang::filln(crate::lang::Key::Tail033, &[&format!("{:?}", other)]),
+        ),
+        NoGas::Unreadable(hex) => crate::fault::Fault::known(crate::fault::Known::ChainShape, crate::lang::filln(crate::lang::Key::Tail034, &[&(hex).to_string()])),
+        // No transaction carries more than `send::GAS_LIMIT`: an estimate above it would run out of gas on
+        // chain with the fee still paid, so it is refused by the node's own number, before anything is shown
+        // or sent (and what is shown then always fits the cell it is shown in).
+        NoGas::OverCap(n) => crate::fault::Fault::known(crate::fault::Known::GasRefused, format!("{n} > {}", zikaron_anchor::send::GAS_LIMIT)),
     })?;
-    let hex = match &r.value {
-        zikaron::json::Value::Str(s) => s.clone(),
-        other => {
-            return Err(crate::fault::Fault::known(
-                crate::fault::Known::ChainShape,
-                crate::lang::filln(crate::lang::Key::Tail033, &[&format!("{:?}", other)]),
-            ))
-        }
-    };
-    let n = crate::chainx::wei(&hex).ok_or_else(|| {
-        crate::fault::Fault::known(crate::fault::Known::ChainShape, crate::lang::filln(crate::lang::Key::Tail034, &[&(hex).to_string()]))
-    })?;
-    // Estimating talked to the node: record the chain's current time as well (failing to get it does not
+    let gas = n;
+    // Estimating talked to the node: the chain's current time comes back as well (failing to get it does not
     // block the estimate).
-    if let Ok((time, _, _)) = crate::chainx::head_time(&eps, b.chain) {
-        shell.note_chain_time(time);
-    }
-    // The fee cap is computed from the chain's base fee: the confirmation card's cell and the pre-send
-    // balance gate read the same value.
-    let fees = crate::chainx::fees(&eps, b.chain);
+    let head_time = crate::chainx::head_time(&eps, chain).ok().map(|(time, _, _)| time);
+    // The fee cap is computed from the chain's base fee, and the gas limit from this estimate
+    // (`Fees::with_estimate`): the confirmation card's cell, the pre-send balance gate and the signed
+    // transaction read the same value.
+    let fees = crate::chainx::fees(&eps, chain).with_estimate(gas);
     // Also hand out the call data given to the node for estimating: the `input` of the sent transaction read
     // back from the chain must match it byte for byte.
-    Ok((n as u64, zikaron::hexfmt::encode(&data), fees))
+    Ok(crate::task::Done::Gas { count, gas, calldata: zikaron::hexfmt::encode(&data), fees, head_time })
 }
 
 /// The "show before send" question: whether this batch's gas was estimated, and for this count.
@@ -160,8 +175,9 @@ pub fn resume(shell: &mut Shell) -> bool {
         return false;
     }
     let wait = shell.anchor_wait;
+    let backoff = shell.receipt_backoff.clone();
     matches!(
-        shell.tasks.spawn(Kind::Anchor, move || confirm_batch(root, urls, chain, tx, ids, None, wait)),
+        shell.tasks.spawn(Kind::Anchor, move || confirm_batch(root, urls, chain, tx, ids, None, wait, &backoff)),
         Spawned::Started
     )
 }
@@ -194,7 +210,8 @@ pub fn wait_submitted(shell: &mut Shell, tx: String, chain: u64, url: String, id
     let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
     let urls = receipt_urls(shell, chain, Some(&url));
     let wait = shell.anchor_wait;
-    let _ = shell.tasks.spawn(Kind::Anchor, move || confirm_batch(root, urls, chain, tx, ids, gas, wait));
+    let backoff = shell.receipt_backoff.clone();
+    let _ = shell.tasks.spawn(Kind::Anchor, move || confirm_batch(root, urls, chain, tx, ids, gas, wait, &backoff));
 }
 
 /// Which places to ask for the receipt: the place that took the transaction first, then this chain's other
@@ -287,10 +304,10 @@ pub(super) fn anchor_batch(
     // broadcast. It sits after the show-before-send gate (`send_batch`'s `gas_shown`) and does not loosen it.
     funds_gate(&b, &secret, fees).map_err(refused)?;
     // The exit gate, last before the chain: this ledger's lineage's anchors read now, every one held here.
-    crate::exitgate::pass(&ask).map_err(refused)?;
+    let pass = crate::exitgate::pass(&ask).map_err(refused)?;
     // The statement that touches the chain (sign, broadcast, check the echo) lives in `sign::anchor_send`:
     // the key loan is visible only in that file.
-    let sent = crate::sign::anchor_send(&secret, &b.urls, b.chain, Some(b.registry.0), &b.hashes, fees, &b.backoff).map_err(refused)?;
+    let sent = crate::sign::anchor_send(&pass, &secret, &b.urls, b.chain, Some(b.registry.0), &b.hashes, fees, &b.backoff).map_err(refused)?;
     let tx = zikaron::hexfmt::encode(&sent.hash);
     // When the echo matches, save "submitted": after a restart this transaction is seen as waiting for its
     // receipt and is awaited, not resent.
@@ -309,6 +326,7 @@ pub(super) fn confirm_batch(
     ids: Vec<String>,
     gas: Option<u64>,
     wait: std::time::Duration,
+    backoff: &[std::time::Duration],
 ) -> Result<Done, crate::fault::Fault> {
     let url = urls.first().cloned().unwrap_or_default();
     let hash: [u8; 32] = zikaron::hexfmt::decode(&tx)
@@ -321,7 +339,7 @@ pub(super) fn confirm_batch(
         return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, crate::lang::filln(crate::lang::Key::Tail216, &[&(url).to_string()])));
     }
     let mut refs: Vec<&mut dyn zikaron_anchor::rpc::Endpoint> = opened.iter_mut().map(|b| b.as_mut() as &mut dyn zikaron_anchor::rpc::Endpoint).collect();
-    let confirm = zikaron_anchor::send::confirm_each(&mut refs, &hash, wait);
+    let confirm = zikaron_anchor::send::confirm_each(&mut refs, &hash, wait, backoff);
     // What the sent transaction actually says: read `input` back from the chain by transaction hash, never
     // reassembled here. Unreadable gives an empty string (the face then says "not read"), and the broadcast
     // has already happened, so there is no `?` on this statement.

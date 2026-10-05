@@ -80,7 +80,8 @@ fn every_name_falls_into_exactly_one_of_three_classes() {
 
 #[test]
 fn a_path_never_leaves_the_archive() {
-    let root = Path::new("/tmp/x");
+    let root_buf = std::env::temp_dir().join("x");
+    let root = root_buf.as_path();
     assert!(layout::path_of(root, "..").is_none());
     assert!(layout::path_of(root, "a/b").is_none());
     assert!(layout::path_of(root, "").is_none());
@@ -189,6 +190,8 @@ fn the_strict_read_is_the_pile_and_refuses_rather_than_shorten() {
     assert_eq!(t.names, vec!["README.txt".to_string()]);
 }
 
+// Unix only: the link is made the unix way (on Windows a link is another kind of file; its own form, later).
+#[cfg(unix)]
 #[test]
 fn a_symlink_wearing_an_entry_name_is_not_an_entry() {
     let d = scratch("symlink");
@@ -249,6 +252,8 @@ fn a_named_file_is_read_as_it_lies_whatever_its_name() {
     assert_eq!(led.read_named("../x").unwrap_err().code, Code::BadName);
 }
 
+// Unix only: a name that is not UTF-8 is made from raw bytes, the unix way.
+#[cfg(unix)]
 #[test]
 fn a_name_that_is_not_utf8_is_named_not_dropped() {
     use std::os::unix::ffi::OsStrExt;
@@ -344,6 +349,8 @@ fn concurrent_appends_of_the_same_name_settle_on_one_answer() {
     assert_eq!(pile.items[0], settled.unwrap());
 }
 
+// Unix only: the directory is made unlistable with unix permission bits.
+#[cfg(unix)]
 #[test]
 fn a_directory_that_cannot_be_listed_is_named_by_every_reader() {
     use std::os::unix::fs::PermissionsExt;

@@ -141,3 +141,12 @@ pub fn decode(payload: &[u8]) -> Result<Vec<Entry>, DecodeReject> {
     }
     Ok(grants)
 }
+
+/// The first hop of a grant chain that is not among `carried`, byte for byte (`None` when every hop is). A
+/// bundle that carries a grant code and the entries beside it must carry the same bytes in both places: a
+/// code naming a hop the bundle does not hold would be checked against entries that are not its own.
+pub fn uncarried<'a>(hops: &'a [Vec<u8>], carried: &[Vec<u8>]) -> Option<&'a [u8]> {
+    trace::mark(t::K2);
+    hops.iter().find(|h| !carried.iter().any(|b| b == *h)).map(|h| h.as_slice())
+}
+

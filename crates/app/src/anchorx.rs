@@ -71,10 +71,11 @@ impl Content {
     }
 }
 
-/// A file's content: the sha256 of its bytes. Signing and the record bundle attachment gate
-/// (`kitx::Originals`) read the same place.
+/// A file's content: the sha256 of its bytes (`zikaron_glue::recording`, which the command line's
+/// `history --file` asks too). Signing and the record bundle attachment gate (`kitx::Originals`) read the same
+/// place.
 pub fn file_digest(bytes: &[u8]) -> [u8; 32] {
-    cryptox::sha256(bytes)
+    zikaron_glue::recording::content_of(bytes)
 }
 
 /// A chosen file's size (a folder or an unreadable path has none); shown beside its name.
@@ -193,14 +194,15 @@ pub struct Mode {
 
 /// The family literal this desk emits. The only member: all three entries compute the sha256 of bytes (the
 /// file's bytes, the manifest's bytes, the commit object's bytes), so one literal says how every `content` is
-/// computed. The literal-to-algorithm mapping lives here, with writing and reading from the same source. One
-/// name, one home.
-pub const FAMILY: &str = "bytes-sha256/1";
+/// computed. The literal lives in `zikaron_glue::recording`, which the command line reads too (one name, one
+/// home).
+pub use zikaron_glue::recording::FAMILY;
 
 /// Lay out the mode mark. No input: `mark` is always [`FAMILY`], and `toolchain` is always its UTF-8 bytes
-/// through the core's `sha256` once. A person can neither choose nor fill it, so "not filled" has no form.
+/// through the core's `sha256` once (`zikaron_glue::recording::toolchain`). A person can neither choose nor
+/// fill it, so "not filled" has no form.
 pub fn mode() -> Mode {
-    Mode { mark: FAMILY.to_string(), toolchain: cryptox::sha256(FAMILY.as_bytes()) }
+    Mode { mark: FAMILY.to_string(), toolchain: zikaron_glue::recording::toolchain() }
 }
 
 /// The body of `history` (law §6.2's three cells: `content` required, `mode` required, `note_md` optional).

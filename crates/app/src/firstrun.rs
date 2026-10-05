@@ -89,7 +89,9 @@ pub struct Adopted {
 }
 
 /// Adopt. After inspection, append every entry, sealed, to this home's ledger; not one byte of the original
-/// directory changes. After landing, run self-audit once and pass the label through unchanged.
+/// directory changes. After landing, run self-audit once and pass the label through unchanged. A home that
+/// holds the not-fetched mark (an imported key) opens for writing after this as any other does: once its tail
+/// is checked against the chain (`action::check_tail`, started by the action layer after adopting).
 pub fn adopt(dir: &std::path::Path, into: &Home) -> Result<Adopted, Fault> {
     let seen = look(dir)?;
     if !seen.adoptable() {
@@ -221,7 +223,7 @@ impl Shade {
 /// A true first run: this machine has no passcode and no identity yet (nothing to go back to). The wizard
 /// asks this once, as it opens, to decide whether it offers a way out for the whole run.
 pub fn fresh_machine(shell: &crate::shell::Shell) -> bool {
-    let pin = !matches!(shell.vault, crate::keybox::State::Absent);
+    let pin = !shell.vault.absent();
     let identity = shell.identities.as_ref().map(|r| !r.rows.is_empty()).unwrap_or(false);
     !pin && !identity
 }

@@ -25,7 +25,7 @@ impl Args {
         let mut it = argv.into_iter();
         let verb = match it.next() {
             Some(x) => text(&x),
-            None => out::misuse(Reason::Args, USAGE),
+            None => out::misuse(Reason::Args, "zikaron", out::Said::Usage),
         };
         let rest: Vec<String> = it.map(|x| text(&x)).collect();
         let mut pairs: Vec<(String, String)> = Vec::new();
@@ -34,11 +34,11 @@ impl Args {
             let name = &rest[i];
             let stripped = match name.strip_prefix("--") {
                 Some(x) if !x.is_empty() => x.to_string(),
-                _ => out::misuse(Reason::Args, name),
+                _ => out::misuse(Reason::Args, name, out::Said::NotAFlag),
             };
             let value = match rest.get(i + 1) {
                 Some(v) if !v.starts_with("--") => v.clone(),
-                _ => out::misuse(Reason::Args, &format!("--{stripped} 要一个值")),
+                _ => out::misuse(Reason::Args, &format!("--{stripped}"), out::Said::NeedsValue),
             };
             pairs.push((stripped, value));
             i += 2;
@@ -54,7 +54,7 @@ impl Args {
     pub fn close(&self, allowed: &[&str]) {
         for (k, _) in &self.pairs {
             if !allowed.contains(&k.as_str()) {
-                out::misuse(Reason::Args, &format!("--{k} 不在 {} 的旗单里", self.verb));
+                out::misuse(Reason::Args, &format!("--{k}"), out::Said::NotThisVerbsFlag);
             }
         }
     }
@@ -63,7 +63,7 @@ impl Args {
         let mut found = self.pairs.iter().filter(|(k, _)| k == name);
         let first = found.next()?;
         if found.next().is_some() {
-            out::misuse(Reason::Args, &format!("--{name} 给了不止一次"));
+            out::misuse(Reason::Args, &format!("--{name}"), out::Said::Repeated);
         }
         Some(first.1.clone())
     }
@@ -71,7 +71,7 @@ impl Args {
     pub fn need(&self, name: &str) -> String {
         match self.one(name) {
             Some(x) => x,
-            None => out::misuse(Reason::Args, &format!("缺 --{name}")),
+            None => out::misuse(Reason::Args, &format!("--{name}"), out::Said::Missing),
         }
     }
 
@@ -95,14 +95,8 @@ impl Args {
             1 => hit.remove(0),
             _ => out::misuse(
                 Reason::Args,
-                &format!(
-                    "{} 之中恰要一面",
-                    names
-                        .iter()
-                        .map(|n| format!("--{n}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
+                &names.iter().map(|n| format!("--{n}")).collect::<Vec<_>>().join(" "),
+                out::Said::OneOf,
             ),
         }
     }
@@ -111,14 +105,14 @@ impl Args {
         let raw = self.one(name)?;
         match raw.parse::<u64>() {
             Ok(x) => Some(x),
-            Err(_) => out::misuse(Reason::Args, &format!("--{name} 不是一个整数:{raw}")),
+            Err(_) => out::misuse(Reason::Args, &format!("--{name}"), out::Said::NotInt),
         }
     }
 
     pub fn need_u64(&self, name: &str) -> u64 {
         match self.u64_of(name) {
             Some(x) => x,
-            None => out::misuse(Reason::Args, &format!("缺 --{name}")),
+            None => out::misuse(Reason::Args, &format!("--{name}"), out::Said::Missing),
         }
     }
 
@@ -133,10 +127,10 @@ impl Args {
         let raw = self.need(name);
         let k = match zikaron::hexfmt::scalar32(&raw) {
             Some(x) => x,
-            None => out::misuse(Reason::Key, &format!("--{name} 不是六十四位十六进制")),
+            None => out::misuse(Reason::Key, &format!("--{name}"), out::Said::KeyNotHex),
         };
         if !zikaron::cryptox::in_range(&k) {
-            out::misuse(Reason::Key, &format!("--{name} 不在曲线的范围里"));
+            out::misuse(Reason::Key, &format!("--{name}"), out::Said::KeyOutOfRange);
         }
         k
     }
@@ -149,7 +143,7 @@ impl Args {
 pub fn slurp(path: &str) -> Vec<u8> {
     match std::fs::read(path) {
         Ok(b) => b,
-        Err(_) => out::misuse(Reason::Unreadable, path),
+        Err(_) => out::misuse(Reason::Unreadable, path, out::Said::Unreadable),
     }
 }
 
@@ -159,14 +153,14 @@ pub fn slurp_json(path: &str) -> zikaron::json::Value {
     let bytes = slurp(path);
     match zikaron::json::parse_tests_1_5(&bytes) {
         Ok(v) => v,
-        Err(_) => out::misuse(Reason::Unreadable, &format!("{path}(不是法 §3.5 收的 JSON)")),
+        Err(_) => out::misuse(Reason::Unreadable, path, out::Said::NotLawJson),
     }
 }
 
 fn text(x: &OsString) -> String {
     match x.to_str() {
         Some(s) => s.to_string(),
-        None => out::misuse(Reason::Args, "参数不是合法 UTF-8"),
+        None => out::misuse(Reason::Args, &x.to_string_lossy(), out::Said::NotUtf8),
     }
 }
 

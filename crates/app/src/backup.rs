@@ -234,9 +234,10 @@ fn package_of(bytes: &[u8]) -> Result<Package, Fault> {
                 _ => return Err(bad("file")),
             };
             let rel = text(f, "rel").ok_or_else(|| bad("file"))?;
-            // Every path is checked: no absolute path, no `..`, and it names the kind it claims (a crafted
-            // package cannot land a file outside a home or as another kind).
-            if rel.starts_with('/') || rel.split('/').any(|x| x == ".." || x.is_empty()) {
+            // Every path is checked: each segment one plain path component on every system ([`plain_member`]),
+            // and it names the kind it claims (a crafted package cannot land a file outside a home or as another
+            // kind).
+            if !plain_member(&rel) {
                 return Err(bad("file"));
             }
             let doc = text(f, "doc").and_then(|t| Doc::from_tag(&t)).filter(|d| *d != Doc::Registry).ok_or_else(|| bad("file"))?;
@@ -254,22 +255,28 @@ fn package_of(bytes: &[u8]) -> Result<Package, Fault> {
     Ok(Package { registry, primary, keys, machine, files })
 }
 
+/// A member's path is segments joined by `/`, each exactly one plain path component, judged the same on every
+/// system: not empty (so no leading `/`), not ending in `.` or a space (which covers `.` and `..`, and the
+/// trailing dots and spaces one system drops from a name, turning `.. ` into `..`), and holding no other
+/// system's separator or drive and stream mark (`\`, `:`) and no NUL. A segment one system would read as
+/// several steps, a drive or a parent can then never take a file out of the home it is restored into. The
+/// names this app writes are never refused by it.
+fn plain_member(rel: &str) -> bool {
+    rel.split('/').all(|x| !x.is_empty() && !x.ends_with(['.', ' ']) && !x.contains(['\\', ':', '\0']))
+}
+
 // ───────────────────────── The envelope ─────────────────────────
 
 fn nonce_and_salt() -> Result<(Vec<u8>, Vec<u8>), Fault> {
-    use std::io::Read;
-    let mut h = std::fs::File::open(crate::key::ENTROPY).map_err(|e| classify(&e, crate::key::ENTROPY))?;
-    let mut n = vec![0u8; NONCE];
-    let mut salt = vec![0u8; SALT];
-    h.read_exact(&mut n).map_err(|e| classify(&e, crate::key::ENTROPY))?;
-    h.read_exact(&mut salt).map_err(|e| classify(&e, crate::key::ENTROPY))?;
-    Ok((n, salt))
+    Ok((crate::key::random(NONCE)?, crate::key::random(SALT)?))
 }
 
-/// The scrypt parameters a new backup is sealed with: this machine's calibration to about one second (from
-/// the standard parameters upward, doubling N while one derivation takes under half a second, within the
-/// bounds every keystore reader accepts). The light parameters `keybox::params` returns under the `drive`
-/// test hooks (off in normal builds) are used as they are: tests measure behavior, not time.
+/// The scrypt parameters a new backup is sealed with: the standard level, on purpose and on every machine. It
+/// is not calibrated to this machine: a backup made on a fast machine must open on a slow one, and a level
+/// tuned upward here could take minutes or run out of memory there. The loop below never raises it: doubling
+/// N from the standard level passes the standard level at once, so it returns the standard parameters after
+/// one timed derivation. The light parameters `keybox::params` returns under the `drive` test hooks (off in
+/// normal builds) are used as they are: tests measure behavior, not time.
 pub fn params() -> crate::keystore::Params {
     let p = crate::keybox::params();
     if p != crate::keystore::Params::standard() {
@@ -402,7 +409,9 @@ fn collect() -> Result<Package, Fault> {
     // The register travels in its own field (its file name is this machine's, not the backup's).
     // A deleted identity's homes stay on this machine only. Each file travels by its logical path (what it
     // stands for), never by its name on this disk (keyed by this vault's names key).
-    for f in crate::local::all_files()?.into_iter().filter(|f| f.doc != Doc::Registry && !matches!(f.whose, Whose::Left { .. })) {
+    // The record of checked chain facts (`checkedx`) stays on this machine: an export carries no chain readings,
+    // and a restored machine asks again.
+    for f in crate::local::all_files()?.into_iter().filter(|f| f.doc != Doc::Registry && f.doc != Doc::Checked && !matches!(f.whose, Whose::Left { .. })) {
         let raw = read_file(&f.at)?;
         let bytes = crate::local::open_with(&key, f.doc, &raw, &f.rel)?;
         let rel = crate::local::logical_rel(f.doc, &f.rel, &bytes)?;
@@ -754,4 +763,21 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
         crate::local::note_trouble(f);
     }
     Ok(Restored { summary })
+}
+
+#[cfg(test)]
+mod tests {
+    /// Each segment is one plain component on every system: the forms another system would read as a parent,
+    /// a drive, a stream or a second step are refused here, wherever this runs.
+    #[test]
+    fn a_member_is_plain_segments_on_every_system() {
+        for ok in ["settings/settings.json", "ledger/0001.entry", "kits/terms/ab/name-1.json", "a.b/c..d/.e"] {
+            assert!(super::plain_member(ok), "{ok}");
+        }
+        for bad in [
+            "", "/etc/passwd", "a//b", "a/", "../x", "a/../b", "a/./b", ".", "a/...", "a/.. /b", "a/b. ", "a/x\\..\\..\\y", "a\\b", "C:/x", "a/C:x", "a/b:stream", "a/\\\\host\\share", "a/\0b",
+        ] {
+            assert!(!super::plain_member(bad), "{bad:?}");
+        }
+    }
 }

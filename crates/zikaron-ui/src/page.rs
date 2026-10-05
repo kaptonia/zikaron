@@ -69,9 +69,19 @@ impl Pen {
         button::key(ui, text, Role::Commit, enabled)
     }
 
+    /// The same key with a phase, saying `busy` with a turning ring while it is busy (`button::Key::busy_text`).
+    pub fn press_saying(self, ui: &mut egui::Ui, text: &str, busy: &str, enabled: bool, phase: button::Phase) -> egui::Response {
+        button::show(ui, button::Key::new(text, Role::Commit).enabled(enabled).phase(phase).busy_text(busy))
+    }
+
     /// The solid cinnabar key running a long action (its phase: busy, done, failed).
     pub fn press_long(self, ui: &mut egui::Ui, text: &str, enabled: bool, phase: button::Phase) -> egui::Response {
         button::show(ui, button::Key::new(text, Role::Commit).enabled(enabled).phase(phase))
+    }
+
+    /// The same key, saying `busy` with a turning ring while its phase is busy (`button::Key::busy_text`).
+    pub fn press_long_saying(self, ui: &mut egui::Ui, text: &str, busy: &str, enabled: bool, phase: button::Phase) -> egui::Response {
+        button::show(ui, button::Key::new(text, Role::Commit).enabled(enabled).phase(phase).busy_text(busy))
     }
 }
 

@@ -139,37 +139,48 @@ pub fn verify_signature(sig_hex: &str, digest: &[u8; 32], expect_addr: &str) -> 
 
 /// Law §6: judge the body by the type table; one token covers every body fault.
 fn check_body(kind: EntryType, body: &Value) -> Result<(), Token> {
+    body_check(kind, body).map_err(|_| Token::BodyField)
+}
+
+/// Which body member the type table refuses (law §6), by its path (`mode.mark`, `window.from`); `None` when
+/// the body passes. The law answers every body fault with one token (`E_BODY_FIELD`); this names the member
+/// for the people who wrote it, from the same table [`check`] judges by (step 12 asks this one function).
+pub fn body_fault(kind: EntryType, body: &Value) -> Option<&'static str> {
+    body_check(kind, body).err()
+}
+
+/// The type table itself: the first member that fails, by path.
+fn body_check(kind: EntryType, body: &Value) -> Result<(), &'static str> {
     let get = |k: &str| body.member(k);
-    let bad = Err(Token::BodyField);
     match kind {
         EntryType::Genesis => {
             match get("statement_md") {
                 Some(v) if is_prose_val(v) => {}
-                _ => return bad,
+                _ => return Err("statement_md"),
             }
             Ok(())
         }
         EntryType::History => {
             match get("content") {
                 Some(v) if is_hex32_val(v) => {}
-                _ => return bad,
+                _ => return Err("content"),
             }
             match get("mode") {
                 Some(m) if m.is_obj() => {
                     match m.member("mark") {
                         Some(v) if is_token_val(v) => {}
-                        _ => return bad,
+                        _ => return Err("mode.mark"),
                     }
                     match m.member("toolchain") {
                         Some(v) if is_hex32_val(v) => {}
-                        _ => return bad,
+                        _ => return Err("mode.toolchain"),
                     }
                 }
-                _ => return bad,
+                _ => return Err("mode"),
             }
             if let Some(v) = get("note_md") {
                 if !is_prose_val(v) {
-                    return bad;
+                    return Err("note_md");
                 }
             }
             Ok(())
@@ -177,40 +188,40 @@ fn check_body(kind: EntryType, body: &Value) -> Result<(), Token> {
         EntryType::Grant => {
             match get("grantee") {
                 Some(v) if is_hex20_val(v) => {}
-                _ => return bad,
+                _ => return Err("grantee"),
             }
             match get("work") {
                 Some(v) if is_hex32_val(v) => {}
-                _ => return bad,
+                _ => return Err("work"),
             }
             match get("terms") {
                 Some(v) if is_hex32_val(v) => {}
-                _ => return bad,
+                _ => return Err("terms"),
             }
             if let Some(v) = get("history") {
                 if !is_hex32_val(v) {
-                    return bad;
+                    return Err("history");
                 }
             }
             if let Some(w) = get("window") {
                 if !w.is_obj() {
-                    return bad;
+                    return Err("window");
                 }
                 let from = match w.member("from") {
                     Some(v) if is_int_val(v) => v.as_int().unwrap_or(0),
-                    _ => return bad,
+                    _ => return Err("window.from"),
                 };
                 let to = match w.member("to") {
                     Some(v) if is_int_val(v) => v.as_int().unwrap_or(0),
-                    _ => return bad,
+                    _ => return Err("window.to"),
                 };
                 if from > to {
-                    return bad;
+                    return Err("window");
                 }
             }
             if let Some(v) = get("scope_md") {
                 if !is_prose_val(v) {
-                    return bad;
+                    return Err("scope_md");
                 }
             }
             Ok(())
@@ -218,11 +229,11 @@ fn check_body(kind: EntryType, body: &Value) -> Result<(), Token> {
         EntryType::Revocation => {
             match get("grant") {
                 Some(v) if is_hex32_val(v) => {}
-                _ => return bad,
+                _ => return Err("grant"),
             }
             if let Some(v) = get("case") {
                 if !is_hex32_val(v) {
-                    return bad;
+                    return Err("case");
                 }
             }
             Ok(())
@@ -232,69 +243,73 @@ fn check_body(kind: EntryType, body: &Value) -> Result<(), Token> {
                 Some(Value::Arr(items)) if !items.is_empty() => {
                     for el in items {
                         if !el.is_obj() {
-                            return bad;
+                            return Err("anchors");
                         }
                         match el.member("chainId") {
                             Some(v) if is_int_val(v) => {}
-                            _ => return bad,
+                            _ => return Err("anchors.chainId"),
                         }
                         match el.member("tx") {
                             Some(v) if is_hex32_val(v) => {}
-                            _ => return bad,
+                            _ => return Err("anchors.tx"),
                         }
                         match el.member("payloadKind") {
                             Some(v) if is_token_val(v) => {}
-                            _ => return bad,
+                            _ => return Err("anchors.payloadKind"),
                         }
                         match el.member("content") {
                             Some(v) if is_hex32_val(v) => {}
-                            _ => return bad,
+                            _ => return Err("anchors.content"),
                         }
                     }
                 }
-                _ => return bad,
+                _ => return Err("anchors"),
             }
             let attestor = get("attestor");
             let attestation = get("attestation");
             match (attestor, attestation) {
                 (None, None) => {}
                 (Some(a), Some(g)) => {
-                    if !is_hex20_val(a) || !is_hex65_val(g) {
-                        return bad;
+                    if !is_hex20_val(a) {
+                        return Err("attestor");
+                    }
+                    if !is_hex65_val(g) {
+                        return Err("attestation");
                     }
                 }
-                _ => return bad,
+                (None, Some(_)) => return Err("attestor"),
+                (Some(_), None) => return Err("attestation"),
             }
             Ok(())
         }
         EntryType::Succession => {
             match get("to") {
                 Some(v) if is_hex20_val(v) => {}
-                _ => return bad,
+                _ => return Err("to"),
             }
             match get("kind") {
                 Some(v) if is_token_val(v) => {}
-                _ => return bad,
+                _ => return Err("kind"),
             }
             match get("effective") {
                 Some(v) if is_int_val(v) => {}
-                _ => return bad,
+                _ => return Err("effective"),
             }
             match get("statement_md") {
                 Some(v) if is_prose_val(v) => {}
-                _ => return bad,
+                _ => return Err("statement_md"),
             }
             Ok(())
         }
         EntryType::Annotation => {
             if let Some(v) = get("subject") {
                 if !is_hex32_val(v) {
-                    return bad;
+                    return Err("subject");
                 }
             }
             match get("note_md") {
                 Some(v) if is_prose_val(v) => {}
-                _ => return bad,
+                _ => return Err("note_md"),
             }
             Ok(())
         }

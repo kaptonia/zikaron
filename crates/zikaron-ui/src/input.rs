@@ -33,6 +33,12 @@ pub fn frame_shape(ctx: &egui::Context, rect: Rect, id: egui::Id, edge: Edge) ->
     egui::Shape::Vec(v)
 }
 
+/// The single-line field's frame for a control that is not a text field but looks like one (the date field):
+/// open, it draws the focused state. The shape is still [`frame_shape`]'s, the one source of the frame.
+pub fn frame_of(ctx: &egui::Context, rect: Rect, id: egui::Id, open: bool) -> egui::Shape {
+    frame_shape(ctx, rect, id, if open { Edge::Focus } else { Edge::Rest })
+}
+
 /// How a single-line field looks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Look {

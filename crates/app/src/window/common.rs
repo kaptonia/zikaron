@@ -218,7 +218,71 @@ pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
         Kind::Chain => &[Key::StageReadChain],
         Kind::Depth => &[Key::StageReadChain],
         Kind::Gate => &[Key::StageReadChain],
+        Kind::ReadNet => &[Key::StageConnect],
         _ => &[],
+    }
+}
+
+/// A date field's width in a search row ("2026-10-01" with its calendar mark).
+pub(super) const DATE_W: f32 = 136.0;
+/// The least a search field keeps beside the two date fields; narrower, the dates go to a row of their own.
+const SEARCH_MIN_W: f32 = 180.0;
+
+/// A date field with the calendar in the app's words, today read in the zone moments are shown in
+/// ([`crate::when::day`]), so the day picked and the day a row shows are counted the same way.
+pub(super) fn date_box(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, now_secs: u64) -> bool {
+    datepick::field(ui, id, value, hint, DATE_W, today_of(now_secs), &date_words())
+}
+
+/// The calendar's words in the app's language.
+pub(super) fn date_words() -> datepick::Words<'static> {
+    let weekdays = [Key::DateMon, Key::DateTue, Key::DateWed, Key::DateThu, Key::DateFri, Key::DateSat, Key::DateSun].map(t);
+    datepick::Words { weekdays, month: month_title, today: t(Key::DateToday), clear: t(Key::PickClear) }
+}
+
+/// The calendar's month row: the year and the month, each followed by its word in the current language.
+fn month_title(y: i32, m: u32) -> String {
+    fill2(Key::DateMonth, &y.to_string(), &m.to_string())
+}
+
+/// Today as the calendar counts it: the day of `now_secs` in the zone moments are shown in.
+pub(super) fn today_of(now_secs: u64) -> datepick::Day {
+    datepick::parse(&crate::when::day(now_secs)).unwrap_or((1970, 1, 1))
+}
+
+/// A picker's width: a plain list, and a list of records (number, name, first anchor time).
+pub(super) const PICK_W: f32 = 360.0;
+pub(super) const PICK_WIDE_W: f32 = 560.0;
+
+/// The two date fields "start date · end date" side by side.
+pub(super) fn date_pair(ui: &mut egui::Ui, id: &str, range: &mut (String, String), now_secs: u64) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = tk::S2;
+        date_box(ui, &format!("{id}-from"), &mut range.0, t(Key::DateFrom), now_secs);
+        date_box(ui, &format!("{id}-to"), &mut range.1, t(Key::DateTo), now_secs);
+    });
+}
+
+/// A list's search row: the search field, then "start date · end date" (rows outside the range, by anchor
+/// time, are the caller's to drop through [`crate::when::within`]). On a narrow window the dates take a row
+/// of their own under the search field.
+pub(super) fn search_row(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str, range: &mut (String, String), now_secs: u64) {
+    let w = ui.available_width();
+    if w >= DATE_W * 2.0 + tk::S2 * 2.0 + SEARCH_MIN_W {
+        width::then(
+            ui,
+            |ui| {
+                date_box(ui, &format!("{id}-to"), &mut range.1, t(Key::DateTo), now_secs);
+                date_box(ui, &format!("{id}-from"), &mut range.0, t(Key::DateFrom), now_secs);
+            },
+            |ui, room| input::search(ui, query, hint, room),
+        );
+    } else {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = tk::S2;
+            input::search(ui, query, hint, w);
+            date_pair(ui, id, range, now_secs);
+        });
     }
 }
 

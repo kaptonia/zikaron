@@ -10,12 +10,29 @@ use super::*;
 
 impl Win {
     pub(super) fn gate(&mut self, ctx: &egui::Context, now: f64) {
-        let state = self.shell.vault;
-        // The same closed table decides whether the gate or the shell draws (`State::gate_up`).
+        let state = self.shell.vault.clone();
+        // The same closed table decides whether the gate or the shell draws (`Vault::gate_up`).
         if !state.gate_up() {
             return;
         }
-        let locked_out = state == crate::keybox::State::LockedOut;
+        // The store's file is there and cannot be read: the gate says so, with the store's own refusal, and
+        // offers nothing that would build a new store over the keys it holds (no wizard, no passcode cells).
+        if let crate::shell::Vault::Damaged(f) = &state {
+            full::cover(ctx, "gate", |ui, drop| {
+                let rect = ui.max_rect();
+                full::centered(ui, "gate", rect, tk::SHEET_W, drop, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        paint::text(ui, t(Key::AppName), Type::Small, c(C::Ink3));
+                        paint::text(ui, t(Key::VaultDamagedTitle), Type::Page, c(C::Ink));
+                        ui.add_space(18.0);
+                    });
+                    states::err_box(ui, "gate-damaged", f.human(), f.next(), t(Key::U3RawError), &f.raw());
+                });
+            });
+            return;
+        }
+        let locked_out = state.is(crate::keybox::State::LockedOut);
         if locked_out {
             self.ux.gate_recover = true;
         }
@@ -235,7 +252,7 @@ fn gate_message(ui: &mut egui::Ui, busy: bool, trouble: Option<&str>, gap: f32) 
     child.multiply_opacity(open);
     let r = child.vertical_centered(|ui| {
         if busy {
-            paint::text(ui, t(Key::VaultBusy), Type::Small, c(C::Ink3));
+            sheet::busy_note(ui, t(Key::VaultBusy), true);
         } else if let Some(s) = trouble {
             states::note_box(ui, s);
         }

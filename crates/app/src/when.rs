@@ -72,6 +72,20 @@ pub fn day(unix_secs: u64) -> String {
     when(unix_secs).chars().take(10).collect()
 }
 
+/// Whether a moment falls in a range of days picked on screen (`YYYY-MM-DD`, both ends included, either end
+/// empty for no bound), its day read in the chosen zone, as [`day`] shows it. With no bound at all every row
+/// is in; with any bound a row without a moment (not anchored yet) is out. The one reading of a date range:
+/// every list filtered by anchor time calls it.
+pub fn within(at: Option<u64>, from: &str, to: &str) -> bool {
+    let (from, to) = (from.trim(), to.trim());
+    if from.is_empty() && to.is_empty() {
+        return true;
+    }
+    let Some(t) = at else { return false };
+    let d = day(t);
+    (from.is_empty() || d.as_str() >= from) && (to.is_empty() || d.as_str() <= to)
+}
+
 /// The month, day, hour and minute of [`when`] (narrow list cells).
 pub fn short(unix_secs: u64) -> String {
     when(unix_secs).chars().skip(5).take(11).collect()
@@ -423,5 +437,17 @@ mod tests {
             let (y, m, d, ..) = civil(t);
             assert_eq!(days_from_civil(y, m, d), (t / 86_400) as i64);
         }
+    }
+
+    #[test]
+    fn a_date_range_holds_both_ends_and_drops_the_unanchored() {
+        // 2023-11-14 12:00:00 UTC: the same day in any zone within twelve hours.
+        let t = 1_699_963_200u64;
+        assert!(within(None, "", ""));
+        assert!(within(Some(t), "2023-11-14", "2023-11-14"));
+        assert!(within(Some(t), "", "2023-11-14"));
+        assert!(!within(Some(t), "2023-11-15", ""));
+        assert!(!within(Some(t), "", "2023-11-13"));
+        assert!(!within(None, "2023-01-01", ""));
     }
 }

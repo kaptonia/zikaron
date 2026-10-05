@@ -245,8 +245,7 @@ pub fn ask_from(
     single_source: bool,
 ) -> Result<Verdict, Fault> {
     let root = root_of(items)?;
-    let assembled = input::assemble(fragment, &root, &pile_hex(items), &[])
-        .ok_or_else(|| Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail080).to_string()))?;
+    let assembled = input_of(items, fragment)?;
     let report = zikaron::audit::audit(&assembled);
     let label = match member(&report, Key::LabelKey.as_str()) {
         Some(Value::Str(s)) => s.clone(),
@@ -269,10 +268,18 @@ pub fn ask_from(
 ///
 /// The depth reading and the six checks both take an audit input or audit outcome, and assembling the input
 /// has one owner ([`zikaron_anchor::input::assemble`]); this layer does not assemble a separate one for each.
+///
+/// The input is judged as the law reads it: one whose canonical bytes the law's reader refuses (a number a node
+/// answered past the canonical integer ceiling, for one) is not an audit input, so it is refused by name and
+/// nothing (no label, no first-anchor time) is read off it in memory that the bytes would not give.
 pub fn input_of(items: &[Vec<u8>], fragment: &Value) -> Result<Value, Fault> {
     let root = root_of(items)?;
-    input::assemble(fragment, &root, &pile_hex(items), &[])
-        .ok_or_else(|| Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail080).to_string()))
+    let input = input::assemble(fragment, &root, &pile_hex(items), &[])
+        .ok_or_else(|| Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail080).to_string()))?;
+    if let Err(t) = zikaron::json::parse(&zikaron::json::canon_bytes(&input)) {
+        return Err(Fault::known(Known::AuditInput, format!("{} · {t:?}", crate::lang::t(crate::lang::Key::Tail081))));
+    }
+    Ok(input)
 }
 
 /// The same input handed to the core for the audit outcome (the report plus ledger, findings, anchor set and
@@ -294,6 +301,81 @@ pub fn first_anchored(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String
     let lines = zikaron_kit::reading::Lines::of(&outcome.ledger);
     let bounds = zikaron_kit::reading::bounds(&outcome, &lines);
     Some(bounds.iter().enumerate().filter_map(|(i, t)| t.map(|t| (lines.id(i).to_string(), t))).collect())
+}
+
+/// The earliest counted anchor that reaches a ledger entry, whole: the same reading as [`first_anchored`]'s
+/// time (kit law §8.2 bounds), with which anchor gave it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstAnchor {
+    pub chain_id: u64,
+    pub block_number: u64,
+    pub block_timestamp: u64,
+    /// The anchoring transaction (hex32).
+    pub tx: String,
+    /// The hash it anchored (hex32): the entry it points to, at or after the one it reaches.
+    pub hash: String,
+    /// The registry contract whose log carried it (hex20), when the scan noted one.
+    pub registry: Option<String>,
+}
+
+/// **Each entry's first anchor, whole**: per entry, among the counted anchors whose time is that entry's
+/// bound and that reach it, the one with the smallest (chain id, block, transaction). `None` when the fragment
+/// does not audit; entries no anchor reaches are left out.
+pub fn first_anchors(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String, FirstAnchor)>> {
+    let outcome = outcome_of(items, fragment).ok()?;
+    let lines = zikaron_kit::reading::Lines::of(&outcome.ledger);
+    let bounds = zikaron_kit::reading::bounds(&outcome, &lines);
+    let int = |v: &Value, k: &str| match v.member(k) {
+        Some(Value::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let text = |v: &Value, k: &str| match v.member(k) {
+        Some(Value::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    // The fragment's counted rows by a sender of this lineage: what `counted` was trimmed from.
+    let rows: Vec<FirstAnchor> = match fragment.member("anchors") {
+        Some(Value::Arr(a)) => a
+            .iter()
+            .filter(|r| text(r, "verdict").as_deref() == Some(zikaron::tokens::Verdict::Counted.as_str()))
+            .filter(|r| text(r, "sender").map(|s| outcome.lineage.iter().any(|l| l.eq_ignore_ascii_case(&s))).unwrap_or(false))
+            .filter_map(|r| {
+                Some(FirstAnchor {
+                    chain_id: int(r, "chainId")?,
+                    block_number: int(r, "blockNumber")?,
+                    block_timestamp: int(r, "blockTimestamp")?,
+                    tx: text(r, "tx")?,
+                    hash: text(r, "hash")?,
+                    registry: None,
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, t) in bounds.iter().enumerate() {
+        let Some(t) = *t else { continue };
+        let first = outcome
+            .counted
+            .iter()
+            .filter(|a| a.block_timestamp == t)
+            .filter(|a| lines.position(&a.hash).map(|p| zikaron_kit::reading::reachable_at(&outcome.ledger, &lines, p, i)).unwrap_or(false))
+            .flat_map(|a| rows.iter().filter(move |r| r.hash.eq_ignore_ascii_case(&a.hash) && r.block_timestamp == a.block_timestamp))
+            .min_by(|x, y| (x.chain_id, x.block_number, &x.tx).cmp(&(y.chain_id, y.block_number, &y.tx)));
+        if let Some(f) = first {
+            out.push((lines.id(i).to_string(), f.clone()));
+        }
+    }
+    Some(out)
+}
+
+/// Name the registry of each first anchor from a scan's side reading (several: the smallest address).
+pub fn name_registry(first: &mut FirstAnchor, emitters: &zikaron_anchor::scan::Emitters) {
+    let h32 = |s: &str| -> Option<[u8; 32]> { zikaron::hexfmt::decode(s)?.try_into().ok() };
+    let (Some(tx), Some(hash)) = (h32(&first.tx), h32(&first.hash)) else { return };
+    if let Some(set) = emitters.get(&(first.chain_id, first.block_number, tx, hash)) {
+        first.registry = set.iter().next().map(|a| zikaron::hexfmt::encode(a));
+    }
 }
 
 /// A fragment with an empty basis (the offline path needs it).
@@ -394,6 +476,26 @@ fn nth_for(eps: &[Endpoint], chain: u64, k: usize) -> Option<String> {
     mine.get(k.min(mine.len().saturating_sub(1))).map(|u| (*u).to_string())
 }
 
+/// Whether a scan uses this machine's record of chain facts already checked (`checkedx`). Every scan of this
+/// app does, except the grant check page's: that page has zero permissions (no key, no disk, no sending), so it
+/// reads and writes no local file and asks every log about, as a scan always did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Facts {
+    /// Read the record; an agreed scan adds what its endpoints read alike.
+    Local,
+    /// Neither read nor write it.
+    Bare,
+}
+
+impl Facts {
+    fn known(self) -> scan::Known {
+        match self {
+            Facts::Local => crate::checkedx::read(),
+            Facts::Bare => scan::Known::default(),
+        }
+    }
+}
+
 /// Scan once, no audit. The succession desk asks "how many anchors has this address sent", not for a report.
 ///
 /// Returns one scan's reading. The scan is still the anchoring crate's `scan::run`, and the basis is still
@@ -409,7 +511,17 @@ pub struct Scanned1 {
 }
 
 pub fn scan_once(eps: &[Endpoint], g: &Ground) -> Result<Scanned1, Fault> {
-    let basis_bytes = zikaron::json::canon_bytes(&basis_of(g));
+    scan_once_noting(eps, g).map(|(s, _)| s)
+}
+
+/// [`scan_once`], with which registry each record came from (the scan's side reading; the same questions).
+pub fn scan_once_noting(eps: &[Endpoint], g: &Ground) -> Result<(Scanned1, scan::Emitters), Fault> {
+    scan_first(eps, &zikaron::json::canon_bytes(&basis_of(g)))
+}
+
+/// One scan of the given basis bytes at each chain's first endpoint: the body of [`scan_once`], shared with
+/// the read side across networks (`widex`), whose windows may name several registries.
+pub fn scan_first(eps: &[Endpoint], basis_bytes: &[u8]) -> Result<(Scanned1, scan::Emitters), Fault> {
     let mut chains: Vec<u64> = eps.iter().map(|e| e.chain).collect();
     chains.sort_unstable();
     chains.dedup();
@@ -428,8 +540,9 @@ pub fn scan_once(eps: &[Endpoint], g: &Ground) -> Result<Scanned1, Fault> {
         .iter_mut()
         .map(|(c, h)| (*c, &mut **h as &mut dyn rpc::Endpoint))
         .collect();
-    match scan::run(&basis_bytes, &[], &mut handed) {
-        Ok(Ok(s)) => Ok(Scanned1 { anchors: s.anchors.len(), asked, fragment: scan::fragment(&s) }),
+    // One endpoint per chain: the facts on record spare questions; nothing this single source reads is added.
+    match scan::run_knowing(basis_bytes, &[], &mut handed, &Facts::Local.known()) {
+        Ok(Ok((s, emitters, _))) => Ok((Scanned1 { anchors: s.anchors.len(), asked, fragment: scan::fragment(&s) }, emitters)),
         Ok(Err(_)) => Err(Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail083).to_string())),
         Err(r) => Err(Fault::scan_refused(Fault::scan_tail(&r), std::slice::from_ref(&r))),
     }
@@ -457,20 +570,123 @@ pub enum Scan {
 }
 
 pub fn scan_agreed(eps: &[Endpoint], g: &Ground) -> Result<Scan, Fault> {
+    scan_agreed_with(eps, g, Facts::Local)
+}
+
+/// [`scan_agreed`], saying whether this machine's record of checked facts is used ([`Facts`]).
+pub fn scan_agreed_with(eps: &[Endpoint], g: &Ground, facts: Facts) -> Result<Scan, Fault> {
+    scan_agreed_bytes_with(eps, &zikaron::json::canon_bytes(&basis_of(g)), facts)
+}
+
+/// [`scan_agreed`] over the given basis bytes: the read side across networks (`widex`) asks each chain's
+/// window this way, which may name several registries.
+pub fn scan_agreed_bytes(eps: &[Endpoint], basis_bytes: &[u8]) -> Result<Scan, Fault> {
+    scan_agreed_bytes_with(eps, basis_bytes, Facts::Local)
+}
+
+/// [`scan_agreed_bytes`], saying whether this machine's record of checked facts is used ([`Facts`]). With
+/// [`Facts::Local`], once the endpoint rule agreed, the facts every run read alike on a chain more than one
+/// place answered are added to the record (`checkedx::agreed`); a failure to add them costs only questions next
+/// time, never this scan's answer.
+pub fn scan_agreed_bytes_with(eps: &[Endpoint], basis_bytes: &[u8], facts: Facts) -> Result<Scan, Fault> {
     if eps.is_empty() {
         return Err(Fault::known(Known::NoEndpoint, crate::lang::t(crate::lang::Key::Tail084).to_string()));
     }
-    let basis_bytes = zikaron::json::canon_bytes(&basis_of(g));
+    let r = match rounds_over(eps, basis_bytes, &facts.known()) {
+        Ok(r) => r,
+        Err(no_label) => return Ok(no_label),
+    };
+    let fresh = crate::checkedx::agreed(&r.sightings, &thin_from(&r.answered, &r.chains));
+    let (reading, unanswered, asked) = r.converge()?;
+    if facts == Facts::Local {
+        let _ = crate::checkedx::add(&fresh);
+    }
+    Ok(Scan::Basis(Agreed {
+        fragment: reading.fragment,
+        unanswered,
+        asked,
+        single_source: reading.single_source,
+    }))
+}
+
+/// What the rounds of one agreed scan brought back, before they are converged.
+struct Rounds {
+    runs: Vec<(String, Value)>,
+    /// Which place each run asked on each chain (chain id and url), in run order.
+    places: Vec<Vec<(u64, String)>>,
+    unanswered: Vec<String>,
+    refused: Vec<zikaron_anchor::scan::Refusal>,
+    /// The places that actually answered (chain id and url); the single-source flag counts them.
+    answered: Vec<(u64, String)>,
+    asked: usize,
+    chains: Vec<u64>,
+    /// For each run that answered, the chains it read and the facts it read afresh (`checkedx::agreed`).
+    sightings: Vec<(Vec<u64>, scan::Sightings)>,
+}
+
+impl Rounds {
+    /// Converge by the endpoint rule: no round answering is the scan's refusal, rounds that differ are a
+    /// disagreement.
+    fn converge(self) -> Result<(zikaron_anchor::endpoints::Reading, Vec<String>, usize), Fault> {
+        if self.runs.is_empty() {
+            return Err(Fault::scan_refused(self.unanswered.join(" · "), &self.refused));
+        }
+        let thin = thin_from(&self.answered, &self.chains);
+        let empty = answered_empty(&self.runs, &self.places);
+        let reading = zikaron_anchor::endpoints::agree_over(self.runs, thin).map_err(|d| {
+            // Still a disagreement (no majority, no first-come); when one place answered nothing where
+            // another answered records, the sentence names that place: it lacks the history since the start
+            // block (a node that keeps only recent logs answers older windows empty).
+            let said = if empty.is_empty() {
+                crate::lang::filln(crate::lang::Key::Tail086, &[&(d.sources.len()).to_string(), &(d.sources.join(" ")).to_string()])
+            } else {
+                crate::lang::filln(crate::lang::Key::TailNoHistory, &[&empty.join(" ")])
+            };
+            Fault::known(Known::Disagree, said)
+        })?;
+        Ok((reading, self.unanswered, self.asked))
+    }
+}
+
+/// The places that answered a chain with no record (no anchor, no evidence) while another place answered the
+/// same chain with some: each by its url, once, in run order.
+fn answered_empty(runs: &[(String, Value)], places: &[Vec<(u64, String)>]) -> Vec<String> {
+    let count = |v: &Value, chain: u64| -> usize {
+        ["anchors", "evidence"]
+            .iter()
+            .filter_map(|k| match v.member(k) {
+                Some(Value::Arr(a)) => Some(a.iter().filter(|x| matches!(x.member("chainId"), Some(Value::Int(c)) if *c == chain)).count()),
+                _ => None,
+            })
+            .sum()
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (i, (_, v)) in runs.iter().enumerate() {
+        for (chain, url) in places.get(i).map(|p| p.as_slice()).unwrap_or(&[]) {
+            let others = runs.iter().enumerate().any(|(j, (_, w))| j != i && places.get(j).map(|p| p.iter().any(|(c, _)| c == chain)).unwrap_or(false) && count(w, *chain) > 0);
+            if count(v, *chain) == 0 && others && !out.contains(url) {
+                out.push(url.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Each round scans every chain at its k-th endpoint. The law check saying this is not a basis comes back as
+/// the no-label scan, passed through unchanged.
+fn rounds_over(eps: &[Endpoint], basis_bytes: &[u8], known: &scan::Known) -> Result<Rounds, Scan> {
     let mut chains: Vec<u64> = eps.iter().map(|e| e.chain).collect();
     chains.sort_unstable();
     chains.dedup();
 
     let mut runs: Vec<(String, Value)> = Vec::new();
+    let mut places: Vec<Vec<(u64, String)>> = Vec::new();
     let mut unanswered: Vec<String> = Vec::new();
     let mut refused: Vec<zikaron_anchor::scan::Refusal> = Vec::new();
     // The places that actually answered this pass (chain id and url); the single-source flag counts them.
     let mut answered: Vec<(u64, String)> = Vec::new();
     let mut asked = 0usize;
+    let mut sightings: Vec<(Vec<u64>, scan::Sightings)> = Vec::new();
     for k in 0..rounds(eps) {
         let mut https: Vec<(u64, Box<dyn rpc::Endpoint>)> = Vec::new();
         let mut used: Vec<(u64, String)> = Vec::new();
@@ -493,14 +709,17 @@ pub fn scan_agreed(eps: &[Endpoint], g: &Ground) -> Result<Scan, Fault> {
             .iter_mut()
             .map(|(c, h)| (*c, &mut **h as &mut dyn rpc::Endpoint))
             .collect();
-        match scan::run(&basis_bytes, &[], &mut handed) {
+        // Every round reads the same record: one round's fresh facts never spare another round a question.
+        match scan::run_knowing(basis_bytes, &[], &mut handed, known) {
             // The law check says this is not a basis: the no-label result is passed through unchanged, never
             // wrapped as a successful scan.
-            Ok(Err(no_label)) => return Ok(Scan::NoLabel { report: no_label, unanswered, asked }),
-            Ok(Ok(s)) => {
+            Ok(Err(no_label)) => return Err(Scan::NoLabel { report: no_label, unanswered, asked }),
+            Ok(Ok((s, _, seen))) => {
                 // This round actually answered, so these urls count as sources (the single-source flag
                 // counts them).
                 answered.extend(used.iter().cloned());
+                sightings.push((used.iter().map(|(c, _)| *c).collect(), seen));
+                places.push(used.clone());
                 runs.push((names.join(","), scan::fragment(&s)))
             }
             Err(r) => {
@@ -509,22 +728,7 @@ pub fn scan_agreed(eps: &[Endpoint], g: &Ground) -> Result<Scan, Fault> {
             }
         }
     }
-    if runs.is_empty() {
-        return Err(Fault::scan_refused(unanswered.join(" · "), &refused));
-    }
-    let thin = thin_from(&answered, &chains);
-    let reading = zikaron_anchor::endpoints::agree_over(runs, thin).map_err(|d| {
-        Fault::known(
-            Known::Disagree,
-            crate::lang::filln(crate::lang::Key::Tail086, &[&(d.sources.len()).to_string(), &(d.sources.join(" ")).to_string()]),
-        )
-    })?;
-    Ok(Scan::Basis(Agreed {
-        fragment: reading.fragment,
-        unanswered,
-        asked,
-        single_source: reading.single_source,
-    }))
+    Ok(Rounds { runs, places, unanswered, refused, answered, asked, chains, sightings })
 }
 
 pub fn online(home: &Home, eps: &[Endpoint], g: &Ground) -> Result<Verdict, Fault> {

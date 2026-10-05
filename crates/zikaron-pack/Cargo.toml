@@ -1,0 +1,18 @@
+[package]
+name = "zikaron-pack"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# The packaging pieces, standard library only: the third-party notices made from the lock file for one target
+# (the app's build script embeds them; the packages ship them), and the steps that keep the building machine
+# out of a package (owners and dates in a disk image's catalog, the partition names a disk image records in
+# the builder's language, the toolchain words in an ELF `.comment`), and the Windows package (built with the
+# building machine's paths mapped to neutral names, laid out with its licence and notices). Nothing in the
+# product depends on it at run time; the app takes it as a build dependency only.
+[dependencies]
+
+[[bin]]
+name = "zikaron-pack"
+path = "src/main.rs"

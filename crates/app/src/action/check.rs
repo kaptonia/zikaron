@@ -26,7 +26,8 @@ pub(super) fn check_payload(
         ));
     }
     let typed = typed.trim().to_string();
-    let shelf = shelf_of(shell, ledgers);
+    let mut shelf = shelf_of(shell, ledgers);
+    shelf.reads = read_nets_now()?;
     // Endpoints: the page's when filled; otherwise borrow the home's configured ones (read-only).
     let mut eps: Vec<crate::chainx::Endpoint> = Vec::new();
     let mut bad: Vec<String> = Vec::new();
@@ -119,5 +120,16 @@ pub fn shelf_of(shell: &Shell, manual: &str) -> crate::supplyx::Shelf {
         manual: manual.lines().map(|l| Some(l.trim().to_string()).filter(|x| !x.is_empty())).collect(),
         carried: None,
         pointer: None,
+        reads: Vec::new(),
+    }
+}
+
+/// The read-only networks as the machine directory holds them now, for a path that reads someone else's
+/// material. A machine with no machine directory has no table; a table that cannot be read refuses the action
+/// by name.
+pub fn read_nets_now() -> Result<Vec<crate::readnets::Net>, crate::fault::Fault> {
+    match crate::home::machine_dir() {
+        Ok(m) => crate::readnets::read(&m),
+        Err(_) => Ok(Vec::new()),
     }
 }

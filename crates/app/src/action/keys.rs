@@ -5,11 +5,11 @@ pub(super) fn make_anchor_key(shell: &mut Shell) -> Result<Address, crate::fault
     let a = s
         .address()
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string()))?;
-    crate::key::install(&s)?;
+    crate::key::install(crate::register::account_now()?.as_deref(), &s)?;
     // Load it back and compare once after storing. The system saying it accepted it is the system's word,
     // while this step claims a state ("the key vault has this key"); the owner of that state is the key
     // vault, so ask it, never substituting the freshly generated key.
-    match crate::key::load()? {
+    match crate::key::load(crate::register::account_now()?.as_deref())? {
         Some(back) if back.address() == Some(a) => {}
         _ => {
             return Err(crate::fault::Fault::known(
@@ -77,7 +77,7 @@ pub(super) fn signing_key(shell: &Shell, u: crate::sign::Use) -> Result<crate::k
             crate::lang::filln(crate::lang::Key::TailSeatDomain, &[u.as_str(), crate::lang::t(seat_word(go))]),
         ));
     }
-    if let (Some((row, seat)), Some(home)) = (crate::identity::now_row_listed()?, shell.home.as_ref()) {
+    if let (Some((row, seat)), Some(home)) = (crate::register::now_row_listed()?, shell.home.as_ref()) {
         // An empty seat has no home, so no home "belongs to it": a mismatch is refused by name, writing not
         // one byte.
         let owns = row
@@ -88,31 +88,32 @@ pub(super) fn signing_key(shell: &Shell, u: crate::sign::Use) -> Result<crate::k
             return Err(Fault::known(Known::NoIdentity, home.root().display().to_string()));
         }
     }
-    crate::key::load()?.ok_or_else(|| Fault::known(Known::KeychainMissing, crate::lang::t(crate::lang::Key::SetNoKey).to_string()))
+    crate::key::load(crate::register::account_now()?.as_deref())?.ok_or_else(|| Fault::known(Known::KeychainMissing, crate::lang::t(crate::lang::Key::SetNoKey).to_string()))
 }
 
 pub(super) fn switch_role(shell: &mut Shell) -> Result<crate::roles::Role, crate::fault::Fault> {
     use crate::identity::Slot;
     // The register's current identity has one slot per key by address: switching seat switches the derived
     // key and that seat's home.
-    if let Some((row, seat)) = crate::identity::now_row_listed()? {
+    if let Some((row, seat)) = crate::register::now_row_listed()? {
         {
             let (id, slot, other) = (row.id.clone(), row.slot(), seat.other());
             if slot == Slot::Own {
-                let row = crate::identity::switch(&id, other)?;
+                let row = crate::register::change(other, |reg| crate::identity::switch(reg, &id, other))?;
                 enter(shell, &row, other)?;
                 return Ok(shell.settings.role);
             }
             // The existing slot key: what changes is the view, and the register's current seat follows.
             shell.commit_settings(|s| s.role = s.role.other())?;
-            crate::identity::switch(&id, shell.settings.role)?;
-            shell.seat_identities(Some(crate::identity::view(shell.settings.role)?));
+            let seat = shell.settings.role;
+            crate::register::change(seat, |reg| crate::identity::switch(reg, &id, seat))?;
+            shell.seat_identities(Some(crate::register::view(seat)?));
             return Ok(shell.settings.role);
         }
     }
     shell.commit_settings(|s| s.role = s.role.other())?;
     // Without a register the identity reads as the existing slot key and the current seat follows settings:
     // readings switch along, and the face keeps no old seat.
-    shell.seat_identities(Some(crate::identity::view(shell.settings.role)?));
+    shell.seat_identities(Some(crate::register::view(shell.settings.role)?));
     Ok(shell.settings.role)
 }

@@ -28,16 +28,16 @@ pub fn endpoint_specs(raw: &[String]) -> Vec<(u64, String)> {
     for spec in raw {
         let (c, url) = match spec.split_once('=') {
             Some(x) => x,
-            None => out::misuse(Reason::Args, "--endpoint 的形是 <链号>=<url>"),
+            None => out::misuse(Reason::Args, spec, out::Said::EndpointShape),
         };
         let id: u64 = match c.parse() {
             Ok(x) => x,
-            Err(_) => out::misuse(Reason::Args, &format!("链号不是十进制整数:{c}")),
+            Err(_) => out::misuse(Reason::Args, c, out::Said::ChainIdNotInt),
         };
         out_specs.push((id, url.to_string()));
     }
     if out_specs.is_empty() {
-        out::misuse(Reason::Args, "至少要一个 --endpoint <链号>=<url>");
+        out::misuse(Reason::Args, "--endpoint", out::Said::NeedEndpoint);
     }
     out_specs
 }
@@ -81,7 +81,7 @@ fn wire_of(path: &str) -> (Vec<u8>, W) {
     let b = crate::args::slurp(path);
     match wire::parse(&b) {
         Some(v) => (b, v),
-        None => out::misuse(Reason::Unreadable, &format!("{path}(不是 JSON)")),
+        None => out::misuse(Reason::Unreadable, path, out::Said::NotJson),
     }
 }
 
@@ -92,7 +92,7 @@ fn adoptions_of(v: &W) -> Vec<(u64, [u8; 32])> {
             e.member("chainId").and_then(|x| x.as_u64()),
             e.member("tx").and_then(|x| x.as_str()),
         ) else {
-            out::misuse(Reason::Args, "导入元素要 {chainId, tx}")
+            out::misuse(Reason::Args, "--adoptions", out::Said::AdoptionShape)
         };
         out_pairs.push((c, h32(t)));
     }
@@ -102,10 +102,10 @@ fn adoptions_of(v: &W) -> Vec<(u64, [u8; 32])> {
 pub fn h32(x: &str) -> [u8; 32] {
     let b = match zikaron::hexfmt::decode(x) {
         Some(b) => b,
-        None => out::misuse(Reason::Args, &format!("{x} 不是十六进制")),
+        None => out::misuse(Reason::Args, x, out::Said::NotHex),
     };
     if b.len() != 32 {
-        out::misuse(Reason::Args, &format!("{x} 不是三十二字节"));
+        out::misuse(Reason::Args, x, out::Said::Not32);
     }
     let mut o = [0u8; 32];
     o.copy_from_slice(&b);
@@ -115,10 +115,10 @@ pub fn h32(x: &str) -> [u8; 32] {
 pub fn h20(x: &str) -> [u8; 20] {
     let b = match zikaron::hexfmt::decode(x) {
         Some(b) => b,
-        None => out::misuse(Reason::Args, &format!("{x} 不是十六进制")),
+        None => out::misuse(Reason::Args, x, out::Said::NotHex),
     };
     if b.len() != 20 {
-        out::misuse(Reason::Args, &format!("{x} 不是二十字节"));
+        out::misuse(Reason::Args, x, out::Said::Not20);
     }
     let mut o = [0u8; 20];
     o.copy_from_slice(&b);
@@ -136,13 +136,13 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
     let adoptions = adoptions_of(&fx);
     let recorded = fx.member("rpc").cloned().unwrap_or(W::of(Body::Obj(Vec::new())));
     let Body::Obj(chains) = &recorded.body else {
-        out::misuse(Reason::Args, &format!("{path} 的 rpc 不是对象"))
+        out::misuse(Reason::Args, path, out::Said::RpcNotObject)
     };
     let mut replays: Vec<(u64, rpc::Replay)> = Vec::new();
     for (cid, exchanges) in chains {
         let id: u64 = match cid.parse() {
             Ok(x) => x,
-            Err(_) => out::misuse(Reason::Args, &format!("录制的链号不是十进制整数:{cid}")),
+            Err(_) => out::misuse(Reason::Args, cid, out::Said::ChainIdNotInt),
         };
         let ex = exchanges.as_arr().unwrap_or(&[]).to_vec();
         match rpc::Replay::new(format!("replay:{id}"), &ex) {
@@ -181,7 +181,7 @@ pub fn live_fragment(
         let url = nth_for(specs, c, round);
         match rpc::Http::new(&url) {
             Some(h) => https.push((c, h)),
-            None => out::misuse(Reason::Args, &format!("端点只认 http://host:port:{url}")),
+            None => out::misuse(Reason::Args, &url, out::Said::EndpointScheme),
         }
     }
     let names: Vec<String> = https

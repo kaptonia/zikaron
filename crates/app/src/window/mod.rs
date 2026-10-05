@@ -31,7 +31,7 @@ use zikaron_ui::mark::Mark;
 use zikaron_ui::palette::{c, Tone as PillTone, C};
 use zikaron_ui::toast::{Toasts, Tone};
 use zikaron_ui::tokens::{self as tk, Type};
-use zikaron_ui::{card, drop, fold, full, input, kv, mark, menu, motion, page, paint, pin, rail, seg, sheet, skin, states, table, toggle, width};
+use zikaron_ui::{card, datepick, drop, fold, full, input, kv, mark, menu, motion, page, paint, pick, pin, rail, seg, sheet, skin, states, table, toggle, width};
 
 /// Initial window size, defined once.
 pub const W: f32 = 1180.0;
@@ -179,7 +179,8 @@ impl Win {
                 }
             }
         }
-        let claimed: Vec<_> = landed.into_iter().filter(|o| self.ux.claim(o.kind)).collect();
+        // The kinds that answer in `said` are told where that answer is taken (below), not here.
+        let claimed: Vec<_> = landed.into_iter().filter(|o| !crate::action::lands_said(o.kind)).filter(|o| self.ux.claim(o.kind)).collect();
         for o in claimed {
             let kind = o.kind;
             // A long key shows how the task the person started landed (a check, or red and a shake).
@@ -201,7 +202,7 @@ impl Win {
                 Ok(Done::Check(r)) => (fill2(Key::SaidSelfCheck, &r.found().to_string(), &r.marks.to_string()), Tone::Note),
                 Ok(Done::Archive { bytes, items, .. }) => (fill2(Key::SaidMeasured, &size_say(bytes), &items.to_string()), Tone::Note),
                 Ok(Done::Chain { gas_wei, .. }) => match gas_wei {
-                    Some(w) => (fill1(Key::SaidChain, &eth(w)), Tone::Note),
+                    Some(w) => (fill1(Key::SaidChain, &eth_held(w)), Tone::Note),
                     None => (t(Key::SaidChainNone).to_string(), Tone::Bad),
                 },
                 Ok(Done::Reconciled { label, complete, .. }) => (fill1(Key::SaidReconciled, &label_human(&label)), if complete { Tone::Note } else { Tone::Bad }),
@@ -223,6 +224,8 @@ impl Win {
                 Ok(Done::BackupSeen { .. }) => continue,
                 // Passcode tasks are finished by the shell; the answer is in `vault_said` and told below.
                 Ok(Done::Vault(_)) => continue,
+                // Those kinds were filtered out above (`said`).
+                Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) => continue,
                 // An export's gate passed: the shell ran the export, its answer is in `gate_said` and told below.
                 Ok(Done::GatePassed { .. }) => continue,
                 // Attachment digests land silently: their row updates itself.
@@ -235,6 +238,8 @@ impl Win {
                 ),
                 // The new key's history is read on its sheet: no toast.
                 Ok(Done::Sighting { .. }) => continue,
+                // A read-only network's reading shows on its own row: no toast.
+                Ok(Done::NetRead { .. }) => continue,
                 Ok(Done::Book { anchors, entries, .. }) => (fill2(Key::SaidBook, &anchors.to_string(), &entries.to_string()), if entries == 0 { Tone::Bad } else { Tone::Note }),
                 Ok(Done::Grants { rows, .. }) => (fill1(Key::SaidGrants, &rows.len().to_string()), Tone::Note),
                 Ok(Done::Diligence(r)) => (
@@ -262,6 +267,9 @@ impl Win {
                 Ok(Done::Badge(b)) => (fill2(Key::SaidBadge, &folder_of(&b.txt.parent().map(|p| p.display().to_string()).unwrap_or_default()), &b.hops.to_string()), Tone::Note),
                 // A conflict is answered by its card on the home page, not by a toast.
                 Ok(Done::FetchConflict { .. }) => continue,
+                // A tail check the product started itself says nothing: a passing one lifts the read-only bar,
+                // a gap changes what the bar says.
+                Ok(Done::TailChecked { .. }) => continue,
                 Ok(Done::FetchedAside { fetched, .. }) => {
                     let said = match *fetched {
                         Done::Fetched { entries, tail: crate::restorex::Tail::Pass { anchors }, .. } => fill2(Key::SaidFetched, &entries.to_string(), &anchors.to_string()),
@@ -314,6 +322,12 @@ impl Win {
             self.toasts.say_keys(said, &why, "", tone, now, view);
         }
 
+        // The actions whose slow half ran in the background landed: each answer goes back to where it started.
+        for k in crate::task::Kind::ALL {
+            if let Some(a) = self.shell.said.remove(&k) {
+                self.said_back(k, a, now);
+            }
+        }
         // A passcode task landed: the answer goes back to whoever started it.
         if let Some(a) = self.shell.vault_said.take() {
             let site = self.ux.vault_site.take();
@@ -525,6 +539,18 @@ fn gap_say(g: crate::watchx::Gap) -> String {
     }
 }
 
+impl Win {
+    /// What a task in flight is called: by its kind, except the fetch kind's flight while it checks the tail
+    /// (that check is not a fetch, and is not called one).
+    fn task_word(&self, k: crate::task::Kind) -> Key {
+        if k == crate::task::Kind::Fetch && self.shell.fetch_checks_tail {
+            Key::TaskCheckTail
+        } else {
+            task_key(k)
+        }
+    }
+}
+
 fn task_key(k: crate::task::Kind) -> Key {
     use crate::task::Kind;
     match k {
@@ -555,6 +581,11 @@ fn task_key(k: crate::task::Kind) -> Key {
         Kind::Vet => Key::TaskVet,
         Kind::Gate => Key::TaskGate,
         Kind::Backup => Key::WizBackupTitle,
+        Kind::ReadNet => Key::TaskReadNet,
+        Kind::Gas => Key::U3GasEstimate,
+        Kind::Take => Key::TaskTake,
+        Kind::Record => Key::TaskRecord,
+        Kind::Migrate => Key::TaskMigrate,
     }
 }
 
@@ -640,7 +671,7 @@ impl Win {
                 self.ux.asked.push(k);
                 (String::new(), Tone::Note)
             }
-            Applied::Refused(k) => (fill1(Key::SaidInFlight, t(task_key(k))), Tone::Bad),
+            Applied::Refused(k) => (fill1(Key::SaidInFlight, t(self.task_word(k))), Tone::Bad),
             Applied::Stopped(r) => (fill1(Key::SaidReaped, &r.joined.to_string()), Tone::Note),
             Applied::AnchorKey(_) => (t(Key::SaidAnchorKeyPlain).to_string(), Tone::Note),
             Applied::Seated(r) => (fill1(Key::SaidSeated, t(id_seat_key(r))), Tone::Note),
@@ -651,10 +682,8 @@ impl Win {
             Applied::Unlocked | Applied::LockedUp => (String::new(), Tone::Note),
             Applied::PinChanged => (t(Key::SaidPinChanged).to_string(), Tone::Note),
             Applied::AutoAnchor(on) => (fill1(Key::SaidAutoAnchor, t(if on { Key::On } else { Key::Off })), Tone::Note),
-            Applied::NetworkChosen { name, .. } | Applied::NetworkAdopted { name } => (
-                fill1(if matches!(applied, Applied::NetworkAdopted { .. }) { Key::SaidNetworkAdopted } else { Key::SaidNetworkChosen }, &network_label(&name)),
-                Tone::Note,
-            ),
+            Applied::HideLocalDeletions(on) => (fill1(Key::SaidHideLocalDeletions, t(if on { Key::On } else { Key::Off })), Tone::Note),
+            Applied::NetworkChosen { name, .. } => (fill1(Key::SaidNetworkChosen, &network_label(&name)), Tone::Note),
             // Idle locking: "idle N minutes locks" when on or when the time changes, "auto-lock off" when off.
             Applied::AutoLockSet { on: true, secs } => (fill1(Key::SaidAutoLockOn, &(secs / 60).to_string()), Tone::Note),
             Applied::AutoLockSet { on: false, .. } => (t(Key::SaidAutoLockOff).to_string(), Tone::Note),
@@ -703,6 +732,7 @@ impl Win {
             Applied::IdentitySwitched { id } => (fill1(Key::SaidIdentitySwitched, &self.id_name(&id)), Tone::Note),
             Applied::IdentityDeleted { .. } => (fill1(Key::SaidIdentityDeleted, &self.ux.id_deleting.take().unwrap_or_else(|| t(Key::Unnamed).to_string())), Tone::Note),
             Applied::KeyBackedUp { path, .. } => (fill1(Key::SaidKeyBackedUp, &folder_of(&path)), Tone::Note),
+            Applied::FactsForgotten { .. } => (t(Key::SaidRecheckAll).to_string(), Tone::Note),
             Applied::Homed { root, mode } => (fill2(Key::SaidHomed, &folder_of(&root), t(if mode.writable() { Key::NoteWriter } else { Key::NoteReader })), Tone::Note),
             Applied::Migrated { root } => (fill1(Key::SaidMigrated, &folder_of(&root)), Tone::Note),
             Applied::Capped(n) => (fill1(Key::SaidCapped, &size_say(n)), Tone::Note),
@@ -764,11 +794,7 @@ impl Win {
                     }
                 }
             }
-            Applied::FileVerdict(v) => {
-                let said = verify_said(&v);
-                self.ux.u3.file_verdict = Some((self.shell.rows_gen, *v));
-                (said, Tone::Note)
-            }
+            Applied::GrantCode { .. } => (String::new(), Tone::Note),
             Applied::KitLinked { link, .. } => (fill1(Key::SaidKitLinked, &link.unwrap_or_else(|| t(Key::KitNoLink).to_string())), Tone::Note),
             Applied::KitDropped { .. } => {
                 self.ux.u3.drop_armed = None;
@@ -796,6 +822,8 @@ impl Win {
                 self.toasts.say_full(fill3(Key::SaidGrantFile, &folder_of(&path), &hops.to_string(), &terms.to_string()), &second, "", Tone::Note, now);
                 (String::new(), Tone::Note)
             }
+            // The read-only network table changed: the list shows it, no toast.
+            Applied::ReadNets(_) => (String::new(), Tone::Note),
             Applied::PublishSet { url } => match url {
                 Some(u) => (fill1(Key::SaidPublishSet, &u), Tone::Note),
                 None => (t(Key::SaidPublishCleared).to_string(), Tone::Note),
@@ -836,7 +864,7 @@ impl Win {
                 self.toasts.say_full(fill2(Key::SaidHeldPartly, &ids.len().to_string(), &refused.to_string()), "", &why, Tone::Bad, now);
                 (String::new(), Tone::Bad)
             }
-            Applied::Held { ids } => (fill1(Key::SaidHeldPlain, &ids.len().to_string()), Tone::Note),
+            Applied::Held { ids, .. } => (fill1(Key::SaidHeldPlain, &ids.len().to_string()), Tone::Note),
             // Names typed with the grant go in with it: the add's own toast already said so.
             Applied::HeldNoted { .. } => (String::new(), Tone::Note),
             Applied::Upstream { grant } => {
@@ -955,7 +983,7 @@ impl Win {
                     self.ux.pin_again.clear();
                     // On the final failure the "wrong passcode" line is not written: the whole card turns into
                     // "locked · 5 wrong passcodes", and "0 tries left" would contradict it on the same frame.
-                    let burnt = self.shell.vault == crate::keybox::State::LockedOut && f.which() == Some(crate::fault::Known::PinWrong);
+                    let burnt = self.shell.vault.is(crate::keybox::State::LockedOut) && f.which() == Some(crate::fault::Known::PinWrong);
                     // Derivation parameters below the floor: the gate switches to the reseal path.
                     if f.which() == Some(crate::fault::Known::KdfBelowFloor) {
                         self.ux.gate_reseal = true;
@@ -1050,7 +1078,7 @@ impl Win {
             next = fill1(Key::ExitBehindSay, f.tail());
         }
         // With no passcode on this machine yet, "enter the passcode to unlock" cannot be done: set one first.
-        if f.which() == Some(crate::fault::Known::Locked) && self.shell.vault == crate::keybox::State::Absent {
+        if f.which() == Some(crate::fault::Known::Locked) && self.shell.vault.absent() {
             next = t(Key::FaultNextNoPinYet).to_string();
         }
         // Insufficient balance says what is needed and what there is, and offers "copy address" (the address
@@ -1058,7 +1086,7 @@ impl Win {
         let mut act: Option<(String, String)> = None;
         if f.which() == Some(crate::fault::Known::InsufficientFunds) {
             if let Some((need, have)) = crate::action::funds_of(f.tail()) {
-                next = fill2(Key::FundsNeedHave, &eth(need), &eth(have));
+                next = fill2(Key::FundsNeedHave, &eth_cap(need), &eth_held(have));
             }
             act = self.shell.anchor.map(|a| (t(Key::IdDoCopy).to_string(), a.hex()));
         }
@@ -1112,6 +1140,7 @@ fn task_of(a: &Action) -> Option<crate::task::Kind> {
         Action::Reconcile => Kind::Reconcile,
         Action::Measure => Kind::Archive,
         Action::ReadChain => Kind::Chain,
+        Action::ReadReadNetwork { .. } => Kind::ReadNet,
         Action::SelfCheck => Kind::SelfCheck,
         Action::CheckPublished { .. } => Kind::Publish,
         Action::ReadDepth { .. } => Kind::Depth,
@@ -1214,6 +1243,9 @@ struct Ux {
     landings: Vec<(Out, crate::home::Chosen)>,
     /// The text in each list page's search field (per face; interface only).
     search: std::collections::BTreeMap<&'static str, String>,
+    /// The date range under each list's search field: start and end day, `YYYY-MM-DD` or empty (per face;
+    /// interface only).
+    range: std::collections::BTreeMap<&'static str, (String, String)>,
     /// The current place. `None` until settled (the first frame follows `shell.page`).
     place: Option<Place>,
     /// Which view the person is in, and each view's history of pages.
@@ -1272,6 +1304,10 @@ struct Ux {
     basis_chain: String,
     basis_registry: String,
     basis_from: String,
+    /// Which preset filled the network editor's cells (0: by hand; see `settings::preset_menu`).
+    basis_preset: usize,
+    /// The read-only networks being edited on the settings' network page.
+    readnet: settings::ReadNetUx,
     /// State of the author pages.
     u3: U3,
     u4: U4,
@@ -1286,6 +1322,9 @@ struct Ux {
     id_label: String,
     /// The note field for a new or imported identity.
     id_new_label: String,
+    /// The network chosen on the new-identity or import sheet; unset means the one selected first
+    /// (`machine::pick`).
+    id_network: Option<String>,
     /// The identity switcher row currently expanded (by id).
     id_switch_open: Option<String>,
     /// The name of the identity being deleted (for its toast).
@@ -1435,6 +1474,7 @@ impl Ux {
         }
         self.id_label.clear();
         self.id_new_label.clear();
+        self.id_network = None;
         self.id_hex.clear();
         self.id_ks_pw.clear();
         self.id_pw.clear();
@@ -1496,6 +1536,10 @@ struct U3 {
     /// asked once the sheet has come up).
     send_after_estimate: Option<usize>,
     estimate_from: f64,
+    /// The batch a gas estimate is out for (`Kind::Gas`); its answer lands in `shell.said`.
+    estimating: Option<usize>,
+    /// The files a record in the background is writing (`Kind::Record`): what stays in the form when it stops.
+    recording: Option<Vec<String>>,
     /// "Confirm and send" was pressed on the send sheet: the anchoring task's landing count then (the sheet
     /// closes on a landing after it, never on one already there).
     sending: Option<u64>,
@@ -1513,8 +1557,6 @@ struct U3 {
     check_refused: Option<crate::fault::Fault>,
     /// Grant check page: which hop's "change…/add…" is open (the issuer ledger field).
     ck_source_open: Option<usize>,
-    /// The last file check answer and the table generation at that moment.
-    file_verdict: Option<(u64, crate::recordsx::Verdict)>,
     /// The export page kit (by path) whose "delete local copy" was pressed once and awaits confirmation.
     drop_armed: Option<String>,
     /// Text of each kit's link field on the export page (kit path, text, edited or not).
@@ -1647,4 +1689,19 @@ use self::wizard::*;
 /// What a backup holds, in one line: identities, ledger entries, records, settings.
 pub(super) fn backup_content(s: &crate::backup::Summary) -> String {
     crate::lang::filln(Key::BackupContent, &[&s.identities.to_string(), &s.entries.to_string(), &s.records.to_string()])
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every kind of task is called by its own name in the side bar and the task list: no kind borrows another
+    /// kind's words (a borrowed name tells the person a different task is running).
+    #[test]
+    fn every_task_kind_has_its_own_name() {
+        let mut seen: Vec<super::Key> = Vec::new();
+        for k in crate::task::Kind::ALL {
+            let key = super::task_key(k);
+            assert!(!seen.contains(&key), "{} borrows another kind's name", k.as_str());
+            seen.push(key);
+        }
+    }
 }

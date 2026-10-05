@@ -119,8 +119,22 @@ pub fn landing_stem(rows: &[crate::ledgerx::Row], pick: &Pick) -> String {
     }
 }
 
+/// What a pick takes from this home's ledger, as [`export`] will take it: the front room of the export mouth,
+/// reading the same judgement ([`chosen_in`]).
 pub fn choose(home: &Home, pick: &Pick) -> Result<Chosen, Fault> {
-    let got = select::choose(&whole(home)?, &pick.selection());
+    chosen_in(&whole(home)?, pick)
+}
+
+/// The selection's one judgement: the glue crate chooses, and every entry named by id must be among what it
+/// chose. [`export`] and [`choose`] both read it.
+fn chosen_in(pile: &[Vec<u8>], pick: &Pick) -> Result<Chosen, Fault> {
+    let got = select::choose(pile, &pick.selection());
+    // Every entry named by id is one this ledger holds: judged on what the selection actually chose, so a
+    // named entry it did not find is refused by name, never left out of the package without a word.
+    let chosen_ids: Vec<String> = got.items.iter().map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(b))).collect();
+    if let Some(missing) = pick.ids.iter().find(|x| !chosen_ids.iter().any(|c| c.eq_ignore_ascii_case(x))) {
+        return Err(Fault::known(Known::SubjectMissing, missing.clone()));
+    }
     Ok(Chosen { items: got.items, pulled: got.pulled })
 }
 
@@ -304,10 +318,10 @@ pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault
 /// irregular files are `E_BAD_PATH`, directories are descended), reading not one byte of content. Used by the
 /// attachment preview; the writing pass still goes through `gather` (the owner).
 fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fault> {
-    let bad = |rel: &str| Fault::landing("E_BAD_PATH", rel);
+    let bad = |rel: &str| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(rel.to_string()));
     // Read and write errors take the export pass's form (code and subject as in `gather`): preview and real
     // export say the same sentence.
-    let io = |rel: &str| Fault::landing("E_IO", rel);
+    let io = |rel: &str| Fault::of_landing(zikaron_glue::pack::Trouble::Io(rel.to_string()));
     let listing = std::fs::read_dir(root).map_err(|_| io(prefix))?;
     let mut names: Vec<std::ffi::OsString> = Vec::new();
     for item in listing {
@@ -376,7 +390,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
         if !originals.admits(&crate::anchorx::file_digest(&bytes)) {
             return Err(stranger());
         }
-        let inside = kit_rel(&name).ok_or_else(|| Fault::landing("E_BAD_PATH", &name))?;
+        let inside = kit_rel(&name).ok_or_else(|| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(name.to_string())))?;
         if inside != name {
             names.push((name.clone(), inside.clone()));
         }
@@ -388,10 +402,10 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
         }
         let mut got: Vec<(String, Vec<u8>)> = Vec::new();
         pack::gather(path, &name, &mut got)
-            .map_err(|t| Fault::landing(t.code(), t.subject()))?;
+            .map_err(|t| Fault::of_landing(t))?;
         let mut mapped: Vec<(String, String, Vec<u8>)> = Vec::new();
         for (p, b) in got {
-            let inside = kit_rel(&p).ok_or_else(|| Fault::landing("E_BAD_PATH", &p))?;
+            let inside = kit_rel(&p).ok_or_else(|| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(p.to_string())))?;
             mapped.push((p, inside, b));
         }
         for (p, inside, b) in mapped {
@@ -444,6 +458,16 @@ pub fn latest_kit(kits: &Path) -> Option<std::path::PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// This home's anchoring point: its basis (chain id, registry, start block) as the settings hold it now; none
+/// when the chain or the registry is not configured.
+pub fn anchored_on(home: &Home) -> Result<Option<crate::kitsindex::AnchoredOn>, Fault> {
+    let s = crate::settings::Settings::read(home)?;
+    Ok(match (s.chain_id, s.registry) {
+        (Some(chain_id), Some(r)) => Some(crate::kitsindex::AnchoredOn { chain_id, from_block: s.from_block, registry: r.hex() }),
+        _ => None,
+    })
+}
+
 /// One export's reading.
 pub struct Made {
     pub path: String,
@@ -466,7 +490,9 @@ pub struct Made {
 /// three things up and brings the glue crate's refusal back unchanged: "something is already at that path",
 /// "two files with one path in the kit" and "self-verification failed" each have their own name, never merged
 /// into "cannot export".
+/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
 pub fn export(
+    _pass: &crate::exitgate::Pass,
     home: &Home,
     pick: &Pick,
     attachments: &[String],
@@ -477,8 +503,7 @@ pub fn export(
     // are marked too.
     crate::trace::mark(crate::feature::Feature::W5);
     let pile = whole(home)?;
-    let got = select::choose(&pile, &pick.selection());
-    let chosen = Chosen { items: got.items, pulled: got.pulled };
+    let chosen = chosen_in(&pile, pick)?;
     if chosen.items.is_empty() {
         return Err(Fault::known(
             Known::QueueEmpty,
@@ -486,7 +511,9 @@ pub fn export(
         ));
     }
     let originals = Originals::of(&chosen);
-    let mut b = Bundle { entries: chosen.items.clone(), note: note.to_string(), ..Default::default() };
+    // Where this kit is anchored travels with it: the home's basis now, as the note's fixed last line.
+    let note = crate::kitsindex::note_with(note, anchored_on(home)?.as_ref());
+    let mut b = Bundle { entries: chosen.items.clone(), note, ..Default::default() };
     let mut names: Vec<(String, String)> = Vec::new();
     for one in attachments {
         let t = one.trim();
@@ -519,7 +546,7 @@ pub fn export(
         }
     }
     let landed = pack::export(out, b).map_err(|t| {
-        Fault::landing(t.code(), t.subject())
+        Fault::of_landing(t)
     })?;
     Ok(Made {
         path: out.display().to_string(),

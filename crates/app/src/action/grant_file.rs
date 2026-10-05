@@ -16,11 +16,11 @@ pub(super) fn grant_file_plan(shell: &Shell, id: &str, to: &str) -> Result<(Stri
 
 /// Export a grant file. It lands in the folder the person chose (empty means the home's kits); the publish
 /// address pointer comes from the settings cell.
-pub(super) fn export_grant_file(shell: &mut Shell, id: &str, to: &str) -> Result<crate::grantfilex::Exported, crate::fault::Fault> {
+pub(super) fn export_grant_file(shell: &mut Shell, id: &str, to: &str, pass: &crate::exitgate::Pass) -> Result<crate::grantfilex::Exported, crate::fault::Fault> {
     let (id, folder) = grant_file_plan(shell, id, to)?;
     let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
     // The exit gate passed in the background just before this runs (`gate_first`).
-    crate::grantfilex::export(home, &id, shell.settings.publish.as_deref(), &folder)
+    crate::grantfilex::export(pass, home, &id, shell.settings.publish.as_deref(), &folder)
 }
 
 /// Set the publish address. `https://` only; unrecognized is `REMOTE_NOT_HTTPS`, and not one byte of the
@@ -53,6 +53,9 @@ pub(super) fn set_publish(shell: &mut Shell, url: &str) -> Result<Option<String>
 /// and the mark stays (without a tail check, writing does not open).
 pub(super) fn fetch_ledger(shell: &mut Shell, from: &str, password: crate::secret::Secret) -> Result<Spawned, crate::fault::Fault> {
     let f = fetch_from(shell, from)?;
+    if !shell.tasks.in_flight(Kind::Fetch) {
+        shell.fetch_checks_tail = false;
+    }
     Ok(shell.tasks.spawn(Kind::Fetch, move || {
         let items = crate::backup::ledger_of(&f.at, password.expose(), &f.id, f.seat)?;
         let home = crate::home::Home::open(&f.root)?;
@@ -67,10 +70,80 @@ pub(super) fn fetch_ledger(shell: &mut Shell, from: &str, password: crate::secre
         }
         let landed = crate::restorex::land(&home, &items)?;
         let pile = home.ledger()?.pile()?.items;
-        let scanned = crate::auditx::scan_once(&f.eps, &to_head(&f.eps, f.g)?)?;
-        let tail = crate::restorex::tail_check(&pile, &scanned.fragment);
+        let tail = crate::exitgate::tail(&f.ask(&f.root))?;
         Ok(Done::Fetched { root: f.root, landed, entries: pile.len(), tail, from: None })
     }))
+}
+
+/// Check the tail of this identity's seats against the chain, whatever their ledgers came from (fetched from a
+/// backup, adopted in place, or never anywhere): for each seat home holding the not-fetched mark, the gate's
+/// own reading (`exitgate::tail`: the lineage of that ledger and that seat's key, nodes agreeing, on that
+/// home's own chain cells and nodes) says whether every anchored digest is in that home's ledger. Passing
+/// removes the mark and opens writing; an anchor this ledger lacks turns the mark into "newer entries
+/// elsewhere" (`Shell::fetch_landed`). Basis and nodes are asked first: without them it is refused by name and
+/// every mark stays. Whoever polls this records the asking before it asks (`Shell::take_tail_due`), so a
+/// refusal is not asked again every frame.
+pub(super) fn check_tail(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
+    use crate::fault::{Fault, Known};
+    // The open home's cells are asked first, as before: without them nothing can be checked.
+    crate::exitgate::ask_of(shell)?;
+    let view = crate::register::view(shell.settings.role)?;
+    let (row, _) = crate::identity::now_row(&view).ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
+    let open = shell.home.as_ref().map(|h| h.root().to_path_buf());
+    // Each seat this identity holds whose home holds the mark (an unreadable mark counts as held, as
+    // everywhere), with what the gate needs for that home.
+    let mut asks: Vec<crate::exitgate::Ask> = Vec::new();
+    for seat in row.seats() {
+        let (Some(root), Some(addr)) = (row.home(seat), row.address(seat)) else { continue };
+        let Ok(h) = crate::home::Home::open(&root) else { continue };
+        if matches!(crate::restorex::read(&h), Ok(None)) {
+            continue;
+        }
+        let is_open = open.as_deref().map(|o| crate::home::same_place(o, &root)).unwrap_or(false);
+        // Another seat's home is asked on its own network when it has one (it may be set to another than the
+        // open one): a cell or node it lacks there keeps its mark and is said by name, never read on the open
+        // home's network instead. Only a home with no network of its own at all is asked on the open home's.
+        let own_net = if is_open { Ok(false) } else { crate::settings::Settings::read(&h).map(|s| s.chain_id.is_some()) };
+        match own_net {
+            Ok(false) => {
+                let mut a = crate::exitgate::ask_of(shell)?;
+                a.root = root.clone();
+                a.own = Some(addr.hex());
+                asks.push(a);
+            }
+            _ => match crate::exitgate::ask_for_home(&h, Some(addr.hex())) {
+                Ok(a) => asks.push(a),
+                Err(f) => shell.faults.push(f),
+            },
+        }
+    }
+    if asks.is_empty() {
+        return Err(Fault::known(Known::SubjectMissing, crate::lang::t(crate::lang::Key::Tail215).to_string()));
+    }
+    let spawned = shell.tasks.spawn(Kind::Fetch, move || {
+        let mut checked = Vec::new();
+        // Each home answers on its own: one whose chain cannot be read does not hold back the others.
+        for ask in asks {
+            let tail = crate::exitgate::tail(&ask);
+            checked.push((ask.root, tail));
+        }
+        Ok(Done::TailChecked { checked })
+    });
+    if spawned == Spawned::Started {
+        shell.fetch_checks_tail = true;
+    }
+    Ok(spawned)
+}
+
+/// Start the tail check when it falls due (`Shell::tail_due`). The places that make it due call this: an
+/// identity landing with its homes marked, nodes or basis set, a ledger adopted in place; the window's clock
+/// asks the same question for the rest.
+pub(super) fn tail_if_due(shell: &mut Shell) {
+    if shell.take_tail_due() {
+        if let Err(f) = check_tail(shell) {
+            shell.faults.push(f);
+        }
+    }
 }
 
 /// Where fetching takes its ledger from and what it checks against, asked before the background pass.
@@ -81,6 +154,20 @@ struct FetchFrom {
     seat: crate::roles::Role,
     g: crate::auditx::Ground,
     eps: Vec<crate::chainx::Endpoint>,
+}
+
+impl FetchFrom {
+    /// What the gate needs to judge the tail of the ledger landed at `root` (this seat's key, these cells).
+    fn ask(&self, root: &std::path::Path) -> crate::exitgate::Ask {
+        crate::exitgate::Ask {
+            root: root.to_path_buf(),
+            eps: self.eps.iter().filter(|e| e.chain == self.g.chain).cloned().collect(),
+            chain: self.g.chain,
+            registry: self.g.registry,
+            from_block: self.g.from_block,
+            own: self.g.senders.first().cloned(),
+        }
+    }
 }
 
 /// Whether this home's ledger and the fetched one are at odds: an entry here and a fetched entry at the same
@@ -154,7 +241,7 @@ fn fetch_from(shell: &mut Shell, from: &str) -> Result<FetchFrom, crate::fault::
     let who = shell.anchor.ok_or_else(|| Fault::known(Known::KeyNotStored, String::new()))?;
     // The source is a whole-machine backup: this identity's ledger for this seat is taken from it.
     let seat = shell.settings.role;
-    let id = crate::identity::now_row(seat)?.map(|(r, _)| r.id).ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
+    let id = crate::identity::now_row(&crate::register::view(seat)?).map(|(r, _)| r.id).ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
     let at = crate::home::landing(from)?;
     let mut g = ground_bare(shell)?;
     g.senders = vec![who.hex()];
@@ -172,6 +259,9 @@ fn fetch_from(shell: &mut Shell, from: &str) -> Result<FetchFrom, crate::fault::
 /// checked as for `fetch_ledger`. Nothing is deleted. The same first checks as fetching.
 pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret::Secret) -> Result<Spawned, crate::fault::Fault> {
     let f = fetch_from(shell, from)?;
+    if !shell.tasks.in_flight(Kind::Fetch) {
+        shell.fetch_checks_tail = false;
+    }
     Ok(shell.tasks.spawn(Kind::Fetch, move || {
         let items = crate::backup::ledger_of(&f.at, password.expose(), &f.id, f.seat)?;
         // Everything is done beside this home before it is touched: a fetched ledger broken on its own is
@@ -182,8 +272,7 @@ pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret
         let done = (|| -> Result<(usize, usize, crate::restorex::Tail), crate::fault::Fault> {
             let landed = crate::restorex::land(&staged, &items)?;
             let pile = staged.ledger()?.pile()?.items;
-            let scanned = crate::auditx::scan_once(&f.eps, &to_head(&f.eps, f.g.clone())?)?;
-            Ok((landed, pile.len(), crate::restorex::tail_check(&pile, &scanned.fragment)))
+            Ok((landed, pile.len(), crate::exitgate::tail(&f.ask(staged.root()))?))
         })();
         let (landed, entries, tail) = match done {
             Ok(x) => x,
@@ -233,7 +322,7 @@ pub(super) fn check_published(shell: &mut Shell, local: &str) -> Result<Spawned,
     Ok(shell.tasks.spawn(Kind::Publish, move || {
         crate::task::stage_at(Kind::Publish, 0);
         let mut local: Vec<(String, Vec<u8>)> = Vec::new();
-        zikaron_glue::pack::gather(&dir, "", &mut local).map_err(|t| crate::fault::Fault::landing(t.code(), t.subject()))?;
+        zikaron_glue::pack::gather(&dir, "", &mut local).map_err(|t| crate::fault::Fault::of_landing(t))?;
         let read = crate::fetchx::compare(&base, &local)?;
         Ok(Done::Published { url: base.as_str().to_string(), read })
     }))

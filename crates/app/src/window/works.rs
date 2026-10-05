@@ -42,29 +42,22 @@ impl Win {
         let read = self.shell.rows.is_some();
         let mut open: Option<String> = None;
         let mut new_record: Option<String> = None;
-        let mut check = false;
         let mut query = self.ux.search.get("works").cloned().unwrap_or_default();
+        let mut range = self.ux.range.get("works").cloned().unwrap_or_default();
+        let today = (self.shell.clock)();
         stagger(ui, 0, |ui| {
             let d = drop::zone(ui, "works-new", Some(Glyph::Inbox), &[t(Key::V2NewAnchor), t(Key::DropClickAny)], None, 84.0, drop::Shape::Row, true);
             new_record = self.drop_or_pick(&d, crate::platform::Pick::FileOrFolder, now);
         });
-        stagger(ui, 1, |ui| {
-            let (_, hit) = width::then(ui, |ui| key::key(ui, t(Key::VerifyTitle), Role::Secondary, true).clicked(), |ui, room| input::search(ui, &mut query, t(Key::SearchWorks), room));
-            check = hit;
-            // "Check a file": the file's digest is read and the ledger answers which entry it is, or that it
-            // is not here.
-            let gen = self.shell.rows_gen;
-            if let Some(v) = self.ux.u3.file_verdict.as_ref().filter(|(g, _)| *g == gen).map(|(_, v)| v.clone()) {
-                motion::swap(ui, egui::Id::new("works-verdict"), motion::key_of(&verify_said(&v)), |ui| {
-                    states::okline(ui, verify_mark(&v), &verify_said(&v));
-                    if let Some((n, _)) = v.signed_as.as_ref() {
-                        hint(ui, &fill1(Key::VerifySignedAs, n));
-                    }
-                });
-            }
-        });
+        stagger(ui, 1, |ui| search_row(ui, "works", &mut query, t(Key::SearchWorks), &mut range, today));
         let at = self.shell.remembered.as_ref().map(|r| r.at);
-        let shown: Vec<&WorkLine> = works.iter().filter(|w| matches(&query, &[&w.name, &w.work, &format!("#{}", w.seq), &work_state(w, at).0])).collect();
+        let hide = self.shell.settings.hide_local_deletions;
+        let shown: Vec<&WorkLine> = works
+            .iter()
+            .filter(|w| !(hide && w.lamp.local()))
+            .filter(|w| matches(&query, &[&w.name, &w.work, &format!("#{}", w.seq), &work_state(w, at).0]))
+            .filter(|w| crate::when::within(w.row.anchored_at, &range.0, &range.1))
+            .collect();
         stagger(ui, 2, |ui| {
             let cols = [
                 table::col(t(Key::U3Work), table::Col::Fr(1.0)),
@@ -103,11 +96,7 @@ impl Win {
             }
         });
         self.ux.search.insert("works", query);
-        if check {
-            if let Some(p) = crate::platform::choose_path(crate::platform::Pick::File) {
-                self.act(Action::VerifyFile { path: p }, now);
-            }
-        }
+        self.ux.range.insert("works", range);
         if let Some(path) = new_record {
             self.u3_new_anchor_open();
             self.take_for_record(vec![path], now);

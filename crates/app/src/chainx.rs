@@ -267,17 +267,16 @@ pub fn said_fault(url: &str, t: &rpc::Trouble) -> Fault {
     Fault::known(k, tail)
 }
 
-/// The only place an endpoint is opened from a url. `http://` uses the anchoring crate's [`rpc::Http`]
-/// unchanged, `https://` uses [`Https`], anything else gives `None` and the caller refuses by name. Chain
-/// queries, block height, chain time, scans, reconciliation and anchoring all call it.
+/// The only place an endpoint is opened from a url. The address is read by the one transport's reader
+/// (`zikaron_net::parse`: the scheme and host in any case, RFC 3986): `http` uses the anchoring crate's
+/// [`rpc::Http`], `https` uses [`Https`] (the same transport, with its failures named by layer); anything else
+/// gives `None` and the caller refuses by name. Chain queries, block height, chain time, scans, reconciliation
+/// and anchoring all call it.
 pub fn endpoint_at(url: &str) -> Option<Box<dyn rpc::Endpoint>> {
-    if url.starts_with("http://") {
-        return rpc::Http::new(url).map(|h| Box::new(h) as Box<dyn rpc::Endpoint>);
+    match zikaron_net::parse(url)?.scheme {
+        zikaron_net::Scheme::Http => rpc::Http::new(url).map(|h| Box::new(h) as Box<dyn rpc::Endpoint>),
+        zikaron_net::Scheme::Https => Https::new(url).map(|h| Box::new(h) as Box<dyn rpc::Endpoint>),
     }
-    if url.starts_with("https://") {
-        return Https::new(url).map(|h| Box::new(h) as Box<dyn rpc::Endpoint>);
-    }
-    None
 }
 
 /// Which layer of an https connection failed. Closed; the certificate layer is kept apart from the
@@ -326,140 +325,57 @@ impl Layer {
     }
 }
 
-/// An https endpoint. The HTTP/1.1 exchange matches [`rpc::Http`] (one connection per request, `Connection:
-/// close`, canonical request body) over a TLS stream from [`crate::cryptx::tls_connect`]. The certificate
-/// chain and host name are always verified; there is no way to skip them. Timeouts and the answer cap use the
-/// same [`rpc::Limits`] (`ZKA_TIMEOUT_SECS`, `ZKA_MAX_ANSWER_BYTES`), so a silent node cannot hang a scan.
-/// Connection failures are [`rpc::Trouble::Transport`] naming the layer (name resolution, connection, TLS
-/// handshake, certificate).
+/// An https endpoint: the one transport (`zikaron_net`: TLS configuration, certificate chain and host name
+/// always verified, deadline and answer cap from [`rpc::Limits`]), with its failures said by layer (name
+/// resolution, connection, TLS handshake, certificate) in this app's words. Node queries (POST) and remote
+/// fetches (GET) both use it.
 pub struct Https {
     url: String,
-    host: String,
-    port: u16,
-    path: String,
+    target: zikaron_net::Target,
     next_id: u64,
     limits: rpc::Limits,
 }
 
 impl Https {
-    /// `https://host[:port]/path`; any other spelling gives `None`.
+    /// An `https` address (the scheme and host in any case); any other gives `None`.
     pub fn new(url: &str) -> Option<Https> {
-        let rest = url.strip_prefix("https://")?;
-        let (authority, path) = match rest.find('/') {
-            Some(i) => (&rest[..i], &rest[i..]),
-            None => (rest, "/"),
-        };
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((h, p)) => (h.to_string(), p.parse().ok()?),
-            None => (authority.to_string(), 443u16),
-        };
-        if host.is_empty() {
-            return None;
-        }
-        Some(Https { url: url.to_string(), host, port, path: path.to_string(), next_id: 1, limits: rpc::Limits::from_env() })
+        let target = zikaron_net::parse(url).filter(|t| t.scheme == zikaron_net::Scheme::Https)?;
+        Some(Https { url: url.trim().to_string(), target, next_id: 1, limits: rpc::Limits::from_env() })
     }
 
     fn fail(&self, layer: Layer, detail: &str) -> rpc::Trouble {
         rpc::Trouble::Transport(format!("{} · {}", layer.code(), crate::lang::filln(layer.key(), &[&self.url, detail])))
     }
-}
 
-impl Https {
-    /// The one transport for an exchange: connect TCP, handshake TLS (certificate and host name always
-    /// verified), write the request, read the whole answer in chunks, within `limits`'s deadline and cap.
-    /// Node queries (POST) and remote fetches (GET) both use it, so TLS, timeouts and overflow behave the
-    /// same.
-    fn exchange(&self, request: &[u8], limits: &rpc::Limits) -> Result<Vec<u8>, rpc::Trouble> {
-        use std::io::{Read, Write};
-        let began = std::time::Instant::now();
-        let limit = limits.deadline;
-        let deadline = (!limit.is_zero()).then(|| began + limit);
-        let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(self.host.as_str(), self.port))
-            .map_err(|e| self.fail(Layer::Name, &e.to_string()))?
-            .collect();
-        let first = addrs.first().ok_or_else(|| self.fail(Layer::Name, &self.host))?;
-        let tcp = match limit.is_zero() {
-            true => std::net::TcpStream::connect(first),
-            false => std::net::TcpStream::connect_timeout(first, limit),
+    /// A transport failure in this app's words: the four connection layers by layer, the deadline and the cap
+    /// in the anchoring crate's recognized sentences.
+    fn said(&self, f: zikaron_net::Fail) -> rpc::Trouble {
+        match f {
+            zikaron_net::Fail::Name(x) => self.fail(Layer::Name, &x),
+            zikaron_net::Fail::Connect(x) => self.fail(Layer::Connect, &x),
+            zikaron_net::Fail::Handshake(x) => self.fail(Layer::Handshake, &x),
+            zikaron_net::Fail::Certificate(x) => self.fail(Layer::Certificate, &x),
+            other => rpc::transport_said(&self.url, &other),
         }
-        .map_err(|e| self.fail(Layer::Connect, &e.to_string()))?;
-        if !limit.is_zero() {
-            let d = Some(limit);
-            tcp.set_read_timeout(d).and_then(|_| tcp.set_write_timeout(d)).map_err(|e| self.fail(Layer::Connect, &e.to_string()))?;
-        }
-        let mut tls = crate::cryptx::tls_connect(&self.host, tcp, deadline).map_err(|t| match t {
-            crate::cryptx::TlsTrouble::Name(x) => self.fail(Layer::Name, &x),
-            crate::cryptx::TlsTrouble::Certificate(x) => self.fail(Layer::Certificate, &x),
-            crate::cryptx::TlsTrouble::Handshake(x) => self.fail(Layer::Handshake, &x),
-        })?;
-        let io = |this: &Https, e: std::io::Error| match crate::cryptx::tls_said(&e) {
-            Some(crate::cryptx::TlsTrouble::Certificate(x)) => this.fail(Layer::Certificate, &x),
-            _ => rpc::Trouble::Transport(format!("{}: {e}", this.url)),
-        };
-        tls.write_all(request).and_then(|_| tls.flush()).map_err(|e| io(self, e))?;
-        // Read in chunks; after each, check the total deadline, the answer size, and whether the answer is
-        // complete.
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 16 << 10];
-        loop {
-            match tls.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    raw.extend_from_slice(&chunk[..n]);
-                    if limits.max_answer > 0 && raw.len() > limits.max_answer {
-                        return Err(rpc::overlong(&self.url, limits.max_answer));
-                    }
-                    if answer_complete(&raw) {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                // A peer that disconnects without a close alert: a complete answer is accepted; an incomplete
-                // one is named.
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-                Err(e) => return Err(io(self, e)),
-            }
-            if !limit.is_zero() && began.elapsed() >= limit {
-                return Err(rpc::late(&self.url, limit));
-            }
-        }
-        Ok(raw)
-    }
-
-    fn authority(&self) -> String {
-        if self.port == 443 { self.host.clone() } else { format!("{}:{}", self.host, self.port) }
     }
 
     /// Fetch one resource (GET): status, `Location` (when present) and body, within `limits`. Whether to
     /// follow redirects is the caller's decision (remote fetch allows only same-origin https); this asks one
     /// place at a time.
     pub fn get(&self, limits: &rpc::Limits) -> Result<Got, rpc::Trouble> {
-        let head = format!("GET {} HTTP/1.1\r\nHost: {}\r\nAccept: */*\r\nConnection: close\r\n\r\n", self.path, self.authority());
-        let raw = self.exchange(head.as_bytes(), limits)?;
-        let split = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or_else(|| rpc::Trouble::Transport("答里没有头身分界".into()))?;
-        let text = String::from_utf8_lossy(&raw[..split]).to_string();
-        let status: u16 = text
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|c| c.parse().ok())
-            .ok_or_else(|| rpc::Trouble::Transport("答的状态行读不出".into()))?;
-        let location = text.lines().find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            k.trim().eq_ignore_ascii_case("location").then(|| v.trim().to_string())
-        });
-        let body = http_body(&raw[..split], &raw[split + 4..])?;
-        Ok(Got { status, location, body })
+        let a = zikaron_net::get(&self.target, limits).map_err(|f| self.said(f))?;
+        Ok(Got { status: a.status, location: a.location, body: a.body })
+    }
+
+    /// The address as the transport's reader writes it (lowercase scheme and host, default port left out).
+    pub fn address(&self) -> String {
+        self.target.url()
     }
 
     /// The three parts of the address: host, port, path (read when comparing origins and building the next
     /// file's address).
     pub fn parts(&self) -> (&str, u16, &str) {
-        (&self.host, self.port, &self.path)
+        (&self.target.host, self.target.port, &self.target.path)
     }
 }
 
@@ -480,21 +396,8 @@ impl rpc::Endpoint for Https {
             ("method".into(), Value::Str(method.into())),
             ("params".into(), params.clone()),
         ]));
-        let head = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            self.path,
-            self.authority(),
-            body.len()
-        );
-        let mut request = head.into_bytes();
-        request.extend_from_slice(&body);
-        let raw = self.exchange(&request, &self.limits)?;
-        let split = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or_else(|| rpc::Trouble::Transport("答里没有头身分界".into()))?;
-        let payload = http_body(&raw[..split], &raw[split + 4..])?;
-        let v = wire::parse(&payload).ok_or(rpc::Trouble::Transport(rpc::NOT_JSON.into()))?;
+        let got = zikaron_net::post_json(&self.target, &body, &self.limits).map_err(|f| self.said(f))?;
+        let v = wire::parse(&got.body).ok_or(rpc::Trouble::Transport(rpc::NOT_JSON.into()))?;
         if let Some(err) = v.member("error") {
             return Err(rpc::Trouble::Node(wire::write(err)));
         }
@@ -502,53 +405,6 @@ impl rpc::Endpoint for Https {
     }
     fn name(&self) -> String {
         self.url.clone()
-    }
-}
-
-/// Whether an HTTP answer is complete: the header/body boundary arrived, and the body has its
-/// `Content-Length` or the final chunk arrived. With neither, read until the peer closes.
-fn answer_complete(raw: &[u8]) -> bool {
-    let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") else { return false };
-    let head = String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase();
-    let body = &raw[split + 4..];
-    if head.contains("transfer-encoding: chunked") {
-        return http_body(&raw[..split], body).is_ok();
-    }
-    head.lines()
-        .find_map(|l| l.strip_prefix("content-length:").and_then(|n| n.trim().parse::<usize>().ok()))
-        .map(|n| body.len() >= n)
-        .unwrap_or(false)
-}
-
-/// The HTTP body: chunked transfer is unchunked, `Content-Length` bodies are taken by length, anything else
-/// as received.
-fn http_body(head: &[u8], rest: &[u8]) -> Result<Vec<u8>, rpc::Trouble> {
-    let h = String::from_utf8_lossy(head).to_ascii_lowercase();
-    if !h.contains("transfer-encoding: chunked") {
-        let len = h.lines().find_map(|l| l.strip_prefix("content-length:").and_then(|n| n.trim().parse::<usize>().ok()));
-        return match len {
-            Some(n) => rest.get(..n).map(|b| b.to_vec()).ok_or_else(|| rpc::Trouble::Transport("答的身短于它报的长度".into())),
-            None => Ok(rest.to_vec()),
-        };
-    }
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    loop {
-        let tail = rest.get(i..).ok_or_else(|| rpc::Trouble::Transport("分块答被截断".into()))?;
-        let eol = tail.windows(2).position(|w| w == b"\r\n").ok_or_else(|| rpc::Trouble::Transport("分块的长度行没收尾".into()))?;
-        let size = String::from_utf8_lossy(&tail[..eol]);
-        let size = size.split(';').next().unwrap_or("").trim().to_string();
-        let n = usize::from_str_radix(&size, 16).map_err(|_| rpc::Trouble::Transport("分块的长度读不出".into()))?;
-        i += eol + 2;
-        if n == 0 {
-            return Ok(out);
-        }
-        let chunk = rest.get(i..i + n).ok_or_else(|| rpc::Trouble::Transport("分块短了".into()))?;
-        out.extend_from_slice(chunk);
-        if rest.get(i + n..i + n + 2) != Some(b"\r\n") {
-            return Err(rpc::Trouble::Transport("分块答被截断".into()));
-        }
-        i += n + 2;
     }
 }
 
@@ -566,6 +422,27 @@ fn none_answered(first: Option<Fault>, refused: &[String]) -> Fault {
 pub const SEND_BACKOFF: [std::time::Duration; 2] = [std::time::Duration::from_millis(300), std::time::Duration::from_millis(900)];
 
 pub fn ask(eps: &[Endpoint], method: &str, params: &Value) -> Result<Reading, Fault> {
+    ask_with(eps, method, params, None)
+}
+
+/// The transaction facts a decision reads: who sent it, what it carried, which block holds it. Endpoints add
+/// members of their own (`blockTimestamp`, signature padding), so agreement is asked over these alone.
+pub const TX_FACTS: [&str; 3] = ["blockNumber", "from", "input"];
+
+/// The block fact the fee cap reads.
+pub const FEE_FACTS: [&str; 1] = ["baseFeePerGas"];
+
+/// The fee-history fact the priority fee reads (each block's median paid priority fee).
+pub const TIP_FACTS: [&str; 1] = ["reward"];
+
+/// [`ask`], with agreement over the named facts only (`zikaron_anchor::endpoints::project`): what endpoints
+/// add of their own no longer disagrees, a fact that differs still does. The reading's value is the
+/// projection.
+pub fn ask_facts(eps: &[Endpoint], method: &str, params: &Value, facts: &[&str]) -> Result<Reading, Fault> {
+    ask_with(eps, method, params, Some(facts))
+}
+
+fn ask_with(eps: &[Endpoint], method: &str, params: &Value, facts: Option<&[&str]>) -> Result<Reading, Fault> {
     if eps.is_empty() {
         return Err(Fault::known(Known::NoEndpoint, method.to_string()));
     }
@@ -579,7 +456,10 @@ pub fn ask(eps: &[Endpoint], method: &str, params: &Value) -> Result<Reading, Fa
         };
         match http.call(method, params) {
             Ok(w) => match wire::to_core(&w) {
-                Some(v) => runs.push((e.url.clone(), v)),
+                Some(v) => runs.push((e.url.clone(), match facts {
+                    Some(f) => endpoints::project(&v, f),
+                    None => v,
+                })),
                 None => refused.push(crate::lang::filln(crate::lang::Key::Tail094, &[&(e.url).to_string()])),
             },
             Err(t) => {
@@ -695,13 +575,19 @@ pub fn head_time(eps: &[Endpoint], chain: u64) -> Result<(u64, u64, usize), Faul
     }
 }
 
-/// An address's balance (wei). A load-bearing read: several endpoints must agree.
-pub fn balance(eps: &[Endpoint], who: &Address) -> Result<(u128, Reading), Fault> {
+/// An address's balance (wei) on `chain`. A load-bearing read: several endpoints must agree.
+///
+/// Only that chain's endpoints are asked (another chain's balance is another number), at one pinned block:
+/// `latest` moves between two asks, and two endpoints a block apart would disagree over a balance neither
+/// disputes. The smallest head is one every endpoint has reached (`head_block`).
+pub fn balance(eps: &[Endpoint], chain: u64, who: &Address) -> Result<(u128, Reading), Fault> {
     // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
     // are marked too.
     crate::trace::mark(crate::feature::Feature::H4);
-    let params = Value::Arr(vec![Value::Str(who.hex()), Value::Str("latest".into())]);
-    let r = ask(eps, "eth_getBalance", &params)?;
+    let eps: Vec<Endpoint> = eps.iter().filter(|e| e.chain == chain).cloned().collect();
+    let (height, _) = head_block(&eps, chain)?;
+    let params = Value::Arr(vec![Value::Str(who.hex()), Value::Str(format!("0x{height:x}"))]);
+    let r = ask(&eps, "eth_getBalance", &params)?;
     let hex = match &r.value {
         Value::Str(s) => s.clone(),
         other => return Err(Fault::known(Known::ChainShape, crate::lang::filln(crate::lang::Key::Tail099, &[&format!("{:?}", other)]))),
@@ -719,32 +605,27 @@ pub fn wei(hex: &str) -> Option<u128> {
     u128::from_str_radix(bare, 16).ok()
 }
 
-/// This transaction's two fee fields, computed from the chain's base fee: ask the latest block's
-/// `baseFeePerGas`; cap = base fee × 2 + priority fee. When unavailable (no answer, no such field), the
-/// fallback is used and sending is not blocked; the balance check and the confirmation card read this same
-/// value, and the screen says which was used.
+/// This transaction's two fee fields, from what this chain's endpoints agree on at one pinned block: that
+/// block's `baseFeePerGas`, and the priority fees paid over the blocks up to it (`eth_feeHistory`); the rule is
+/// `zikaron_anchor::send::Fees::of`, the one the command line uses. Without a base fee the whole pair is the
+/// fallback; without priority fees (unanswered, `null`, refused, endpoints that differ, another shape) the
+/// priority fee is its ceiling. Sending is not blocked either way; the balance check and the confirmation card
+/// read this same value, and the screen says which was used.
 pub fn fees(eps: &[Endpoint], chain: u64) -> zikaron_anchor::send::Fees {
+    use zikaron_anchor::send::{tip_of, tip_params, Fees};
+    // Only this chain's endpoints are asked: another chain's fees are another number.
     let eps: Vec<Endpoint> = eps.iter().filter(|e| e.chain == chain).cloned().collect();
     // Ask for one pinned block, not `latest`: two endpoints a block apart answer `latest` with different
     // blocks, the readings disagree, and the fallback would stand in for a base fee every endpoint knows.
     // The smallest head is one every endpoint has reached (`head_block`).
     let Ok((height, _)) = head_block(&eps, chain) else {
-        return zikaron_anchor::send::Fees::fallback();
+        return Fees::fallback();
     };
     let params = Value::Arr(vec![Value::Str(format!("0x{height:x}")), Value::Bool(false)]);
-    match ask(&eps, "eth_getBlockByNumber", &params) {
-        Ok(r) => match &r.value {
-            Value::Obj(m) => m
-                .iter()
-                .find(|(k, _)| k == "baseFeePerGas")
-                .and_then(|(_, v)| match v {
-                    Value::Str(h) => wei(h).filter(|n| *n <= u128::from(u64::MAX)).map(|n| n as u64),
-                    _ => None,
-                })
-                .map(zikaron_anchor::send::Fees::from_base)
-                .unwrap_or_else(zikaron_anchor::send::Fees::fallback),
-            _ => zikaron_anchor::send::Fees::fallback(),
-        },
-        Err(_) => zikaron_anchor::send::Fees::fallback(),
-    }
+    // Agreement over the base fee alone: endpoints answer the same block with members of their own, and a
+    // whole-block comparison would put the fallback in place of a base fee every endpoint gave alike.
+    let base = ask_facts(&eps, "eth_getBlockByNumber", &params, &FEE_FACTS).ok().and_then(|r| zikaron_anchor::send::base_fee_of(&r.value));
+    // The priority fees paid up to the same block, agreed over the facts the rule reads.
+    let tip = ask_facts(&eps, "eth_feeHistory", &tip_params(height), &TIP_FACTS).ok().and_then(|r| tip_of(&r.value));
+    Fees::of(base, tip)
 }

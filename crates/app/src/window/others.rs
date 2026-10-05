@@ -50,10 +50,12 @@ impl Win {
                     let address = if grantee { &mut self.typed.dg_address } else { &mut self.typed.rd_address };
                     let heads: Vec<String> = book.iter().map(|a| head_tail(a)).collect();
                     let items: Vec<menu::Item> = heads.iter().map(|h| menu::Item::Row(menu::Row { lead: t(Key::Address), label: h, mono: true, ..Default::default() })).collect();
+                    let spec = pick::Spec { hint: t(Key::SearchAddress), empty: t(Key::SearchNone), w: PICK_W, dates: None };
+                    let keep = |i: usize, q: &str, _: &str, _: &str| matches(q, &[&book[i]]);
                     let mut picked = None;
                     width::then(
                         ui,
-                        |ui| picked = menu::plain_key(ui, "others-book", t(Key::U3SeenBeforeDots), !book.is_empty(), false, 260.0, &items),
+                        |ui| picked = pick::key(ui, "others-book", t(Key::U3SeenBeforeDots), !book.is_empty(), false, &spec, &items, &keep),
                         |ui, room| input::field(ui, address, "0x\u{2026}", room, input::Look { mono: true, ..Default::default() }),
                     );
                     if let Some(i) = picked {
@@ -170,6 +172,12 @@ impl Win {
             _ => None,
         };
         let unobtained = matches!(supply, Some((None, _, _)));
+        // Networks this pass could not read, each named.
+        let missed: Vec<crate::widex::Missed> = match (grantee, self.shell.book.as_ref(), v.dil.as_ref()) {
+            (false, Some(Done::Book { missed, .. }), _) => missed.clone(),
+            (true, _, Some(x)) => x.missed.clone(),
+            _ => Vec::new(),
+        };
         let deleted = crate::retractx::read(&v.timeline);
         let works: Vec<&crate::ledgerx::Row> = v.timeline.iter().filter(|r| r.kind == zikaron::tokens::EntryType::History && !deleted.is_deleted(&r.id)).collect();
         let last = v.timeline.iter().filter(|r| r.lamp == crate::ledgerx::Lamp::Anchored).map(|r| r.seq).max();
@@ -218,6 +226,9 @@ impl Win {
                 }
                 None => {}
             }
+            for m in &missed {
+                states::okline(ui, Mark::Warn, &format!("{} {}", m.name, t(m.reading.key())));
+            }
         });
         if let Some(x) = v.dil.as_ref() {
             stagger(ui, 4, |ui| {
@@ -243,7 +254,13 @@ impl Win {
                             rows.push((format!("#{} \u{b7} {}", one.seq, one.kind), Val::mono(one.to.clone())));
                         }
                         if let Some(three) = x.depth.clone().map(crate::depthx::three) {
-                            rows.push((t(Key::U3Deepest).to_string(), Val::mono(three.deepest.to_string())));
+                            // A network left out this pass: "deepest" with no anchor read says the chain was not
+                            // read (the same rule as the verify page, `depthx::said`).
+                            let deepest = match crate::depthx::said(&three, !x.missed.is_empty()).1 {
+                                crate::depthx::Said::Is(n) => n.to_string(),
+                                _ => t(Key::U4ChainUnread).to_string(),
+                            };
+                            rows.push((t(Key::U3Deepest).to_string(), Val::mono(deepest)));
                             rows.push((t(Key::AuditLabel).to_string(), Val::mono(three.label.clone())));
                         }
                         let refs: Vec<(&str, Val)> = rows.iter().map(|(a, b)| (a.as_str(), b.clone())).collect();

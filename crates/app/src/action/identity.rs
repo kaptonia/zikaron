@@ -21,19 +21,20 @@ pub(super) fn enter(shell: &mut Shell, row: &crate::identity::Row, seat: crate::
         shell.commit_settings(|s| s.role = seat)?;
     }
     shell.refresh_anchor()?;
-    shell.seat_identities(Some(crate::identity::view(seat)?));
+    shell.seat_identities(Some(crate::register::view(seat)?));
     Ok(())
 }
 
 /// The last step of creating an identity. The copy check is judged in the frame at once (mistakes are said at
 /// once); deriving both seats' keys and sealing the recovery credential run in the background (on the
 /// interface thread each identity creation froze the window for a second), and on landing [`vault_landed`]
-/// continues into the home.
-pub(super) fn confirm_identity(shell: &mut Shell, answers: &[(usize, crate::secret::Secret)], label: &str) -> Result<Applied, crate::fault::Fault> {
+/// continues into the home. `network` is the identity's network, recorded on its row in the same pass.
+pub(super) fn confirm_identity(shell: &mut Shell, answers: &[(usize, crate::secret::Secret)], label: &str, network: &str) -> Result<Applied, crate::fault::Fault> {
     let Some(f) = shell.new_words.as_ref() else {
         return Err(crate::fault::Fault::known(crate::fault::Known::PhraseConfirm, String::new()));
     };
     crate::identity::confirm(f, answers)?;
+    let network = network_choice(network)?;
     // The label is written to the register when this pass lands (`identity::rename` is the one owner); empty
     // means the cell is not written.
     shell.new_label = Some(label.trim().to_string());
@@ -42,10 +43,22 @@ pub(super) fn confirm_identity(shell: &mut Shell, answers: &[(usize, crate::secr
     let role = shell.settings.role;
     Ok(vault(shell, move || {
         // Words confirmed by copying count as one form of backup.
-        let row = crate::identity::add_words(&f, role, true)?;
+        let row = crate::register::change(role, |reg| {
+            let row = crate::identity::add_words(reg, &f, true)?;
+            crate::identity::choose_network(reg, &row.id, &network)
+        })?;
         let restored = before.contains(&row.id);
         Ok(crate::task::Vault::Identity { row, restored, fresh: true })
     }))
+}
+
+/// The network an identity is made with, judged in the frame: a row of the known deployments table, or
+/// "custom"; anything else is refused by name before the background pass (and before any key is made).
+fn network_choice(name: &str) -> Result<String, crate::fault::Fault> {
+    if !crate::deploy::is_choice(name) {
+        return Err(crate::fault::Fault::known(crate::fault::Known::IdentitiesShape, name.to_string()));
+    }
+    Ok(name.to_string())
 }
 
 /// The identity pass landed: enter its first occupied seat (key and home switched together) and answer
@@ -54,13 +67,14 @@ pub(super) fn identity_landed(shell: &mut Shell, row: crate::identity::Row, rest
     if fresh {
         shell.new_words = None;
     }
-    // A restored identity's homes with empty ledgers first get the "not fetched" mark: importing is
-    // restoring (words, private key and key file alike); a freshly created identity (`fresh`) has no ledger
-    // elsewhere and gets no mark. A home whose ledger already has entries (deleted and imported back) gets no
-    // mark. For an identity restored onto this machine (not in the register before; `restored`, which only
-    // refills missing slots of an existing identity, does not count), both seats' homes are marked, even when
-    // the home already has a ledger (that ledger may be older than the identity deletion, and writing may
-    // have continued elsewhere; writing opens only after the tail is checked). If marking fails, it is
+    // An imported identity's homes get the "not fetched" mark: importing is restoring (words, private key and
+    // key file alike), and the key may have written elsewhere; a freshly created identity (`fresh`) has no
+    // ledger elsewhere and gets no mark. For an identity restored onto this machine (not in the register
+    // before; `restored`, which only refills missing slots of an existing identity, does not count), both
+    // seats' homes are marked, whether or not the home already has a ledger (it may be older than the
+    // identity deletion, and writing may have continued elsewhere). The mark comes off one way only: this
+    // seat's ledger checked against this key's anchors on chain with nothing missing (`check_tail`), whatever
+    // the ledger came from; an empty ledger and a key with no anchors pass at once. If marking fails, it is
     // treated as marked (read-only, writing not opened).
     let mut mark_failed = false;
     if !fresh && !restored {
@@ -78,7 +92,7 @@ pub(super) fn identity_landed(shell: &mut Shell, row: crate::identity::Row, rest
     // a trouble and continues, without failing the whole identity landing.
     let mut row = row;
     if let Some(label) = shell.new_label.take().filter(|l| !l.trim().is_empty()) {
-        match crate::identity::rename(&row.id, &label, shell.settings.role) {
+        match crate::register::change(shell.settings.role, |reg| crate::identity::rename(reg, &row.id, &label)) {
             Ok(fresh_row) => row = fresh_row,
             Err(f) => shell.faults.push(f),
         }
@@ -89,6 +103,10 @@ pub(super) fn identity_landed(shell: &mut Shell, row: crate::identity::Row, rest
             if mark_failed && shell.unfetched.is_none() {
                 shell.unfetched = Some(crate::restorex::State::Unfetched);
             }
+            // The marks come off only by the tail check, whatever the ledger's source: started now when
+            // basis and nodes are set (an empty ledger and a key with no anchors pass on the spot), or when
+            // they are set later.
+            tail_if_due(shell);
             Applied::IdentityMade { id: row.id.clone(), seats: seats_of(&row), restored }
         }
         Err(f) => shell.trouble(f),
@@ -110,34 +128,70 @@ pub(super) fn registered() -> Result<Vec<String>, crate::fault::Fault> {
 /// empty). The recovery-words branch still derives both seats and lands on its first occupied seat
 /// (`Row::first_seat`), so in that form `seat` is used only to read the current identity table, not to decide
 /// the landing; the face line therefore appears only for the two existing-key forms.
-pub(super) fn import_identity(shell: &mut Shell, form: ImportForm, seat: crate::roles::Role, label: &str) -> Result<Applied, crate::fault::Fault> {
+pub(super) fn import_identity(shell: &mut Shell, form: ImportForm, seat: crate::roles::Role, label: &str, network: &str) -> Result<Applied, crate::fault::Fault> {
+    // The key file's cells are judged in the frame, as exporting one is (`key_file_checks`): a mistyped
+    // password is said at once, before the background pass.
+    if let ImportForm::PrivateKey { keyfile: Some(out), .. } = &form {
+        key_file_checks(&out.password, &out.again, &out.dir)?;
+    }
+    let network = network_choice(network)?;
     shell.new_label = Some(label.trim().to_string());
     let before = registered()?;
     // Key extraction (the keystore's scrypt, word derivation) and sealing the recovery credential run in the
     // background; landing is the same as `confirm_identity`.
     Ok(vault(shell, move || {
-        let row = imported(form, seat)?;
+        let row = imported(form, seat, &network)?;
         let restored = before.contains(&row.id);
         Ok(crate::task::Vault::Identity { row, restored, fresh: false })
     }))
 }
 
-/// The disk and vault work of importing (run in the background pass).
-pub(super) fn imported(form: ImportForm, seat: crate::roles::Role) -> Result<crate::identity::Row, crate::fault::Fault> {
+/// The disk and vault work of importing (run in the background pass). The row records `network` when it has
+/// none (an identity imported again keeps the one it had).
+pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let row = match form {
         // Importing from words: the person holds the words, which is one form of backup.
-        ImportForm::Words(text) => crate::identity::add_words(&crate::identity::from_words(text.expose())?, seat, true)?,
-        ImportForm::PrivateKey(hex) => {
-            let s = crate::key::from_hex(hex.expose()).ok_or_else(|| Fault::known(Known::KeyMalformed, String::new()))?;
-            crate::identity::add_existing(&s, seat, false)?
+        ImportForm::Words(text) => {
+            let f = crate::identity::from_words(text.expose())?;
+            crate::register::change(seat, |reg| {
+                let row = crate::identity::add_words(reg, &f, true)?;
+                crate::identity::choose_network(reg, &row.id, network)
+            })?
+        }
+        ImportForm::PrivateKey { key, keyfile } => {
+            let s = crate::key::from_hex(key.expose()).ok_or_else(|| Fault::known(Known::KeyMalformed, String::new()))?;
+            // An import that makes the primary identity (the store has none yet) lands its key file first,
+            // in this pass: the primary is the one identity that reopens the store after a forgotten
+            // passcode, and a bare key has no other way back. Nothing is enrolled before the file is read
+            // back (`landed_check`); without the cells it is refused by name. A secondary import that names
+            // a key file lands it too; one that names none is as before.
+            let becomes_primary = crate::keybox::primary()?.is_none();
+            let landed = match keyfile {
+                Some(out) => {
+                    let dir = key_file_checks(&out.password, &out.again, &out.dir)?;
+                    Some(write_key_file(&s, &out.password, &dir)?.0)
+                }
+                None if becomes_primary => return Err(Fault::known(Known::PrimaryNoKeyFile, String::new())),
+                None => None,
+            };
+            crate::register::change(seat, |reg| {
+                let row = crate::identity::add_existing(reg, &s, seat, landed.is_some())?;
+                if let Some(at) = landed.as_deref() {
+                    crate::identity::mark(reg, &row.id, false, true, Some(at))?;
+                }
+                crate::identity::choose_network(reg, &row.id, network)
+            })?
         }
         // Importing from a keystore file: the person holds the file, which is one form of backup.
         ImportForm::Keystore { path, password } => {
             let p = path.trim();
             let bytes = std::fs::read(p).map_err(|e| crate::fault::classify(&e, p))?;
             let s = crate::keystore::decrypt(&bytes, password.expose())?;
-            crate::identity::add_existing(&s, seat, true)?
+            crate::register::change(seat, |reg| {
+                let row = crate::identity::add_existing(reg, &s, seat, true)?;
+                crate::identity::choose_network(reg, &row.id, network)
+            })?
         }
     };
     Ok(row)
@@ -146,11 +200,11 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role) -> Result<cra
 pub(super) fn switch_identity(shell: &mut Shell, id: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
     // Land on its first occupied seat: an identity occupying only the user seat still lands on the user seat
     // after switching.
-    let seat = crate::identity::view(shell.settings.role)?
+    let seat = crate::register::view(shell.settings.role)?
         .find(id)
         .map(|r| r.first_seat())
         .unwrap_or(crate::roles::Role::Author);
-    let row = crate::identity::switch(id, seat)?;
+    let row = crate::register::change(seat, |reg| crate::identity::switch(reg, id, seat))?;
     enter(shell, &row, seat)?;
     Ok(row)
 }
@@ -158,7 +212,7 @@ pub(super) fn switch_identity(shell: &mut Shell, id: &str) -> Result<crate::iden
 pub(super) fn delete_identity(shell: &mut Shell, id: &str) -> Result<String, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let seat = shell.settings.role;
-    let reg = crate::identity::view(seat)?;
+    let reg = crate::register::view(seat)?;
     let row = reg.find(id).cloned().ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
     // The handover question includes the ledgers in both seats' homes.
     //
@@ -184,12 +238,12 @@ pub(super) fn delete_identity(shell: &mut Shell, id: &str) -> Result<String, cra
             .filter_map(|s| row.address(s))
             .any(|a| crate::succeedx::handed_over(&items, Some(a)).is_some())
     };
-    let (gone, next) = crate::identity::delete(id, seat, handed)?;
+    let (gone, next) = crate::register::change(seat, |reg| crate::identity::delete(reg, id, handed))?;
     match next {
         Some((r, s)) => enter(shell, &r, s)?,
         None => {
             shell.refresh_anchor()?;
-            shell.seat_identities(Some(crate::identity::view(seat)?));
+            shell.seat_identities(Some(crate::register::view(seat)?));
         }
     }
     Ok(gone.id)
@@ -227,48 +281,50 @@ pub(super) fn same_twice(pin: &crate::secret::Secret, again: &crate::secret::Sec
     Ok(())
 }
 
-/// Choose a network row: written to the machine-level settings file (the row name exists only there, and the
-/// literal always comes from the table); when the current home is writable and has no chain configured, it is
-/// filled from that row. Returns whether this home was filled.
+/// The wizard's network step. The choice is the network of the identity the wizard made: recorded on the
+/// current identity's row (both its seats take it), and in the machine-level settings file as this machine's
+/// last choice (which choice the wizard and the new-identity sheet select first; the row name exists only
+/// there, the literals always come from the table). The current home follows the choice unless the person
+/// configured its network by hand: a row fills it, "custom" leaves it without a network, to be filled in
+/// settings. Returns whether this home now has the row's network.
 pub(super) fn choose_network(shell: &mut Shell, name: &str) -> Result<bool, crate::fault::Fault> {
     let mut m = crate::machine::read()?;
     m.network = Some(name.to_string());
     crate::machine::write(&m)?;
     shell.machine = crate::machine::read()?;
-    let bare = shell.settings.chain_id.is_none() && shell.settings.registry.is_none() && shell.settings.endpoints.is_empty();
-    match crate::machine::chosen(&shell.machine) {
-        Some(d) if shell.home.is_some() && shell.writable() && bare => {
-            // The machine cell is already settled, so failing to fill this home is not a whole failure:
-            // returning an error would make the face say "choosing the network failed" while the machine row
-            // did change and the next new home takes its basis from it. Failing to fill records a trouble and
-            // says plainly that it was not filled.
-            match adopt_deployment(shell, d) {
-                Ok(()) => Ok(true),
-                Err(f) => {
-                    shell.trouble(f);
-                    Ok(false)
-                }
-            }
+    // The machine cell is settled, so a later step failing is not a whole failure: returning an error would
+    // make the face say "choosing the network failed" while the machine's choice did change. Each later
+    // failure records a trouble and says plainly what was not done.
+    // The shell's copy of the table is reread with it: the wizard's network step reads the current identity's
+    // choice from there.
+    let recorded = crate::register::now_row_listed().and_then(|now| match now {
+        Some((row, _)) => crate::register::change_listed(|reg| crate::identity::set_network(reg, &row.id, name))
+            .and_then(|_| crate::register::view(shell.settings.role))
+            .map(|v| shell.seat_identities(Some(v))),
+        None => Ok(()),
+    });
+    if let Err(f) = recorded {
+        shell.trouble(f);
+    }
+    let s = &shell.settings;
+    let bare = s.chain_id.is_none() && s.registry.is_none() && s.endpoints.is_empty();
+    // A home whose network came from a choice records which (`Settings::network`); one the person configured
+    // by hand records none and is not touched.
+    let from_a_choice = bare || s.network.is_some();
+    if shell.home.is_none() || !shell.writable() || !from_a_choice {
+        return Ok(false);
+    }
+    let done = match crate::deploy::named(name) {
+        Some(d) => adopt_network(shell, crate::deploy::Network::Known(d)).map(|()| true),
+        None => clear_network(shell).map(|()| false),
+    };
+    match done {
+        Ok(filled) => Ok(filled),
+        Err(f) => {
+            shell.trouble(f);
+            Ok(false)
         }
-        _ => Ok(false),
     }
-}
-
-/// Connect an old home to the network this machine chose. If this machine has not chosen yet, choose the
-/// table's default row and record it (that row becomes "this machine's default"); a choice of "custom" is
-/// refused by name (no row to take; the person edits the node).
-pub(super) fn use_machine_network(shell: &mut Shell) -> Result<String, crate::fault::Fault> {
-    if shell.machine.network.is_none() {
-        let mut m = crate::machine::read()?;
-        m.network = Some(crate::deploy::DEFAULT.to_string());
-        crate::machine::write(&m)?;
-        shell.machine = crate::machine::read()?;
-    }
-    let d = crate::machine::chosen(&shell.machine).ok_or_else(|| {
-        crate::fault::Fault::known(crate::fault::Known::NoChainId, crate::lang::t(crate::lang::Key::TailNetworkCustom).to_string())
-    })?;
-    adopt_deployment(shell, d)?;
-    Ok(d.name.to_string())
 }
 
 pub(super) fn set_auto_lock(shell: &mut Shell, on: bool, secs: u64) -> Result<(bool, u64), crate::fault::Fault> {
@@ -286,6 +342,11 @@ pub(super) fn set_auto_lock(shell: &mut Shell, on: bool, secs: u64) -> Result<(b
 /// twice alike, the folder absolute; the package is collected, sealed, written and read back in the background.
 pub(super) fn export_backup(shell: &mut Shell, password: crate::secret::Secret, again: &crate::secret::Secret, dir: &str) -> Result<Spawned, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
+    // The same refusal as a key file's (see `key_file_checks`): the backup is never sealed under the head of a
+    // password longer than the secret block.
+    if password.overflowed() || again.overflowed() {
+        return Err(Fault::known(Known::PasswordLong, crate::secret::CAP.to_string()));
+    }
     if &password != again {
         return Err(Fault::known(Known::PasswordsDiffer, String::new()));
     }
@@ -317,24 +378,33 @@ pub(super) fn reveal_words(shell: &mut Shell) -> Result<(), crate::fault::Fault>
     // (`Action::pin_asked`): these three actions go through the same gate and the same record.
     let seat = shell.settings.role;
     // "Which row is current" is answered only by `identity::now_row` (the backup path asks the same).
-    let id = crate::identity::now_row(seat)?
+    let view = crate::register::view(seat)?;
+    let id = crate::identity::now_row(&view)
         .map(|(r, _)| r.id)
         .ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
-    shell.words = Some(crate::identity::words_of(&id, seat)?);
+    shell.words = Some(crate::identity::words_of(&view, &id)?);
     Ok(())
 }
 
 /// Name. Changes only the register's weightless text cell.
 pub(super) fn name_identity(shell: &mut Shell, id: &str, label: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
     let seat = shell.settings.role;
-    let row = crate::identity::rename(id, label, seat)?;
-    shell.seat_identities(Some(crate::identity::view(seat)?));
+    let row = crate::register::change(seat, |reg| crate::identity::rename(reg, id, label))?;
+    shell.seat_identities(Some(crate::register::view(seat)?));
     Ok(row)
 }
 
-pub(super) fn backup_key(shell: &mut Shell, password: crate::secret::Secret, again: &crate::secret::Secret, dir: &str) -> Result<Spawned, crate::fault::Fault> {
+/// The cells of a key file to write, judged before anything is written: the password twice alike, at least
+/// the minimum, and a landing folder (`home::landing`). Answers the folder as it will be written to. Exporting
+/// a key file and importing a key that becomes primary ask this one place.
+pub(super) fn key_file_checks(password: &crate::secret::Secret, again: &crate::secret::Secret, dir: &str) -> Result<String, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
-    if &password != again {
+    // A password longer than the secret block keeps only its head: the key file would be sealed under a
+    // password the person never typed in full (and another wallet given the whole one would not open it).
+    if password.overflowed() || again.overflowed() {
+        return Err(Fault::known(Known::PasswordLong, crate::secret::CAP.to_string()));
+    }
+    if password != again {
         return Err(Fault::known(Known::PasswordsDiffer, String::new()));
     }
     // The minimum counts characters only (the strength reading only reminds; there is no weak password gate;
@@ -344,38 +414,52 @@ pub(super) fn backup_key(shell: &mut Shell, password: crate::secret::Secret, aga
     }
     // An empty or relative landing place is refused before going to the background and writing the key file
     // (`home::landing`).
-    let dir = crate::home::landing(dir)?.display().to_string();
-    let acct = crate::identity::account_now()?
-        .ok_or_else(|| Fault::known(Known::SeatUnseated, crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string()))?;
-    let secret = crate::key::load()?.ok_or_else(|| Fault::known(Known::KeychainMissing, acct.clone()))?;
+    Ok(crate::home::landing(dir)?.display().to_string())
+}
+
+/// Write `secret` as a key file under `password` into `dir` and read it back (`landed_check`). Answers where
+/// it landed and the address it carries. Runs in a background pass (the scrypt standard level). Exporting a
+/// key file and importing a key that becomes primary write through this one place.
+pub(super) fn write_key_file(secret: &crate::key::Secret, password: &crate::secret::Secret, dir: &str) -> Result<(String, Address), crate::fault::Fault> {
+    let ks = crate::keystore::encrypt(secret, password.expose(), Params::standard(), now_secs())?;
+    std::fs::create_dir_all(dir).map_err(|e| crate::fault::classify(&e, dir))?;
+    let path = std::path::Path::new(dir).join(&ks.file_name);
+    // The key file is readable only by its owner: it is ciphertext, but another account on the same
+    // machine reading it byte for byte could brute-force its password offline. The same depth as the
+    // vault file's 0600; what is handed to the counterpart still follows the environment.
+    zikaron_glue::landing::land_bytes_for(zikaron_glue::landing::Readers::Owner, &path, &ks.json)
+        .map_err(|t| crate::fault::Fault::of_landing(t))?;
+    // Read it back after writing and compare once.
+    //
+    // Inferring "backed up" from "the landing step returned no error" fails when the disk is full or
+    // read-only, the landing place was swapped, or the written bytes do not match the ones in hand; if
+    // any of those returns no error, the register gets a false flag, and a person who deletes the
+    // identity relying on it loses the key forever (the victim: an author who pressed backup and then
+    // deleted the identity). So the owner of "backed up" is the file on disk, not the previous step's
+    // exit code: unreadable, wrong shape or wrong address is refused by name as `BACKUP_NOT_LANDED`, and
+    // this pass does not count as a backup.
+    if let Some(tamper) = LANDED_TAMPER.get() {
+        tamper(&path);
+    }
+    landed_check(&path, ks.address)?;
+    Ok((path.display().to_string(), ks.address))
+}
+
+pub(super) fn backup_key(shell: &mut Shell, password: crate::secret::Secret, again: &crate::secret::Secret, dir: &str) -> Result<Spawned, crate::fault::Fault> {
+    use crate::fault::{Fault, Known};
+    let dir = key_file_checks(&password, again, dir)?;
     let seat = shell.settings.role;
-    let id = crate::identity::now_row(seat)?.map(|(r, _)| r.id);
+    let view = crate::register::view(seat)?;
+    let acct = crate::identity::account_now(&view)
+        .ok_or_else(|| Fault::known(Known::SeatUnseated, crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string()))?;
+    let secret = crate::key::load(Some(&acct))?.ok_or_else(|| Fault::known(Known::KeychainMissing, acct.clone()))?;
+    let id = crate::identity::now_row(&view).map(|(r, _)| r.id);
     // The scrypt standard level runs in the background: the key is taken from the key vault in the frame and
     // moved into this pass; the frame keeps running and the card says it is encrypting. After landing, the
     // "backed up" record is written when the shell receives the message.
     Ok(shell.tasks.spawn(Kind::Keystore, move || {
-        let ks = crate::keystore::encrypt(&secret, password.expose(), Params::standard(), now_secs())?;
-        std::fs::create_dir_all(&dir).map_err(|e| crate::fault::classify(&e, &dir))?;
-        let path = std::path::Path::new(&dir).join(&ks.file_name);
-        // The key file is readable only by its owner: it is ciphertext, but another account on the same
-        // machine reading it byte for byte could brute-force its password offline. The same depth as the
-        // vault file's 0600; what is handed to the counterpart still follows the environment.
-        zikaron_glue::landing::land_bytes_for(zikaron_glue::landing::Readers::Owner, &path, &ks.json)
-            .map_err(|t| Fault::landing(t.code(), t.subject()))?;
-        // Read it back after writing and compare once.
-        //
-        // Inferring "backed up" from "the landing step returned no error" fails when the disk is full or
-        // read-only, the landing place was swapped, or the written bytes do not match the ones in hand; if
-        // any of those returns no error, the register gets a false flag, and a person who deletes the
-        // identity relying on it loses the key forever (the victim: an author who pressed backup and then
-        // deleted the identity). So the owner of "backed up" is the file on disk, not the previous step's
-        // exit code: unreadable, wrong shape or wrong address is refused by name as `BACKUP_NOT_LANDED`, and
-        // this pass does not count as a backup.
-        if let Some(tamper) = LANDED_TAMPER.get() {
-            tamper(&path);
-        }
-        landed_check(&path, ks.address)?;
-        Ok(Done::Keystore(crate::task::Keystore::BackedUp { path: path.display().to_string(), address: ks.address, id, seat }))
+        let (path, address) = write_key_file(&secret, &password, &dir)?;
+        Ok(Done::Keystore(crate::task::Keystore::BackedUp { path, address, id, seat }))
     }))
 }
 

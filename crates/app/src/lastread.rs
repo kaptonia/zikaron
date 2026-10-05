@@ -55,7 +55,9 @@ impl Anchored {
 
 /// A verdict read back: the kit crate's overall verdict, the six checks (raw word pairs), the verification
 /// time; plus that pass's upstream ledger audit label and chain time (the vault detail card's "upstream" and
-/// "remaining" speak from them). Older files lack the last two cells, which read as empty.
+/// "remaining" speak from them), and the block time the grant was anchored at in its issuer's ledger (the
+/// vault's date range filters by it after a restart, before any re-check this run). Older files lack the last
+/// three cells, which read as empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
     pub verdict: String,
@@ -63,6 +65,7 @@ pub struct Verdict {
     pub at: u64,
     pub upstream_label: String,
     pub chain_now: Option<u64>,
+    pub anchored_at: Option<u64>,
 }
 
 /// Whether stale: the cache time more than [`STALE_SECS`] before now is stale; now earlier than the cache
@@ -164,9 +167,11 @@ pub fn save_verdict(home: &Home, id: &str, v: &Verdict) -> Result<(), Fault> {
         .iter()
         .map(|(tok, st)| Value::Obj(vec![("state".to_string(), Value::Str(st.clone())), ("token".to_string(), Value::Str(tok.clone()))]))
         .collect();
-    let mut m = vec![
-        ("at".to_string(), Value::Int(at)),
-    ];
+    let mut m = Vec::new();
+    if let Some(n) = v.anchored_at {
+        m.push(("anchored_at".to_string(), Value::Int(n)));
+    }
+    m.push(("at".to_string(), Value::Int(at)));
     if let Some(n) = v.chain_now {
         m.push(("chain_now".to_string(), Value::Int(n)));
     }
@@ -185,6 +190,12 @@ pub fn save_verdict(home: &Home, id: &str, v: &Verdict) -> Result<(), Fault> {
 /// case, as `Entry::id_hex` spells it (callers compare against that).
 pub fn grant_form(id: &str) -> String {
     format!("0x{}", id.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase())
+}
+
+/// The one form an issuer takes as the key of the person's note for it (written by the vault, read by the
+/// window and the door): `0x` and lower case, as `grant_form` spells a grant.
+pub fn issuer_form(author: &str) -> String {
+    grant_form(author)
 }
 
 /// A verdict's bytes naming its grant inside (an older cache named it only by its file name): as they are when
@@ -214,7 +225,7 @@ pub fn load_verdict(home: &Home, id: &str) -> Result<Option<Verdict>, Fault> {
         };
         checks.push((tok, st));
     }
-    Ok(Some(Verdict { verdict, checks, at, upstream_label: str_of(&v, "upstream_label").unwrap_or_default(), chain_now: int_of(&v, "chain_now") }))
+    Ok(Some(Verdict { verdict, checks, at, upstream_label: str_of(&v, "upstream_label").unwrap_or_default(), chain_now: int_of(&v, "chain_now"), anchored_at: int_of(&v, "anchored_at") }))
 }
 
 /// Read every verdict in the vault (for startup hydration): files under `grants-held/` ending in

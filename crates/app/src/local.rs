@@ -39,6 +39,9 @@ pub enum Doc {
     KitLinks,
     /// Machine directory: the local index of signed files (`records/index.json`).
     Records,
+    /// Machine directory: chain facts already checked, read alike by several endpoints (`checked/facts.json`,
+    /// `checkedx`).
+    Checked,
     /// Home `settings/`: the settings file.
     Settings,
     /// Home `settings/`: the anchor queue.
@@ -70,10 +73,11 @@ pub enum Doc {
 }
 
 impl Doc {
-    pub const ALL: [Doc; 16] = [
+    pub const ALL: [Doc; 17] = [
         Doc::Registry,
         Doc::KitLinks,
         Doc::Records,
+        Doc::Checked,
         Doc::Settings,
         Doc::Queue,
         Doc::FirstWindow,
@@ -95,6 +99,7 @@ impl Doc {
             Doc::Registry => "registry",
             Doc::KitLinks => "kit-links",
             Doc::Records => "records",
+            Doc::Checked => "checked",
             Doc::Settings => "settings",
             Doc::Queue => "queue",
             Doc::FirstWindow => "first-window",
@@ -119,6 +124,20 @@ impl Doc {
     pub fn from_tag(t: &str) -> Option<Doc> {
         Doc::ALL.into_iter().find(|d| d.tag() == t)
     }
+
+    /// For a kind whose plaintext is a canonical document, the refusal its reader answers when the bytes do not
+    /// read (the same named refusal [`seal`] answers before writing such bytes); `None` for kinds whose
+    /// plaintext is not a canonical document (a kept grant file, a terms document, a plan's lines).
+    pub fn canonical_shape(self) -> Option<Known> {
+        match self {
+            Doc::Registry => Some(Known::IdentitiesShape),
+            Doc::KitLinks | Doc::Records | Doc::Checked | Doc::Settings | Doc::FirstWindow | Doc::LastAudit | Doc::Unfetched | Doc::Verdict | Doc::TermsRecord => Some(Known::SettingsShape),
+            Doc::Queue => Some(Known::QueueShape),
+            Doc::Held | Doc::Entry => Some(Known::ContentShape),
+            Doc::Machine => Some(Known::MachineShape),
+            Doc::KeptGrant | Doc::TermsDoc | Doc::Plan => None,
+        }
+    }
 }
 
 fn head(doc: Doc) -> Vec<u8> {
@@ -132,10 +151,8 @@ fn head(doc: Doc) -> Vec<u8> {
 }
 
 fn nonce() -> Result<[u8; NONCE], Fault> {
-    use std::io::Read;
-    let mut h = std::fs::File::open(crate::key::ENTROPY).map_err(|e| classify(&e, crate::key::ENTROPY))?;
     let mut n = [0u8; NONCE];
-    h.read_exact(&mut n).map_err(|e| classify(&e, crate::key::ENTROPY))?;
+    crate::key::fill_random(&mut n)?;
     Ok(n)
 }
 
@@ -155,8 +172,17 @@ pub fn seal_with(key: &LocalKey, doc: Doc, plain: &[u8]) -> Result<Vec<u8>, Faul
     Ok(out)
 }
 
-/// Seal under this vault's key (refused with `LOCKED` while locked).
+/// Seal under this vault's key (refused with `LOCKED` while locked). Every new write of local data passes here,
+/// so this is where a canonical document is judged by the reader that will read it back: bytes that reader
+/// refuses (a number past the canonical integer ceiling, for one) are refused by the kind's own name and never
+/// land (`Doc::canonical_shape`). Re-sealing what is already on disk under another key (`seal_with`) carries
+/// it as it is.
 pub fn seal(doc: Doc, plain: &[u8]) -> Result<Vec<u8>, Fault> {
+    if let Some(shape) = doc.canonical_shape() {
+        if let Err(t) = zikaron::json::parse(plain) {
+            return Err(Fault::known(shape, format!("{} {t:?}", doc.tag())));
+        }
+    }
     seal_with(&crate::keybox::local_key()?, doc, plain)
 }
 
@@ -202,7 +228,7 @@ pub fn put(dir: &Path, name: &str, doc: Doc, plain: &[u8]) -> Result<(), Fault> 
 /// terms documents, issuance records, held grants, kept grant files).
 pub fn land(path: &Path, doc: Doc, plain: &[u8]) -> Result<(), Fault> {
     let sealed = seal(doc, plain)?;
-    zikaron_glue::landing::land_bytes(path, &sealed).map_err(|t| Fault::landing(t.code(), t.subject()))
+    zikaron_glue::landing::land_bytes(path, &sealed).map_err(|t| Fault::of_landing(t))
 }
 
 fn store(t: zikaron_store::Trouble) -> Fault {
@@ -371,6 +397,9 @@ pub fn machine_doc(rel: &str) -> Option<Doc> {
     }
     if rel == format!("{}/{}", crate::recordsx::DIR, crate::recordsx::FILE) {
         return Some(Doc::Records);
+    }
+    if rel == format!("{}/{}", crate::checkedx::DIR, crate::checkedx::FILE) {
+        return Some(Doc::Checked);
     }
     None
 }
@@ -1449,7 +1478,9 @@ pub fn stage_fresh_home(root: &Path) -> Result<crate::home::Home, Fault> {
     Ok(home)
 }
 
-/// Copy every file under `from` to the same place under `to` (flushed to disk).
+/// Copy every file under `from` to the same place under `to` (flushed to disk). A file readable by its owner
+/// only is copied into a file created owner-only (`zikaron_os::owner_only`): a system whose copy does not carry
+/// the access rule (an access list) would otherwise leave the copy readable by others.
 fn copy_tree(from: &Path, to: &Path) -> Result<(), Fault> {
     let mut files = Vec::new();
     walk(from, "", &mut files);
@@ -1459,8 +1490,17 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), Fault> {
             std::fs::create_dir_all(d).map_err(|e| classify(&e, &d.display().to_string()))?;
         }
         let say = |e: std::io::Error| classify(&e, &dest.display().to_string());
-        std::fs::copy(&at, &dest).map_err(say)?;
-        std::fs::File::open(&dest).and_then(|f| f.sync_all()).map_err(say)?;
+        if zikaron_os::is_owner_only(&at).map_err(|e| classify(&e, &at.display().to_string()))? {
+            let mut o = zikaron_os::Options::new();
+            o.write(true).create(true).truncate(true);
+            zikaron_os::owner_only(&mut o);
+            let mut out = o.open(&dest).map_err(say)?;
+            let mut src = std::fs::File::open(&at).map_err(|e| classify(&e, &at.display().to_string()))?;
+            std::io::copy(&mut src, &mut out).map_err(say)?;
+        } else {
+            std::fs::copy(&at, &dest).map_err(say)?;
+        }
+        zikaron_os::sync_file(&dest).map_err(say)?;
     }
     Ok(())
 }
@@ -1980,7 +2020,7 @@ pub fn after_open() {
         Ok(m) => o.migrated = m.sealed,
         Err(f) => o.troubles.push(f),
     }
-    match crate::identity::settle_primary() {
+    match crate::register::read().and_then(|listed| crate::identity::settle_primary(listed.as_ref())) {
         Ok(p) => o.primary = p,
         Err(f) => o.troubles.push(f),
     }

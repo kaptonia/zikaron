@@ -108,6 +108,31 @@ pub fn three(v: Value) -> Three {
     }
 }
 
+/// One depth cell as a page says it: a value, "none", or "chain not read".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said<T> {
+    Is(T),
+    Nothing,
+    ChainUnread,
+}
+
+/// The three depth cells as a page says them, for a pass that did or did not leave a chain unread (`unread`:
+/// no chain read, or a network left out). A cell that reads "none" or falls short may have its anchor on the
+/// chain not read, so with `unread` it says the chain was not read; a value read on the chains that were read
+/// shows as it is. Without `unread`, and for a work this ledger does not hold (no chain could change that),
+/// every cell is as the kit crate read it. One rule for every page.
+pub fn said(t: &Three, unread: bool) -> (Said<u64>, Said<u64>, Said<(u64, u64)>) {
+    let unread = unread && t.found;
+    let first = match t.earliest {
+        Some(at) => Said::Is(at),
+        None if unread => Said::ChainUnread,
+        None => Said::Nothing,
+    };
+    let deepest = if unread && t.earliest.is_none() { Said::ChainUnread } else { Said::Is(t.deepest) };
+    let continuity = if unread && t.anchored < t.span { Said::ChainUnread } else { Said::Is((t.anchored, t.span)) };
+    (first, deepest, continuity)
+}
+
 /// Read depth once. The audit outcome comes from the core (the input assembly has one owner), the three
 /// quantities from the kit crate; this layer computes not one number.
 pub fn read(items: &[Vec<u8>], fragment: &Value, work: &str) -> Result<Three, Fault> {

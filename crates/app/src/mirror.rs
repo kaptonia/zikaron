@@ -21,17 +21,14 @@ use zikaron::hexfmt;
 use zikaron::json::{self, Value};
 use zikaron_store::EntryName;
 
-/// Manifest file name, defined once.
-pub const MANIFEST: &str = "mirror.json";
+/// The bundle's layout (manifest name, entries room, kind and version) is named once in the glue crate, where
+/// the command line reads mirrors by the same names.
+pub use zikaron_glue::mirror::{ENTRIES, KIND, MANIFEST, VERSION};
 /// The name of the bundle inside a folder, defined once: first run, settings and the test hooks all call
 /// [`bundle_in`].
 pub const STEM: &str = "ZIKARON-backup";
-pub const ENTRIES: &str = "entries";
 /// Where the vault room goes inside a bundle (the mirror also covers `grants-held/`).
 pub const HELD: &str = "held";
-/// Bundle kind name. A product name, not a law domain, so it has no `zikaron.` prefix.
-pub const KIND: &str = "desk-mirror";
-pub const VERSION: u64 = 1;
 
 /// Reading after writing a bundle.
 pub struct Made {
@@ -71,19 +68,6 @@ fn sha_hex(b: &[u8]) -> String {
     hexfmt::encode(&zikaron::cryptox::sha256(b)).trim_start_matches("0x").to_string()
 }
 
-fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
-    match v {
-        Value::Obj(m) => m.iter().find(|(n, _)| n == k).map(|(_, x)| x),
-        _ => None,
-    }
-}
-
-fn text(v: &Value, k: &str) -> String {
-    match field(v, k) {
-        Some(Value::Str(s)) => s.clone(),
-        _ => String::new(),
-    }
-}
 
 /// Where one holder's seat bundle lands inside a folder: `<chosen>/ZIKARON-backup/<address>/<seat>`. The only
 /// place this name is built (first run, settings and the test hooks take it from here). A second address or seat
@@ -182,7 +166,7 @@ pub fn belongs(bundle: &std::path::Path, our_root: &str) -> Belongs {
 /// The id of the identity on this machine now (`None` when unreadable: then only roots are compared, as
 /// before).
 fn our_owner() -> Option<String> {
-    crate::identity::now_row_listed().ok().flatten().map(|(row, _)| row.id)
+    crate::register::now_row_listed().ok().flatten().map(|(row, _)| row.id)
 }
 
 /// This ledger's root (the genesis author). Empty with no root yet: the grantee side often has no ledger but
@@ -203,7 +187,8 @@ fn our_root(home: &Home) -> Result<String, Fault> {
 /// The location must be a full path: empty or relative is refused at once. An empty place gets a new bundle;
 /// an earlier bundle of this ledger is compared entry by entry by digest, new entries are added and a new
 /// manifest written; another ledger's bundle or junk is refused, saying which.
-pub fn export(home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fault> {
+/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fault> {
     // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
     // are traced too.
     crate::trace::mark(crate::feature::Feature::H4);
@@ -243,7 +228,7 @@ pub fn export(home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fau
                 std::fs::remove_file(&at).map_err(|e| classify(&e, &at.display().to_string()))?;
             }
             zikaron_glue::landing::land_bytes(&at, bytes)
-                .map_err(|t| Fault::landing(t.code(), t.subject()))?;
+                .map_err(|t| Fault::of_landing(t))?;
             added += 1;
         }
         rows.push(Value::Obj(vec![
@@ -270,7 +255,7 @@ pub fn export(home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fau
                 std::fs::remove_file(&at).map_err(|e| classify(&e, &at.display().to_string()))?;
             }
             zikaron_glue::landing::land_bytes(&at, &bytes)
-                .map_err(|t| Fault::landing(t.code(), t.subject()))?;
+                .map_err(|t| Fault::of_landing(t))?;
         }
         held_rows.push(Value::Obj(vec![
             ("bytes".into(), Value::Int(bytes.len() as u64)),
@@ -300,7 +285,7 @@ pub fn export(home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fau
         std::fs::remove_file(&manifest).map_err(|e| classify(&e, &manifest.display().to_string()))?;
     }
     zikaron_glue::landing::land_bytes(&manifest, &json::canon_bytes(&sheet))
-        .map_err(|t| Fault::landing(t.code(), t.subject()))?;
+        .map_err(|t| Fault::of_landing(t))?;
     Ok(Made {
         root: out.to_path_buf(),
         entries: survey.items.len(),
@@ -314,40 +299,18 @@ pub fn export(home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fau
 pub fn inspect(bundle: &std::path::Path) -> Result<Sheet, Fault> {
     let p = bundle.join(MANIFEST);
     let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
-    let v = json::parse(&bytes)
+    // The manifest is read by the one reading the command line shares (`zikaron_glue::mirror::sheet`).
+    let s = zikaron_glue::mirror::sheet(&bytes)
         .map_err(|t| Fault::known(Known::MirrorShape, crate::lang::filln(crate::lang::Key::Tail185, &[&(MANIFEST).to_string(), &format!("{:?}", t)])))?;
-    let kind = text(&v, "kind");
-    let version = match field(&v, "version") {
-        Some(Value::Int(n)) => *n,
-        _ => 0,
-    };
-    let mut rows = Vec::new();
-    if let Some(Value::Arr(a)) = field(&v, "entries") {
-        for r in a {
-            rows.push(Row {
-                name: text(r, "name"),
-                sha256: text(r, "sha256"),
-                bytes: match field(r, "bytes") {
-                    Some(Value::Int(n)) => *n,
-                    _ => 0,
-                },
-            });
-        }
-    }
-    let mut held = Vec::new();
-    if let Some(Value::Arr(a)) = field(&v, "held") {
-        for r in a {
-            held.push(Row {
-                name: text(r, "path"),
-                sha256: text(r, "sha256"),
-                bytes: match field(r, "bytes") {
-                    Some(Value::Int(n)) => *n,
-                    _ => 0,
-                },
-            });
-        }
-    }
-    Ok(Sheet { kind, version, root: text(&v, "root"), rows, held, owner: text(&v, "owner") })
+    let row = |r: zikaron_glue::mirror::Row| Row { name: r.name, sha256: r.sha256, bytes: r.bytes };
+    Ok(Sheet {
+        kind: s.kind,
+        version: s.version,
+        root: s.root,
+        rows: s.rows.into_iter().map(row).collect(),
+        held: s.held.into_iter().map(row).collect(),
+        owner: s.owner,
+    })
 }
 
 impl Sheet {

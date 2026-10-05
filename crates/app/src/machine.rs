@@ -16,9 +16,12 @@
 //! (`zh` or `en`), which the passcode gate speaks before unlocking. The file stays plain: the passcode gate
 //! reads the appearance and the language before unlocking, and none of its cells is something the person wrote. `appearance` is how the window looks on this machine (`light`, `dark`, or `system`
 //! to follow the operating system); absent means light.
-//! `network` is the chosen row's name (a row of `deploy::KNOWN`, or `deploy::CUSTOM` "custom"); absent means
-//! not chosen yet (older files with only the auto-lock cell still open). Unknown members are kept as they
-//! are, so changing one cell does not erase others. No file means all defaults (a machine whose settings were
+//! `network` is the name the wizard's network step last chose (a row of `deploy::KNOWN`, or `deploy::CUSTOM`
+//! "custom"); absent means not chosen yet (older files with only the auto-lock cell still open). It decides only
+//! which choice the wizard's network step and the new-identity sheet select first: what network a home has is
+//! decided by the identity that made it, or by the person in settings (`identity::Row::network`). Unknown
+//! members are kept as they are, so changing one cell does not erase others (an older file's `custom`, the
+//! network once filled in by hand for the whole machine, stays as it was and is read by nothing). No file means all defaults (a machine whose settings were
 //! never changed). A wrong shape, or an auto-lock value outside the closed table, is refused by name as
 //! `MACHINE_SHAPE`, and not one byte of the file changes; the shell locks by the default and hands the
 //! refusal to the face (never silently "never lock").
@@ -91,8 +94,8 @@ pub struct Machine {
     pub auto_lock_secs: u64,
     /// The last whole-machine backup; `None` means never.
     pub backup: Option<Backed>,
-    /// The chosen network (row name, or `deploy::CUSTOM`); `None` means not chosen yet. Chain id and contract
-    /// literals always come from the table.
+    /// The network the wizard last chose (row name, or `deploy::CUSTOM`); `None` means not chosen yet. Only
+    /// which choice is selected first: no home takes its network from here.
     pub network: Option<String>,
     /// The chosen appearance, one of [`APPEARANCES`]; `None` means never chosen (light).
     pub appearance: Option<String>,
@@ -273,17 +276,29 @@ pub fn to_bytes(m: &Machine) -> Result<Vec<u8>, Fault> {
     }
     members.push((member::SHAPE.into(), Value::Str(SHAPE.to_string())));
     members.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(json::canon_bytes(&Value::Obj(members)))
+    let bytes = json::canon_bytes(&Value::Obj(members));
+    // Judged by the reader that reads it back (a number past the canonical integer ceiling, for one, would
+    // write and then never read): refused by name, and the file is untouched.
+    if let Err(t) = json::parse(&bytes) {
+        return Err(Fault::known(Known::MachineShape, format!("{t:?}")));
+    }
+    Ok(bytes)
 }
 
 /// Names the network cell accepts: a table row, or "custom".
 fn network_ok(n: &str) -> bool {
-    n == crate::deploy::CUSTOM || crate::deploy::named(n).is_some()
+    crate::deploy::is_choice(n)
 }
 
 /// The chosen row (only when a table row was chosen; not chosen or "custom" gives `None`).
 pub fn chosen(m: &Machine) -> Option<&'static crate::deploy::Deployment> {
     m.network.as_deref().and_then(crate::deploy::named)
+}
+
+/// The choice selected first in the wizard's network step and the new-identity sheet: what this machine last
+/// chose, or the table's default row when it never chose.
+pub fn pick(m: &Machine) -> String {
+    m.network.clone().unwrap_or_else(|| crate::deploy::DEFAULT.to_string())
 }
 
 /// Whether idle time is up. A pure function: the last human input at `last`, now at `now` (same clock,

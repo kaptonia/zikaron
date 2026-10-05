@@ -382,17 +382,13 @@ fn lock_book() -> Result<Held, Fault> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| classify(&e, &d.display().to_string()))?;
     }
-    let mut o = std::fs::OpenOptions::new();
+    let mut o = zikaron_os::Options::new();
     o.create(true).read(true).write(true).truncate(false);
     // The lock file is owner-only too (like the vault file and the registry). It holds no bytes, but anyone
-    // who can open it can lock it: `flock` needs only an open descriptor, read-only included. At 0644,
+    // who can open it can lock it: a lock needs only an open handle, read-only included. Readable by others,
     // another account on the same machine could hold the lock forever while this side waits, and the passcode
     // gate would hang.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
+    zikaron_os::owner_only(&mut o);
     let file = o.open(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
     if !crate::lock::grab_waiting(&file) {
         return Err(Fault::known(Known::KeyboxLocked, p.display().to_string()));
@@ -401,12 +397,7 @@ fn lock_book() -> Result<Held, Fault> {
 }
 
 fn rand(n: usize) -> Result<Vec<u8>, Fault> {
-    use std::io::Read;
-    let mut h = std::fs::File::open(crate::key::ENTROPY)
-        .map_err(|e| classify(&e, crate::key::ENTROPY))?;
-    let mut b = vec![0u8; n];
-    h.read_exact(&mut b).map_err(|e| classify(&e, crate::key::ENTROPY))?;
-    Ok(b)
+    crate::key::random(n)
 }
 
 fn bare(b: &[u8]) -> String {
@@ -942,6 +933,10 @@ fn upgrade(book: &mut Book, mk: &[u8; MASTER_BYTES]) -> bool {
 /// primary's id is sealed under the master key and marked with its secret's mark; the one recovery seal is
 /// relabelled. Not one key is lost: a slot that does not open stops the upgrade and the file stays as it was.
 /// A vault whose primary is not settled yet (older vaults: [`settle_primary`] runs first) waits.
+///
+/// Settling the primary is [`settle_primary`]'s alone (it chooses it and drops every other identity's seal);
+/// this upgrade only relabels the one seal left. A vault still holding a seal that is not its primary's
+/// waits for it, so no second place decides which seal stays.
 fn upgrade_v3(book: &mut Book, mk: &[u8; MASTER_BYTES]) -> Result<bool, Fault> {
     if book.form == Form::V3 {
         return Ok(false);
@@ -950,6 +945,10 @@ fn upgrade_v3(book: &mut Book, mk: &[u8; MASTER_BYTES]) -> Result<bool, Fault> {
         return Ok(false);
     }
     if book.primary.is_none() && !book.recovery.is_empty() {
+        return Ok(false);
+    }
+    let settled = book.primary.as_ref().and_then(|p| p.id.clone());
+    if book.recovery.iter().any(|(label, _)| settled.as_deref().map(|p| !label.eq_ignore_ascii_case(p)).unwrap_or(true)) {
         return Ok(false);
     }
     let kdf = kdf_of(book);
@@ -971,8 +970,6 @@ fn upgrade_v3(book: &mut Book, mk: &[u8; MASTER_BYTES]) -> Result<bool, Fault> {
         let sealed = seal_slot(mk, &name, kdf, Form::V3, &slot_plain(account, secret))?;
         slots.push(Slot { name, sealed, tag: Some(member_tag(secret, &marks)) });
     }
-    // The primary as the older shape names it (plain), before it is sealed below.
-    let primary_id = book.primary.as_ref().and_then(|p| p.id.clone());
     if let Some(pr) = book.primary.as_mut() {
         let id = pr.id.clone().unwrap_or_default();
         // The primary's secret: its seed slot (a recovery-word identity) or its own key's slot (a key file).
@@ -999,10 +996,8 @@ fn upgrade_v3(book: &mut Book, mk: &[u8; MASTER_BYTES]) -> Result<bool, Fault> {
     for (_, s) in opened.iter_mut() {
         wipe(s);
     }
-    // Shape 3 holds the primary's seal only: of an older vault's seals (labelled by id) the primary's is kept
-    // and relabelled; any other identity's is dropped (it could open the vault through a secret that is not
-    // the primary's, and a second seal is not a shape 3 vault).
-    book.recovery.retain(|(label, _)| primary_id.as_deref().map(|p| label.eq_ignore_ascii_case(p)).unwrap_or(false));
+    // Shape 3 holds the primary's seal only, labelled as the primary's: the one seal left (labelled by id,
+    // checked above to be the primary's) is relabelled.
     for (label, s) in book.recovery.iter_mut() {
         *label = PRIMARY_LABEL.to_string();
         s.bind = Some(bind_of(mk, Kind::Recovery, PRIMARY_LABEL, kdf, s));
@@ -1435,11 +1430,23 @@ pub fn primary_kind() -> Result<Option<PrimaryKind>, Fault> {
 /// identity, or the earliest one when there is no recovery-word identity. Every other recovery seal is
 /// dropped. Answers the chosen id when this pass settled it (the screen says once that only the primary
 /// identity recovers the passcode); `None` when already settled or when there is no identity with a seal.
+///
+/// The one place an older vault's primary is settled: a vault that recorded its primary while other
+/// identities' seals were still written has those dropped here too (the shape upgrade only relabels).
 pub fn settle_primary(rows: &[(String, PrimaryKind, String)]) -> Result<Option<String>, Fault> {
     let _mk = master_now()?;
     let held = lock_book()?;
     let Some(mut book) = read_book()? else { return Ok(None) };
-    if book.primary.is_some() {
+    if let Some(pr) = book.primary.as_ref() {
+        // Recorded by id (the older shapes): every seal not its own goes. Shape 3 seals the id and holds one
+        // seal labelled as the primary's; nothing to drop there.
+        if let Some(id) = pr.id.clone() {
+            let before = book.recovery.len();
+            book.recovery.retain(|(x, _)| x.eq_ignore_ascii_case(&id));
+            if book.recovery.len() != before {
+                write_book(&held, &book)?;
+            }
+        }
         return Ok(None);
     }
     let sealed: Vec<&(String, PrimaryKind, String)> =

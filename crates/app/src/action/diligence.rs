@@ -59,21 +59,32 @@ pub(super) fn diligence(
     // last two, and even when empty the first two are tried. None at all means "not obtained", with each
     // failing level named.
     let shelf = shelf_of(shell, dir.trim());
+    let nets = read_nets_now()?;
     shell.diligence = None;
     Ok(shell.tasks.spawn(Kind::Diligence, move || {
         let found = crate::supplyx::find_book(&shelf, &who.hex());
         let bytes = found.supply.as_ref().map(|s| s.items.clone()).unwrap_or_default();
         // The fragment is scanned once: label, anchor count and quantities all speak of the same pass.
         crate::task::stage_at(Kind::Diligence, 0);
-        let g = crate::readerx::basis_for(&to_head(&eps, g)?, &who, &bytes);
-        crate::task::stage_at(Kind::Diligence, 1);
-        let scanned = crate::auditx::scan_once(&eps, &g)?;
+        let (g, scanned, missed) = if nets.is_empty() {
+            let g = crate::readerx::basis_for(&to_head(&eps, g)?, &who, &bytes);
+            crate::task::stage_at(Kind::Diligence, 1);
+            let scanned = crate::auditx::scan_once(&eps, &g)?;
+            (g, scanned, Vec::new())
+        } else {
+            // Across networks: each chain's head is asked with its window.
+            crate::task::stage_at(Kind::Diligence, 1);
+            let (scanned, missed) = crate::readerx::scan_wide(&eps, &g, &who, &bytes, &nets)?;
+            (g, scanned, missed)
+        };
         crate::task::stage_at(Kind::Diligence, 2);
-        let book = crate::readerx::read_scanned(&scanned, &who, &bytes)?;
+        let mut book = crate::readerx::read_scanned(&scanned, &who, &bytes)?;
+        crate::readerx::unread_where_missed(&mut book, &missed);
         let mut r = crate::diligx::assemble(book, &scanned.fragment, &bytes, &work, window)?;
         r.from = found.supply.as_ref().map(|s| (s.level, s.place.clone()));
         r.files = found.supply.as_ref().and_then(|s| s.files);
         r.misses = found.misses;
+        r.missed = missed;
         // The chain's current time (the latest among this chain's endpoints): grant badges need it; without
         // it they still show "no reading".
         r.now = crate::chainx::head_time(&eps, g.chain).ok().map(|(t, _, _)| t);

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
@@ -21,8 +21,12 @@ zikaron = { path = "../zikaron" }
 zikaron-kit = { path = "../zikaron-kit" }
 zikaron-store = { path = "../zikaron-store" }
 zikaron-anchor = { path = "../zikaron-anchor" }
+# The one transport: https nodes and remote files go through it (`chainx::Https`); TLS is not built here.
+zikaron-net = { path = "../zikaron-net" }
 # The only exit for writing files (the landing seam). A second atomic write here would be a copy.
 zikaron-glue = { path = "../zikaron-glue" }
+# The operating system's four (entropy, owner-only files, syncing, replacing rename): one place per system.
+zikaron-os = { path = "../zikaron-os" }
 # Third party: the egui family. On the app side only the `window` module touches it.
 eframe = { version = "0.31.1", default-features = false, features = ["glow"] }
 # Third-party cryptography: on the app side only the `cryptx` module touches these.
@@ -38,11 +42,6 @@ k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 # local data key from the master key. Also confined to `cryptx`.
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 hkdf = "0.12"
-# TLS for https nodes: `rustls` with `ring` cryptography, roots from `webpki-roots` (the Mozilla root table is
-# compiled in and the system trust store is not read, so one binary trusts the same roots on every machine).
-# Certificate chain and host name are always verified. Also confined to `cryptx`.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "1"
 
 # H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
 # portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.
@@ -52,3 +51,12 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 log = "0.4"
 # The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).
 winit = { version = "0.30", default-features = false, features = ["x11"] }
+
+# H11 · Windows only: the file dialog is `rfd` over the system's own dialog. It enters through the `platform`
+# module; the macOS and Linux builds are unchanged.
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = { version = "0.17", default-features = false }
+
+# The third-party notices generator the build script runs (`build.rs`); the packages use the same one.
+[build-dependencies]
+zikaron-pack = { path = "../zikaron-pack" }

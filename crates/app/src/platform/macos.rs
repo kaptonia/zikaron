@@ -3,7 +3,7 @@
 //! system gives this user (`confstr(_CS_DARWIN_USER_TEMP_DIR)`), whatever `TMPDIR` says. Asked once, modally,
 //! in the frame, starting no thread and no child process.
 
-pub(super) use super::unix::{home_dir, lock_now, lock_wait, zone_rules};
+pub(super) use super::unix::{app_data_dir, home_dir, lock_now, lock_wait, say_without_window, zone_rules};
 
 use std::ffi::c_void;
 

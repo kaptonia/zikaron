@@ -26,14 +26,14 @@ pub fn start(shell: &mut Shell) -> String {
 /// (whether or not it opened; an empty string when there is nothing to open); the window prefills the "open
 /// data directory" cell with it.
 pub fn boot_home(shell: &mut Shell) -> String {
-    let landed = match crate::identity::land_at_boot() {
+    let landed = match crate::register::change_listed(crate::identity::land_at_boot).map(Option::flatten) {
         Ok(l) => l,
         Err(f) => {
             shell.faults.push(f);
             None
         }
     };
-    let root = match crate::identity::home_now() {
+    let root = match crate::register::read().and_then(|listed| crate::identity::home_now(listed.as_ref())) {
         Ok(Some(root)) => root.display().to_string(),
         Ok(None) => String::new(),
         Err(f) => {
@@ -85,6 +85,17 @@ pub fn reopen_here(shell: &mut Shell, root: &std::path::Path) -> Result<crate::l
     open_home_at(shell, &root.display().to_string(), false)
 }
 
+/// "Change data folder": the person points at a folder, and a home opens there only when it is a home already
+/// or nothing is there (`home::may_open_at`); anything else is refused by name with nothing written (a
+/// command-line ledger folder is taken over by adopting it in place, not by opening it as a home). Only the
+/// person's choice is asked this: a home the product opens by itself (the one remembered at start, a seat's)
+/// is the product's own, and a stray file a person later drops in it must not lock them out of their data.
+pub(super) fn change_home(shell: &mut Shell, root: &str) -> Result<crate::lock::Mode, crate::fault::Fault> {
+    let at = crate::home::landing(root)?;
+    crate::home::may_open_at(&at)?;
+    open_home(shell, root)
+}
+
 pub(super) fn open_home(shell: &mut Shell, root: &str) -> Result<crate::lock::Mode, crate::fault::Fault> {
     // The place the person gave is checked for shape first (`home::landing`): empty or relative is refused
     // before laying out rooms or writing the pointer.
@@ -95,7 +106,7 @@ pub(super) fn open_home(shell: &mut Shell, root: &str) -> Result<crate::lock::Mo
     // seat home from the register at startup goes through here too, and writing here would change the
     // machine pointer to that identity's home on every open. The pointer only follows a home the person chose
     // without an identity register.
-    let identity_home = crate::identity::now_row_listed()
+    let identity_home = crate::register::now_row_listed()
         .ok()
         .flatten()
         .and_then(|(row, seat)| row.home(seat))
@@ -122,9 +133,6 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
     // judging itself a reader.
     let lock = if crate::lock::holds_writer(shell.lock.as_ref(), &home) { None } else { Some(crate::lock::take(&home)?) };
     let mode = lock.as_ref().map(|l| l.mode()).unwrap_or(crate::lock::Mode::Writer);
-    // A new home without a settings file yet: after opening, the basis is taken from the row this machine
-    // chose, see below.
-    let fresh = !home.dir(crate::home::Slot::Settings).join(crate::settings::FILE).exists();
     // Steps that can fail come before the shell is touched: unreadable settings or an unwritable pointer
     // leave with the shell untouched. Loading the new home's settings before writing the pointer would, on
     // pointer failure, show the old home while holding the new home's settings, and the next settings change
@@ -147,20 +155,28 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
         // Moving to another home: the new lock is settled, and the old lock is released on replacement.
         shell.lock = Some(l);
     }
-    // A new home takes its basis only through this path: when a writer opens a home with no settings file and
-    // this machine chose a table row, the basis and nodes are filled from that row and saved once; once the
-    // person changes this home, the next open has a settings file and nothing is filled back. Not chosen,
-    // chose "custom", or merely a reader: nothing is filled, and the face says plainly that no chain is
-    // configured.
-    if fresh && mode.writable() {
-        if let Some(d) = crate::machine::chosen(&shell.machine) {
-            // A failure after the shell was touched returns no error (the other half of the statement above):
-            // the home is already the new one and the lock is in hand, so returning an error would make the
-            // face say "opening the home failed" while the app already stands in the new home. Failing to
-            // fill records a trouble, and the face says plainly this home has no chain configured yet.
-            if let Err(f) = adopt_deployment(shell, d) {
-                shell.trouble(f);
-            }
+    // Three writes a writer makes on opening, and a reader never does (a reader's home is another writer's),
+    // nor does opening old data to read (`view_old`: the set-aside data is only looked at, whoever holds its
+    // lock). Each failure after the shell was touched returns no error: the home is already the new one and
+    // the lock is in hand, so returning an error would make the face say "opening the home failed" while the
+    // app already stands in the new home. A failure records a trouble, and the face says plainly what the home
+    // has.
+    let old_data = shell.home.as_ref().map(|h| shell.aside.iter().any(|a| crate::home::same_place(&a.path, h.root()))).unwrap_or(false);
+    if mode.writable() && !old_data {
+        // Nodes a table row shipped with before, letter for letter: the row's nodes of today, saved once.
+        if let Err(f) = renew_shipped_nodes(shell) {
+            shell.trouble(f);
+        }
+        // Identities made before they chose a network: recorded this machine's row once.
+        if let Err(f) = record_machine_network(shell) {
+            shell.trouble(f);
+        }
+        // A home without a network takes the network of the identity it belongs to (both seats of an identity
+        // take the same one); once it has one, nothing is filled back. A home no identity owns, an identity
+        // that chose none, or chose "custom" with nothing filled in yet: nothing is filled, and the face says
+        // plainly that no network is configured.
+        if let Err(f) = take_identity_network(shell) {
+            shell.trouble(f);
         }
     }
     // Measure once after opening: the face cells then have real numbers, and the disk walk happens in the
@@ -180,7 +196,64 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
     Ok(mode)
 }
 
-pub(super) fn migrate(shell: &mut Shell, to: &str) -> Result<String, crate::fault::Fault> {
+/// The open home's nodes are an earlier pair of a known row (`deploy::shipped_before`): they become that row's
+/// nodes of today, saved once; every other cell stays. Nodes that differ in any letter or order were set by a
+/// person and are not touched.
+fn renew_shipped_nodes(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
+    let Some(d) = crate::deploy::shipped_before(&shell.settings.endpoints) else { return Ok(()) };
+    let eps: Vec<crate::chainx::Endpoint> = d.endpoint_specs().iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
+    shell.commit_settings(|s| s.endpoints = eps.iter().map(|e| e.spec()).collect())?;
+    endpoints_changed(shell, eps);
+    Ok(())
+}
+
+/// Rows made before identities chose a network record none; their homes took the row this machine chose when
+/// they were first opened. Each such row is recorded that row, once (`identity::backfill_network` records
+/// only on a row with none): a seat not yet opened then takes it like any identity's, and a later choice on
+/// this machine changes no row. A machine that chose none, or chose "custom", records nothing; nor does a row
+/// whose homes already hold another chain (recording it would put the two seats on two chains).
+fn record_machine_network(shell: &Shell) -> Result<(), crate::fault::Fault> {
+    let Some(d) = shell.machine.network.as_deref().and_then(crate::deploy::named) else { return Ok(()) };
+    crate::register::change_listed(|reg| {
+        crate::identity::backfill_network(reg, d, |row| row.seats().into_iter().filter_map(|s| row.home(s)).all(|h| holds_no_other_chain(&h, d)));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// A home that is not there yet, or whose settings name no chain, or name this row's chain and registry. A home
+/// whose settings cannot be read counts as holding another: nothing is recorded over what cannot be seen.
+fn holds_no_other_chain(at: &std::path::Path, d: &crate::deploy::Deployment) -> bool {
+    if !at.exists() {
+        return true;
+    }
+    match crate::home::Home::open(at).and_then(|h| crate::settings::Settings::read(&h)) {
+        Ok(s) => s.chain_id.is_none() || (s.chain_id == Some(d.chain_id) && s.registry == Some(d.registry_address())),
+        Err(_) => false,
+    }
+}
+
+/// The open home has no network (no chain, no registry, no nodes) and an identity on this machine owns it:
+/// it takes that identity's network (`identity::Row::network_now`). A home with a network is never changed
+/// here: it may hold a ledger anchored on that chain.
+fn take_identity_network(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
+    let s = &shell.settings;
+    if s.chain_id.is_some() || s.registry.is_some() || !s.endpoints.is_empty() {
+        return Ok(());
+    }
+    let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return Ok(()) };
+    let Some(reg) = crate::register::read()? else { return Ok(()) };
+    let Some((row, _)) = crate::identity::owner_of(&reg, &root) else { return Ok(()) };
+    match row.network_now() {
+        Some(n) => adopt_network(shell, n),
+        None => Ok(()),
+    }
+}
+
+/// The frame half before a move: whether this side may move the home, and where to (checked, not written).
+/// Answers the old root and the landing place; the copy runs in the background (`Kind::Migrate`, with
+/// [`copy_home`]) and [`migrate_landed`] follows it where it lands.
+pub(super) fn migrate_start(shell: &Shell, to: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), crate::fault::Fault> {
     // Moving the home asks "am I this home's writer".
     //
     // With no gate at all, when two instances have the home open, the reader side could copy the whole tree,
@@ -215,8 +288,41 @@ pub(super) fn migrate(shell: &mut Shell, to: &str) -> Result<String, crate::faul
             crate::lang::t(crate::lang::Key::Tail017).to_string(),
         ));
     };
-    let old = home.root().to_path_buf();
-    let moved = crate::settings::migrate(home, &target)?;
+    // A new place at or under this home is refused here, before the task starts and the home freezes
+    // (`settings::migrate` asks the same on its own, for its other callers).
+    crate::settings::outside_home(home.root(), &target)?;
+    Ok((home.root().to_path_buf(), target))
+}
+
+/// Starting a move: the checks (`migrate_start`), then the whole tree copied as a task (`Kind::Migrate`) with the
+/// home frozen meanwhile (`swapping`), so nothing written to it now could end up only in the old place. The lock,
+/// the register and the shell follow where it lands (`migrate_landed`).
+pub(super) fn migrate_begin(shell: &mut Shell, to: &str) -> Applied {
+    match migrate_start(shell, to) {
+        Ok((old, target)) => match shell.tasks.spawn(Kind::Migrate, move || copy_home(&old, &target)) {
+            Spawned::Started => {
+                shell.swapping = true;
+                Applied::Started(Kind::Migrate)
+            }
+            Spawned::InFlight => Applied::Refused(Kind::Migrate),
+        },
+        Err(f) => shell.trouble(f),
+    }
+}
+
+/// The background half of a move: the whole tree copied to the new place and compared, then the pointer written
+/// (`settings::migrate`; copy first, pointer after, as always). Not one byte of the old place changes.
+pub(super) fn copy_home(old: &std::path::Path, target: &std::path::Path) -> Result<crate::task::Done, crate::fault::Fault> {
+    let from = crate::home::Home::open(old)?;
+    let moved = crate::settings::migrate(&from, target)?;
+    Ok(crate::task::Done::Copied { old: old.to_path_buf(), root: moved.root().to_path_buf() })
+}
+
+/// The frame half after a move copied the home: the lock moves to the new home, the register's cell and the
+/// record bundle index follow, and the shell opens it.
+pub(super) fn migrate_landed(shell: &mut Shell, old: &std::path::Path, root: &std::path::Path) -> Result<String, crate::fault::Fault> {
+    let old = old.to_path_buf();
+    let moved = crate::home::Home::open(root)?;
     let root = moved.root().display().to_string();
     // Not one byte of the old place changes: the person deletes it after moving. The lock moves to the new
     // home.
@@ -226,7 +332,7 @@ pub(super) fn migrate(shell: &mut Shell, to: &str) -> Result<String, crate::faul
     // shell is touched that can fail: if any step before it fails, the register and shell still point to the
     // old place; if it fails itself, the new lock is released with this frame and the shell keeps the old
     // place open, so both sides still agree.
-    crate::identity::rehome(&old, moved.root())?;
+    crate::register::change_listed(|reg| Ok(crate::identity::rehome(reg, &old, moved.root())))?;
     // After the whole move succeeds, record bundle index rows whose paths are under the old home move to the
     // new home. Failure does not undo the move (the home has moved and the shell must follow); the refusal
     // goes to the trouble bar and the index keeps pointing at the old place (not one byte of it changed, and

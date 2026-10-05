@@ -148,6 +148,8 @@ pub struct Read {
     pub files: Option<usize>,
     /// Which levels failed on the way, each named.
     pub misses: Vec<(crate::supplyx::Level, crate::fault::Fault)>,
+    /// Networks this pass could not read (`widex`), each named; empty with no read-only network.
+    pub missed: Vec<crate::widex::Missed>,
 }
 
 impl Read {
@@ -189,6 +191,7 @@ pub fn assemble(
     };
     let clash = double_sale(&book.grants, &work, window);
     Ok(Read {
+        missed: Vec::new(),
         latest: book.latest,
         who: book.who,
         anchors: book.anchors,
@@ -289,7 +292,7 @@ pub fn snapshot(r: &Read, to: &std::path::Path) -> Result<usize, Fault> {
     }
     let bytes = zikaron::json::canon_bytes(&snapshot_value(r));
     zikaron_glue::landing::land_bytes(to, &bytes).map_err(|t| {
-        Fault::landing(t.code(), t.subject())
+        Fault::of_landing(t)
     })?;
     Ok(bytes.len())
 }

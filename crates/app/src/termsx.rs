@@ -25,8 +25,9 @@ use crate::home::{Home, Slot};
 use std::path::{Path, PathBuf};
 use zikaron::json::Value;
 
-/// The name of this room inside the `kits` room. One name, one home.
-pub const ROOM: &str = "terms";
+/// The name of this room inside the `kits` room, the same room a grant file carries its terms in: named once, in
+/// the grant file reading (`zikaron_glue::grantfile`).
+pub use zikaron_glue::grantfile::TERMS_ROOM as ROOM;
 
 /// A grant's issuance record.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +131,7 @@ pub fn keep(home: &Home, grant: &str, terms: &str, exclusive: bool, doc: Option<
             return Err(Fault::known(Known::TermsMismatch, format!("{got} ≠ {terms}")));
         }
         let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let r = doc_rel(&terms, &name).ok_or_else(|| Fault::landing("E_BAD_PATH", &name))?;
+        let r = doc_rel(&terms, &name).ok_or_else(|| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(name.to_string())))?;
         let at = doc_path(home, &terms)?;
         if !at.exists() {
             if let Some(d) = at.parent() {

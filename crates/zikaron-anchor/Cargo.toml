@@ -1,13 +1,15 @@
 [package]
 name = "zikaron-anchor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
-# Depends only on the core. No third-party chain crates: RLP, transaction encoding, JSON-RPC transport
-# and MPT proofs are written here; cryptography goes only through the core's cryptox.
+# Depends on the core and on the one transport. No third-party chain crates: RLP, transaction encoding,
+# JSON-RPC and MPT proofs are written here; the cryptography of the chain goes only through the core's
+# cryptox, and the bytes reach a node only through zikaron-net (http and https, its one TLS configuration).
 [dependencies]
 zikaron = { path = "../zikaron" }
+zikaron-net = { path = "../zikaron-net" }
 
 # A small helper binary for exercising this crate end to end.
 [[bin]]

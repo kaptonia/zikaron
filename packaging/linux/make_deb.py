@@ -2,8 +2,8 @@
 
 Usage: make_deb.py <staged root> <control template> <version> <deb arch> <output .deb>
 
-Every file is owned by root:root with a fixed modification time, so the package carries nothing of the
-machine that built it.
+Every file is owned by root:root with one modification time (SOURCE_DATE_EPOCH, else 0), so the package
+carries nothing of the machine that built it.
 """
 
 import io
@@ -11,7 +11,7 @@ import os
 import sys
 import tarfile
 
-MTIME = 0
+MTIME = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
 
 
 def tar_gz(members):

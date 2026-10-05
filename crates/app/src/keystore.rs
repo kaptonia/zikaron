@@ -122,12 +122,7 @@ pub struct Keystore {
 }
 
 fn rand(n: usize) -> Result<Vec<u8>, Fault> {
-    use std::io::Read;
-    let mut h = std::fs::File::open(crate::key::ENTROPY)
-        .map_err(|e| crate::fault::classify(&e, crate::key::ENTROPY))?;
-    let mut b = vec![0u8; n];
-    h.read_exact(&mut b).map_err(|e| crate::fault::classify(&e, crate::key::ENTROPY))?;
-    Ok(b)
+    crate::key::random(n)
 }
 
 /// Hex without `0x` (these fields are bare in the V3 specification).

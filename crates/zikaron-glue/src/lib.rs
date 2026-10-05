@@ -1,4 +1,5 @@
-//! Glue behavior for disclosure kits.
+//! Glue behavior for disclosure kits, and the conventions the app and the command line share
+//! ([`recording`]: how a `history` entry records bytes).
 //!
 //! - Kit output ([`pack`], [`select`], [`tidy`]): choose entries, attach files and proof kits, lay out the
 //! directory and manifest by kit law §7, self-verify with the kit core, and write only on KIT_OK.
@@ -17,9 +18,13 @@ pub fn seam_v2() {
 }
 
 pub mod container;
+pub mod grantfile;
 pub mod landing;
+pub mod mirror;
 pub mod names;
 pub mod pack;
+pub mod read;
+pub mod recording;
 pub mod retraction;
 pub mod sealed;
 pub mod select;

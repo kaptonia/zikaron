@@ -5,7 +5,9 @@
 //! Members the law requires are refused by the law when missing: a `history` without `mode` or a `grant`
 //! without `terms` has no such member in its body, and the core's thirteen steps return `E_BODY_FIELD`. A
 //! second check here would be a second copy of the law, and copies drift apart; it also means every
-//! entry-writing verb has a refusal that is the law's own token.
+//! entry-writing verb has a refusal that is the law's own token. For people, that refusal carries one stderr
+//! line naming the member the law refused (the core's `entry::body_fault`, the same table) and the flags that
+//! give it ([`body_flags`]); stdout and the exit code are the law's answer alone.
 
 use crate::args::{self, Args};
 use crate::chain;
@@ -77,7 +79,7 @@ pub fn run(a: &Args) -> Answer {
         "badge" => badge_verb(a),
         "kit-export" => kit_export(a),
         "show" => show(a),
-        other => out::misuse(Reason::Args, &format!("{other} 不是一个动词。{}", args::USAGE)),
+        other => out::misuse(Reason::Args, other, out::Said::NotAVerb),
     }
 }
 
@@ -169,20 +171,41 @@ fn init(a: &Args) -> Answer {
     }
     seal_and_append(
         &dir,
+        &[],
         &author,
         EntryType::Genesis.as_str(),
         0,
         None,
         entry::shape(body),
         &key,
+        None,
     )
 }
 
 // The seven entry types.
 
 fn history(a: &Args) -> Answer {
-    a.close(&flags(&WRITE, &["content", "mark", "toolchain", "note"]));
+    a.close(&flags(&WRITE, &["content", "mark", "toolchain", "note", "file"]));
     let mut body: Vec<(Field, Value)> = Vec::new();
+    // `--file`: the record convention (`zikaron_glue::recording`, the app's own) fills `content` with the
+    // file's sha256 and `mode` with the convention's two cells. Only when given; it stands instead of the three
+    // flags it fills, never beside them.
+    if let Some(path) = a.one("file") {
+        if a.one("content").is_some() || a.one("mark").is_some() || a.one("toolchain").is_some() {
+            out::misuse(Reason::Args, "--file --content --mark --toolchain", out::Said::OneOf);
+        }
+        use zikaron_glue::recording;
+        let bytes = args::slurp(&path);
+        body.push((Field::Content, s(&hexfmt::encode(&recording::content_of(&bytes)))));
+        body.push((
+            Field::Mode,
+            entry::shape(vec![(Field::Mark, s(recording::FAMILY)), (Field::Toolchain, s(&hexfmt::encode(&recording::toolchain())))]),
+        ));
+        if let Some(x) = a.one("note") {
+            body.push((Field::NoteMd, s(&x)));
+        }
+        return write_entry(a, EntryType::History, body);
+    }
     if let Some(x) = a.one("content") {
         body.push((Field::Content, s(&x)));
     }
@@ -204,6 +227,37 @@ fn history(a: &Args) -> Answer {
         body.push((Field::NoteMd, s(&x)));
     }
     write_entry(a, EntryType::History, body)
+}
+
+/// Which flags give a body member the law refused (`entry::body_fault`'s path), per entry type: the words of
+/// the stderr line. A member no flag gives (an unlisted type has no table) says none.
+fn body_flags(kind: EntryType, member: &str) -> &'static str {
+    match (kind, member) {
+        (EntryType::Genesis, "statement_md") => "--statement",
+        (EntryType::History, "content") => "--content(或 --file)",
+        (EntryType::History, "mode") => "--mark 与 --toolchain(或 --file)",
+        (EntryType::History, "mode.mark") => "--mark",
+        (EntryType::History, "mode.toolchain") => "--toolchain",
+        (EntryType::History, "note_md") => "--note",
+        (EntryType::Grant, "grantee") => "--grantee",
+        (EntryType::Grant, "work") => "--work",
+        (EntryType::Grant, "terms") => "--terms",
+        (EntryType::Grant, "history") => "--history",
+        (EntryType::Grant, "window" | "window.from" | "window.to") => "--window-from 与 --window-to",
+        (EntryType::Grant, "scope_md") => "--scope",
+        (EntryType::Revocation, "grant") => "--grant",
+        (EntryType::Revocation, "case") => "--case",
+        (EntryType::Adoption, "attestor") => "--attestor",
+        (EntryType::Adoption, "attestation") => "--attestation",
+        (EntryType::Adoption, _) => "--anchors",
+        (EntryType::Succession, "to") => "--to",
+        (EntryType::Succession, "kind") => "--kind",
+        (EntryType::Succession, "effective") => "--effective",
+        (EntryType::Succession, "statement_md") => "--statement",
+        (EntryType::Annotation, "subject") => "--subject",
+        (EntryType::Annotation, "note_md") => "--note",
+        _ => "",
+    }
 }
 
 fn grant(a: &Args) -> Answer {
@@ -375,12 +429,14 @@ fn retract(a: &Args) -> Answer {
     };
     seal_and_append(
         &dir,
+        &items,
         &author,
         convention::ENTRY_TYPE,
         seq,
         prev.as_deref(),
         convention::body(&target, &a.one("note").unwrap_or_default()),
         &key,
+        a.one("root").as_deref(),
     )
 }
 
@@ -397,15 +453,12 @@ fn anchor(a: &Args) -> Answer {
     // others; there is no failover here, so a second url for the same chain would never be used either.
     // (Reading needs multi-endpoint agreement; that is `scan`.)
     if specs.len() != 1 {
-        out::misuse(
-            Reason::Args,
-            &format!("anchor 只往一条链上发,而给了 {} 个 --endpoint", specs.len()),
-        );
+        out::misuse(Reason::Args, "--endpoint", out::Said::OneEndpoint);
     }
     let (chain_id, url) = specs[0].clone();
     let mut ep = match zikaron_anchor::rpc::Http::new(&url) {
         Some(h) => h,
-        None => out::misuse(Reason::Args, &format!("端点只认 http://host:port:{url}")),
+        None => out::misuse(Reason::Args, &url, out::Said::EndpointScheme),
     };
     let key = a.key("key");
     let form_raw = a.need("form");
@@ -416,27 +469,26 @@ fn anchor(a: &Args) -> Answer {
     } else {
         out::misuse(
             Reason::Args,
-            &format!(
-                "--form 只认 {} 或 {}",
-                Word::Registry.as_str(),
-                Word::Bare.as_str()
-            ),
+            &form_raw,
+            out::Said::FormWord,
         )
     };
     let registry = a.one("registry").map(|x| chain::h20(&x));
     let hashes: Vec<[u8; 32]> = a.many("hash").iter().map(|x| chain::h32(x)).collect();
     let calldata = a.one("calldata").map(|x| match hexfmt::decode(&x) {
         Some(b) => b,
-        None => out::misuse(Reason::Args, "--calldata 不是十六进制"),
+        None => out::misuse(Reason::Args, "--calldata", out::Said::NotHex),
     });
     if hashes.is_empty() && calldata.is_none() {
-        out::misuse(Reason::Args, "至少要一个 --hash,或一段 --calldata");
+        out::misuse(Reason::Args, "--hash", out::Said::NeedHashOrCalldata);
     }
     // The caller sets the wait: a fixed number would impose one block time on every chain.
     let wait = std::time::Duration::from_secs(a.u64_of("wait-secs").unwrap_or(90));
-    match send::anchor(
-        &mut ep, &key, chain_id, form, registry, &hashes, calldata, wait,
-    ) {
+    // The transaction is estimated before it is sent, by the rule the app takes (`send::estimate_gas`), and
+    // carries the limit that estimate gives (`send::limit_for`). A call the endpoint refuses to estimate would
+    // revert, and one estimated above the ceiling would run out of gas, either with the fee paid: neither is
+    // broadcast.
+    match send::anchor_estimated(&mut ep, &key, chain_id, form, registry, &hashes, calldata, wait).map(|(sent, _limit)| sent) {
         // Only "included with status 1" is anchored (law §9.1). The other three states are named, and the
         // transaction hash is always present because the bytes were broadcast.
         Ok(sent) if sent.anchored() => {
@@ -467,7 +519,16 @@ fn anchor(a: &Args) -> Answer {
                 }
             }
         }
-        Err(e) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("{e:?}")))]),
+        Err(send::NotSent::Gas(no)) => match no {
+            send::NoGas::Refused(t) => out::denied(Reason::GasRefused, vec![(Key::Detail, s(&format!("{t:?}")))]),
+            send::NoGas::OverCap(n) => out::denied(Reason::GasRefused, vec![(Key::Detail, s(&format!("{n} > {}", send::GAS_LIMIT)))]),
+            // The endpoint never answered the question, or answered it in another shape: no answer about the
+            // call.
+            send::NoGas::Network(t) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("{t:?}")))]),
+            send::NoGas::NotText(v) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&String::from_utf8_lossy(&zikaron::json::canon_bytes(&v))))]),
+            send::NoGas::Unreadable(hex) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&hex))]),
+        },
+        Err(send::NotSent::Send(e)) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("{e:?}")))]),
     }
 }
 
@@ -476,7 +537,7 @@ fn scan(a: &Args) -> Answer {
     let fixtures = a.many("fixture");
     let endpoints_given = a.many("endpoint");
     if fixtures.is_empty() == endpoints_given.is_empty() {
-        out::misuse(Reason::Args, "--fixture 与 --endpoint 之中恰要一路");
+        out::misuse(Reason::Args, "--fixture --endpoint", out::Said::OneOf);
     }
     let mut runs: Vec<(String, Value)> = Vec::new();
     let thin: Vec<u64>;
@@ -571,7 +632,7 @@ fn chains_in(path: &str) -> Vec<u64> {
     use zikaron_anchor::wire::{self, Body};
     let b = args::slurp(path);
     let Some(fx) = wire::parse(&b) else {
-        out::misuse(Reason::Unreadable, &format!("{path}(不是 JSON)"))
+        out::misuse(Reason::Unreadable, path, out::Said::NotJson)
     };
     let mut out_ids = Vec::new();
     if let Some(w) = fx.member("rpc") {
@@ -599,13 +660,9 @@ fn audit_input(a: &Args) -> Result<Value, Answer> {
             Err(_) => Err(out::verbatim(Exit::Denied, audit::no_label())),
         };
     }
-    let dir = match ledger::open(&a.need("ledger")) {
-        Ok(d) => d,
-        Err(t) => return Err(ledger_trouble(&t)),
-    };
-    let items = match ledger::pile(&dir) {
+    let items = match ledger::read_any(&a.need("ledger")) {
         Ok(x) => x,
-        Err(t) => return Err(ledger_trouble(&t)),
+        Err(r) => return Err(read_refused(r)),
     };
     let root = match a.one("root") {
         Some(x) => x,
@@ -640,12 +697,21 @@ fn audit_input(a: &Args) -> Result<Value, Answer> {
 fn audit_verb(a: &Args) -> Answer {
     a.close(&flags(
         &["ledger", "root"],
-        &["input", "fragment", "unavailable"],
+        &["input", "fragment", "unavailable", "out"],
     ));
     let input = match audit_input(a) {
         Ok(v) => v,
         Err(ans) => return ans,
     };
+    // `--out`: the audit input this pass assembled (contract 11, its six members, in canonical bytes; the same
+    // shape `zka audit-input` prints) lands at that path before the core reads it, whatever the label, so a
+    // cross-ledger `chain-check` can take it as a hop's input. Landing goes the one way files land
+    // (`zikaron_glue::landing`): an existing name is refused, nothing is overwritten.
+    if let Some(p) = a.one("out") {
+        if let Err(t) = zikaron_glue::landing::land_bytes(std::path::Path::new(&p), &json::canon_bytes(&input)) {
+            return out::denied(Reason::Ledger, vec![(Key::Detail, s(t.code())), (Key::Path, s(t.subject()))]);
+        }
+    }
     match audit::audit_full(&input) {
         // The report passes through unchanged (its byte shape belongs to the core); the label only sets the
         // exit code.
@@ -682,13 +748,46 @@ fn check_grant(a: &Args) -> Answer {
         &["ledger", "root"],
         &["input", "fragment", "unavailable", "now", "grant"],
     ));
-    let grant = args::slurp(&a.need("grant"));
+    let grant = match grant_of(&args::slurp(&a.need("grant"))) {
+        Ok(g) => g,
+        Err(ans) => return ans,
+    };
     let outcome = match outcome_of(a, Some(&grant)) {
         Ok(o) => o,
         Err(ans) => return ans,
     };
     let checked = check::grant_check_with(&grant, outcome.as_ref(), a.now());
     out::verbatim(verdict_exit(checked.verdict), checked.value)
+}
+
+/// The grant to check from what `--grant` holds: entry bytes as they are; a grant file (the app's
+/// single-file bundle, recognized by its start) opened by the one reading the app uses
+/// (`zikaron_glue::grantfile`), and the grant it is for is its chain's last hop. A grant file that does not
+/// open is refused by name (`E_GRANT_FILE` with the refusing layer's token); nothing is checked.
+fn grant_of(bytes: &[u8]) -> Result<Vec<u8>, Answer> {
+    use zikaron_glue::grantfile::Refused;
+    if !zikaron_glue::container::is_container(bytes) {
+        return Ok(bytes.to_vec());
+    }
+    match zikaron_glue::grantfile::open(bytes) {
+        Ok(o) => o.hops.last().cloned().ok_or_else(|| out::denied(Reason::GrantFile, vec![(Key::Token, s("E_GRANT_FILE_CODE"))])),
+        Err(r) => {
+            let ms = match r {
+                Refused::Shape(b) => vec![(Key::Token, s(b.code())), (Key::Detail, s(&b.subject()))],
+                Refused::Kit(verdict, subject) => {
+                    let mut m = vec![(Key::Token, s(verdict.as_str()))];
+                    if let Some(x) = subject {
+                        m.push((Key::Detail, s(&x)));
+                    }
+                    m
+                }
+                Refused::NoCode(at) => vec![(Key::Token, s("E_GRANT_FILE_CODE")), (Key::Detail, s(&at))],
+                Refused::Code(r) => vec![(Key::Token, s(r.token.as_str()))],
+                Refused::Uncarried(id) => vec![(Key::Token, s("E_GRANT_FILE_CHAIN")), (Key::EntryId, s(&hexfmt::encode(&id)))],
+            };
+            Err(out::denied(Reason::GrantFile, ms))
+        }
+    }
 }
 
 /// Verdict to exit code. PARTIAL has its own code, merged into neither green nor red.
@@ -724,7 +823,7 @@ fn chain_check(a: &Args) -> Answer {
                 let bytes = args::slurp(i);
                 match json::parse_tests_1_3(&bytes) {
                     Ok(v) => (g.to_string(), Some(v)),
-                    Err(_) => out::misuse(Reason::Unreadable, i),
+                    Err(_) => out::misuse(Reason::Unreadable, i, out::Said::NotLawJson),
                 }
             }
             None => (spec.clone(), shared.clone()),
@@ -807,7 +906,7 @@ fn ack_sign(a: &Args) -> Answer {
     let fpm_id = match (&fpm_bytes, a.one("fpm")) {
         (Some(b), None) => hexfmt::encode(&zikaron_kit::doc::doc_id(b)),
         (None, Some(x)) => x,
-        _ => out::misuse(Reason::Args, "--fpm 与 --fpm-doc 之中恰要一面"),
+        _ => out::misuse(Reason::Args, "--fpm --fpm-doc", out::Said::OneOf),
     };
     let made = docs::ack(
         &recipient,
@@ -914,7 +1013,7 @@ fn badge_verb(a: &Args) -> Answer {
     let encode = a.many("encode");
     let decode = a.one("decode");
     if encode.is_empty() == decode.is_none() {
-        out::misuse(Reason::Args, "--encode 与 --decode 之中恰要一路");
+        out::misuse(Reason::Args, "--encode --decode", out::Said::OneOf);
     }
     if !encode.is_empty() {
         let entries: Vec<Vec<u8>> = encode.iter().map(|p| args::slurp(p)).collect();
@@ -1024,7 +1123,7 @@ fn kit_export(a: &Args) -> Answer {
         // `<kit path>=<disk path>`: kit paths contain no `=` (kit law), so the split is at the first one.
         let (kit_path, src) = match spec.split_once('=') {
             Some(x) => x,
-            None => out::misuse(Reason::Args, "--file 的形是 <包内路径>=<盘上的路>"),
+            None => out::misuse(Reason::Args, &spec, out::Said::FileShape),
         };
         files.push((kit_path.to_string(), args::slurp(src)));
         contents.push(kit_path.to_string());
@@ -1034,10 +1133,7 @@ fn kit_export(a: &Args) -> Answer {
         let mut parts = spec.splitn(3, '=');
         let (Some(kit_path), Some(tx), Some(src)) = (parts.next(), parts.next(), parts.next())
         else {
-            out::misuse(
-                Reason::Args,
-                "--proof 的形是 <包内路径>=<tx>=<盘上的路>",
-            )
+            out::misuse(Reason::Args, &spec, out::Said::ProofShape)
         };
         proofs.push((kit_path.to_string(), tx.to_string(), args::slurp(src)));
     }
@@ -1092,10 +1188,7 @@ fn entry_id_form(x: &str) -> String {
     let bare = x.strip_prefix("0x").unwrap_or(x);
     match zikaron_store::layout::EntryName::parse(bare) {
         Some(n) => format!("0x{}", n.as_str()),
-        None => out::misuse(
-            Reason::Args,
-            &format!("--entry 不是六十四位小写十六进制:{x}"),
-        ),
+        None => out::misuse(Reason::Args, x, out::Said::EntryNotId),
     }
 }
 
@@ -1104,25 +1197,40 @@ fn show(a: &Args) -> Answer {
     let bytes = match (a.one("path"), a.one("entry")) {
         (Some(p), None) => args::slurp(&p),
         (None, Some(id)) => {
-            let dir = match ledger::open(&a.need("ledger")) {
-                Ok(d) => d,
-                Err(t) => return ledger_trouble(&t),
-            };
-            // The file name comes from the storage naming rule (`EntryName` is the only constructor).
             let form = entry_id_form(&id);
-            let name = match zikaron_store::layout::EntryName::parse(form.trim_start_matches("0x")) {
-                Some(n) => n,
-                None => out::misuse(Reason::Args, &format!("--entry 不是六十四位小写十六进制:{id}")),
-            };
-            match dir.read_named(&zikaron_store::layout::entry_file_name(&name)) {
-                Ok(b) => {
-                    ledger::refuse_sealed(std::slice::from_ref(&b));
-                    b
+            // A mirror bundle or a record package is read by the read-only reading (`ledger::read_any`), and the
+            // entry is the one whose id the core computes as `--entry`; not there is `E_ENTRY_ABSENT`.
+            let at = a.need("ledger");
+            let p = std::path::Path::new(&at);
+            if zikaron_glue::mirror::is_bundle(p) || zikaron_glue::read::is_kit(p) {
+                let items = match ledger::read_any(&at) {
+                    Ok(x) => x,
+                    Err(r) => return read_refused(r),
+                };
+                match items.into_iter().find(|b| hexfmt::encode(&zikaron::entry::entry_id(b)) == form) {
+                    Some(b) => b,
+                    None => return out::denied(Reason::EntryAbsent, vec![(Key::EntryId, s(&form))]),
                 }
-                Err(t) => return ledger_trouble(&t),
+            } else {
+                let dir = match ledger::open(&at) {
+                    Ok(d) => d,
+                    Err(t) => return ledger_trouble(&t),
+                };
+                // The file name comes from the storage naming rule (`EntryName` is the only constructor).
+                let name = match zikaron_store::layout::EntryName::parse(form.trim_start_matches("0x")) {
+                    Some(n) => n,
+                    None => out::misuse(Reason::Args, &id, out::Said::EntryNotId),
+                };
+                match dir.read_named(&zikaron_store::layout::entry_file_name(&name)) {
+                    Ok(b) => {
+                        ledger::refuse_sealed(&at, std::slice::from_ref(&b));
+                        b
+                    }
+                    Err(t) => return ledger_trouble(&t),
+                }
             }
         }
-        _ => out::misuse(Reason::Args, "--entry 与 --path 之中恰要一面"),
+        _ => out::misuse(Reason::Args, "--entry --path", out::Said::OneOf),
     };
     match zikaron::entry::check(&bytes) {
         Ok(e) => out::affirmed(vec![
@@ -1162,29 +1270,57 @@ fn write_entry(a: &Args, kind: EntryType, body: Vec<(Field, Value)>) -> Answer {
     };
     seal_and_append(
         &dir,
+        &items,
         &author,
         kind.as_str(),
         seq,
         prev.as_deref(),
         entry::shape(body),
         &key,
+        a.one("root").as_deref(),
     )
 }
 
+/// Seal one entry and land it, after the one write gate: the core audits this pile with the candidate
+/// offline, and a chain finding the pile did not already have refuses the write by name (`E_WOULD_BREAK`,
+/// the findings' names) with not one byte written (`ledger::new_findings`). Every entry-writing verb comes here,
+/// `init` and `retract` included, after the tip and the root are asked.
 fn seal_and_append(
     dir: &LedgerDir,
+    items: &[Vec<u8>],
     author: &str,
     entry_type: &str,
     seq: u64,
     prev: Option<&str>,
     body: Value,
     key: &[u8; 32],
+    root: Option<&str>,
 ) -> Answer {
-    let sealed = match entry::seal(author, entry_type, seq, prev, body, key) {
+    let sealed = match entry::seal(author, entry_type, seq, prev, body.clone(), key) {
         Ok(x) => x,
-        // The law's token passes through unchanged: no translation, no regrouping.
-        Err(t) => return out::denied(Reason::Entry, vec![(Key::Token, s(t.as_str()))]),
+        // The law's token passes through unchanged: no translation, no regrouping. A body refusal also tells
+        // people which member and which flags, on stderr only.
+        Err(t) => {
+            let answer = out::denied(Reason::Entry, vec![(Key::Token, s(t.as_str()))]);
+            let kind = EntryType::of(entry_type);
+            return match (t, zikaron::entry::body_fault(kind, &body)) {
+                (zikaron::tokens::Token::BodyField, Some(member)) if !body_flags(kind, member).is_empty() => {
+                    answer.telling(out::body_line(member, body_flags(kind, member)))
+                }
+                _ => answer,
+            };
+        }
     };
+    match ledger::new_findings(items, &sealed.bytes, root) {
+        Ok(names) if names.is_empty() => {}
+        Ok(names) => {
+            return out::denied(
+                Reason::WouldBreak,
+                vec![(Key::EntryId, s(&sealed.entry.id_hex())), (Key::Names, Value::Arr(names.iter().map(|n| s(n)).collect()))],
+            )
+        }
+        Err(r) => return out::denied(r, vec![]),
+    }
     match ledger::append(dir, &sealed.entry, &sealed.bytes) {
         Ok(stored) => out::affirmed(vec![
             (Key::EntryId, s(&sealed.entry.id_hex())),
@@ -1211,7 +1347,7 @@ fn next_link(a: &Args, items: &[Vec<u8>]) -> Result<(u64, Option<String>), Answe
                 Err(r) => Err(out::denied(r, vec![])),
             }
         }
-        _ => out::misuse(Reason::Args, "--seq 与 --prev 要么都给,要么都不给"),
+        _ => out::misuse(Reason::Args, "--seq --prev", out::Said::SeqPrevPair),
     }
 }
 
@@ -1225,6 +1361,23 @@ fn root_named(a: &Args, items: &[Vec<u8>]) -> Result<String, Answer> {
 }
 
 /// Pass a storage refusal on in full: code, named files, size and cap (its disclosure is not optional).
+/// A read-only verb's refusal of what `--ledger` names, each by its own layer: the storage crate's code, the
+/// kit core's verdict, a mirror manifest that is not this kind, a file that does not read.
+fn read_refused(r: ledger::ReadRefused) -> Answer {
+    match r {
+        ledger::ReadRefused::Ledger(t) => ledger_trouble(&t),
+        ledger::ReadRefused::Kit(verdict, subject) => {
+            let mut ms = vec![(Key::State, s(verdict.as_str()))];
+            if let Some(x) = subject {
+                ms.push((Key::Detail, s(&x)));
+            }
+            out::denied(Reason::Kit, ms)
+        }
+        ledger::ReadRefused::Mirror(said) => out::denied(Reason::Ledger, vec![(Key::Detail, s(&said))]),
+        ledger::ReadRefused::Unreadable(p) => out::misuse(Reason::Unreadable, &p, out::Said::Unreadable),
+    }
+}
+
 fn ledger_trouble(t: &zikaron_store::codes::Trouble) -> Answer {
     let mut ms = vec![(Key::Detail, s(t.code.as_str()))];
     if !t.names.is_empty() {

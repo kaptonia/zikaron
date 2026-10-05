@@ -8,11 +8,13 @@ impl Win {
         let all = self.shell.grants.clone();
         let chain_now = self.chain_now();
         let mut query = self.ux.search.get("grants").cloned().unwrap_or_default();
-        stagger(ui, 0, |ui| {
-            let w = ui.available_width();
-            input::search(ui, &mut query, t(Key::SearchGrants), w);
-        });
+        let mut range = self.ux.range.get("grants").cloned().unwrap_or_default();
+        let today = (self.shell.clock)();
+        stagger(ui, 0, |ui| search_row(ui, "grants", &mut query, t(Key::SearchGrants), &mut range, today));
         let lamps: Vec<(String, crate::ledgerx::Lamp)> = self.shell.rows.as_ref().map(|(rs, _)| rs.iter().map(|r| (r.id.clone(), r.lamp)).collect()).unwrap_or_default();
+        // A grant's anchor time is its entry's row in this ledger (a grant is an entry here).
+        let anchored: Vec<(String, Option<u64>)> = self.shell.rows.as_ref().map(|(rs, _)| rs.iter().map(|r| (r.id.clone(), r.anchored_at)).collect()).unwrap_or_default();
+        let anchored_at = |id: &str| anchored.iter().find(|(x, _)| x.eq_ignore_ascii_case(id)).and_then(|(_, at)| *at);
         let shown: Vec<crate::grantx::Row> = all
             .clone()
             .unwrap_or_default()
@@ -22,6 +24,7 @@ impl Win {
                 let badge = row.badge(chain_now);
                 matches(&query, &[&row.grantee, &self.work_label(&row.work), &row.work, t(badge_key(badge)), &format!("#{}", row.seq)])
             })
+            .filter(|row| crate::when::within(anchored_at(&row.id), &range.0, &range.1))
             .collect();
         let mut open: Option<String> = None;
         stagger(ui, 1, |ui| {
@@ -63,6 +66,7 @@ impl Win {
             }
         });
         self.ux.search.insert("grants", query);
+        self.ux.range.insert("grants", range);
         if let Some(id) = open {
             self.push(Route::Grant(id), now);
         }
@@ -172,15 +176,12 @@ impl Win {
                 }
             });
         }
+        // The whole code (every hop to the root), the same encoding as the badge and the grant file; a refusal
+        // is said by the action layer.
         if copy {
-            if let Some(d) = opened.as_ref() {
-                match crate::badgex::payload_text(&[d.bytes.clone()]) {
-                    Ok(text) => {
-                        ui.ctx().copy_text(text);
-                        self.toasts.say(t(Key::U3CopiedGrantText), Tone::Note, now);
-                    }
-                    Err(f) => self.say_fault(&f, now),
-                }
+            if let Applied::GrantCode { text } = self.act(Action::CopyGrantCode { grant: row.id.clone() }, now) {
+                ui.ctx().copy_text(text);
+                self.toasts.say(t(Key::U3CopiedGrantText), Tone::Note, now);
             }
         }
         if export {
@@ -273,10 +274,12 @@ impl Win {
                             let recent = self.recent_addresses();
                             let heads: Vec<String> = recent.iter().map(|a| head_tail(a)).collect();
                             let items: Vec<menu::Item> = heads.iter().map(|h| menu::Item::Row(menu::Row { lead: t(Key::Address), label: h, mono: true, ..Default::default() })).collect();
+                            let spec = pick::Spec { hint: t(Key::SearchAddress), empty: t(Key::SearchNone), w: PICK_W, dates: None };
+                            let keep = |i: usize, q: &str, _: &str, _: &str| matches(q, &[&recent[i]]);
                             let mut picked = None;
                             width::then(
                                 ui,
-                                |ui| picked = menu::plain_key(ui, "grant-recent", t(Key::U3RecentDots), !recent.is_empty(), false, 300.0, &items),
+                                |ui| picked = pick::key(ui, "grant-recent", t(Key::U3RecentDots), !recent.is_empty(), false, &spec, &items, &keep),
                                 |ui, room| input::field(ui, &mut self.typed.g_grantee, t(Key::U3ToWhomHint), room, input::Look { mono: true, ..Default::default() }),
                             );
                             if let Some(i) = picked {
@@ -297,6 +300,8 @@ impl Win {
                                 let current = lines.iter().find(|w| w.work.eq_ignore_ascii_case(self.typed.g_work.trim())).map(|w| format!("#{} {}", w.seq, w.name));
                                 let labels: Vec<String> = lines.iter().map(|w| w.name.clone()).collect();
                                 let seqs: Vec<String> = lines.iter().map(|w| format!("#{}", w.seq)).collect();
+                                // The third column: the first anchor's block time, or "not on chain".
+                                let times: Vec<String> = lines.iter().map(|w| w.row.anchored_at.map(crate::when::when).unwrap_or_else(|| t(Key::V2StateLanded).to_string())).collect();
                                 let items: Vec<menu::Item> = lines
                                     .iter()
                                     .enumerate()
@@ -309,13 +314,24 @@ impl Win {
                                             (None, Lamp::Remembered | Lamp::RememberedStale) => Some((t(Key::V2AwaitThisCheck), PillTone::Warn)),
                                             (None, _) => Some((t(Key::V2PendingGrey), PillTone::Warn)),
                                         };
-                                        menu::Item::Row(menu::Row { label: &labels[i], struck: w.deleted.is_some(), disabled: why.is_some(), pill: why, trail: if why.is_none() { &seqs[i] } else { "" }, ..Default::default() })
+                                        menu::Item::Row(menu::Row { lead: &seqs[i], label: &labels[i], struck: w.deleted.is_some(), disabled: why.is_some(), pill: why, trail: &times[i], ..Default::default() })
                                     })
                                     .collect();
+                                let words = date_words();
+                                let spec = pick::Spec {
+                                    hint: t(Key::SearchWorks),
+                                    empty: t(Key::SearchNone),
+                                    w: PICK_WIDE_W,
+                                    dates: Some(pick::Dates { words: &words, today: today_of((self.shell.clock)()), from_hint: t(Key::DateFrom), to_hint: t(Key::DateTo) }),
+                                };
+                                let keep = |i: usize, q: &str, from: &str, to: &str| {
+                                    let w = &lines[i];
+                                    matches(q, &[&w.name, &w.work, &seqs[i]]) && crate::when::within(w.row.anchored_at, from, to)
+                                };
                                 let mut picked = None;
                                 width::then(
                                     ui,
-                                    |ui| picked = menu::plain_key(ui, "grant-work", t(Key::V2PickWorkBtn), !lines.is_empty(), false, 340.0, &items),
+                                    |ui| picked = pick::key(ui, "grant-work", t(Key::V2PickWorkBtn), !lines.is_empty(), false, &spec, &items, &keep),
                                     |ui, room| match &current {
                                         Some(s) => {
                                             paint::line(ui, s, Type::Body, c(C::Ink), room);
@@ -470,7 +486,7 @@ impl Win {
                 })
                 .collect();
             rows.push(match &self.shell.chain {
-                Some(Done::Chain { gas_wei: Some(g), .. }) if *g > 0 => (Mark::Ok, fill1(Key::U3GasLeft, &eth(*g)), None),
+                Some(Done::Chain { gas_wei: Some(g), .. }) if *g > 0 => (Mark::Ok, fill1(Key::U3GasLeft, &eth_held(*g)), None),
                 Some(Done::Chain { gas_wei: Some(_), .. }) => (Mark::Bad, t(Key::GuideGas).to_string(), None),
                 _ => (Mark::Todo, t(Key::U3GasUnread).to_string(), None),
             });

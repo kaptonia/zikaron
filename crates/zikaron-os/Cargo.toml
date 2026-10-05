@@ -1,0 +1,12 @@
+[package]
+name = "zikaron-os"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+
+# What differs by operating system below the app: system entropy, files only their owner may read or write,
+# making a directory's or a file's contents last through a power cut, and a rename that replaces its target.
+# One implementation per system behind one `cfg` (`src/unix.rs` and `src/windows.rs`). It
+# depends on no crate of this workspace and no third-party crate: the core, the store, the glue, the command
+# line and the app all reach these four through here.
+[dependencies]

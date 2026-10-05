@@ -137,7 +137,7 @@ pub fn store_all(home: &Home, items: &[&Vec<u8>]) -> Result<Vec<String>, Fault> 
     let mut landed: Vec<String> = Vec::new();
     let mut rest = staged.into_iter();
     while let Some((id, part, at)) = rest.next() {
-        if let Err(x) = std::fs::rename(&part, &at) {
+        if let Err(x) = zikaron_os::replace(&part, &at) {
             let _ = std::fs::remove_file(&part);
             for (_, p, _) in rest {
                 let _ = std::fs::remove_file(p);

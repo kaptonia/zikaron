@@ -87,9 +87,13 @@ pub struct Settings {
     /// money and cannot be undone, so by default it is not spent for the person. The cell is written only
     /// when on, so a settings file that never touched it stays byte-identical.
     pub auto_anchor: bool,
-    /// Which row of the known deployments table this home's basis came from (`None` when configured by the
-    /// person or not yet configured). Cleared when the person changes the basis or nodes: the face line "from
-    /// the network this machine chose" lights only when that is really so.
+    /// Display only: the records and ledger pages leave out what stays on this machine after a deletion (a
+    /// deleted entry never published, and its local deletion). Off by default; nothing else reads it.
+    pub hide_local_deletions: bool,
+    /// Which choice this home's network came from: a row of the known deployments table, or "custom" taken
+    /// from what its identity recorded (`None` when configured by the person or not yet configured). Cleared
+    /// when the person changes the basis or nodes: the face line shows that row's name only when
+    /// that is really so.
     pub network: Option<String>,
     /// Publish address: where the recorder puts record bundles on static hosting; `https://` only. The
     /// publish address pointer in grant files takes it; "check publication" fetches file by file against it.
@@ -125,6 +129,7 @@ impl Default for Settings {
             lang: None,
             zone: None,
             auto_anchor: false,
+            hide_local_deletions: false,
             network: None,
             publish: None,
             grant_notes: Vec::new(),
@@ -273,6 +278,7 @@ impl Settings {
                 _ => None,
             },
             auto_anchor: matches!(field(&v, "autoAnchor"), Some(Value::Bool(true))),
+            hide_local_deletions: matches!(field(&v, "hideLocalDeletions"), Some(Value::Bool(true))),
             network: match field(&v, "network") {
                 Some(Value::Str(x)) if crate::deploy::named(x).is_some() => Some(x.clone()),
                 _ => None,
@@ -387,6 +393,9 @@ impl Settings {
         if self.auto_anchor {
             m.push(("autoAnchor".to_string(), Value::Bool(true)));
         }
+        if self.hide_local_deletions {
+            m.push(("hideLocalDeletions".to_string(), Value::Bool(true)));
+        }
         m.push(("reviewEvery".to_string(), Value::Int(self.review_every)));
         let bytes = json::canon_bytes(&Value::Obj(m));
         // Writing to disk has one method (`local::put`: sealed, written aside, then renamed).
@@ -402,13 +411,14 @@ impl Settings {
 
 /// Migration: move a whole home to another path.
 ///
-/// Three steps: the target must be empty (no overwriting), copy file by file, then verify bytes file by file.
-/// On failure the new copy is left in place and the error is named, and not one byte of the old is touched:
-/// when a move fails, the copy still standing must be the old one.
+/// Three steps: the target must lie outside this home (`outside_home`) and be empty (no overwriting), copy file
+/// by file, then verify bytes file by file. On failure the new copy is left in place and the error is named, and
+/// not one byte of the old is touched: when a move fails, the copy still standing must be the old one.
 pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
     // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
     // are traced too.
     crate::trace::mark(crate::feature::Feature::H3);
+    outside_home(from.root(), to)?;
     if to.exists() && std::fs::read_dir(to).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Err(Fault::known(Known::Occupied, to.display().to_string()));
     }
@@ -420,6 +430,52 @@ pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
     let home = Home::open(to)?;
     crate::home::write_pointer(to)?;
     Ok(home)
+}
+
+/// A move's new place must not be this home's root or lie under it. Copying a tree into itself would copy the
+/// copy again, one level deeper each time, until the path grew too long, leaving a half-nested tree inside the
+/// old home. The rule is the containment of the two places, decided before one byte is written, not something
+/// found halfway through the copy. Both are read as real paths: symbolic links resolved, and for a new place
+/// that does not exist yet, its deepest existing ancestor resolved with the rest appended. The other way round
+/// (the old root under the new place) needs no rule of its own: such a new place is not empty.
+pub fn outside_home(root: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> {
+    let root = std::fs::canonicalize(root).map_err(|e| classify(&e, &root.display().to_string()))?;
+    let target = real_path(to)?;
+    if target.starts_with(&root) {
+        return Err(Fault::known(Known::InsideHome, format!("{} {}", to.display(), root.display())));
+    }
+    Ok(())
+}
+
+/// The real path of a place that may not exist yet: its deepest existing ancestor resolved, the rest appended
+/// (a `..` in that rest steps back over a name that does not exist, so it cannot be a link).
+fn real_path(p: &std::path::Path) -> Result<std::path::PathBuf, Fault> {
+    use std::path::Component;
+    let mut rest: Vec<Component> = Vec::new();
+    let mut at = p;
+    let base = loop {
+        match std::fs::canonicalize(at) {
+            Ok(b) => break b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(classify(&e, &at.display().to_string())),
+        }
+        let (Some(name), Some(up)) = (at.components().next_back(), at.parent()) else {
+            return Err(Fault::known(Known::PathRelative, p.display().to_string()));
+        };
+        rest.push(name);
+        at = up;
+    };
+    let mut out = base;
+    for c in rest.into_iter().rev() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c.as_os_str()),
+        }
+    }
+    Ok(out)
 }
 
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> {
@@ -434,7 +490,7 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> 
         } else if md.is_file() {
             let bytes = std::fs::read(&src).map_err(|e| classify(&e, &src.display().to_string()))?;
             zikaron_glue::landing::land_bytes(&dst, &bytes)
-                .map_err(|t| Fault::landing(t.code(), t.subject()))?;
+                .map_err(|t| Fault::of_landing(t))?;
         }
         // Other shapes (symbolic links, device files) are not moved: a home should not contain them, and
         // moving them would lose their meaning.

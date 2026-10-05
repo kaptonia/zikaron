@@ -374,10 +374,11 @@ impl<'a> Staged<'a> {
 }
 
 impl<'a> Linked<'a> {
-    /// Stage three: fsync the directory so the link survives a power cut, then remove the temporary file.
+    /// Stage three: fsync the directory so the link survives a power cut, then remove the temporary file. The
+    /// temporary name is the entry's own file under its other name (the link), so a system that syncs the file
+    /// in place of the directory is handed it.
     pub fn seal(self) -> Result<Stored, Trouble> {
-        let dir = fs::File::open(self.dir.root()).map_err(|_| Trouble::of(Code::Io))?;
-        dir.sync_all().map_err(|_| Trouble::of(Code::Io))?;
+        zikaron_os::sync_dir(self.dir.root(), &self.tmp).map_err(|_| Trouble::of(Code::Io))?;
         let _ = fs::remove_file(&self.tmp);
         Ok(self.stored)
     }

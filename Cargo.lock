@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "bip39",
@@ -107,15 +107,16 @@ dependencies = [
  "log",
  "pbkdf2",
  "rfd",
- "rustls",
  "scrypt",
  "sha2",
- "webpki-roots",
  "winit",
  "zikaron",
  "zikaron-anchor",
  "zikaron-glue",
  "zikaron-kit",
+ "zikaron-net",
+ "zikaron-os",
+ "zikaron-pack",
  "zikaron-store",
  "zikaron-ui",
 ]
@@ -3786,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "zikaron"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "k256",
  "sha2",
@@ -3795,45 +3796,67 @@ dependencies = [
 
 [[package]]
 name = "zikaron-anchor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zikaron",
+ "zikaron-net",
 ]
 
 [[package]]
 name = "zikaron-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zikaron",
  "zikaron-anchor",
  "zikaron-glue",
  "zikaron-kit",
+ "zikaron-os",
  "zikaron-store",
 ]
 
 [[package]]
 name = "zikaron-glue"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zikaron",
  "zikaron-kit",
+ "zikaron-os",
  "zikaron-store",
 ]
 
 [[package]]
 name = "zikaron-kit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zikaron",
 ]
 
 [[package]]
+name = "zikaron-net"
+version = "0.1.1"
+dependencies = [
+ "rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "zikaron-os"
+version = "0.1.1"
+
+[[package]]
+name = "zikaron-pack"
+version = "0.1.1"
+
+[[package]]
 name = "zikaron-store"
-version = "0.1.0"
+version = "0.1.1"
+dependencies = [
+ "zikaron-os",
+]
 
 [[package]]
 name = "zikaron-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "egui",
 ]

@@ -306,6 +306,92 @@ pub fn run(
     endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
 ) -> Result<Result<Scanned, Value>, Refusal> {
     crate::seam();
+    noting(basis_bytes, adoptions, endpoints, &Known::default()).map(|r| r.map(|(s, _, _)| s))
+}
+
+/// The §9.4 deduplication key of a record: `(chainId, blockNumber, tx, hash)`.
+pub type RecordKey = (u64, u64, [u8; 32], [u8; 32]);
+
+/// What one log on chain is known by, for the facts read about it: the chain, the hash of its block (a block
+/// that was replaced is another block, and its facts are not these), the transaction, and the log's index in
+/// that block.
+pub type FactKey = (u64, [u8; 32], [u8; 32], u64);
+
+/// What a registry-form record took questions to learn, once the log was judged an anchor: the block's time
+/// and the sender's verdict at that block (the transaction, its receipt and its calldata having passed), with
+/// the log as it was when they passed (its block number, the sender and hash it names, the registry that
+/// emitted it). A log read later under the same key is spared the questions only when it still says exactly
+/// this; one that says anything else is asked about as new, so what the questions bound to the transaction
+/// cannot be carried over to other words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fact {
+    pub block_number: u64,
+    pub sender: [u8; 20],
+    pub hash: [u8; 32],
+    pub emitter: [u8; 20],
+    pub block_timestamp: u64,
+    pub verdict: Verdict,
+}
+
+/// Facts a caller already holds, checked before (its own record of readings several endpoints agreed on).
+/// The logs are still asked for whole, every time; a log found here under the same key and saying the same
+/// is not asked about again, and any other (a new anchor, the same transaction in another block, a log that
+/// says something else under a key held here) is asked about as always. Empty: every log is asked about.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Known(pub std::collections::BTreeMap<FactKey, Fact>);
+
+/// Facts this scan read afresh, each under its key: only logs judged anchors with a decided verdict (an
+/// unproven verdict is no fact), and only logs that carry their block hash and index.
+pub type Sightings = Vec<(FactKey, Fact)>;
+
+/// The key of a log as it came back: its chain, block hash, transaction and index; `None` when the log does
+/// not carry them.
+fn fact_key(chain: u64, log: &W, tx: &[u8; 32]) -> Option<FactKey> {
+    let block = log.member("blockHash").and_then(h32)?;
+    let index = log.member("logIndex").and_then(tx::hex_qty)?;
+    Some((chain, block, *tx, index))
+}
+
+/// Which registry contracts emitted the logs each registry-form record was read from: a side reading, never
+/// part of the record or of the scan's canonical bytes. One key may have several (one transaction calling two
+/// registries of a window); bare-form records have none.
+pub type Emitters = std::collections::BTreeMap<RecordKey, std::collections::BTreeSet<[u8; 20]>>;
+
+/// The key a record is deduplicated by.
+pub fn record_key(a: &AnchorRec) -> RecordKey {
+    (a.chain_id, a.block_number, a.tx, a.hash)
+}
+
+/// [`run`], noting beside it which registry each registry-form record came from. The address is the one on
+/// the log already read: no question is asked for it, so the query order is [`run`]'s.
+pub fn run_noting(
+    basis_bytes: &[u8],
+    adoptions: &[(u64, [u8; 32])],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+) -> Result<Result<(Scanned, Emitters), Value>, Refusal> {
+    crate::seam();
+    noting(basis_bytes, adoptions, endpoints, &Known::default()).map(|r| r.map(|(s, e, _)| (s, e)))
+}
+
+/// [`run_noting`] with facts already checked ([`Known`]), handing back as well the facts this scan read
+/// afresh ([`Sightings`]). With an empty table it asks exactly what [`run`] asks.
+pub fn run_knowing(
+    basis_bytes: &[u8],
+    adoptions: &[(u64, [u8; 32])],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+    known: &Known,
+) -> Result<Result<(Scanned, Emitters, Sightings), Value>, Refusal> {
+    crate::seam();
+    noting(basis_bytes, adoptions, endpoints, known)
+}
+
+/// The scan every public entry runs (each marks the trace once, then comes here).
+fn noting(
+    basis_bytes: &[u8],
+    adoptions: &[(u64, [u8; 32])],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+    known: &Known,
+) -> Result<Result<(Scanned, Emitters, Sightings), Value>, Refusal> {
     let Some(basis_value) = ask_core_about_basis(basis_bytes) else {
         // The core says this is not a zikaron/1 basis; its no-label value is the only byte shape.
         return Ok(Err(zikaron::audit::no_label()));
@@ -320,6 +406,8 @@ pub fn run(
 
     let mut anchors: Vec<AnchorRec> = Vec::new();
     let mut evidence: Vec<EvidenceRec> = Vec::new();
+    let mut emitters = Emitters::new();
+    let mut seen = Sightings::new();
     let t0 = topic0();
 
     for id in chains {
@@ -338,12 +426,16 @@ pub fn run(
 
         // Registry form.
         for w in basis.windows.iter().filter(|w| w.chain_id == id) {
-            if w.registries.is_empty() {
+            // No registry, or no sender this window admits: no log could become a record, so none is asked.
+            if w.registries.is_empty() || w.senders.is_empty() {
                 continue;
             }
             let logs = logs_over_window(&mut chain, w, &t0)?;
             for log in &logs {
-                let Some(rec) = registry_record(&mut chain, w, log, &t0)? else { continue };
+                let Some(rec) = registry_record(&mut chain, w, log, &t0, known, &mut seen)? else { continue };
+                if let Some(at) = emitter_of(log) {
+                    emitters.entry(record_key(&rec)).or_default().insert(at);
+                }
                 anchors.push(rec);
             }
         }
@@ -375,16 +467,34 @@ pub fn run(
     let deduped = dedupe(anchors);
     let evidence = zikaron::audit::ordered(evidence, |a, b| (a.chain_id, a.tx).cmp(&(b.chain_id, b.tx)));
 
-    Ok(Ok(Scanned { anchors: deduped, evidence, basis: basis_value }))
+    Ok(Ok((Scanned { anchors: deduped, evidence, basis: basis_value }, emitters, seen)))
 }
 
-/// The `eth_getLogs` query, built in one place for the whole range and for every sub-range.
+/// The contract that emitted a log (its `address`), as twenty bytes.
+fn emitter_of(log: &W) -> Option<[u8; 20]> {
+    let b = log.member("address").and_then(|a| a.as_str()).and_then(hexfmt::decode)?;
+    b.try_into().ok()
+}
+
+/// An address as a log's indexed topic carries it: twelve zero bytes, then the twenty.
+fn padded(a: &[u8; 20]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[12..].copy_from_slice(a);
+    out
+}
+
+/// The `eth_getLogs` query, built in one place for the whole range and for every sub-range: the window's
+/// registries, the range, topic 0, and as topic 1 the window's senders in one "any of" list (each left-padded
+/// to 32 bytes as the log carries it). §9.4 reads only logs whose sender the window lists, so asking for those
+/// alone reads the same records; the node's filtering is never trusted for that, every log that comes back is
+/// still judged here (`registry_record`). One question per window range, never one per sender.
 fn log_filter(w: &Window, from: u64, to: u64, t0: &[u8; 32]) -> Value {
+    let senders: Vec<Value> = w.senders.iter().map(|a| Value::Str(hexfmt::encode(&padded(a)))).collect();
     Value::Obj(vec![
         ("address".into(), Value::Arr(w.registries.iter().map(|r| Value::Str(hex20(r))).collect())),
         ("fromBlock".into(), Value::Str(hex_quantity(from))),
         ("toBlock".into(), Value::Str(hex_quantity(to))),
-        ("topics".into(), Value::Arr(vec![Value::Str(hexfmt::encode(t0))])),
+        ("topics".into(), Value::Arr(vec![Value::Str(hexfmt::encode(t0)), Value::Arr(senders)])),
     ])
 }
 
@@ -395,7 +505,12 @@ const MIN_SPAN: u64 = 1;
 /// node refuses for another reason (unknown method, auth), at most eight extra queries pass its sentence on.
 const MAX_SHRINKS: usize = 8;
 
-/// Queries per window at most. Splitting exists to finish a window, not to shatter it: a misread limit
+/// How many times one log question is asked before its range is split: a node that declines now often
+/// answers the same question a moment later (a busy public node), and splitting a range that was refused only
+/// for that would cost many questions. Asked again at once, never after waiting.
+const TRIES: usize = 3;
+
+/// Queries per window at most (asking again counts). Splitting exists to finish a window, not to shatter it: a misread limit
 /// (reading `up to a 2K block range` as 2) would turn a two-million-block window into a million queries. At
 /// this bound the scan returns a named refusal saying what to do (move the start block forward, or use a node
 /// that accepts wider ranges).
@@ -432,8 +547,10 @@ fn said_limit(said: &str, span: u64) -> Option<u64> {
     best.map(|(_, n)| n)
 }
 
-/// The first number within 24 characters of the start of a string, with `k`/`m` suffixes in thousands or
-/// millions; returns the number and where it ends.
+/// The first number within 24 characters of the start of a string, with thousands grouped by commas read as
+/// one number (`2,000`, `1,000,000`: a lead of one to three digits, then groups of exactly three) and `k`/`m`
+/// suffixes in thousands or millions; returns the number and where it ends. A comma not followed by exactly
+/// three digits ends the number (`10,20` is 10).
 fn number_after(rest: &str) -> Option<(u64, usize)> {
     let b = rest.as_bytes();
     let mut i = 0usize;
@@ -447,7 +564,15 @@ fn number_after(rest: &str) -> Option<(u64, usize)> {
     while i < b.len() && b[i].is_ascii_digit() {
         i += 1;
     }
-    let mut n: u64 = rest[start..i].parse().ok()?;
+    let mut digits = rest[start..i].to_string();
+    if digits.len() <= 3 {
+        let group = |at: usize| b.get(at) == Some(&b',') && (1..=3).all(|k| b.get(at + k).is_some_and(u8::is_ascii_digit)) && !b.get(at + 4).is_some_and(u8::is_ascii_digit);
+        while group(i) {
+            digits.push_str(&rest[i + 1..i + 4]);
+            i += 4;
+        }
+    }
+    let mut n: u64 = digits.parse().ok()?;
     if i < b.len() {
         match b[i] {
             b'k' => {
@@ -467,9 +592,11 @@ fn number_after(rest: &str) -> Option<(u64, usize)> {
 /// Logs of one window, fetched in ranges the node accepts.
 ///
 /// Ask for the whole range first: when the node accepts, the query is byte-identical to a single-range scan
-/// (so recordings still replay). When refused, shrink the span and ask again from the same start, using the
-/// node's reported limit or halving; if one block is still refused, pass the node's sentence on (a refusal is
-/// not "zero logs").
+/// (so recordings still replay). A refused question is asked again as it was, up to [`TRIES`] times in all;
+/// refused that many times, the span shrinks and the next question starts from the same block, using the
+/// node's reported limit or halving, and that question too has [`TRIES`] tries. Asking again counts toward
+/// [`MAX_ASKS`], never toward [`MAX_SHRINKS`]; if one block is still refused, pass the node's sentence on (a
+/// refusal is not "zero logs").
 fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<W>, Refusal> {
     let mut logs: Vec<W> = Vec::new();
     if w.to_block < w.from_block {
@@ -480,6 +607,8 @@ fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<
     let mut at = w.from_block;
     let mut shrinks = 0usize;
     let mut asks = 0usize;
+    // How many times the question now due was refused.
+    let mut refused = 0usize;
     while at <= w.to_block {
         let end = at.saturating_add(span - 1).min(w.to_block);
         if asks >= MAX_ASKS {
@@ -506,8 +635,14 @@ fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<
                 };
                 logs.append(&mut got);
                 at = end.saturating_add(1);
+                refused = 0;
             }
             Err(e) => {
+                refused += 1;
+                if refused < TRIES {
+                    continue;
+                }
+                refused = 0;
                 if span <= MIN_SPAN || shrinks >= MAX_SHRINKS {
                     return Err(e);
                 }
@@ -570,6 +705,8 @@ fn registry_record(
     w: &Window,
     log: &W,
     t0: &[u8; 32],
+    known: &Known,
+    seen: &mut Sightings,
 ) -> Result<Option<AnchorRec>, Refusal> {
     let Some(f) = anchored_log(log, t0) else { return Ok(None) };
     let (claimed, hash, txh, bn) = (f.claimed, f.hash, f.tx, f.block_number);
@@ -583,6 +720,20 @@ fn registry_record(
     };
     if addr.len() != 20 || !w.registries.iter().any(|r| r[..] == addr[..]) {
         return Ok(None);
+    }
+    let mut emitter = [0u8; 20];
+    emitter.copy_from_slice(&addr);
+    // Checked before under this very key (same block hash, same transaction, same log) and the log still says
+    // what it said then: its transaction, receipt and calldata passed and the time and verdict are known, so
+    // nothing is asked. A log that says anything else under that key is asked about as new. The window's own
+    // sender list is still applied here, every time.
+    let key = fact_key(chain.id, log, &txh);
+    let said_then = |f: &&Fact| f.block_number == bn && f.sender == claimed && f.hash == hash && f.emitter == emitter;
+    if let Some(f) = key.and_then(|k| known.0.get(&k)).filter(said_then) {
+        if !window_admits(w, &claimed) {
+            return Ok(None);
+        }
+        return Ok(Some(AnchorRec { chain_id: chain.id, block_number: bn, block_timestamp: f.block_timestamp, tx: txh, sender: claimed, hash, verdict: f.verdict }));
     }
 
     let Some(t) = chain.tx_by_hash(&txh)? else { return Ok(None) };
@@ -605,6 +756,9 @@ fn registry_record(
     }
     let block_timestamp = chain.block_timestamp(bn)?;
     let verdict = chain.verdict_at(&claimed, bn)?;
+    if let (Some(k), false) = (key, verdict == Verdict::Unproven) {
+        seen.push((k, Fact { block_number: bn, sender: claimed, hash, emitter, block_timestamp, verdict }));
+    }
     Ok(Some(AnchorRec {
         chain_id: chain.id,
         block_number: bn,
@@ -725,7 +879,7 @@ pub fn fragment(s: &Scanned) -> Value {
 
 #[cfg(test)]
 mod said_limit_tests {
-    use super::said_limit;
+    use super::{number_after, said_limit};
 
     /// The limit a node reports is read from the right number. These are sentences real nodes returned (a
     /// public Sepolia node, Alchemy, geth); each yields its stated limit and no other number.
@@ -744,5 +898,18 @@ mod said_limit_tests {
         );
         // No limit in the sentence: halving takes over.
         assert_eq!(said_limit("query timeout exceeded", 50_000), None);
+        // The official Base node: thousands grouped by a comma.
+        assert_eq!(said_limit("eth_getLogs is limited to a 2,000 range", 2_600_000), Some(2_000), "2,000 是两千,不是 2");
+        // BlockPI: the limit, then a link carrying no number.
+        assert_eq!(
+            said_limit("eth_getLogs is limited to 5000 block range. Please check the parameter requirements at  https://docs.blockpi.io/documentations/api-reference", 2_600_000),
+            Some(5_000)
+        );
+        // Groups of three after a lead of one to three digits; anything else ends the number.
+        assert_eq!(number_after(" 1,000,000 blocks"), Some((1_000_000, 10)));
+        assert_eq!(number_after(" 10,20 blocks"), Some((10, 3)));
+        assert_eq!(number_after(" 2,0000"), Some((2, 2)));
+        assert_eq!(number_after(" 5000,000"), Some((5000, 5)));
+        assert_eq!(number_after(" 2,000k"), Some((2_000_000, 7)));
     }
 }

@@ -107,11 +107,14 @@ pub struct Key<'a> {
     /// A glyph before the words (back) and after them (a menu key's caret).
     pub lead: Option<Glyph>,
     pub trail: Option<Glyph>,
+    /// What the key says while it is busy, after a small turning ring, in place of the bar inside the key
+    /// (a key whose work has no measure of its own: an estimate, a fingerprint, a copy).
+    pub busy_text: Option<&'a str>,
 }
 
 impl<'a> Key<'a> {
     pub fn new(text: &'a str, role: Role) -> Key<'a> {
-        Key { text, role, enabled: true, phase: Phase::Idle, lead: None, trail: None }
+        Key { text, role, enabled: true, phase: Phase::Idle, lead: None, trail: None, busy_text: None }
     }
 
     pub fn enabled(mut self, on: bool) -> Self {
@@ -121,6 +124,12 @@ impl<'a> Key<'a> {
 
     pub fn phase(mut self, p: Phase) -> Self {
         self.phase = p;
+        self
+    }
+
+    /// Say `t` with a turning ring while busy (see [`Key::busy_text`]).
+    pub fn busy_text(mut self, t: &'a str) -> Self {
+        self.busy_text = Some(t);
         self
     }
 
@@ -139,6 +148,10 @@ fn font(_role: Role) -> egui::FontId {
     key_font()
 }
 
+/// The turning ring a busy key says its words after: its radius, and the room it takes with its gap.
+const BUSY_RING_R: f32 = 6.0;
+const BUSY_RING_W: f32 = BUSY_RING_R * 2.0 + 8.0;
+
 /// The words on a key: 14 in the medium face.
 pub fn key_font() -> egui::FontId {
     egui::FontId::new(Type::Key.size(), crate::fonts::medium())
@@ -146,7 +159,10 @@ pub fn key_font() -> egui::FontId {
 
 /// The size a key takes.
 pub fn size_of(ui: &egui::Ui, k: &Key) -> egui::Vec2 {
-    let w = ui.painter().layout_no_wrap(k.text.to_string(), font(k.role), Color32::BLACK).size().x;
+    let words = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font(k.role), Color32::BLACK).size().x;
+    // A key that says something else while busy is as wide as the longer of its two sayings (the ring and its
+    // gap included), so it does not change width when it starts.
+    let w = words(k.text).max(k.busy_text.map(|b| words(b) + BUSY_RING_W).unwrap_or(0.0));
     let glyphs = [k.lead, k.trail].iter().flatten().count() as f32 * (12.0 + 6.0);
     if k.role == Role::Link {
         return vec2(w + glyphs, Type::Key.line());
@@ -275,8 +291,16 @@ pub fn paint(ui: &egui::Ui, rect: Rect, resp: &egui::Response, k: &Key, phase: P
             icons::glyph_at(p, gl, pos2(r.right() - 12.0 * press - glyph_w / 2.0, y), glyph_w, cc);
         }
     }
-    // The bar inside the key.
-    if busy > 0.0 {
+    // The busy saying: a turning ring and the words, in place of the bar.
+    if busy > 0.0 && k.busy_text.is_some() {
+        let colour = text.gamma_multiply(busy);
+        let g = p.layout_no_wrap(k.busy_text.unwrap_or_default().to_string(), egui::FontId::new(Type::Key.size(), crate::fonts::medium()), colour);
+        let total = BUSY_RING_W + g.size().x;
+        let x = r.center().x - total / 2.0;
+        let y = r.center().y;
+        crate::mark::spinner(ctx, p, pos2(x + BUSY_RING_R, y), BUSY_RING_R, 1.6, colour, tokens::CYCLE);
+        p.galley(pos2(x + BUSY_RING_W, y - g.size().y / 2.0), g, colour);
+    } else if busy > 0.0 {
         let bar = Rect::from_min_max(pos2(r.left() + 14.0, r.center().y - 1.5), pos2(r.right() - 14.0, r.center().y + 1.5));
         let (track, fill_c) = if k.role.solid() {
             (Color32::from_white_alpha(77), Color32::WHITE)

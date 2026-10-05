@@ -263,6 +263,61 @@ fn chain_answered(d: &Done) -> bool {
     }
 }
 
+/// The key store as the shell holds it: the store's own reading (`keybox::State`, its closed four), or the
+/// store's file there and unreadable (`keybox::state` refuses it by name, `KEYBOX_SHAPE`, kept here to be
+/// said). The fifth member is the shell's alone: the store's table stays four, and a damaged file is never
+/// read as "no store yet", which would open the first-run wizard over the keys the file holds. A damaged
+/// store keeps the gate up and no key is ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Vault {
+    Read(crate::keybox::State),
+    Damaged(Fault),
+}
+
+impl Vault {
+    /// The store's answer, as the shell holds it.
+    pub fn of(read: Result<crate::keybox::State, Fault>) -> Vault {
+        match read {
+            Ok(s) => Vault::Read(s),
+            Err(f) => Vault::Damaged(f),
+        }
+    }
+
+    /// Whether the gate covers the window: the store's own table, and a damaged store.
+    pub fn gate_up(&self) -> bool {
+        match self {
+            Vault::Read(s) => s.gate_up(),
+            Vault::Damaged(_) => true,
+        }
+    }
+
+    /// Whether a key can be had now: only from an open store.
+    pub fn keys_ready(&self) -> bool {
+        match self {
+            Vault::Read(s) => s.keys_ready(),
+            Vault::Damaged(_) => false,
+        }
+    }
+
+    /// Whether this machine has no store yet (first run). A damaged store is a store.
+    pub fn absent(&self) -> bool {
+        matches!(self, Vault::Read(crate::keybox::State::Absent))
+    }
+
+    /// Whether the store reads as `s`.
+    pub fn is(&self, s: crate::keybox::State) -> bool {
+        matches!(self, Vault::Read(x) if *x == s)
+    }
+
+    /// Its name: the store's own word, or `damaged`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Vault::Read(s) => s.as_str(),
+            Vault::Damaged(_) => "damaged",
+        }
+    }
+}
+
 /// Fetching found this home at odds with the fetched ledger (see `Done::FetchConflict`).
 #[derive(Clone, Debug)]
 pub struct Conflict {
@@ -368,7 +423,7 @@ pub struct Shell {
     pub grants_gen: u64,
     /// The key vault state now. Read once at start and changed by each passcode action; the frame only reads
     /// this field, so the window never touches the disk for it.
-    pub vault: crate::keybox::State,
+    pub vault: Vault,
     /// Whether the vault still holds anything to lose (any recovery seal or key slot). Read with `vault`; the
     /// frame only reads it. Whether the lock screen offers "reset the vault" and whether
     /// `keybox::reset_empty` refuses both ask it.
@@ -381,9 +436,10 @@ pub struct Shell {
     /// the gate's result is received; its own place, so a passcode task's answer and an export's never take
     /// each other's place. The window and the test driver each take it (taking clears it).
     pub gate_said: Option<crate::action::Applied>,
-    /// Set only while an export whose exit gate just passed in the background runs where the gate landed
-    /// (`action::gate_landed`); every other press of an export reads the chain first.
-    pub gate_cleared: bool,
+    /// The answers of the actions that run their slow half in the background and answer where it lands (a gas
+    /// estimate, taking a content, recording files, moving the home: `action::landed`), by kind; apart from the
+    /// passcode and exit-gate answers. The window and the test driver each take theirs (taking clears it).
+    pub said: std::collections::BTreeMap<crate::task::Kind, crate::action::Applied>,
     /// This machine's settings (`machine.json`). Read once at start; reread after each change.
     pub machine: crate::machine::Machine,
     /// Other results received while the test driver waited for a passcode task: recorded, kept for the next receive.
@@ -398,6 +454,12 @@ pub struct Shell {
     /// It prevents spinning: with endpoints down, a failed pass is not redialed every frame; it waits for the
     /// ledger to change or a period to pass.
     pub audit_asked: Option<u64>,
+    /// The ledger mark the last tail check started from (success or failure; `action::check_tail`). `None`
+    /// when this home has not run one, or its nodes or basis changed since.
+    pub tail_asked: Option<u64>,
+    /// Whether the one task of the fetch kind in flight is a tail check (it shares the fetch kind's single
+    /// flight with fetching, so the two never run together); the window names it by what it does.
+    pub fetch_checks_tail: bool,
     /// The anchor queue (read from disk when the home opens, written after every change).
     pub queue: crate::queue::Queue,
     /// The last anchoring reading.
@@ -446,10 +508,19 @@ pub struct Shell {
     /// This batch's two fee fields: computed from the chain's base fee during estimation; the confirmation
     /// card and the balance check before sending read the same values.
     pub fees: Option<zikaron_anchor::send::Fees>,
+    /// The two readings above are of one chain, registry contract and set of nodes: whenever those change
+    /// (`commit_settings`, a change of source) the readings are void (`gas_void`), and this count moves on.
+    pub gas_epoch: u64,
+    /// The count when the estimate now out was started: it lands only if nothing it came from changed since
+    /// (`gas_out_of_date`), else it is set aside like a reading of an earlier source.
+    pub gas_asked: Option<u64>,
     /// Backoff deadlines when the chain rate-limits: ask again after each, then move to the next endpoint.
     /// Default `chainx::SEND_BACKOFF`; tests may change it (setting zeros so they never wait on the wall
     /// clock).
     pub send_backoff: Vec<std::time::Duration>,
+    /// The pauses between rounds of asking for a receipt (`zikaron_anchor::send::RECEIPT_BACKOFF` in the
+    /// product; test hooks inject their own so no wall clock is waited).
+    pub receipt_backoff: Vec<std::time::Duration>,
     /// How long to wait for an anchor to be included ([`crate::action::ANCHOR_WAIT`] in the product; tests inject
     /// the deadline).
     pub anchor_wait: std::time::Duration,
@@ -480,6 +551,11 @@ pub struct Shell {
     /// The kit index (machine directory `kits/index.json`); `None` when not read yet or unreadable (the
     /// trouble is recorded).
     pub kits_index: Option<Vec<crate::kitsindex::Row>>,
+    /// The read-only network table (the machine directory's); `None` when not read yet or unreadable (the
+    /// trouble is recorded). The paths that read it take it from disk when they run.
+    pub read_nets: Option<Vec<crate::readnets::Net>>,
+    /// The last reading of each read-only network (chain id, registry), from its "read the chain" key.
+    pub net_reads: Vec<(u64, crate::key::Address, crate::widex::Reading)>,
     /// The root of this home's ledger (the export page lists only its kits; read with `reread_kits`, never in
     /// the frame).
     pub kits_root: Option<String>,
@@ -543,8 +619,8 @@ pub struct Shell {
     /// A master key change is in flight (making another identity primary, restoring from a backup): the screen
     /// says it is resealing and every other action waits (`action::apply`).
     pub rekeying: bool,
-    /// A fetch and replace is swapping this home for a fresh one (`Action::FetchAside`): the home is frozen
-    /// (`action::held_back`) until its fetch lands.
+    /// A fetch and replace is swapping this home for a fresh one (`Action::FetchAside`), or a move is copying it
+    /// (`Action::MigrateHome`): the home is frozen (`action::held_back`) until that task lands.
     pub swapping: bool,
     /// A lock asked for while a task that writes local data was running: the gate is up and the shell reads as
     /// locked; the master key is wiped and the home closed when those tasks have landed (`drain_at`).
@@ -612,16 +688,18 @@ impl Shell {
             rows: None,
             rows_gen: 0,
             grants_gen: 0,
-            vault: crate::keybox::state().unwrap_or(crate::keybox::State::Absent),
+            vault: Vault::of(crate::keybox::state()),
             vault_recoverable: crate::keybox::recoverable().unwrap_or(true),
             vault_said: None,
+            said: std::collections::BTreeMap::new(),
             gate_said: None,
-            gate_cleared: false,
             machine,
             held_back: Vec::new(),
             audit: None,
             book_mark: 0,
             audit_asked: None,
+            tail_asked: None,
+            fetch_checks_tail: false,
             queue: crate::queue::Queue::default(),
             sent: None,
             repo_since: None,
@@ -629,8 +707,11 @@ impl Shell {
             flow: crate::anchorx::Flow::default(),
             gas: None,
             send_backoff: crate::chainx::SEND_BACKOFF.to_vec(),
+            receipt_backoff: zikaron_anchor::send::RECEIPT_BACKOFF.to_vec(),
             anchor_wait: crate::action::ANCHOR_WAIT,
             fees: None,
+            gas_epoch: 0,
+            gas_asked: None,
             resumed_at: 0.0,
             grants: None,
             depth: None,
@@ -651,6 +732,8 @@ impl Shell {
             verdicts: Vec::new(),
             clock: crate::lastread::now_secs,
             kits_index: None,
+            read_nets: None,
+            net_reads: Vec::new(),
             kits_root: None,
             unfetched: None,
             fetch_conflict: None,
@@ -690,6 +773,15 @@ impl Shell {
         }
     }
 
+    /// The block time a held grant was anchored at in its issuer's ledger: this run's re-check first, else the
+    /// cached verdict of the last one (so a date range still holds after a restart). `None` while neither has
+    /// read it. The one reading the vault's date range filters by.
+    pub fn held_anchored_at(&self, id: &str) -> Option<u64> {
+        // A card of this run that has no time yet does not hide the cached one.
+        let card = self.cards.as_ref().and_then(|(cs, _)| cs.iter().find(|c| c.id.eq_ignore_ascii_case(id)).and_then(|c| c.anchored_at));
+        card.or_else(|| self.verdicts.iter().find(|(g, _)| g.eq_ignore_ascii_case(&crate::lastread::grant_form(id))).and_then(|(_, v)| v.anchored_at))
+    }
+
     /// Whether the anchor key is in the vault, recording its address for the screen. Asked now, not
     /// remembered.
     pub fn refresh_anchor(&mut self) -> Result<bool, Fault> {
@@ -701,7 +793,7 @@ impl Shell {
             self.anchor = None;
             return Ok(false);
         }
-        match crate::key::load()? {
+        match crate::key::load(crate::register::account_now()?.as_deref())? {
             Some(s) => {
                 self.anchor = s.address();
                 Ok(true)
@@ -739,7 +831,7 @@ impl Shell {
         if let Err(f) = self.refresh_anchor() {
             self.faults.push(f);
         }
-        match crate::identity::view(self.settings.role) {
+        match crate::register::view(self.settings.role) {
             Ok(v) => self.seat_identities(Some(v)),
             Err(f) => self.faults.push(f),
         }
@@ -820,13 +912,11 @@ impl Shell {
 
     /// Reread the vault state (after passcode actions and after opening a home; never in the frame).
     pub fn reread_vault(&mut self) {
-        match crate::keybox::state() {
-            Ok(v) => self.vault = v,
-            Err(f) => {
-                self.vault = crate::keybox::State::Absent;
-                self.faults.push(f);
-            }
+        let v = Vault::of(crate::keybox::state());
+        if let Vault::Damaged(f) = &v {
+            self.faults.push(f.clone());
         }
+        self.vault = v;
         // Unreadable counts as "still holds something": the delete key is withheld whenever the reading is
         // uncertain.
         self.vault_recoverable = crate::keybox::recoverable().unwrap_or(true);
@@ -924,8 +1014,27 @@ impl Shell {
         f(&mut next);
         let h = self.home.as_ref().expect("上一句已经问过家在不在");
         next.write(h)?;
+        // A gas estimate and its fees are readings of one chain, registry contract and set of nodes: saved
+        // settings that change any of them leave those readings speaking of another place, so they go,
+        // whichever key saved (nodes, the chain cells, a network chosen or cleared).
+        let moved = gas_source(&self.settings) != gas_source(&next);
         self.settings = next;
+        if moved {
+            self.gas_void();
+        }
         Ok(())
+    }
+
+    /// The gas estimate and its fees are void: cleared, and an estimate still out lands as out of date.
+    pub fn gas_void(&mut self) {
+        self.gas = None;
+        self.fees = None;
+        self.gas_epoch += 1;
+    }
+
+    /// Whether a gas estimate landing now was started before what it came from changed.
+    pub fn gas_out_of_date(&self) -> bool {
+        self.gas_asked != Some(self.gas_epoch)
     }
 
     /// Whether this ledger's chain broke. Reads the label the last reconciliation returned (from the core),
@@ -989,6 +1098,31 @@ impl Shell {
         // Even with a period of zero: "does not run by itself" is about repetition, and the anchor lamps come
         // from the report, so a report about an older ledger would make them lie.
         self.audit_possible() && self.audit_asked != Some(self.book_mark)
+    }
+
+    /// [`Shell::tail_due`], and when it is due the asking is recorded at once for this ledger state, before
+    /// anything is asked: whatever answers (a refusal before the check starts included) does not make it due
+    /// again on the next frame; a ledger that moves, new nodes or basis, or another home do.
+    pub fn take_tail_due(&mut self) -> bool {
+        let due = self.tail_due();
+        if due {
+            self.tail_asked = Some(self.book_mark);
+        }
+        due
+    }
+
+    /// Whether this identity's tail is due to be checked against the chain (`Action::CheckTail`): the open
+    /// home holds the not-fetched mark (either form), basis and nodes are set, no fetch is in flight, and this
+    /// ledger as it is now has not been checked since its nodes or basis last changed (`tail_asked`). A pure
+    /// decision without disk or network; the window's clock and the places that make it due ask it.
+    pub fn tail_due(&self) -> bool {
+        self.home.is_some()
+            && self.unfetched.is_some()
+            && self.settings.chain_id.is_some()
+            && self.settings.registry.is_some()
+            && !self.endpoints.is_empty()
+            && !self.tasks.in_flight(crate::task::Kind::Fetch)
+            && self.tail_asked != Some(self.book_mark)
     }
 
     /// Whether the self-audit clock is due. A pure decision without disk or network: a zero period never
@@ -1177,6 +1311,19 @@ impl Shell {
                 self.faults.push(f);
             }
         }
+        self.reread_nets();
+    }
+
+    /// Reread the read-only network table (the machine directory's). Unreadable goes to the trouble panel by
+    /// name.
+    pub fn reread_nets(&mut self) {
+        match crate::action::read_nets_now() {
+            Ok(n) => self.read_nets = Some(n),
+            Err(f) => {
+                self.read_nets = None;
+                self.faults.push(f);
+            }
+        }
     }
 
     /// Whether the periodic review should start (vault card checks follow the basis): a zero period does not;
@@ -1228,6 +1375,8 @@ impl Shell {
         let Shell {
             // Following the machine, the person and this session, not the ledger's source:
             page: _,
+            // Names the fetch kind's flight, which a source change does not stop (its result is set aside).
+            fetch_checks_tail: _,
             resume_blocked: _,
             tasks: _,
             fonts: _,
@@ -1246,11 +1395,14 @@ impl Shell {
             words: _,
             book_mark: _,
             send_backoff: _,
+            receipt_backoff: _,
             anchor_wait: _,
             remembered,
             verdicts,
             clock: _,
             kits_index: _,
+            read_nets: _,
+            net_reads: _,
             kits_root: _,
             unfetched,
             vetted: _,
@@ -1268,7 +1420,8 @@ impl Shell {
             // follow the session.
             vault_said: _,
             gate_said: _,
-            gate_cleared: _,
+            // Those kinds follow the source: one started for the earlier source lands stale and writes nothing here.
+            said: _,
             machine: _,
             held_back: _,
             home: _,
@@ -1293,6 +1446,7 @@ impl Shell {
             grants_gen,
             audit,
             audit_asked,
+            tail_asked,
             sent,
             repo_since,
             grants,
@@ -1309,6 +1463,8 @@ impl Shell {
             story,
             gas,
             fees,
+            gas_epoch,
+            gas_asked: _,
             resumed_at: _,
             failed,
             archive,
@@ -1349,6 +1505,7 @@ impl Shell {
         // A source change means this home has no report yet: the next frame audits (without waiting for the
         // period).
         *audit_asked = None;
+        *tail_asked = None;
         *sent = None;
         *repo_since = None;
         *grants = None;
@@ -1365,6 +1522,7 @@ impl Shell {
         *story = None;
         *gas = None;
         *fees = None;
+        *gas_epoch += 1;
         failed.clear();
         // The usage reading includes the entry count: invalidated when the ledger changes; the caller
         // measures again.
@@ -1425,6 +1583,10 @@ impl Shell {
                     self.rooted = crate::ledgerx::head(h).map(|x| x.is_some()).unwrap_or(false);
                 }
                 self.book_changed();
+                // The answer that just landed is about this ledger as it now is: the tail is not due again until
+                // the ledger, its nodes or basis, or the home change (an answer of "newer entries elsewhere" is
+                // not asked again every frame).
+                self.tail_asked = Some(self.book_mark);
                 // With a root, the export page lists kits of this ledger.
                 self.reread_kits();
             }
@@ -1474,9 +1636,28 @@ impl Shell {
             // place, apart from a passcode task's). A refused gate takes the common path below (recorded, and the home's read-only
             // mark taken). A pass holds only for the home and the source it started on (`o.stale` says whether the
             // source moved since): `gate_landed` judges it before anything runs.
-            if let (crate::task::Kind::Gate, Ok(Done::GatePassed { root, then })) = (o.kind, &o.result) {
-                if let Some(said) = crate::action::gate_landed(self, root.clone(), (**then).clone(), o.stale) {
+            if let (crate::task::Kind::Gate, Ok(Done::GatePassed { root, then, pass })) = (o.kind, &o.result) {
+                if let Some(said) = crate::action::gate_landed(self, root.clone(), (**then).clone(), pass, o.stale) {
                     self.gate_said = Some(said);
+                }
+                continue;
+            }
+            // The actions whose slow half ran in the background: their frame half runs here (`action::landed`)
+            // and the answer goes to `said`, not through the common path below. One started for an earlier source
+            // lands nothing: it was for that source. A move ends the home's freeze whatever it came to.
+            if crate::action::lands_said(o.kind) {
+                if o.kind == crate::task::Kind::Migrate {
+                    self.swapping = false;
+                }
+                // An estimate started before its chain, registry or nodes changed is of the place left behind.
+                let behind = o.kind == crate::task::Kind::Gas && self.gas_out_of_date();
+                if o.stale || behind {
+                    if let Err(f) = &o.result {
+                        self.faults.push(f.clone());
+                    }
+                } else {
+                    let said = crate::action::landed(self, o.kind, o.result.clone());
+                    self.said.insert(o.kind, said);
                 }
                 continue;
             }
@@ -1531,6 +1712,8 @@ impl Shell {
                 Ok(Done::Vault(_)) => {}
                 // Taken above (`gate_landed`) and never reaches here.
                 Ok(Done::GatePassed { .. }) => {}
+                // Taken above (`action::landed`) and never reach here.
+                Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) => {}
                 Ok(Done::Check(r)) => self.last = Some(r.clone()),
                 Ok(Done::Archive { bytes, items, skipped, mirror, records, machine_items }) => {
                     self.archive = Some(ArchiveRead {
@@ -1614,6 +1797,15 @@ impl Shell {
                     self.sighting = Some((to.clone(), *anchors, *asked))
                 }
                 Ok(d @ Done::Book { .. }) => self.book = Some(d.clone()),
+                // A reading speaks only for the row it asked: when the row was changed or removed while it was
+                // in flight, the reading is dropped (the row shows no mark, as after any change).
+                Ok(Done::NetRead { chain_id, registry, nodes, reading }) => {
+                    let same = self.read_nets.as_ref().map(|t| t.iter().any(|n| n.is(*chain_id, registry) && n.nodes == *nodes)).unwrap_or(false);
+                    if same {
+                        self.net_reads.retain(|(c, r, _)| !(c == chain_id && r == registry));
+                        self.net_reads.push((*chain_id, *registry, *reading));
+                    }
+                }
                 // Broadcast landed: the queue file records those entries as submitted; the shell's copy
                 // follows the disk, the table is invalidated (lamps now "waiting to be anchored"), and the
                 // receipt wait starts.
@@ -1685,11 +1877,11 @@ impl Shell {
                     // The location is recorded with the flag: the flag says it was done, the location says
                     // where, so whether the backup is really on disk can be asked (`identity::backup_seen`).
                     if let Some(id) = id {
-                        if let Err(f) = crate::identity::mark(id, *seat, false, true, Some(path)) {
+                        if let Err(f) = crate::register::change(*seat, |reg| crate::identity::mark(reg, id, false, true, Some(path))) {
                             self.faults.push(f);
                         }
                     }
-                    match crate::identity::view(*seat) {
+                    match crate::register::view(*seat) {
                         Ok(v) => self.seat_identities(Some(v)),
                         Err(f) => self.faults.push(f),
                     }
@@ -1739,7 +1931,7 @@ impl Shell {
                         let at = (self.clock)();
                         for c in cards.iter() {
                             let checks = crate::vaultx::states(&c.checks);
-                            let v = crate::lastread::Verdict { verdict: c.verdict.clone(), checks, at, upstream_label: c.upstream_label.clone(), chain_now: *now };
+                            let v = crate::lastread::Verdict { verdict: c.verdict.clone(), checks, at, upstream_label: c.upstream_label.clone(), chain_now: *now, anchored_at: c.anchored_at };
                             match crate::lastread::save_verdict(h, &c.id, &v) {
                                 Ok(()) => {
                                     self.verdicts.retain(|(id, _)| !id.eq_ignore_ascii_case(&c.id));
@@ -1763,6 +1955,16 @@ impl Shell {
                     self.fetch_conflict = None;
                     self.last_aside = None;
                     self.fetch_landed(root, tail);
+                }
+                // The tail of each marked seat home was checked: each follows its answer as a fetch does; a home
+                // whose chain could not be read keeps its mark and says why, without holding the others back.
+                Ok(Done::TailChecked { checked }) => {
+                    for (root, tail) in checked {
+                        match tail {
+                            Ok(tail) => self.fetch_landed(root, tail),
+                            Err(f) => self.faults.push(f.clone()),
+                        }
+                    }
                 }
                 Ok(Done::FetchConflict { root, offline, fetched, rows }) => {
                     self.fetch_conflict = Some(Conflict { root: root.clone(), offline: *offline, fetched: *fetched, rows: rows.clone() });
@@ -1956,4 +2158,9 @@ fn primary_reading() -> Option<(String, crate::keybox::PrimaryKind)> {
         Ok(p) => p,
         Err(_) => crate::keybox::primary_kind().ok().flatten().map(|k| (String::new(), k)),
     }
+}
+
+/// What a gas estimate and its fees are read from: this home's chain, registry contract and nodes (as a set).
+fn gas_source(s: &Settings) -> (Option<u64>, Option<crate::key::Address>, std::collections::BTreeSet<&str>) {
+    (s.chain_id, s.registry, s.endpoints.iter().map(String::as_str).collect())
 }

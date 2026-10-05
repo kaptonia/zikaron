@@ -50,13 +50,17 @@ impl Base {
     }
 }
 
-/// Recognize an address. `https://` only; unrecognized is `REMOTE_NOT_HTTPS`, with the person's input
-/// unchanged as subject. Pointing at `…/manifest.json` steps back to its directory.
+/// Recognize an address. `https` only, the scheme and host in any case (read by the one transport's reader);
+/// unrecognized is `REMOTE_NOT_HTTPS`, with the person's input unchanged as subject. The address is kept as
+/// that reader writes it (lowercase scheme and host), so `HTTPS://Host/k` and `https://host/k` are one
+/// address. Pointing at `…/manifest.json` steps back to its directory.
 pub fn base_of(typed: &str) -> Result<Base, Fault> {
-    let t = typed.trim();
-    if !t.starts_with("https://") || crate::chainx::Https::new(t).is_none() {
-        return Err(Fault::known(Known::RemoteNotHttps, t.to_string()));
-    }
+    let typed = typed.trim();
+    let Some(h) = crate::chainx::Https::new(typed) else {
+        return Err(Fault::known(Known::RemoteNotHttps, typed.to_string()));
+    };
+    let normal = h.address();
+    let t = normal.as_str();
     // Step back to the manifest's directory by whole segment only (comparing by suffix would cut
     // `…/oldmanifest.json` to `…/old/`, and every later file would be fetched from a nonexistent directory,
     // with the person seeing only 404s).
@@ -66,11 +70,10 @@ pub fn base_of(typed: &str) -> Result<Base, Fault> {
     Ok(Base { url })
 }
 
-/// Whether this text is an https address (the bytes cell branches on it: addresses go to remote fetch, others
-/// to local paths).
+/// Whether this text is an address (the bytes cell branches on it: addresses go to remote fetch, others to
+/// local paths). Read by the one transport's reader, so `HTTPS://…` is an address and not a local path.
 pub fn is_address(typed: &str) -> bool {
-    let t = typed.trim();
-    t.starts_with("https://") || t.starts_with("http://")
+    zikaron_net::parse(typed).is_some()
 }
 
 fn limits() -> zikaron_anchor::rpc::Limits {
@@ -136,13 +139,13 @@ pub fn get_one(url: &str) -> Result<One, Fault> {
                 } else {
                     to.clone()
                 };
-                if !next.starts_with("https://") || origin(&next).as_ref() != Some(&home) {
+                if origin(&next).as_ref() != Some(&home) {
                     return Err(Fault::known(Known::RemoteRedirect, format!("{at} → {to}")));
                 }
                 at = next;
             }
             404 | 410 => return Ok(One::Absent(got.status)),
-            n => return Err(Fault::known(Known::RemoteStatus, format!("{n} {at}"))),
+            n => return Err(Fault::known(Known::RemoteStatus, format!("{n} {at}")).with_status(n)),
         }
     }
     Err(Fault::known(Known::RemoteRedirect, format!("{url} · {MAX_HOPS}")))
@@ -152,7 +155,7 @@ pub fn get_one(url: &str) -> Result<One, Fault> {
 fn must(url: &str) -> Result<Vec<u8>, Fault> {
     match get_one(url)? {
         One::Bytes(b) => Ok(b),
-        One::Absent(n) => Err(Fault::known(Known::RemoteStatus, format!("{n} {url}"))),
+        One::Absent(n) => Err(Fault::known(Known::RemoteStatus, format!("{n} {url}")).with_status(n)),
     }
 }
 

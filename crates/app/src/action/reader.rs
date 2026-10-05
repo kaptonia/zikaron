@@ -9,6 +9,7 @@ pub(super) fn read_book(shell: &mut Shell, address: &str, dir: &str) -> Result<S
     // empty the first two levels are tried, and the face names the level that supplied the material; none at
     // all means "not obtained", never passing for 0 entries.
     let shelf = shelf_of(shell, dir.trim());
+    let nets = read_nets_now()?;
     shell.book = None;
     Ok(shell.tasks.spawn(Kind::Book, move || {
         let found = crate::supplyx::find_book(&shelf, &who.hex());
@@ -16,9 +17,15 @@ pub(super) fn read_book(shell: &mut Shell, address: &str, dir: &str) -> Result<S
         // Scan to the chain head: the basis's upper bound is asked of the chain now (the smallest across
         // endpoints), never scanning 0..0.
         crate::task::stage_at(Kind::Book, 0);
-        let g = to_head(&eps, g)?;
-        crate::task::stage_at(Kind::Book, 1);
-        let b = crate::readerx::read(&eps, &g, &who, &bytes)?;
+        let (b, missed) = if nets.is_empty() {
+            let g = to_head(&eps, g)?;
+            crate::task::stage_at(Kind::Book, 1);
+            (crate::readerx::read(&eps, &g, &who, &bytes)?, Vec::new())
+        } else {
+            // Across networks: each chain's head is asked with its window.
+            crate::task::stage_at(Kind::Book, 1);
+            crate::readerx::read_wide(&eps, &g, &who, &bytes, &nets)?
+        };
         Ok(Done::Book {
             who: b.who,
             anchors: b.anchors,
@@ -31,6 +38,7 @@ pub(super) fn read_book(shell: &mut Shell, address: &str, dir: &str) -> Result<S
             from: found.supply.as_ref().map(|s| (s.level, s.place.clone())),
             files: found.supply.as_ref().and_then(|s| s.files),
             misses: found.misses,
+            missed,
         })
     }))
 }

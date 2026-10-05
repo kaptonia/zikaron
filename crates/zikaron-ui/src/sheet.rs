@@ -211,6 +211,24 @@ pub fn title(ui: &mut egui::Ui, s: &str, sub: &str) {
 
 /// The quiet words at the left end of a sheet's foot (drawn last in the right-to-left row, so they take what
 /// the keys leave).
+/// A line saying work is under way: a small turning ring, then the words on one line (elided to fit), at the
+/// left or centred.
+pub fn busy_note(ui: &mut egui::Ui, s: &str, centred: bool) {
+    let t = Type::Small;
+    let colour = c(C::Ink2);
+    let ring = 4.25;
+    let gap = 6.0;
+    let room = ui.available_width();
+    let fit = crate::width::elide_to(ui, s, t.font(), (room - ring * 2.0 - gap).max(0.0));
+    let g = ui.painter().layout_no_wrap(fit, t.font(), colour);
+    let w = ring * 2.0 + gap + g.size().x;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(if centred { room } else { w }, t.line().max(ring * 2.0)), egui::Sense::hover());
+    let x = if centred { rect.center().x - w / 2.0 } else { rect.left() };
+    let y = rect.center().y;
+    crate::mark::spinner(ui.ctx(), ui.painter(), egui::pos2(x + ring, y), ring, 1.5, colour, crate::tokens::CYCLE);
+    ui.painter().galley(egui::pos2(x + ring * 2.0 + gap, y - g.size().y / 2.0), g, colour);
+}
+
 pub fn foot_note(ui: &mut egui::Ui, s: &str) {
     if s.is_empty() {
         return;

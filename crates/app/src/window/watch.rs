@@ -67,6 +67,10 @@ impl Win {
         if self.shell.review_due(now, self.last_tick) {
             apply(&mut self.shell, Action::ReviewVault);
         }
+        // A marked home whose tail can be checked now (nodes back, the ledger moved): checked once.
+        if self.shell.take_tail_due() {
+            apply(&mut self.shell, Action::CheckTail);
+        }
         // `audit_stale` covers "the report in hand is stale", `audit_due` the period: either audits now.
         if !self.shell.audit_stale() && !self.shell.audit_due(now, self.last_tick) {
             return;

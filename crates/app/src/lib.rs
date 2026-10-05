@@ -23,6 +23,7 @@
 
 pub mod action;
 pub mod anchorx;
+pub mod about;
 pub mod adoptx;
 pub mod auditx;
 pub mod exitgate;
@@ -65,12 +66,15 @@ pub mod secret {
 pub mod mirror;
 pub mod nav;
 pub mod payloadx;
+pub mod pinned;
 pub mod places;
 pub mod probe;
 pub mod qr;
 pub mod queue;
 pub mod readerx;
+pub mod readnets;
 pub mod recordsx;
+pub mod checkedx;
 pub mod restorex;
 pub mod names;
 pub mod register;
@@ -101,8 +105,10 @@ pub mod task;
 pub mod termsx;
 pub mod trace;
 pub mod vaultx;
+pub mod verifiedx;
 pub mod verifyx;
 pub mod watchx;
+pub mod widex;
 pub mod window;
 pub mod when;
 pub mod wizard;

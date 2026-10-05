@@ -48,6 +48,26 @@ pub fn agree_over(runs: Vec<(String, Value)>, thin: Vec<u64>) -> Result<Reading,
     Ok(Reading { fragment, sources, single_source: !thin.is_empty(), single_source_chains: thin })
 }
 
+/// One endpoint's answer cut down to the facts a decision reads: an object keeps only the named members, in
+/// the order named; any other answer (a string, `null`, an array) stands whole.
+///
+/// Endpoints answer the same transaction or block with members that differ by node (one adds
+/// `blockTimestamp`, another orders or pads differently) and with values that move between two asks. Agreement
+/// over the whole answer then fails on what no decision reads. The caller names the facts its decision uses
+/// and agreement is asked over those alone; [`agree`] itself stays strict. A named member one endpoint lacks
+/// is left out of its projection, so a missing fact still disagrees with a present one.
+pub fn project(answer: &Value, facts: &[&str]) -> Value {
+    match answer {
+        Value::Obj(m) => Value::Obj(
+            facts
+                .iter()
+                .filter_map(|f| m.iter().find(|(k, _)| k == f).map(|(k, v)| (k.clone(), v.clone())))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Convergence for one chain or without chain ids: fewer than two sources is single-source.
 pub fn agree(runs: Vec<(String, Value)>) -> Result<Reading, Disagreement> {
     let thin = if runs.len() < 2 { vec![0] } else { Vec::new() };

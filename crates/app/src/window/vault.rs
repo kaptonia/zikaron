@@ -110,17 +110,17 @@ impl Win {
         let held = self.shell.held.clone().unwrap_or_default();
         let rejected = self.shell.held_rejected.clone();
         let mut query = self.ux.search.get("vault").cloned().unwrap_or_default();
+        let mut range = self.ux.range.get("vault").cloned().unwrap_or_default();
+        let today = (self.shell.clock)();
         let mut open: Option<String> = None;
-        stagger(ui, 0, |ui| {
-            let w = ui.available_width();
-            input::search(ui, &mut query, t(Key::SearchVault), w);
-        });
+        stagger(ui, 0, |ui| search_row(ui, "vault", &mut query, t(Key::SearchVault), &mut range, today));
         for x in &rejected {
             states::err_box(ui, &format!("vault-rej-{}", x.file), &fill1(Key::VaultRejected, &width::file_name(&x.file)), t(Key::U4RejectedNext), t(Key::U3RawError), &x.why);
         }
         if held.is_empty() {
             stagger(ui, 1, |ui| card::card(ui, |ui| states::empty(ui, Glyph::Vault, t(if self.shell.held.is_some() { Key::U4VaultEmpty } else { Key::WbNotRead }))));
             self.ux.search.insert("vault", query);
+            self.ux.range.insert("vault", range);
             return;
         }
         let faces: Vec<(crate::vaultx::Held, String, String, (String, PillTone, Mark))> = held
@@ -132,22 +132,21 @@ impl Win {
                 (h.clone(), name, issuer, face)
             })
             .collect();
-        let age_of = |id: &str| {
-            cards
-                .iter()
-                .find(|k| k.id.eq_ignore_ascii_case(id))
-                .and_then(|k| crate::vaultx::anchor_age(k.latest_anchor, chain_now))
-                .map(|a| fill1(Key::U4AnchorAgeDays, &days_of(a)))
-                .unwrap_or_else(|| t(Key::U4AnchorAgeUnread).to_string())
+        // The block time the grant was anchored at in its issuer's ledger, the one reading the date range
+        // filters by (this run's re-check, else the cached verdict), in the record rows' format; "not read"
+        // only while neither has it.
+        let shell = &self.shell;
+        let anchored_say = |id: &str| shell.held_anchored_at(id).map(crate::when::when).unwrap_or_else(|| t(Key::U4AnchorAgeUnread).to_string());
+        let shown = |f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark))| {
+            matches(&query, &[&f.1, &f.2, &f.0.author, &(f.3).0]) && crate::when::within(shell.held_anchored_at(&f.0.id), &range.0, &range.1)
         };
-        let shown = |f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark))| matches(&query, &[&f.1, &f.2, &f.0.author, &(f.3).0]);
         let draw = |ui: &mut egui::Ui, f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark)), open: &mut Option<String>| {
             let (h, name, issuer, (verdict, tone, _)) = f;
             let (_, resp) = card::open_card(ui, egui::Id::new(("held-card", &h.id)), |ui| {
                 ui.spacing_mut().item_spacing.y = tk::S1;
                 width::then_at(ui, Type::Card.line(), |ui| mark::pill(ui, verdict, *tone), |ui, room| paint::line(ui, name, Type::Card, c(C::Ink), room));
                 let room = ui.available_width();
-                paint::line(ui, &format!("{} \u{b7} {} \u{b7} {}", issuer, window_short(h.window), age_of(&h.id)), Type::Note, c(C::Ink2), room);
+                paint::line(ui, &format!("{} \u{b7} {} \u{b7} {}", issuer, window_short(h.window), anchored_say(&h.id)), Type::Note, c(C::Ink2), room);
             });
             if resp.clicked() {
                 *open = Some(h.id.clone());
@@ -209,6 +208,7 @@ impl Win {
             card::card(ui, |ui| states::empty(ui, Glyph::Search, t(Key::SearchNone)));
         }
         self.ux.search.insert("vault", query);
+        self.ux.range.insert("vault", range);
         if let Some(id) = open {
             self.typed.vt_grant = id.clone();
             self.typed.vt_dir = self.shell.settings.upstreams.iter().find(|(g, _)| g.eq_ignore_ascii_case(&id)).map(|(_, d)| d.clone()).unwrap_or_default();

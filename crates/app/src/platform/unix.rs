@@ -17,6 +17,16 @@ pub(super) fn lock_wait(file: &std::fs::File) -> bool {
     unsafe { flock(file.as_raw_fd(), LOCK_EX) == 0 }
 }
 
+/// Under the home directory itself (the default machine directory is a dot-folder there).
+pub(super) fn app_data_dir(user_home: &std::path::Path) -> std::path::PathBuf {
+    user_home.to_path_buf()
+}
+
+/// A unix window program writes its reason to standard error, as it always did.
+pub(super) fn say_without_window(line: &str, _sentence: &str) {
+    eprintln!("{line}");
+}
+
 pub(super) fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").filter(|h| !h.is_empty()).map(std::path::PathBuf::from)
 }

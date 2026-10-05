@@ -1,0 +1,14 @@
+[package]
+name = "zikaron-net"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+
+# The one transport: one HTTP/1.1 exchange over TCP, or over TLS for https. It depends on no crate of this
+# workspace; its third-party crates are the TLS stack alone (rustls with the ring provider, and the
+# webpki-roots table). The anchoring crate, the command line through it, and the app all reach nodes and
+# remote files through here, so the TLS configuration is built in one place. The root table is compiled in
+# (`webpki-roots`) and the system trust store is not read, so one binary trusts the same roots on every machine.
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"

@@ -29,12 +29,18 @@ pub(super) fn export_badge(shell: &mut Shell, grant: &str, out: &str) -> Result<
         let chain = crate::badgex::chain_for(&pool, &g)?;
         crate::task::stage_at(Kind::Badge, 1);
         // The exit gate, last before the badge is written.
-        crate::exitgate::pass(&ask)?;
-        let mut made = crate::badgex::export(&chain, &out)?;
+        let pass = crate::exitgate::pass(&ask)?;
+        let mut made = crate::badgex::export(&pass, &chain, &out)?;
         made.grant = g.clone();
         let now = chain_id.and_then(|c| crate::chainx::head_time(&eps, c).ok()).map(|x| x.0).or(reviewed_at);
         made.chain = crate::badgex::chain_verdict(&chain, &cards, now);
         made.input_at = if cards.is_empty() { None } else { reviewed_at };
         Ok(Done::Badge(Box::new(made)))
     }))
+}
+
+/// The whole grant code of a grant in this home (`badgex::code_for`: its chain to the root, encoded).
+pub(super) fn grant_code(shell: &mut Shell, grant: &str) -> Result<String, crate::fault::Fault> {
+    let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
+    crate::badgex::code_for(&crate::badgex::pool(home)?, grant)
 }

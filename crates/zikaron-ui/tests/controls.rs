@@ -35,7 +35,8 @@ fn hex(c: zikaron_ui::egui::Color32) -> String {
 }
 
 /// Bytes live only in the faces the closed table names `Place::Embedded` on this target: monospace and Latin body
-/// everywhere, and the Chinese face on Linux (macOS takes it from the system). Embedding happens only in
+/// everywhere, and the Chinese face on every system but macOS (macOS takes it from the system; Windows carries it as
+/// the fallback of the system's). Embedding happens only in
 /// `fonts.rs`; the files this build carries (an `include_bytes!` gated to another OS does not ship) are exactly
 /// the embedded files of the table, and each reports its licence.
 #[test]
@@ -47,7 +48,14 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
         }
         assert!(!code_only(&text).contains("include_bytes!"), "{name} 里有 include_bytes!:字节只住 fonts.rs");
     }
-    let mut declared: Vec<&str> = ROLES.iter().filter(|(_, _, _, p)| *p == Place::Embedded).map(|(_, f, _, _)| *f).collect();
+    // The table's embedded files: the first choices, and the fallbacks that are embedded (Windows falls back to
+    // the embedded Chinese face).
+    let mut declared: Vec<&str> = ROLES
+        .iter()
+        .filter(|(_, _, _, p)| *p == Place::Embedded)
+        .map(|(_, f, _, _)| *f)
+        .chain(zikaron_ui::fonts::FALLBACK.iter().filter(|(_, _, _, p)| *p == Place::Embedded).map(|(_, f, _, _)| *f))
+        .collect();
     declared.sort();
     declared.dedup();
     let in_source = std::fs::read_to_string(src().join("fonts.rs")).expect("读不出 fonts.rs");
@@ -57,7 +65,13 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
     for (i, l) in lines.iter().enumerate() {
         let Some(at) = l.find("include_bytes!(\"") else { continue };
         let gate = if i > 0 { lines[i - 1] } else { "" };
-        let elsewhere = gate.starts_with("#[cfg(target_os") && !gate.contains(&format!("\"{}\"", std::env::consts::OS));
+        // A gate names this system (`target_os = "<os>"`) or every system but one (`not(target_os = "<os>")`).
+        let names_this = gate.contains(&format!("\"{}\"", std::env::consts::OS));
+        let elsewhere = if gate.starts_with("#[cfg(not(target_os") {
+            names_this
+        } else {
+            gate.starts_with("#[cfg(target_os") && !names_this
+        };
         if elsewhere {
             continue;
         }
@@ -76,6 +90,9 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
             }
             Place::System => assert!(bytes.is_none(), "{} 是系统取的,字节不许随二进制走", role.as_str()),
         }
+    }
+    for (role, file, _, place) in zikaron_ui::fonts::FALLBACK {
+        assert_eq!(embedded(file).is_some(), place == Place::Embedded, "{} 的退路 {file} 内嵌与否与表不符", role.as_str());
     }
     // Embedded faces report a licence; system faces are not distributed by this crate.
     for face in zikaron_ui::fonts::find().faces {
@@ -258,7 +275,7 @@ fn every_icon_is_drawn_here_and_none_is_borrowed() {
 }
 
 #[test]
-fn the_font_roles_name_their_faces_and_the_cjk_one_is_not_face_zero() {
+fn the_font_roles_name_their_faces_and_the_cjk_one_is_the_mainland_set() {
     use zikaron_ui::fonts::{find, Place, Role, ROLES};
     assert_eq!(ROLES.len(), Role::ALL.len());
     // The `Place` column is part of the rule: lookup must follow it. One check per member, reading the face
@@ -267,8 +284,14 @@ fn the_font_roles_name_their_faces_and_the_cjk_one_is_not_face_zero() {
     for (role, file, index, place) in ROLES {
         assert!(!file.is_empty(), "{} 没有档名", role.as_str());
         if role == Role::Cjk {
-            // Face 0 is the Hong Kong glyph set; mainland readers need another.
-            assert_ne!(index, 0, "中文那一面不许取第 0 面");
+            // The Chinese face is the mainland glyph set. In the system's PingFang collection (macOS) face 0 is
+            // the Hong Kong set, so another face is taken; Microsoft YaHei (Windows) is simplified Chinese and
+            // is taken by its full name; the embedded Noto Sans SC is one face, the mainland set itself.
+            match file {
+                "PingFang.ttc" => assert_ne!(index, 0, "苹方合集里中文那一面不许取第 0 面(那是港版字形)"),
+                "msyh.ttc" | "NotoSansSC-Regular.otf" => {}
+                other => panic!("中文那一面不是大陆简体字形:{other}"),
+            }
         }
         let face = found
             .face(role)
@@ -314,7 +337,7 @@ fn only_the_system_taken_faces_have_a_fallback_and_the_strong_face_is_the_simpli
     // The fallback table follows `Place`: embedded faces are always present, so a fallback for them would be
     // dead code; system faces need one, because missing glyphs as boxes would be a silent failure.
     for (role, file, _, place) in ROLES {
-        let has = FALLBACK.iter().any(|(r, _, _)| *r == role);
+        let has = FALLBACK.iter().any(|(r, _, _, _)| *r == role);
         match place {
             Place::Embedded => {
                 assert!(embedded(file).is_some(), "{} 说自己是内嵌的,字节却不在本件里", role.as_str());
@@ -326,8 +349,19 @@ fn only_the_system_taken_faces_have_a_fallback_and_the_strong_face_is_the_simpli
             }
         }
     }
+    // The strong face by system: macOS takes PingFang Semibold (face 11) from the system; Windows takes
+    // Microsoft YaHei UI Bold from the system, by its full name; every other system embeds its Chinese face,
+    // so the strong role carries the embedded one.
     let strong = ROLES.iter().find(|(r, _, _, _)| *r == Role::Strong).expect("有重字");
-    assert_eq!((strong.1, strong.2), ("PingFang.ttc", 11), "重字取苹方简体 Semibold 第 11 面");
+    if cfg!(target_os = "macos") {
+        assert_eq!((strong.1, strong.2), ("PingFang.ttc", 11), "重字取苹方简体 Semibold 第 11 面");
+    } else if cfg!(target_os = "windows") {
+        assert_eq!((strong.1, strong.3), ("msyhbd.ttc", Place::System), "重字取系统的微软雅黑粗体");
+        let named = zikaron_ui::fonts::NAMED.iter().find(|(r, _)| *r == Role::Strong).map(|(_, n)| n.to_vec()).unwrap_or_default();
+        assert_eq!(named, vec!["Microsoft YaHei UI Bold"], "重字按全名取 UI Bold");
+    } else {
+        assert_eq!(strong.3, Place::Embedded, "其余系统重字随二进制走");
+    }
 }
 
 #[test]
@@ -472,4 +506,26 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
     let later = run(&ctx, &mut t, 60.0, Vec::new());
     assert_eq!(later.len(), 1, "an error with its details open stays past its time");
     assert_eq!(t.live(), 1);
+}
+
+/// A face is found by its full name inside a font file: in a collection, the number of the first face with
+/// that name; in a single font, face 0; none when no face has it or the bytes are not a font. Checked on every
+/// build against the embedded Inter (a single font), and on macOS also against the system PingFang collection
+/// when this machine has it (faces 3 and 11 by the closed table; a build machine without PingFang has
+/// nothing to check there).
+#[test]
+fn a_face_is_found_by_its_full_name() {
+    use zikaron_ui::fonts::{embedded, face_named, find, Role};
+    let inter = embedded("Inter-Regular.ttf").expect("内嵌");
+    assert_eq!(face_named(inter, &["Inter Regular"]), Some(0));
+    assert_eq!(face_named(inter, &["Microsoft YaHei UI"]), None);
+    assert_eq!(face_named(b"not a font", &["x"]), None);
+    if cfg!(target_os = "macos") {
+        if let Some(path) = find().face(Role::Cjk).filter(|f| f.file == "PingFang.ttc").and_then(|f| f.path.clone()) {
+            let bytes = std::fs::read(path).expect("读苹方");
+            assert_eq!(face_named(&bytes, &["PingFang SC Regular"]), Some(3));
+            assert_eq!(face_named(&bytes, &["PingFang SC Semibold"]), Some(11));
+            assert_eq!(face_named(&bytes, &["Microsoft YaHei UI"]), None);
+        }
+    }
 }

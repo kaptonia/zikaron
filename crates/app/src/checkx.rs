@@ -343,6 +343,8 @@ pub struct Checked {
     pub file: Side,
     /// Whether the supplied terms file is the one the grant records.
     pub terms: Side,
+    /// Networks this pass could not read (`widex`), each named; empty with no read-only network.
+    pub missed: Vec<crate::widex::Missed>,
 }
 
 /// One supplied file held against the grant. Closed set.
@@ -460,8 +462,9 @@ pub enum Gap {
     NoNode,
     /// Configured, but this pass could not read the chain, with the refusal's words.
     ChainUnread(String),
-    /// A ledger exists and the chain was read, but this one is not yet anchored: verify again in a few
-    /// minutes.
+    /// A ledger exists and every network was read, but this one is not yet anchored: verify again in a few
+    /// minutes. With a network left out this pass it is `ChainUnread` instead, naming the networks not read:
+    /// the anchor may be on one of them.
     NotYetAnchored,
     /// The chain's current time could not be read (for the window check).
     NoTime,
@@ -486,8 +489,9 @@ pub fn gap(x: &Checked, hop: usize, token: &str, state: &str) -> Option<Gap> {
         (Err(_), Some(f)) if matches!(f.which(), Some(Known::NoEndpoint | Known::NoRegistry | Known::NoChainId)) => Some(Gap::NoNode),
         (Err(said), _) => Some(Gap::ChainUnread(said.clone())),
     };
+    let missed_gap = || (!x.missed.is_empty()).then(|| Gap::ChainUnread(crate::widex::named(&x.missed)));
     if token == C::Unanchored.as_str() {
-        return chain_gap().or_else(ledger_gap).or(Some(Gap::NotYetAnchored));
+        return chain_gap().or_else(ledger_gap).or_else(missed_gap).or(Some(Gap::NotYetAnchored));
     }
     if token == C::Expired.as_str() {
         return match (x.now_from, chain_gap()) {
@@ -583,13 +587,7 @@ pub fn run(
     // Basis: the senders are the union of every hop's ledger lineage (sorted and deduplicated, one way to
     // assemble a scan). The refusal's evidence keeps its two forms: not-configured and law-check refusals use
     // `said`, chain queries and scans use `evidence` (bytes frozen).
-    let basis: Result<(Basis, Value), (Fault, bool)> = (|| {
-        let mut g = ground.clone().map_err(|f| (f, false))?;
-        if eps.is_empty() {
-            return Err((Fault::known(Known::NoEndpoint, crate::lang::t(crate::lang::Key::Tail103)), false));
-        }
-        let (head, _) = crate::chainx::head_block(&eps, g.chain).map_err(|f| (f, true))?;
-        g.to_block = head.max(g.from_block);
+    let basis: Result<(Basis, Value, Vec<crate::widex::Missed>), (Fault, bool)> = (|| {
         let mut senders: Vec<String> = Vec::new();
         for p in piles.iter().flatten() {
             senders.extend(crate::auditx::senders_of(p));
@@ -601,9 +599,60 @@ pub fn run(
         }
         senders.sort();
         senders.dedup();
+        if !shelf.reads.is_empty() {
+            // Across networks, as every path that reads someone else's material (`widex::scan`, one rule): the
+            // main network, when configured, is one window that fails by name like any other chain (no node,
+            // no head), and every read-only network is read on its own, each chain to agreement.
+            // The main network the page names: not configured (no registry anywhere, no chain id from any node or
+            // setting) is no window at all, as on the verify page; a cell typed wrong is refused by name as before,
+            // never read as "not configured".
+            let main = match &ground {
+                Ok(g) => Some(g),
+                Err(f) if f.which() == Some(Known::NoRegistry) || (f.which() == Some(Known::NoChainId) && f.tail().is_empty()) => None,
+                Err(f) => return Err((f.clone(), false)),
+            };
+            crate::task::stage_at(crate::task::Kind::Check, 1);
+            let w = crate::widex::scan(main.map(|g| (&eps[..], g)), &shelf.reads, &senders, crate::widex::Ask::Agreed).map_err(|f| (f, true))?;
+            let g = crate::widex::carrier(main, &shelf.reads);
+            // The main window's end as read (its start when it was not read).
+            let to_block = match w.fragment.member("basis").and_then(|b| b.member("chains")) {
+                Some(Value::Arr(c)) => c
+                    .iter()
+                    .filter(|x| x.member("chainId") == Some(&Value::Int(g.chain)))
+                    .filter_map(|x| match x.member("toBlock") {
+                        Some(Value::Int(n)) => Some(*n),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(g.from_block),
+                _ => g.from_block,
+            };
+            return Ok((
+                Basis {
+                    chain: g.chain,
+                    registry: g.registry.hex(),
+                    from_block: g.from_block,
+                    to_block,
+                    senders,
+                    asked: w.asked,
+                    single_source: w.single_source,
+                    unanswered: w.unanswered,
+                    anchors: anchors_in(&w.fragment),
+                },
+                w.fragment,
+                w.missed,
+            ));
+        }
+        let mut g = ground.clone().map_err(|f| (f, false))?;
+        if eps.is_empty() {
+            return Err((Fault::known(Known::NoEndpoint, crate::lang::t(crate::lang::Key::Tail103)), false));
+        }
+        let (head, _) = crate::chainx::head_block(&eps, g.chain).map_err(|f| (f, true))?;
+        g.to_block = head.max(g.from_block);
         g.senders = senders;
         crate::task::stage_at(crate::task::Kind::Check, 1);
-        match crate::auditx::scan_agreed(&eps, &g).map_err(|f| (f, true))? {
+        // Zero permissions: this page touches no local file, so it scans without the record of checked facts.
+        match crate::auditx::scan_agreed_with(&eps, &g, crate::auditx::Facts::Bare).map_err(|f| (f, true))? {
             crate::auditx::Scan::Basis(a) => Ok((
                 Basis {
                     chain: g.chain,
@@ -617,14 +666,20 @@ pub fn run(
                     anchors: anchors_in(&a.fragment),
                 },
                 a.fragment,
+                Vec::new(),
             )),
             crate::auditx::Scan::NoLabel { .. } => Err((Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail083)), false)),
         }
     })();
-    let (basis, basis_why, fragment) = match basis {
-        Ok((b, f)) => (Ok(b), None, f),
-        Err((f, long)) => (Err(if long { f.evidence() } else { f.said().to_string() }), Some(f), crate::auditx::empty_fragment()),
+    let (basis, basis_why, fragment, missed) = match basis {
+        Ok((b, f, m)) => (Ok(b), None, f, m),
+        Err((f, long)) => (Err(if long { f.evidence() } else { f.said().to_string() }), Some(f), crate::auditx::empty_fragment(), Vec::new()),
     };
+    // A network left out this pass joins the judge's basis as a window with no registry: the kit core's own
+    // covering rule then finds the basis does not cover, and the grant is not called unanchored for want of a
+    // chain not read. With nothing missed the fragment is the one scanned, byte for byte.
+    let senders = basis.as_ref().map(|b| b.senders.clone()).unwrap_or_default();
+    let fragment = crate::widex::with_unread_windows(&fragment, &missed, &senders);
     // Input, per hop.
     let mut inputs: Vec<Option<Value>> = Vec::new();
     for (i, pile) in piles.iter().enumerate() {
@@ -649,5 +704,5 @@ pub fn run(
         hop.anchored_at = crate::auditx::first_anchored(items, &fragment)
             .and_then(|at| at.into_iter().find(|(id, _)| id.eq_ignore_ascii_case(&hop.id)).map(|(_, t)| t));
     }
-    Checked { form: hops.form, judged, basis, basis_why, refused, found, now, now_from, file: Side::NotGiven, terms: Side::NotGiven }
+    Checked { form: hops.form, judged, basis, basis_why, refused, found, now, now_from, file: Side::NotGiven, terms: Side::NotGiven, missed }
 }

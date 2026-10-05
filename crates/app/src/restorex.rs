@@ -8,10 +8,12 @@
 //! So at the moment of restoring (the identity was not in the register before), each of the two homes gets a
 //! mark [`FILE`] (in `settings/`; even when the home already has an old ledger). While the mark is present,
 //! the closed table of write actions (`action::Action::writes_ledger`) is refused by name at the entry to
-//! `apply`; only after fetching the full ledger (`Action::FetchLedger`) and checking its tail against this
-//! identity's anchors on chain (every digest this identity anchored is in the fetched ledger) is the mark
-//! removed and writing opened. If the chain has anchors this ledger lacks, "there are newer entries
-//! elsewhere": the mark changes to that form, still read-only.
+//! `apply`. The mark is removed and writing opened by one judgement only, the exit gate's own reading
+//! (`exitgate::tail`): every digest this ledger's lineage and this seat's key anchored on chain, nodes
+//! agreeing, is present in this seat's ledger, whatever the ledger came
+//! from — fetched from a whole-machine backup (`Action::FetchLedger`), adopted in place, or never anywhere
+//! (an empty ledger and a key with no anchors pass at once; `Action::CheckTail`). If the chain has anchors
+//! this ledger lacks, "there are newer entries elsewhere": the mark changes to that form, still read-only.
 //!
 //! The mark is a fact of this home and travels with it (copies are equivalent: a copied home is still
 //! read-only and must have its tail checked the same way before writing).
@@ -114,8 +116,9 @@ pub enum Tail {
     NewerElsewhere { missing: usize, anchors: usize },
 }
 
-/// Tail check: the scan fragment (`anchors[].hash`, only those sent by this identity) against this ledger's
-/// entry ids. Pure; touches no disk.
+/// Tail check: a scan fragment (`anchors[].hash`) against this ledger's entry ids. Pure; touches no disk. The
+/// comparison only: which anchors were asked for is the caller's, and the one that moves a home's mark is the
+/// exit gate's reading (`exitgate::tail`).
 pub fn tail_check(pile: &[Vec<u8>], fragment: &Value) -> Tail {
     let ids: Vec<String> = pile.iter().filter_map(|b| zikaron::entry::check(b).ok()).map(|e| e.id_hex().trim_start_matches("0x").to_ascii_lowercase()).collect();
     let hashes: Vec<String> = match fragment {

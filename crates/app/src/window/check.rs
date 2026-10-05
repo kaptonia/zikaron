@@ -226,6 +226,10 @@ impl Win {
             for g in &gaps {
                 states::note_box(ui, t(gap_note(g)));
             }
+            // Read-only networks this pass could not read, each with why.
+            for m in &x.missed {
+                states::okline(ui, Mark::Warn, &format!("{} {}", m.name, t(m.reading.key())));
+            }
             if gaps.contains(&crate::checkx::Gap::NoNode) && key::link(ui, t(Key::CheckGoSettings)).clicked() {
                 go_settings = true;
             }

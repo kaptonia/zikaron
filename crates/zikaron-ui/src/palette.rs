@@ -309,13 +309,15 @@ impl Tone {
     }
 }
 
-/// Elevation: cards at rest, lifted on hover, floating layers (sheets, menus), and the toast (a small
-/// floating strip: a shorter, lighter shadow than a sheet's). Each is a half-point ring plus soft
-/// shadows; the dark table carries its own.
+/// Elevation: cards at rest, lifted on hover, the drop-downs (menus, search pickers, the date picker: they
+/// open over the page beside their field, so they lift as a hovered card does, not as a sheet), floating
+/// layers (sheets), and the toast (a small floating strip: a shorter, lighter shadow than a sheet's). Each
+/// is a half-point ring plus soft shadows; the dark table carries its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lift {
     Card,
     Hover,
+    Menu,
     Float,
     Toast,
 }
@@ -341,7 +343,7 @@ pub fn lift(l: Lift) -> (Color32, [Soft; 2]) {
             rgba(255, 255, 255, 15),
             [soft(1.0, 2.0, 0, 0, 0, 77), soft(0.0, 0.0, 0, 0, 0, 0)],
         ),
-        Lift::Hover => (
+        Lift::Hover | Lift::Menu => (
             rgba(0, 0, 0, 15),
             [soft(2.0, 4.0, 16, 24, 40, 13), soft(12.0, 28.0, 16, 24, 40, 20)],
             rgba(255, 255, 255, 20),

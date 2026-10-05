@@ -47,10 +47,13 @@ pub enum Lamp {
     Remembered,
     /// As above, with that set stale (`lastread::STALE_SECS`): the lamp turns grey, not yellow.
     RememberedStale,
+    /// Someone else's ledger only: no counted anchor reaches it on the chains read, and this pass left a
+    /// network out, where its anchor may be. Never "not on chain"; never on this home's own ledger.
+    ChainUnread,
 }
 
 impl Lamp {
-    pub const ALL: [Lamp; 11] = [
+    pub const ALL: [Lamp; 12] = [
         Lamp::Anchored,
         Lamp::Included,
         Lamp::Submitted,
@@ -62,6 +65,7 @@ impl Lamp {
         Lamp::LocalDeletion,
         Lamp::Remembered,
         Lamp::RememberedStale,
+        Lamp::ChainUnread,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +81,7 @@ impl Lamp {
             Lamp::LocalDeletion => "local-deletion",
             Lamp::Remembered => "remembered",
             Lamp::RememberedStale => "remembered-stale",
+            Lamp::ChainUnread => "chain-unread",
         }
     }
 

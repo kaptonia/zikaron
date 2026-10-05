@@ -146,13 +146,10 @@ impl Win {
     pub(super) fn u3_open_confirm(&mut self, cf: U3Confirm) {
         self.sheets_clear();
         if let U3Confirm::Send { count } = cf {
-            // A reading for this count is kept only when its fee cap came from the chain: a fallback cap
-            // (the base fee could not be read) is asked again, or the stand-in would block the batch for good.
-            let from_chain = self.shell.fees.map(|f| f != zikaron_anchor::send::Fees::fallback()).unwrap_or(false);
-            if !(self.shell.gas.map(|(n, _)| n == count).unwrap_or(false) && from_chain) {
-                self.ux.u3.send_after_estimate = Some(count);
-                self.ux.u3.estimate_from = self.ux.now;
-            }
+            // An estimate and its fees are a reading of this batch, this chain and this moment: opening the card
+            // always asks again (one already out for this batch is waited for, not asked twice: `estimate_due`).
+            self.ux.u3.send_after_estimate = Some(count);
+            self.ux.u3.estimate_from = self.ux.now;
         }
         self.ux.u3.confirm = Some(cf);
     }
@@ -191,17 +188,23 @@ impl Win {
         }
         let Some(p) = paths.into_iter().next() else { return };
         self.typed.batch_files.clear();
-        if let Applied::Took { .. } = self.act(Action::TakeDropped { path: p }, now) {
-            if self.typed.work_note.trim().is_empty() {
-                if let Some(c) = self.shell.content.as_ref() {
-                    let name = width::file_name(&c.subject);
-                    // A file's name without its extension; a folder or repository keeps its whole name.
-                    let stem = match (c.size, name.rsplit_once('.')) {
-                        (Some(_), Some((s, _))) if !s.is_empty() => s.to_string(),
-                        _ => name,
-                    };
-                    self.typed.work_note = stem;
-                }
+        // The fingerprint is computed in the background (`Kind::Take`): the record's name is filled where it
+        // lands (`took_named`).
+        self.act(Action::TakeDropped { path: p }, now);
+    }
+
+    /// A content taken: an empty record name takes the content's name (a file without its extension, a folder or
+    /// repository whole).
+    pub(super) fn took_named(&mut self) {
+        if self.typed.work_note.trim().is_empty() {
+            if let Some(c) = self.shell.content.as_ref() {
+                let name = width::file_name(&c.subject);
+                // A file's name without its extension; a folder or repository keeps its whole name.
+                let stem = match (c.size, name.rsplit_once('.')) {
+                    (Some(_), Some((s, _))) if !s.is_empty() => s.to_string(),
+                    _ => name,
+                };
+                self.typed.work_note = stem;
             }
         }
     }
@@ -288,14 +291,39 @@ impl Win {
             return;
         }
         self.ux.u3.send_after_estimate = None;
+        // The estimate runs as a task: the frame asks nothing. Until it lands the sheet's cap cell loads and its
+        // send key stays off (`shell.gas` is cleared when the task starts); one already out for this batch is
+        // waited for, not asked again.
         let before = self.shell.faults.len();
-        let applied = apply(&mut self.shell, Action::EstimateGas { count });
-        if self.faults_told >= before {
-            self.faults_told = self.shell.faults.len();
+        match apply(&mut self.shell, Action::EstimateGas { count }) {
+            Applied::Started(_) | Applied::Refused(_) => self.ux.u3.estimating = Some(count),
+            Applied::Trouble(f) => {
+                if self.faults_told >= before {
+                    self.faults_told = self.shell.faults.len();
+                }
+                self.ux.u3.confirm = Some(U3Confirm::NoEstimate { count, why: f.human().to_string(), next: f.next().to_string(), raw: f.raw() });
+            }
+            _ => {}
         }
-        if let Applied::Trouble(f) = applied {
-            self.ux.u3.confirm = Some(U3Confirm::NoEstimate { count, why: f.human().to_string(), next: f.next().to_string(), raw: f.raw() });
+    }
+
+    /// A gas estimate landed. On the send sheet of the batch it was asked for, a refusal turns the sheet to
+    /// "cannot estimate gas" and is said there only (marked told); an answer needs nothing more, the sheet reads
+    /// `shell.gas`. A sheet closed while it was out, or now on another batch, takes nothing: a refusal is then
+    /// told as any other.
+    pub(super) fn gas_back(&mut self, a: Applied) {
+        let asked = self.ux.u3.estimating.take();
+        let Applied::Trouble(f) = a else { return };
+        let on_sheet = matches!((&self.ux.u3.confirm, asked), (Some(U3Confirm::Send { count }), Some(n)) if *count == n);
+        if !on_sheet {
+            return;
         }
+        let n = self.shell.faults.len();
+        if self.faults_told + 1 >= n {
+            self.faults_told = n;
+        }
+        let count = asked.unwrap_or_default();
+        self.ux.u3.confirm = Some(U3Confirm::NoEstimate { count, why: f.human().to_string(), next: f.next().to_string(), raw: f.raw() });
     }
 
     /// New record: choose the thing, name it, optionally say for whom; then the confirmation step (file, for
@@ -305,6 +333,8 @@ impl Win {
         let content = self.shell.content.clone();
         let batch = self.typed.batch_files.clone();
         let ready = content.is_some() || !batch.is_empty();
+        let hashing_now = self.shell.tasks.in_flight(crate::task::Kind::Take);
+        let recording_now = self.shell.tasks.in_flight(crate::task::Kind::Record);
         // Both keys of the sheet (the guide key, then the commit) say what the write will do.
         let go = t(self.anchor_key());
         let go_commit = t(self.anchor_key());
@@ -393,11 +423,17 @@ impl Win {
             },
             |ui, _me| {
                 if step == 0 {
-                    next = page::Guide::key(ui, go, ready).clicked();
+                    // While the fingerprint is computed (`Kind::Take`) the key says so with a turning ring and
+                    // takes no press; "back" stays.
+                    let hashing = if hashing_now { Phase::Busy { frac: None } } else { Phase::Idle };
+                    next = key::show(ui, key::Key::new(go, Role::Guide).enabled(ready).phase(hashing).busy_text(t(Key::U3Hashing))).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                     sheet::foot_note(ui, note);
                 } else {
-                    commit = page::Pen::new().press(ui, go_commit, ready).clicked();
+                    // While the files' fingerprints are computed and the entries written (`Kind::Record`) the key
+                    // says so with a turning ring and takes no press; "back" stays.
+                    let recording = if recording_now { Phase::Busy { frac: None } } else { Phase::Idle };
+                    commit = page::Pen::new().press_saying(ui, go_commit, t(Key::U3Recording), ready, recording).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         back = key::show(ui, key::Key::new(t(Key::WizPrev), Role::Plain).lead(Glyph::Back)).clicked();
@@ -428,7 +464,6 @@ impl Win {
             self.ux.u3.new_anchor = None;
         }
         if commit {
-            self.ux.u3.new_anchor = None;
             self.record_now(now);
         }
     }
@@ -447,11 +482,51 @@ impl Win {
         };
         let files = self.typed.batch_files.clone();
         let a = Action::RecordWork { note_md: self.typed.work_note.clone(), files: files.clone(), for_ };
-        match self.act(a, now) {
+        let r = self.act(a, now);
+        // Files are recorded in the background (`Kind::Record`): the sheet stays with its key busy, and closes
+        // where it lands (`record_back`). One entry from the content taken is written at once.
+        if let Applied::Started(_) = r {
+            self.ux.u3.recording = Some(files);
+            return;
+        }
+        self.ux.u3.new_anchor = None;
+        self.recorded(r, &files);
+    }
+
+    /// The form after recording: a whole write clears it; a batch stopped at item i keeps that one and the rest
+    /// (the signed ones leave the form).
+    fn recorded(&mut self, r: Applied, files: &[String]) {
+        match r {
             Applied::Recorded { .. } | Applied::RecordedBatch { stopped: None, .. } => self.anchor_form_clear(),
-            // A batch stopped at item i: the signed ones leave the form; that one and the rest stay.
             Applied::RecordedBatch { stopped: Some((i, _, _)), .. } => self.typed.batch_files = files[i..].to_vec(),
             _ => {}
+        }
+    }
+
+    /// The answers of the actions whose slow half ran in the background (`Shell::said`), taken where the window
+    /// reads its landings: each goes back to the place that started it, and is told as it was when it ran in the
+    /// frame.
+    pub(super) fn said_back(&mut self, k: crate::task::Kind, a: Applied, now: f64) {
+        use crate::task::Kind;
+        match k {
+            Kind::Gas => self.gas_back(a),
+            Kind::Take => {
+                let a = self.told(a, None, now);
+                if let Applied::Took { .. } = a {
+                    self.took_named();
+                }
+            }
+            Kind::Record => {
+                let a = self.told(a, None, now);
+                let files = self.ux.u3.recording.take().unwrap_or_default();
+                if !matches!(a, Applied::Trouble(_)) {
+                    self.ux.u3.new_anchor = None;
+                }
+                self.recorded(a, &files);
+            }
+            _ => {
+                self.told(a, None, now);
+            }
         }
     }
 
@@ -471,10 +546,30 @@ impl Win {
                 return;
             }
         }
-        let gas = self.shell.gas.filter(|(n, _)| *n == count).map(|(_, g)| g);
-        let cap = eth(self.shell.fees.unwrap_or_else(zikaron_anchor::send::Fees::fallback).cap_wei());
         let sending = self.ux.u3.sending.is_some();
-        let phase = if sending { self.phase_of(crate::task::Kind::Anchor) } else { Phase::Idle };
+        let out = self.shell.tasks.in_flight(crate::task::Kind::Gas);
+        // No reading for this batch, none out, none about to be asked and no refusal: what was out landed
+        // nothing for this card (it was of nodes or a chain changed since it started, or of another batch), so it
+        // is asked again; the card never waits on a reading that will not come.
+        let held = self.shell.gas.map(|(n, _)| n == count).unwrap_or(false);
+        if !sending && !out && !held && failed.is_none() && self.ux.u3.send_after_estimate.is_none() {
+            self.ux.u3.estimating = None;
+            self.ux.u3.send_after_estimate = Some(count);
+            self.ux.u3.estimate_from = self.ux.now;
+        }
+        // Until this opening's estimate is asked and lands, a reading left from before is neither shown nor sent.
+        let asking = self.ux.u3.send_after_estimate == Some(count);
+        let gas = self.shell.gas.filter(|(n, _)| *n == count && !asking).map(|(_, g)| g);
+        let cap = eth_cap(self.shell.fees.unwrap_or_else(zikaron_anchor::send::Fees::fallback).cap_wei());
+        // Sending shows the anchoring task's phase; until the estimate lands the key says it is estimating, with a
+        // turning ring, and takes no press.
+        let phase = if sending {
+            self.phase_of(crate::task::Kind::Anchor)
+        } else if out || asking {
+            Phase::Busy { frac: None }
+        } else {
+            Phase::Idle
+        };
         let first = fill1(Key::U3FirstN, &count.to_string());
         let (mut go, mut close, mut retry) = (false, false, false);
         let step = u64::from(failed.is_some());
@@ -504,7 +599,9 @@ impl Win {
             },
             |ui, me| {
                 if failed.is_none() {
-                    go = page::Pen::new().press_long(ui, t(Key::U3SendGo), gas.is_some() && !sending, phase).clicked();
+                    // The key says what is going on while it is busy: estimating before the figure lands, sending after the press.
+                    let busy = t(if sending { Key::U3Sending } else { Key::U3Estimating });
+                    go = page::Pen::new().press_long_saying(ui, t(Key::U3SendGo), busy, gas.is_some() && !sending, phase).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, !sending).clicked();
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| me.stage_line(ui, crate::task::Kind::Anchor));
                 } else {
@@ -819,10 +916,12 @@ impl Win {
                 field(ui, t(Key::IdAddress), None, |ui| {
                     let heads: Vec<String> = book.iter().map(|a| head_tail(a)).collect();
                     let items: Vec<menu::Item> = heads.iter().map(|h| menu::Item::Row(menu::Row { lead: t(Key::Address), label: h, mono: true, ..Default::default() })).collect();
+                    let spec = pick::Spec { hint: t(Key::SearchAddress), empty: t(Key::SearchNone), w: PICK_W, dates: None };
+                    let keep = |i: usize, q: &str, _: &str, _: &str| matches(q, &[&book[i]]);
                     let mut picked = None;
                     width::then(
                         ui,
-                        |ui| picked = menu::plain_key(ui, "adopt-book", t(Key::U3SeenBeforeDots), !book.is_empty(), false, 280.0, &items),
+                        |ui| picked = pick::key(ui, "adopt-book", t(Key::U3SeenBeforeDots), !book.is_empty(), false, &spec, &items, &keep),
                         |ui, room| input::field(ui, &mut me.typed.ad_key, "0x\u{2026}", room, input::Look { mono: true, ..Default::default() }),
                     );
                     if let Some(i) = picked {
@@ -1037,24 +1136,41 @@ impl Win {
                         hint(ui, t(Key::U3AnnotateNoRows));
                         return;
                     }
-                    egui::ScrollArea::vertical().id_salt("annotate-pick").max_height(190.0).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        for row in rows.iter() {
-                            let on = me.typed.annotate_subject.trim().eq_ignore_ascii_case(&row.id);
+                    // A picker over this ledger, newest first: number, type and summary, first anchor time.
+                    let faces: Vec<(String, String, String)> = rows
+                        .iter()
+                        .map(|row| {
                             let (tag, summary, _) = row_face(&rows, &reading, row);
-                            let resp = table::pick_row(ui, egui::Id::new(("annotate-pick", row.seq)), on, true, 40.0, |ui| {
-                                ui.allocate_ui(egui::vec2(40.0, 20.0), |ui| {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| paint::text(ui, &format!("#{}", row.seq), Type::MonoSmall, c(C::Ink3)));
-                                });
-                                mark::tag_in(ui, tag, tk::PICK_TYPE_W);
-                                let room = ui.available_width();
-                                paint::line(ui, &summary, Type::Body, c(C::Ink), room);
-                            });
-                            if resp.clicked() {
-                                me.typed.annotate_subject = row.id.clone();
+                            let at = row.anchored_at.map(crate::when::when).unwrap_or_else(|| t(Key::V2StateLanded).to_string());
+                            (format!("#{}", row.seq), format!("{tag} \u{b7} {summary}"), at)
+                        })
+                        .collect();
+                    let items: Vec<menu::Item> = faces.iter().map(|(seq, label, at)| menu::Item::Row(menu::Row { lead: seq, label, trail: at, ..Default::default() })).collect();
+                    let words = date_words();
+                    let spec = pick::Spec {
+                        hint: t(Key::SearchLedger),
+                        empty: t(Key::SearchNone),
+                        w: PICK_WIDE_W,
+                        dates: Some(pick::Dates { words: &words, today: today_of((me.shell.clock)()), from_hint: t(Key::DateFrom), to_hint: t(Key::DateTo) }),
+                    };
+                    let keep = |i: usize, q: &str, from: &str, to: &str| matches(q, &[&faces[i].0, &faces[i].1, &rows[i].id]) && crate::when::within(rows[i].anchored_at, from, to);
+                    let current = rows.iter().position(|r| me.typed.annotate_subject.trim().eq_ignore_ascii_case(&r.id));
+                    let mut picked = None;
+                    width::then(
+                        ui,
+                        |ui| picked = pick::key(ui, "annotate-pick", t(Key::KitPickOpen), true, false, &spec, &items, &keep),
+                        |ui, room| match current {
+                            Some(i) => {
+                                paint::line(ui, &format!("{} {}", faces[i].0, faces[i].1), Type::Body, c(C::Ink), room);
                             }
-                        }
-                    });
+                            None => {
+                                paint::line(ui, t(Key::U3AnnotatePickHint), Type::Note, c(C::Ink2), room);
+                            }
+                        },
+                    );
+                    if let Some(i) = picked {
+                        me.typed.annotate_subject = rows[i].id.clone();
+                    }
                 });
                 fold::fold(ui, "annotate-more", t(Key::U3MoreOptions), |ui| {
                     field(ui, t(Key::U3AnnotateTyped), None, |ui| input::mono(ui, &mut me.typed.annotate_subject, t(Key::DetailPickHint)));
@@ -1234,16 +1350,16 @@ impl Win {
             self.ux.sheet_shake = None;
         } else if go {
             match self.act(Action::ImportGrant { typed: self.typed.vt_typed.clone() }, now) {
-                Applied::Held { ids } => {
+                Applied::Held { grant, .. } => {
                     self.ux.u4.import_open = false;
                     self.ux.u4.import_err = None;
                     self.ux.sheet_shake = None;
                     self.typed.vt_typed.clear();
+                    // The notes are for the grant added (the chain's last hop), not for its upstreams: an
+                    // upstream's issuer is someone else.
                     let (note, issuer_note) = (std::mem::take(&mut self.typed.vt_note), std::mem::take(&mut self.typed.vt_issuer_note));
-                    if !note.trim().is_empty() || !issuer_note.trim().is_empty() {
-                        for id in ids {
-                            self.act(Action::NoteHeld { grant: id, note: note.clone(), issuer_note: issuer_note.clone() }, now);
-                        }
+                    if !grant.is_empty() && (!note.trim().is_empty() || !issuer_note.trim().is_empty()) {
+                        self.act(Action::NoteHeld { grant, note, issuer_note }, now);
                     }
                 }
                 Applied::Trouble(f) => {

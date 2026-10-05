@@ -83,26 +83,54 @@ pub fn chain_for(pool: &[Vec<u8>], id: &str) -> Result<Vec<Vec<u8>>, Fault> {
 
 /// Grant text: encode a grant (with its upstreams, from the root down) as the text the counterpart pastes
 /// into the check page. Encoding belongs to the kit crate (`zikaron_kit::badge::encode`); this layer
-/// assembles not one byte.
+/// assembles not one byte. The one encoding: the copied code, the badge and the grant file all go through it,
+/// and a refusal is the kit crate's token by name.
 pub fn payload_text(chain: &[Vec<u8>]) -> Result<String, Fault> {
-    zikaron_kit::badge::encode(chain).map_err(|e| Fault::known(Known::ContentShape, format!("{e:?}")))
+    zikaron_kit::badge::encode(chain).map_err(|r| {
+        Fault::known(Known::PayloadRefused, format!("{}{}", r.token.as_str(), r.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default()))
+    })
 }
 
-/// The kit crate's two colors: BADGE_OK, or its refusal token.
-pub fn verify(payload: &[u8]) -> (bool, String) {
+/// A grant's whole code: its chain cascaded to the root ([`chain_for`]), then encoded ([`payload_text`]). A
+/// relicensed grant's code carries every hop above it, as its badge and grant file do.
+pub fn code_for(pool: &[Vec<u8>], id: &str) -> Result<String, Fault> {
+    payload_text(&chain_for(pool, id)?)
+}
+
+/// The kit crate's reading of a payload as values: whether it decoded, the token it answered (`BADGE_OK` or
+/// its refusal token), how many items it carried, and at which item a refusal points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Checked {
+    pub ok: bool,
+    pub token: String,
+    pub count: Option<usize>,
+    pub index: Option<usize>,
+}
+
+/// The kit crate's two colors, as values.
+pub fn verify_result(payload: &[u8]) -> Checked {
     match zikaron_kit::badge::decode(payload) {
-        Ok(v) => (true, format!("{} {}", zikaron_kit::tokens::BADGE_OK, v.len())),
-        Err(r) => (false, format!("{}{}", r.token.as_str(), r.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default())),
+        Ok(v) => Checked { ok: true, token: zikaron_kit::tokens::BADGE_OK.to_string(), count: Some(v.len()), index: None },
+        Err(r) => Checked { ok: false, token: r.token.as_str().to_string(), count: None, index: r.index },
+    }
+}
+
+/// The kit crate's two colors: BADGE_OK, or its refusal token (said from [`verify_result`]).
+pub fn verify(payload: &[u8]) -> (bool, String) {
+    let c = verify_result(payload);
+    if c.ok {
+        (true, format!("{} {}", c.token, c.count.unwrap_or(0)))
+    } else {
+        (false, format!("{}{}", c.token, c.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default()))
     }
 }
 
 /// Chain check (kit law §10.5), handed to the kit crate. Each hop's audit input comes from this vault's last
 /// re-check (the card of the same item); a hop in this seat's ledger without a card has no input (the kit
-/// crate reads it as undecided). Answers one sentence: GREEN / PARTIAL, or FAIL with the kit crate's failure
-/// point (chain token and hop index). This layer judges no hop.
-pub fn chain_verdict(chain: &[Vec<u8>], cards: &[crate::vaultx::Card], now: Option<u64>) -> String {
+/// crate reads it as undecided). Answers the kit crate's §10.5 result object as it is (verdict, token,
+/// failing point); this layer judges no hop. [`chain_verdict`] says it in one sentence.
+pub fn chain_result(chain: &[Vec<u8>], cards: &[crate::vaultx::Card], now: Option<u64>) -> zikaron::json::Value {
     crate::trace::mark(crate::feature::Feature::D9);
-    use zikaron::json::Value;
     let hops: Vec<zikaron_kit::check::Hop> = chain
         .iter()
         .map(|g| {
@@ -111,7 +139,14 @@ pub fn chain_verdict(chain: &[Vec<u8>], cards: &[crate::vaultx::Card], now: Opti
             zikaron_kit::check::Hop { grant: g, input }
         })
         .collect();
-    let v = zikaron_kit::check::chain_check(&hops, now);
+    zikaron_kit::check::chain_check(&hops, now)
+}
+
+/// The chain check in one sentence: GREEN / PARTIAL, or FAIL with the kit crate's failure point (chain token
+/// and hop index), read from [`chain_result`].
+pub fn chain_verdict(chain: &[Vec<u8>], cards: &[crate::vaultx::Card], now: Option<u64>) -> String {
+    use zikaron::json::Value;
+    let v = chain_result(chain, cards, now);
     let get = |k: &str| match &v {
         Value::Obj(m) => m.iter().find(|(x, _)| x == k).map(|(_, y)| y.clone()),
         _ => None,
@@ -175,14 +210,13 @@ pub const TXT: &str = "badge.txt";
 pub const SVG: &str = "badge.svg";
 
 /// Make one. Encode (kit crate), self-verify (kit crate), draw (qr), write (glue crate).
-pub fn export(chain: &[Vec<u8>], out: &Path) -> Result<Made, Fault> {
+/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+pub fn export(_pass: &crate::exitgate::Pass, chain: &[Vec<u8>], out: &Path) -> Result<Made, Fault> {
     crate::trace::mark(crate::feature::Feature::D9);
     if out.as_os_str().is_empty() {
         return Err(Fault::known(Known::FieldMissing, crate::lang::t(crate::lang::Key::Tail070).to_string()));
     }
-    let payload = zikaron_kit::badge::encode(chain).map_err(|r| {
-        Fault::known(Known::PayloadRefused, format!("{}{}", r.token.as_str(), r.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default()))
-    })?;
+    let payload = payload_text(chain)?;
     let (ok, verdict) = verify(payload.as_bytes());
     if !ok {
         return Err(Fault::known(Known::PayloadRefused, verdict));
@@ -194,7 +228,7 @@ pub fn export(chain: &[Vec<u8>], out: &Path) -> Result<Made, Fault> {
     let svg = out.join(SVG);
     for (p, b) in [(&txt, payload.as_bytes().to_vec()), (&svg, crate::qr::svg(&code).into_bytes())] {
         zikaron_glue::landing::land_bytes(p, &b).map_err(|t| {
-            Fault::landing(t.code(), t.subject())
+            Fault::of_landing(t)
         })?;
     }
     Ok(Made {

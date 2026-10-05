@@ -1,8 +1,8 @@
 # ZIKARON Desk User Manual
 
-ZIKARON Desk is a desktop application for your own machine. It records your works or files in an append-only ledger, anchors that ledger to Ethereum, and lets you issue grants from it. Whoever receives a grant can verify it independently, on any machine.
+ZIKARON Desk is a desktop application for your own machine. It records your works or files in an append-only ledger, anchors that ledger to Ethereum (or the layer-2 network you choose), and lets you issue grants from it. Whoever receives a grant can verify it independently, on any machine.
 
-This manual describes version 0.1.0. Words that appear in the interface are quoted exactly as the window shows them.
+This manual describes version 0.1.1. Words that appear in the interface are quoted exactly as the window shows them.
 
 ---
 
@@ -18,7 +18,7 @@ This manual describes version 0.1.0. Words that appear in the interface are quot
 - **Recorder**: records your own works and issues grants.
 - **User**: receives other people's grants, verifies them, and can sublicense them.
 
-A recovery-phrase identity derives its two keys at `m/44'/60'/0'/0/0` (Recorder) and `m/44'/60'/0'/0/1` (User). The two addresses differ, and each needs a little gas.
+A recovery-phrase identity derives its two keys at `m/44'/60'/0'/0/0` (Recorder) and `m/44'/60'/0'/0/1` (User). The two addresses differ, and each needs a little gas. Each identity records the network it chose, shared by both its roles; identities on one machine may use different chains.
 
 **Ledger.** Each role has its own ledger: a chain of signed entries that can only be appended to. Old entries are never changed or removed. The first entry is "Create the ledger", the ledger's one and only root. Entry types:
 
@@ -33,7 +33,7 @@ A recovery-phrase identity derives its two keys at `m/44'/60'/0'/0/0` (Recorder)
 | Key change or handover | Hands the ledger to a new key |
 | Deletion | Marks a record as deleted (see Appendix C) |
 
-**Putting on chain (anchoring).** New entries wait in the "Pending" queue until an Ethereum transaction carries them; after that they are on chain. The whole queue can go out at once for the cost of a single transaction. Once an entry is on chain, anyone can check against the chain that the ledger held it at that moment.
+**Putting on chain (anchoring).** New entries wait in the "Pending" queue until a transaction on the identity's network (Ethereum mainnet, or Arbitrum One, OP Mainnet and so on) carries them; after that they are on chain. The whole queue can go out at once for the cost of a single transaction. Once an entry is on chain, anyone can check against the chain that the ledger held it at that moment.
 
 **Grant.** A grant entry names the grantee, the record, the validity period and the terms file fingerprint. There are two ways to hand one over:
 
@@ -52,18 +52,18 @@ A User can also write a **sublicense** in their own ledger, passing an upstream 
 
 ## 2 · Installation
 
-Version 0.1.0 comes as packages for macOS with Apple silicon. There are no prebuilt packages for x86_64 Linux; build it from source.
+Version 0.1.1 comes as packages for macOS with Apple silicon and for x86_64 Linux, and as a zip for x86_64 Windows. Every package carries the third-party licences (on macOS in `ZIKARON.app/Contents/Resources/THIRD-PARTY-LICENSES.txt`, on Linux in `/usr/share/doc/zikaron-desk/THIRD-PARTY-LICENSES.txt`, on Windows in the unpacked folder); in the app they are under "About".
 
 **macOS**
 
-- `ZIKARON-0.1.0-macos-arm64.dmg`: open it and drag `ZIKARON.app` to Applications. The `zikaron` command line is inside the app bundle at `ZIKARON.app/Contents/MacOS/zikaron`.
-- `ZIKARON-0.1.0-macos-arm64.pkg`: an installer that puts the app in `/Applications` and the command line at `/usr/local/bin/zikaron`.
+- `ZIKARON-0.1.1-macos-arm64.dmg`: open it and drag `ZIKARON.app` to Applications. The `zikaron` command line is inside the app bundle at `ZIKARON.app/Contents/MacOS/zikaron`.
+- `ZIKARON-0.1.1-macos-arm64.pkg`: an installer that puts the app in `/Applications` and the command line at `/usr/local/bin/zikaron`.
 - The app is signed with a self-signed certificate (Kaptonia) and is not notarized by Apple. Files downloaded in a browser carry macOS's quarantine flag, and macOS refuses to open them; on recent macOS, "Open Anyway" in System Settings > Privacy & Security does not always work either. Check the SHA-256 with `shasum -a 256 <file>` first, then remove the quarantine flag in Terminal:
 
   - With the dmg: before opening the dmg, run the command below, then open the dmg and drag `ZIKARON.app` to Applications:
 
     ```
-    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.dmg
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.1-macos-arm64.dmg
     ```
 
     If you have already dragged the app in, run this instead:
@@ -75,18 +75,32 @@ Version 0.1.0 comes as packages for macOS with Apple silicon. There are no prebu
   - With the pkg: run the command below, then double-click the pkg to install:
 
     ```
-    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.0-macos-arm64.pkg
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.1-macos-arm64.pkg
     ```
 
   Change the paths to wherever you downloaded the files.
 
 **Linux**
 
-- Build from source as described under "Build from source" in the repository's README. On Linux, `packaging/linux/build.sh` also makes a `.deb` and an AppImage; once installed, the window program is `zikaron-desk` and the command line is `zikaron`.
+- `zikaron-desk_0.1.1_amd64.deb`: for Debian, Ubuntu and their derivatives. Install it with `sudo apt install ./zikaron-desk_0.1.1_amd64.deb`; the window program is `zikaron-desk` (also in the applications menu) and the command line is `zikaron`.
+- `ZIKARON-0.1.1-x86_64.AppImage`: no installation; make it executable with `chmod +x` and run it. Running it opens the window program; the `zikaron` command line inside is not exposed, so install the `.deb` for the command line. It uses FUSE; on a system without FUSE, run it with `--appimage-extract-and-run`.
+- Both need glibc 2.31 or later (Ubuntu 20.04, Debian 11 and later). The packages are not signed; check the SHA-256 with `sha256sum <file>` first.
+- For other architectures or distributions, build from source as described under "Build from source" in the repository's README; on Linux, `packaging/linux/build.sh` makes a `.deb` and an AppImage.
 - File dialogs go through the desktop portal, so install `xdg-desktop-portal` and a backend such as `xdg-desktop-portal-gtk`. Without a portal, clicking to choose a file says "The system file dialog can't open on this machine."; drag the file into the window instead.
 - On Linux, a drop zone that takes either a file or a folder (such as New record) opens a dialog that picks files only; to give a folder, drag the folder in. "Choose folder…" picks folders as usual.
 
-Building from source on macOS is also described in the repository's README.
+**Windows**
+
+- `ZIKARON-0.1.1-windows-x86_64.zip`: for Windows 10 and 11 on x86_64. Nothing to install: unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder. The programs carry their own runtime; nothing else is needed.
+- Check the SHA-256 first in PowerShell with `Get-FileHash <file> -Algorithm SHA256`.
+- The programs are not signed. On first start Windows says "Windows protected your PC"; click "More info", then "Run anyway". On Windows 11 with Smart App Control on, unsigned programs are blocked outright: there is no "Run anyway" and no way to allow this one program; to use it, first turn Smart App Control off in Windows Security › App & browser control › Smart App Control settings.
+- To upgrade, replace the folder with the new version's. Machine data is not in the unpacked folder but in `%LOCALAPPDATA%\ZIKARON\` (see Appendix B); deleting the unpacked folder does not delete it.
+- No Start menu entry, desktop shortcut or `PATH` entry is added; add them yourself if you want them.
+- On Windows, as on Linux, a drop zone that takes either a file or a folder opens a dialog that picks files only; to give a folder, drag the folder in.
+
+The window program takes no arguments: started with any, it opens no window and only says why. To work with a file, open the window and drop the file on it; for the command line, use `zikaron`. If the window cannot open (usually the graphics driver does not support the OpenGL it needs, or it runs in a virtual machine or remote desktop without 3D acceleration), it says why as well; on Windows, started by double-clicking in Explorer, it says so in a system dialog.
+
+Building from source on macOS and Windows is also described in the repository's README.
 
 ---
 
@@ -111,8 +125,8 @@ Without a passcode, the wizard stays on step 1. With a passcode but no identity,
 
 **Bottom buttons**
 
-- On the left: "Back", and "Later" on steps that may be skipped. On the last step this key reads "Do it later" and closes the wizard.
-- On the right: the step's own action key until the step is done, then a blue "Next". The last step has "Finish", which shows "First run complete; remaining items are in Settings > About".
+- On the left: "Back", and "Later" on steps that may be skipped. On the last step this key reads "Do it later" and closes the wizard with the same message as "Finish".
+- On the right: the step's own action key until the step is done (step 1 has none; filling the boxes submits), then a blue "Next". The last step has "Finish", which shows "First run complete; remaining items are in Settings > About".
 
 **Leaving the wizard.** "Exit setup" at the bottom of the step list, or Esc, returns you to where you were before the wizard opened. Finished steps stay finished. At the next start the wizard opens again only if the passcode or identity is still missing, or a Recorder's ledger has not been created; for the other unfinished steps, use "Run wizard again" in Settings > About.
 
@@ -123,7 +137,7 @@ Without a passcode, the wizard stays on step 1. With a passcode but no identity,
 
 | From | Opens at |
 |---|---|
-| "Run wizard again" in Settings > About | The first unfinished step; step 1 if all are done |
+| "Run wizard again" in Settings > About | The first unfinished step; step 1 if all are done. Disabled while the current role has no identity |
 | "Go set one" in Settings > Identity key | Step 1 |
 | "Create key…" on the sublicense page | Step 2 |
 | "Set up ledger…" on the sublicense page | Step 4 |
@@ -151,7 +165,9 @@ You may first type a name in "Label" (optional, just for you to recognise it). T
 3. Write them down in order on paper and press "I have written them down". It only works after the words have been shown.
 4. Fill in the three words it asks for ("Word N") and press "Confirm and create". If they match, the identity is created.
 
-**Import an existing key**: press "Import an existing key…". See "Import key" under "Identity and keys".
+**Import an existing key**: press "Import an existing key…". See "Import key" under "Identity and keys". Imported here, it is the machine's first identity and becomes primary; a private key then exports its key file on the same form (the key file password twice and where to save it), and a forgotten passcode is recovered with that file.
+
+An imported key may have written a ledger elsewhere, so it cannot write at first: once a network is chosen in step 3, the app checks this key's records on chain against the ledger here. If the chain holds no record of this key (a new key, say) or every record is in the ledger, writing opens; if the chain holds records the ledger lacks, see "Fetching the ledger" under "Storage".
 
 **Restore from a backup**: press "Restore from backup…", choose a whole-machine backup file, enter the "Backup password" and press "Recover". Identities, keys, ledgers and settings all come back, re-encrypted under the passcode you just set, and the wizard closes.
 
@@ -161,18 +177,18 @@ The first identity created on a machine is its primary identity.
 
 There are two choices:
 
-- "Ethereum mainnet", marked "Recommended" and selected by default.
-- "Custom": "Fill in the chain, contract and nodes yourself".
+- "Ethereum mainnet", marked "Recommended"; selected by default until this machine has chosen a network.
+- "Custom": "Left empty: fill in the chain, contract and nodes in Settings, Network (a preset can fill them)".
 
-Pressing "Next" makes the choice, and the machine remembers it. With mainnet, if the current data folder has no chain settings yet, the app fills in the chain id, registry contract, start block and two public nodes. With "Custom" nothing is filled in; set things up yourself in Settings > Network.
+Pressing "Next" makes the choice. What you choose here is the network of the identity made in step 2, and both its roles (recorder and user) use it: with mainnet, both data folders get the chain id, registry contract, start block and two public nodes; with "Custom", this identity's data folders have no network, whatever this machine chose before, and reading the chain or anchoring says no network is configured until you open "Edit nodes…" in Settings > Network, fill it in by hand or pick a preset, and save. The machine also remembers this choice: the wizard and "New identity…" select it first next time.
 
-Footnote: "Public nodes can see your queries. You can change them in Settings."
-
-Sepolia testnet is not listed here. To use it, choose "Custom" and fill in the values from Appendix A. The one exception: if the network this machine has on record is already Sepolia (for example, restored from such a backup), it appears between "Ethereum mainnet" and "Custom".
+Sepolia testnet, Arbitrum One and OP Mainnet are not listed here. To use one, choose "Custom", then open "Edit nodes…" in Settings > Network and pick it under "Preset" (see Appendix A). The one exception: if the current identity or this machine has already chosen one of them (for example, restored from such a backup), it appears between "Ethereum mainnet" and "Custom".
 
 Anchoring on mainnet costs real ETH in gas.
 
 #### Step 4 · Create the ledger
+
+An identity imported in step 2 creates its ledger once it has been checked against the chain after step 3 (see step 2).
 
 1. Describe what the ledger is for in "Ledger description (optional)".
 2. Press "Create the ledger". A confirmation card shows "Ledger description" and "Cost" ("Free (local only)"), with the note "Cannot be changed after creation". The ledger's location is under "Details".
@@ -199,13 +215,13 @@ Press "Export backup…" and fill it in as described under "Whole-machine backup
 
 #### 4.1 Window layout
 
-The sidebar is on the left and the page is on the right. Across the top of the page is the toolbar: back and forward arrows and the page title on the left, the page's own buttons and filters on the right.
+The sidebar is on the left and the page is on the right. Across the top of the page is the toolbar: back and forward arrows and the page title on the left, the page's own buttons and filters on the right. When an imported identity's chain holds records its ledger lacks, the toolbar of each list page also shows an amber "read-only".
 
 **The sidebar, top to bottom**
 
 1. **Identity chip**: shows the current identity's name ("Unnamed" if it has none) and its kind. Click it to open the identity menu:
-   - Under "Switch identity", each identity takes two lines. The primary is marked "Primary" and the current one "In use". Use ↑↓ and Enter, or click another identity to switch to it and land on Home.
-   - Below that: "New identity…", "Import key…" and "Identity key" (the Identity key page in Settings).
+   - A search field "Find by identity name or address" sits on top; under it each identity takes two lines. The primary is marked "Primary" and the current one "In use". Click another identity to switch to it and land on Home.
+   - After the identities: "New identity…", "Import key…" and "Identity key" (the Identity key page in Settings); they stay while you search.
 2. **Role switch**: the segmented control "Recorder" | "User". Switching replaces the whole sidebar with that role's pages, lands on Home and shows "Switched to …".
 3. **Pages**:
 
@@ -226,10 +242,10 @@ The sidebar is on the left and the page is on the right. Across the top of the p
 
 | Shows | Meaning |
 |---|---|
-| "In progress: …" | Background work you started is running; click it to return to the page where it started |
+| "In progress: …" | Background work you started is running; with several at once it reads "In progress: … and others (N)". Click it to return to the page where it started |
 | "Syncing…" | A sync is running |
 | "Sync failed" | The last chain read failed; the full message is under "Details" on the Alerts page |
-| "Last synced HH:MM" | When the chain was last read successfully |
+| "Last synced HH:MM" | When the chain was last read successfully; followed by "UTC" when the time zone is UTC |
 | "Not synced yet" | The chain has not been read |
 
 **Sync.** Click the sync icon at the right end of the status line to read the chain in the background for the current role:
@@ -240,11 +256,16 @@ The sidebar is on the left and the page is on the right. Across the top of the p
 
 When everything has come back, one summary toast appears. With no nodes set it says "No nodes configured: add them in Settings > Network".
 
-**Keyboard shortcuts** (⌘ on macOS, Ctrl on Linux):
+**How the chain is read.**
+- Only anchors sent by this ledger's own addresses (the keys that wrote in it) are asked for, not anyone else's; every one that comes back is still checked on this machine item by item. A range with no such address is not asked about.
+- When a node declines, the same question is asked again; only after three refusals is the range split (at the limit the node names, or in half), and each smaller question has three tries too.
+- For an anchor several nodes confirmed alike, this machine keeps its block time and verdict and does not ask about it one by one again; which anchors the ledger has, and whether the chain has new ones, is still asked at every sync, and if the block changed (a different block hash), or the log a node returns differs from what was kept, it is asked about again. A reading from one node, or an unproven verdict, is not kept. To ask about everything again, use "Check everything again" in Settings > Local data.
+
+**Keyboard shortcuts** (⌘ in the table is the Command key on macOS and the Ctrl key on Linux and other systems; ⌘L, for example, is Ctrl+L on Linux):
 
 | Keys | Action |
 |---|---|
-| ⌘1 to ⌘6 | Open the sidebar pages in order |
+| ⌘1 onward | Open the sidebar pages in order (⌘1 to ⌘6 for a Recorder, ⌘1 to ⌘4 for a User) |
 | ⌘[ / ⌘] | Back / forward |
 | ⌘, | Settings |
 | ⌘L | Lock |
@@ -253,9 +274,11 @@ Shortcuts do nothing while the passcode gate, the wizard or a card is open.
 
 #### 4.2 Lists and detail pages
 
-List pages (Records, Pending, Ledger, Grant, My grants) have a search field at the top. Click a row to open its detail page; use the toolbar's back arrow or ⌘[ to return. As you scroll down a detail page, its title moves up into the toolbar.
+List pages (Records, Pending, Ledger, Grant, My grants) have a search field at the top. On Records, Ledger, Grant and My grants, two more fields sit beside it, "Start date" and "End date": each opens a month calendar; pick a day to fill it in, with "Today" and "Clear" at the foot. With dates set, the list keeps only the rows whose anchor block time falls between the two days (both included), and rows not yet on chain are left out; days are counted in the time zone of Settings > Language and time. On a narrow window the two date fields move to a row under the search field.
 
-On a narrow window, pages with a side column (New grant, Export record kit) move the side column below the form.
+Wherever you choose one item from a list ("Choose a record" and "Recent addresses" in a new grant, the address books, an annotation's target entry, switching identity), a floating card opens with a search field; lists whose rows carry a time ("Choose a record", the target entry) have the two date fields too; the "Choose entries" card for picking a record kit's entries has the search field and the two date fields as well. Click a row to open its detail page; use the toolbar's back arrow or ⌘[ (Ctrl+[ on Linux and other systems) to return. As you scroll down a detail page, its title moves up into the toolbar.
+
+On a narrow window, pages with a side column (New grant, Draft sublicense, Export record kit) move the side column below the form.
 
 #### 4.3 Bars at the top of the page
 
@@ -306,7 +329,7 @@ Results appear as a small card at the top centre of the page. Only one shows at 
 **Drop zones.** You can drop a file in, or click the zone to open the system file dialog. Cancelling the dialog changes nothing.
 
 - A drop zone takes one item at a time. Dropping several files shows "Drop one item at a time. Put multiple files in a folder first." and takes none.
-- Two exceptions take several files: the drop zone on the "New record" card (a batch of records), and the attachments zone of a record kit.
+- Two exceptions take several files: the drop zone on the "New record" card (a batch of records), and the attachments zone of a record kit. The "Add grant" card takes only the first of several dropped files.
 
 **Dropping onto the window.** On pages without their own drop zone, drop a single file anywhere on the window:
 
@@ -331,15 +354,16 @@ The count of wrong tries is kept on disk and survives restarting the app. This l
 
 Two other cases:
 
-- If the key store's encryption settings are below this machine's standard (for example, someone lowered them), the gate says "Encryption settings are below this Mac's standard." and "Enter your passcode to re-encrypt at this Mac's standard." That try is not counted as wrong; the correct passcode re-encrypts the store at this machine's standard.
+- If the key store's encryption settings are below this machine's standard (for example, someone lowered them), the gate says "Encryption settings are below this machine's standard." and "Enter your passcode to re-encrypt at this machine's standard." That try is not counted as wrong; the correct passcode re-encrypts the store at this machine's standard.
 - If the key store file turns out to be damaged when unlocking or setting a passcode, the app says "The key store file is damaged." and does not touch the file.
+- If the key store file cannot be read at start, the passcode side shows "The key store cannot be read" with the reason and the file's path; the first-run wizard does not open and no new key store is made (the keys are still in that file). Repair or move the file, then reopen the app.
 
 #### 5.2 Locking and auto-lock
 
-"Lock" in the sidebar, or ⌘L, locks at once:
+"Lock" in the sidebar, or ⌘L (Ctrl+L on Linux and other systems), locks at once:
 
 - The master key is wiped from memory, the data folder is closed and everything shown from it is cleared.
-- Background work stops: ledger checks, grant re-verification, revocation watch, sending the pending queue and waiting for receipts.
+- No new background work starts: ledger checks, grant re-verification, revocation watch, sending the pending queue and waiting for receipts. A send, receipt wait or write already under way finishes first, then the master key is wiped.
 - While locked, actions that need a key are refused: "The key store is locked." and "Unlock with your passcode, then try again."
 
 After you unlock, the data folder reopens and the app catches up once: any ledger check or grant re-verification that is due runs, and the pending queue goes back to waiting for its receipts.
@@ -438,18 +462,8 @@ If a passcode was set but no identity was ever created, and then 5 wrong tries l
 The "All" segment, top to bottom:
 
 - The drop zone "New record".
-- The search field "Find by record name or content fingerprint", with "Check a file" beside it.
+- The search field "Find by record name or content fingerprint", with "Start date" and "End date" beside it filtering by first anchor block time. To see whether a file is in this ledger, type its SHA-256 into the search field.
 - The record table, with the columns "Record", "On-chain state", "First anchor block time" and "Entry number", newest first. Deleted records are struck through.
-
-**Check a file.** Choose a file. The app computes its SHA-256, looks for a record with the same fingerprint in the current ledger, and answers under the search field:
-
-- "Entry N · on chain, block time …"
-- "Entry N · on chain, block time not read"
-- "Entry N · not confirmed on chain yet"
-- "Entry N · confirmed · last checked …": this session's check has not come back yet, so the answer is from the last one.
-- "This ledger has no entry with this digest"
-
-If the same content was recorded more than once, the answer is the entry that is on chain; a deleted one gets " (deleted)". If this machine signed it, one more line, "Signed from …", gives the file name used at the time.
 
 #### New record
 
@@ -457,7 +471,7 @@ The "New record" card has two steps.
 
 **Step one: fill it in**
 
-1. Drop a file, a folder or a Git repository into the card's drop zone, or click to choose one. The content fingerprint is computed this way:
+1. Drop a file, a folder or a Git repository into the card's drop zone, or click to choose one. The fingerprint is computed in the background: until it is ready the card's "Add to ledger" (or "Send to chain now") says "Computing the fingerprint" with a turning ring and cannot be pressed; with several files, the confirming key says "Recording" until they are written, and the card closes after. The content fingerprint is computed this way:
 
    | Kind | How |
    |---|---|
@@ -474,12 +488,12 @@ The "New record" card has two steps.
    - The reading below: "No repository linked" until one is saved; "Linked, not checked yet" after "Add repository"; "N commits since the last record" after "Check commits".
    - "Add repository" saves the chosen repository in settings.
    - "Check commits" counts the new commits of the saved repository again.
-5. Press "Add to ledger" (it reads "Send to chain now" when "Auto put on chain" is on). The note says "Cannot be changed once recorded, only annotated."
+5. Press "Add to ledger" (it reads "Send to chain now" when "Auto put on chain" is on). The note says "Cannot be changed once recorded, only annotated."; with "Auto put on chain" on it says "Cannot be changed once recorded, only annotated. Putting it on chain costs gas."
 
 **Step two: confirm**
 
 - The card lists "File", "Recorded for (optional)" and "Cost"; the content fingerprint and ledger location are under "Details".
-- The solid red "Add to ledger" writes the entry and queues it, with the toast "#N added to pending, N in total".
+- The solid red "Add to ledger" writes the entry and queues it, with the toast "#N added to pending, N in total" and a second line "Waiting in the ledger to be put on chain by hand" ("Offline: check against the chain before anchoring" when offline).
 - "Back" returns to step one.
 - With "Auto put on chain" on, the app estimates gas right after writing and opens the "Put on chain" card. The card covers every entry in the queue that can be sent.
 
@@ -490,7 +504,7 @@ The "New record" card has two steps.
 - The batch stops at the first failure. Entries already signed stay signed, and the toast reads "Signed N, stopped at file K: file name · reason". The remaining files stay in the list; fix the problem and press again.
 - A batch cannot contain folders.
 
-For each file signed (a single file, or each file of a batch), this machine remembers the file name and where the file was. "Check a file" and record kit export use this to find originals. Folders and Git repositories are not remembered.
+For each file signed (a single file, or each file of a batch), this machine remembers the file name and where the file was. Record kit export uses this to find originals. Folders and Git repositories are not remembered.
 
 #### Record detail
 
@@ -524,6 +538,8 @@ Whether the deletion itself goes on chain depends on whether the record was ever
 | Still queued and not sent, or never on chain | The record leaves the queue and the deletion stays local. The two rows show "Deleted" and "Deleted locally", and the toast reads "Deleted (entry #N). Not put on chain." |
 | Already sent, in a block or on chain | The deletion entry is queued and goes on chain like any other entry |
 
+In the first case both rows stay on this machine only. With "Hide entries deleted on this machine" turned on in Settings > Local data, the Records and Ledger lists leave these two rows out; a record deleted after it went on chain is still listed. This changes only what the lists show: entry numbers, counts, the ledger check and detail pages stay as they are, and turning it off brings the rows back.
+
 With a network set up, no ledger check yet, and the record not in the pending queue, deleting is refused: "The ledger has not been checked." and "Click Sync at the bottom of the sidebar."
 
 For the entry's format and how it is read, see Appendix C.
@@ -533,23 +549,23 @@ For the entry's format and how it is read, see Appendix C.
 **The pending segment** ("Pending N" in the Records toolbar):
 
 - The table lists number, type, summary and the date each entry was queued. When empty it reads "Nothing pending".
-- Below the table is the "This batch" card: "N entries · gas not estimated" before an estimate and "N entries · gas estimate …" after, with "Put all on chain" and "Sync". After a batch has been sent, a "Last batch" line appears ("N put on chain · N removed").
-- Click a row for its detail: "Summary", "Queued at" and "Sent together" ("First N"), with the button "Put on chain now".
+- Below the table is the "This batch" card: "N entries · gas not estimated" before an estimate and "N entries · gas estimate …" (a gas amount) after, with "Put all on chain" and "Sync". After a batch has been sent, a "Last batch" line appears ("N put on chain · N removed"). If a submitted batch's chain has no node in the current settings, the page says "A batch was submitted and is waiting for its receipt. There is no node for chain N right now, so it cannot continue."
+- Click a row for its detail: "Summary", "Queued at", "Sent together" ("First N", or "Submitted, waiting for its receipt" once sent) and "First anchor block time"; the button "Put on chain now" appears only before it is sent.
 
 **Putting entries on chain**
 
 1. Press "Put all on chain" or "Put on chain now". The "Put on chain" card opens, showing "Entry count" ("First N") and the "Gas cap"; the gas estimate is under "Details". The note says "Once on chain it cannot be withdrawn; it usually confirms within minutes".
-2. Once the estimate is in, press "Confirm and send". The app signs, sends the transaction and waits for the receipt.
+2. Each time the card opens the gas is estimated again (an earlier estimate is not reused). The estimate runs in the background; meanwhile "Confirm and send" says "Estimating" with a turning ring and cannot be pressed, while "Cancel" can (not while sending). Once the estimate is in, press "Confirm and send". The app signs, sends the transaction and waits for the receipt; meanwhile the key says "Sending" with a turning ring.
 
 All entries in a batch travel in one transaction.
 
-**The gas cap** is worked out from the base fee of the latest block: (base fee × 2 + tip) × gas limit. If the base fee cannot be read, it is taken as 0.0006 ETH.
+**The gas cap** is worked out from the chain's actual fees: (base fee × 2 + tip) × the gas limit this transaction carries. The limit is one and a half times the gas the nodes estimate (rounded up), at most 200,000; an estimate above 200,000 is refused and nothing is sent. The base fee is read at the block every node has reached (the lowest height when nodes differ), and nodes are compared on the base fee alone. The tip is the median, over the 20 blocks up to that block, of each block's median paid tip, at most 1 gwei; when the nodes give no answer, refuse, disagree or answer in another shape, it is 1 gwei. If the base fee cannot be read, the whole pair falls back (a 3 gwei cap and a 1 gwei tip; the limit still follows the estimate, so at most 0.0006 ETH): the cap on the confirmation card is then the fallback's, the card does not say that the fallback was used, and the chain is asked again the next time the card opens. The gas estimate takes its block by the same rule (the lowest block every node has reached). Only this chain's nodes are asked. On the layer-two networks Arbitrum One and OP Mainnet the tip is likewise what the chain actually paid, usually far below 1 gwei, so what is set aside and what is paid are a small fraction of mainnet's.
 
 **Checks before sending**
 
 - If the balance cannot cover the cap, nothing is sent. The message is "Insufficient balance." and "Needs N ETH, have N ETH.", with "Copy address" so you can top it up.
 - If the estimate fails, the card becomes "Cannot estimate gas" and gives the reason; "Retry" tries again.
-- Nothing can be sent while the ledger is locked or its chain is broken.
+- Nothing can be sent while the ledger is locked or its chain is broken. Before sending, the chain is read again; if it holds records this machine lacks, sending is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
 
 **After sending**
 
@@ -643,7 +659,7 @@ Below: "N entries · checked every N s". The raw result is under "Details".
 "Add note…", or "Note…" on an entry's detail page, opens "Add note to entry":
 
 1. Write the "Note text" (required).
-2. Pick the entry to annotate in the "Target entry" list, or under "Advanced options" use "Or paste an entry id".
+2. Press "Choose…" beside "Target entry", search the floating card (by number, type or summary, or by a range of first anchor dates) and pick the entry to annotate; or under "Advanced options" use "Or paste an entry id".
 3. Press "Add note" to write it.
 
 A note is saved as a new entry; the original entry is not changed.
@@ -698,7 +714,7 @@ The note says "The new key must have no ledger, and this cannot be undone." From
 
 **The grant list**
 
-- Search: "Find by grantee, record or state".
+- Search: "Find by grantee, record or state", with "Start date" and "End date" beside it filtering by the block time the grant entry was anchored at.
 - The table columns are "Record", "Validity", "Grant no." and "State", plus the on-chain state.
 - The state is judged by chain time: "Active", "Expired", "Not yet active", "Revoked" or "Unknown".
 - With no grants it reads "No grants yet".
@@ -712,8 +728,8 @@ Ways in:
 
 The form's fields:
 
-- **"Grantee"**: paste a `0x…` address. The "Recent addresses" menu on the right lists the address book and earlier grantees.
-- **"Which record"**: press "Choose a record" and pick one. Only records on chain can be chosen; the rest are greyed out with the reason:
+- **"Grantee"**: paste a `0x…` address. "Recent addresses" on the right opens a floating card with a search field, listing the address book and earlier grantees.
+- **"Which record"**: press "Choose a record" to open a large floating card, one row per record in three columns: entry number, record name, first anchor block time ("Not on chain" when not yet anchored); search it, or filter by first anchor date. Only records on chain can be chosen; the rest are greyed out with the reason:
   - "Grant after it is on chain"
   - "Going on chain, please wait"
   - "Waiting for this check"
@@ -727,7 +743,7 @@ The form's fields:
   - "Custom" takes "Start (seconds)" and "End (seconds)" as Unix seconds.
 - **The overlap light**: "Overlapping live grants: N". It counts grants on the same record that are marked exclusive on this machine, overlap in time and are not revoked.
 - **The "Exclusivity, sublicense and scope" fold**:
-  - The "Exclusive grant" switch: "Recorded on this Mac only. Cannot be changed after signing." The exclusive mark is kept only on this machine and is not written into the grant; put the exclusivity terms in the terms file.
+  - The "Exclusive grant" switch: "Recorded on this machine only. Cannot be changed after signing." The exclusive mark is kept only on this machine and is not written into the grant; put the exclusivity terms in the terms file.
   - "Upstream grant (sublicense only)".
   - "Scope".
 
@@ -756,17 +772,17 @@ Click a row in the grant list. The title is "#N · Grant".
 **"Basic information"**
 
 - "Record", "Validity", "State", "On-chain state", "First anchor block time".
-- "Exclusive": "Yes · recorded on this Mac only", "Yes · recorded on this Mac only · no terms file" (an exclusive mark from an earlier version), or "No".
+- "Exclusive": "Yes · recorded on this machine only", "Yes · recorded on this machine only · no terms file" (an exclusive mark from an earlier version), or "No".
 - "Attached terms file": the file name, or "No terms file".
 
 "Details" holds the grantee, the terms file fingerprint and the entry's machine values, plus "Show revocations".
 
 **Buttons**
 
-- **"Copy grant code"** puts the `zikaron-grant:…` code on the clipboard.
+- **"Copy grant code"** puts the `zikaron-grant:…` code on the clipboard. A relicensed grant's code carries every hop up to the root, the same text as in this grant's badge and grant file.
 - **"Export grant file…"** writes a `grant-<first ten hex characters of the grant's entry ID>.zkgrant` file to the "Saved to" location, numbering it if the name is taken.
   - The file holds the entries of every hop in the grant chain, the issuer's ledger, the terms files and the grant code.
-  - It reads the chain once before exporting and refuses if the chain cannot be read.
+  - It reads the chain once before exporting and refuses if the chain cannot be read, or if it holds records this machine lacks: "Ledger is not up to date" and "N records on chain are not on this machine".
   - The toast gives the location, how many hops, and how many terms files.
 - **"Put on chain now"** appears while the grant is still queued.
 - **"Revoke grant…"** at the bottom appears while the grant is not revoked.
@@ -786,7 +802,7 @@ Open it with "Export record kit" on a record's or entry's detail page; that entr
 
 **Entry range.** The "Entry range" line shows "All N" (choosing nothing means the whole ledger) or "N selected".
 
-- "Choose…" opens "Choose entries", with a switch on each entry so you can pick any set. There are also "All" and "Clear selection".
+- "Choose…" opens "Choose entries": a search field and "Start date" / "End date" on top, a switch on each entry so you can pick any set. "All" picks the entries the search and the dates keep; "Clear selection" clears them all.
 - Revocations of the chosen grants, and the ledger's creation and handover entries, come along automatically; the receiver needs them to tell whose ledger this is.
 - If some chosen entries are not on chain yet, red text says "N selected entries are not on chain yet: the package holds no on-chain proof for them", with "Put on chain now" beside it.
 
@@ -806,7 +822,7 @@ Open it with "Export record kit" on a record's or entry's detail page; that entr
 
 **Exporting.** Press "Verify and export":
 
-1. The app reads the chain once.
+1. The app reads the chain once. If the chain holds records this machine lacks, export is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
 2. It creates a folder `kit-<first eight characters of the earliest chosen record's fingerprint>` at the save location (plain `kit` if no record is chosen), numbering it if the name is taken.
 3. The kit checks itself and is written only if it passes. The toast reads "Record kit exported to …".
 
@@ -820,11 +836,18 @@ If it cannot be written, the reason is given:
 | "Two files inside the package have the same name." | Two files with the same name in the kit |
 | "The package failed its own check and was not saved." | The self-check failed |
 
+**Where the kit says it is anchored.** On export a line is added at the end of the kit's note, the same in every interface language: `anchored-on: eip155:<chain ID> · registry <registry contract> · from <start block>`, taken from this data folder's network at that moment.
+
+- With no network set, no line is added.
+- A note that already ends with such a line has it taken off first, so exporting again never doubles it.
+- In the index of "Record packages exported on this machine" the note stays as you wrote it; the line is kept in a cell of its own.
+- The line only points the way: verification never judges by it, it only says which network to add (see "Record verifier").
+
 **The side column**
 
 - "How recipients verify": the receiver drops the kit into Verify > Verify record.
 - "Readings and reference (not in the package)": "Calculate" computes three readings for the first chosen record: "First recorded", "Max depth" and "Continuity". They are shown on the page only and do not go into the kit.
-- "Record packages exported on this Mac": one section for each kit this machine has exported from this ledger.
+- "Record packages exported on this machine": one section for each kit this machine has exported from this ledger.
   - You can set a "Fetch address", the https address where the kit can be fetched online. Left empty, it is the publish address plus the kit's path.
   - "Delete local copy", pressed twice, deletes the local kit folder. The ledger is not touched.
 
@@ -834,7 +857,7 @@ Depth readings describe how long a record has been in the ledger and how continu
 
 - Recorder: "Readings and reference (not in the package)" in the side column of the Record kit page; press "Calculate".
 - User: in the Record verifier, when "Record hash (optional)" is filled in.
-- Due diligence: on the Other ledgers page with "Record hash (optional)" filled in, "Max depth" is under "Details".
+- Due diligence: on the Other ledgers page with "Record hash (optional)" filled in, "Max depth" is under "Details"; when a read-only network was not read this time and no anchor was read, it reads "Chain not read".
 
 The command line's `depth` verb uses the same calculation.
 
@@ -871,7 +894,7 @@ The command line's `depth` verb uses the same calculation.
 
 ### Grant vault
 
-"My grants" in the sidebar. The toolbar has the segmented control "All" | "By issuer", "Verify again" and the blue "Add grant".
+"My grants" in the sidebar. The toolbar has the segmented control "All" | "By issuer", "Verify again" and the blue "Add grant". Above the cards are a search box, "Find by record, issuer or verdict", and two boxes, "Start date" and "End date", that filter by the time each grant went on chain.
 
 #### Add grant
 
@@ -880,7 +903,7 @@ The "Add grant" dialog:
 - Paste a grant code into "Paste grant code", or drop a grant file onto "Drop a grant file". If the code carries a sublicense chain, every hop in it is added.
 - A dropped grant file is checked on the spot: "… verified · N hops in the chain · M terms files".
 - A pasted grant code gets a note: a grant code carries no issuer ledger, so only the signature and validity can be verified. For the full check, ask the issuer to export a grant file.
-- "Grant name" and "Issuer name" are optional and kept only on this machine.
+- "Grant name" and "Issuer name" are optional and kept only on this machine. They are kept for the grant this addition is for (the last hop of a relicense chain) and its issuer only; the issuers of earlier hops are left as they were.
 
 Press "Verify and add":
 
@@ -890,7 +913,7 @@ Press "Verify and add":
 
 #### Grant cards
 
-Each grant has a card with its verdict, record name, issuer, validity and last time on chain.
+Each grant has a card with its verdict, record name, issuer, validity and the time the grant went on chain in its issuer's ledger ("On-chain time not read" until it has been read).
 
 - The verdict is "All passed", "Has gaps", "Failed" or "Revoked by issuer".
 - Until this session's re-verification reaches it, a card shows the last verdict marked "last checked …", turning grey after a day.
@@ -905,7 +928,7 @@ Click a card for its detail page:
   - "Upstream": "None (issuer is the author)", or the state of the upstream ledger.
 - **Status notes**
   - Revoked: "The issuer has revoked this grant." and "Sublicenses based on it are void too."
-  - Has gaps: one sentence per gap, for example that the issuer ledger is missing or that the grant is not yet confirmed on chain.
+  - Has gaps: when the issuer ledger was found nowhere, a note says it is missing; any other gap (including a chain that could not be read or no nodes set) reads "This grant is not yet confirmed on chain. Check again in a few minutes."
   - Issuer ledger handed over: "The issuer's ledger was handed over to a new key".
 - **The credential card**: "Saved to" and "Create credential". When this session's re-verification has passed all six checks, "Sublicense to others" appears too.
 - **"Advanced options"**: "Upstream ledger folder (optional)"; "Save upstream" remembers it, and saving it empty clears it.
@@ -916,7 +939,7 @@ Click a card for its detail page:
 "Verify again" re-verifies every grant you hold:
 
 1. It looks for the issuer's ledger, first on this machine and then in the vault. The vault is the ledgers carried by grant files you added, plus folders saved with "Save upstream".
-2. It scans the chain, updates each card's verdict and records the result.
+2. It scans the chain, updates each card's verdict and records the result. It reads the main network only, not the read-only networks: a grant anchored on a read-only network stays "Has gaps" here, never offers "Sublicense to others", and is not covered by the revocation watch. Check such a grant in Verify > Verify grant.
 
 Re-verification also runs on the interval in Settings > Notifications (600 seconds by default), once nodes, chain ID and registry contract are set.
 
@@ -928,7 +951,7 @@ The "By issuer" segment in the My grants toolbar groups the cards by issuer, wit
 
 A credential is proof of a grant for a third party, such as your customers: a text file and a QR code. Press "Create credential" on the credential card:
 
-- It needs the network set up, and it reads the chain once.
+- It needs the network set up, and it reads the chain once; if the chain holds records this machine lacks, it is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
 - The app follows the grant chain back to its root using the grants you hold, and creates a `badge-<first ten characters of the grant ID>` folder at the save location containing `badge.txt` and `badge.svg` (the QR code).
 - The detail page then shows "Credential created" and the QR code.
 
@@ -972,9 +995,9 @@ Each event alerts only once. No toast appears while the first-run wizard is open
 
 ## 9 · Verify
 
-"Verify" in the sidebar. Both roles have "Verify grant" and "Look up a ledger"; the User also has "Verify record".
+"Verify" in the sidebar. Both roles have three tabs: "Verify grant", "Verify record" and "Look up a ledger". Where Home and a file dropped on the window lead still depends on the role: the Recorder's drop opens a new record, the User's goes to "Verify record".
 
-Verifying does not use the key store or send transactions, and results are not saved. Only two things are written on this machine: changes to the address book, and snapshot files written by "Save snapshot".
+Verifying sends no transactions. Three things are written on this machine: changes to the address book, snapshot files written by "Save snapshot", and the verification result files written by "Verify record" (see "Record verifier").
 
 ### Grant check
 
@@ -989,8 +1012,10 @@ Files you put in show their name and size; "Remove" takes them out.
 **"Advanced options"**
 
 - "Ledger folders (one per hop)": point each hop of the grant chain at the issuer's ledger folder by hand.
-- "Nodes (one per line, optional)", "Registry contract (optional)", "From block": empty means the values in Settings.
+- "Nodes (one per line, optional)", "Registry contract (optional)", "From block": filled in with the main network from Settings and open to change; they set the main network only.
 - "Check as of (seconds, optional)": empty means chain time.
+
+**Which networks are read.** The check reads the main network plus every one of the "Read-only networks" in Settings; with only read-only networks set up and no main network, it still checks and does not report "No nodes configured". A network that could not be read is named, with "Unreachable" or "Fingerprint mismatch"; then a "Confirmed on chain" light with no anchor found is grey with "Chain unreadable right now", and the next step reads "The chain cannot be read right now. Check again later.", not "Not yet confirmed on chain", since the anchor may be on the network not read.
 
 **Where the issuer's ledger comes from.** The app looks in this order:
 
@@ -1048,9 +1073,9 @@ When you receive the work itself, put it into the "File" box on the Verify grant
 
 ### Record verifier
 
-The "Verify record" tab under "Verify" in the sidebar (User only).
+The "Verify record" tab under "Verify" in the sidebar (both roles).
 
-Drop a record kit folder, a grant file or a single record file onto "Drop a record kit or record file", or click to choose one. It is checked as soon as it is in; "Verify now" checks again.
+Drop a record kit folder, a grant file or a single record file onto "Drop a record kit or record file", or click to choose one. It is checked as soon as it is in; "Verify now" checks again. From a publish address, the top of the result card reads "From https://… · N files · verified", with "Fetch again".
 
 **"Advanced options"**
 
@@ -1061,8 +1086,8 @@ Drop a record kit folder, a grant file or a single record file onto "Drop a reco
 
 | Light | What it can show |
 |---|---|
-| Record kit | "Record kit intact, signatures valid", "Record kit check failed: …", or "Verified as a single file" for a single file |
-| Anchor proofs on chain | "N match the chain", "N not on chain", or "Not compared with the chain" when the chain could not be read (including no network) |
+| Record kit | "Record kit intact, signatures valid", "Record kit check failed: …", or "Verified as a single file" for anything that is not a kit (a single file, or a folder of entry files) |
+| Anchor proofs on chain | "N match the chain", "N not on chain", or "Not compared with the chain" when the chain could not be read (including no network) or a network was not read |
 | Issuer ledger | The ledger check result; "This is part of the ledger" when a kit carries only part of it; "Issuer ledger not read" if it could not be read |
 
 **Record by record.** For a kit, a grant file or a publish address, a "Record by record" table follows, one row per record:
@@ -1075,14 +1100,28 @@ Drop a record kit folder, a grant file or a single record file onto "Drop a reco
 
 - No mismatch: a green "All match".
 - Any mismatch: "N mismatches." and "See the error details and confirm with the sender before accepting."
+- A chain not read counts as a mismatch: a failed chain read counts once, and each record on a network not read counts once. So when the kit's network is not added, no network is set up or no node answers, the conclusion reads "N mismatches." however intact the kit is.
 
-With a record hash filled in, three readings for that record are shown as well: "First recorded", "Max depth" and "Continuity".
+With a record hash filled in, three readings for that record are shown as well: "First recorded", "Max depth" and "Continuity". When a chain was not read this time, a cell with no reading or a short one reads "Chain not read".
+
+**When the kit's network is not added.** When a kit says which chain it is anchored on (see "Record kit") and that chain with its registry contract is neither the main network nor among the "Read-only networks":
+
+- The kit is still checked, the chain is not read, the anchor-proof light reads "Not added", and each record's on-chain state is that the chain was not read.
+- The page shows the chain's name, "Stated by the author" and "Add this network in Settings", with "Add". "Add" opens Settings > Network with a new row whose chain ID, registry contract and start block are filled in; you fill in the nodes.
+
+**Which networks were read.** The result card names the networks read this time. A network that could not be read (a read-only network, or the main network when read-only networks are set up) is named, with "Unreachable" or "Fingerprint mismatch"; a record with no anchor on the chains that were read then reads that the chain was not read, not "Not on chain", since its anchor may be on the network not read. Chain ID, registry contract and each record's first-anchor block number and transaction are under "Details", the transaction in full; so is "Result file", with this pass's result file path (or why it could not be written).
+
+**The verification result file.** Each kit, grant file or publish address verified writes a result in the machine folder under `kits/verified/`, named `0x<sha256 of the kit's manifest file>.json`; verifying again replaces it whole.
+
+- It holds whether the kit holds; each record's earliest counted anchor (chain ID, registry contract, block, time, transaction); the anchors this pass found, each with its registry contract; the networks read this time; the networks not read (chain ID and registry contract, with the reading code `down` (unreachable) or `fingerprint` (fingerprint mismatch)); the digest of the core that judged. For a kit that does not hold, only its verdict is written.
+- It is written when the kit does not hold too; when the kit holds and no chain was read this time (its network not added, no network set up, no node answering), it is not written.
+- The file is plain, for other apps to read. ZIKARON does not read it back, and it changes no verdict.
 
 ### Other ledgers
 
 The "Look up a ledger" tab under "Verify" in the sidebar.
 
-Fill in "Author address" (or pick from "Address book" on its right) and press "Read". The app scans the chain for that address's anchor proofs and looks for its ledger in the same four places as described under "Grant check".
+Fill in "Author address" (or pick from "Address book" on its right) and press "Read". The app scans the chain for that address's anchor proofs and looks for its ledger in the same four places as described under "Grant check". The main network must be set up first (with only read-only networks it does not read); any read-only networks are read as well.
 
 - "Record content (optional)" under "Advanced options" can point to a record kit, grant file, ledger folder or https publish address.
 - "Add to address book" and "Remove from address book" change only this machine's address book.
@@ -1099,7 +1138,7 @@ Fill in "Author address" (or pick from "Address book" on its right) and press "R
 - If none of the four places has the ledger, it says "No ledger content yet: provide a record package or publish address", and the record and grant counts read "Not obtained" rather than 0.
 - Below the tiles is a table of grants: work, validity, first anchor block time.
 
-**"Entry list"** lists the other ledger entry by entry; click a row for a read-only detail. Deletions are read the same way as in your own ledger (Appendix C).
+**"Entry list"** lists the other ledger entry by entry; click a row for a read-only detail. Deletions are read the same way as in your own ledger (Appendix C). When a network was not read this time, "Overview" names it with "Unreachable" or "Fingerprint mismatch"; an entry with no anchor on the chains that were read gets a grey light, and its detail's "On-chain state" reads "Chain not read", not "Not on chain".
 
 ### Due diligence
 
@@ -1109,7 +1148,7 @@ A User does due diligence on the "Look up a ledger" page, which has more under "
 - "Validity needed (optional)": "From (seconds)" and "To (seconds)".
 - "Snapshot location" and "Save snapshot".
 
-"Overview" gains a "Grant conflict check", which tells you whether the period you need overlaps active grants the author has already issued. It checks only when both "Record hash (optional)" and "Validity needed (optional)" are filled in; otherwise it shows "No record entered; not checked" or "No period entered; not checked":
+"Overview" gains a "Grant conflict check", which tells you whether the period you need overlaps active grants the author has already issued. It checks only when both "Record hash (optional)" and "Validity needed (optional)" are filled in; otherwise it shows "No record entered; not checked" or "No period entered; not checked". Its "Details" give the "Key lineage" and, with a record hash, "Max depth" ("Chain not read" when a network was not read and no anchor was found):
 
 - Overlap, in red: "N active grants overlap this period".
 - No overlap, in green: "No active grants overlap this period".
@@ -1162,7 +1201,7 @@ A User does due diligence on the "Look up a ledger" page, which has more under "
 
 **Where settings are kept**
 
-- Appearance, auto-lock, the last language chosen, the chosen network and the record of the last whole-machine backup are kept on this machine. They apply to every identity and are used on the passcode gate too.
+- Appearance, auto-lock, the last language chosen and the record of the last whole-machine backup are kept on this machine. They apply to every identity and are used on the passcode gate too. The "Read-only networks" are kept on this machine as well, shared by every identity. The network last chosen in the wizard is kept here too, but it only decides which choice a new identity starts on; each identity uses its own network.
 - Everything else is kept in the current data folder. Without a data folder, or when it is read-only, these cannot be changed: the page stays as it was and a toast gives the reason.
 
 #### 11.1 Language and time
@@ -1191,9 +1230,9 @@ A card at the top shows the current identity's name and its role and kind. "Copy
 | "Gas balance" | The balance of the current role's signing address, or "Not read" |
 | "Backup status" | "Recovery phrase confirmed, key file exported", "Recovery phrase confirmed", "Key file exported" or "Not backed up" |
 | "Backup file" | Whether the exported key file is still on disk right now (checked against the real file) |
-| "Saved to" | "This Mac's key store (passcode encrypted)" |
+| "Saved to" | "This machine's key store (passcode encrypted)" |
 
-If the current role's key cannot be found, an extra "Key address" row explains why, for example "No signing key yet" or "Key not in this Mac's key store". For the empty role of a local-key identity it reads "Not in use. Import another key, or use a mnemonic identity."
+If the current role's key cannot be found, an extra "Key address" row explains why, for example "No signing key yet" or "Key not in this machine's key store". For the empty role of a local-key identity it reads "Not in use. Import another key, or use a mnemonic identity."
 
 **The "Primary" group** ("Only the primary identity can recover the passcode.")
 
@@ -1223,14 +1262,20 @@ If the current role's key cannot be found, an extra "Key address" row explains w
 **The "Change identity" group**
 
 - **"Switch identity…"**: lists every identity. Click a row to expand it and see both roles' full addresses; only "Switch" actually switches.
-- **"New identity…"**: an optional "Label", then generate, write down and check 12 words, as in wizard step 2.
+- **"New identity…"**: an optional "Label", then under it "Network" for the network this identity uses, then generate, write down and check 12 words, as in wizard step 2.
+  - "Network" lists each preset network of Appendix A, then "Custom"; the one this machine last chose in the wizard is selected first, Ethereum mainnet if it never chose.
+  - The chosen network fills both roles' data folders of this identity; both roles use it.
+  - An identity made by an earlier version has no network recorded: the first time a data folder is opened after upgrading, the one this machine chose in the wizard is recorded for it (nothing is recorded if that was "Custom", if this machine never chose, or if the identity's data folders already hold another chain). From then on both roles use it, and a later choice on this machine does not change it.
+  - With "Custom", this identity's data folders have no network, and reading the chain or anchoring says it is not configured, until it is filled in and saved in Settings > Network (by hand or from a preset). Saved in one role, the other role takes the same network when it opens; other identities are not affected.
 - **"Import key…"**: three tabs, "Recovery phrase", "Private key" and "Key file".
   - Recovery phrase: 12 boxes; the whole phrase can be pasted.
   - Private key: 64 hexadecimal digits, with or without 0x.
   - Key file: drop in the keystore file and enter the "Key file password".
   - For a private key or key file, choose "Import as which identity" ("Recorder" or "User"). The key fills only that role; the other stays empty.
-  - An optional "Label". Press "Import identity".
-  - An imported identity is secondary and cannot recover this machine's passcode. An identity already on this machine is not imported twice, but if its keys are missing, importing it puts them back.
+  - On a machine with no identity yet, the imported one becomes primary. A private key then exports its key file as it is imported: the form adds "Password, at least 8 characters", "Confirm password" and "Saved to", and the identity is created only after the exported file is read back and checked. Left empty, it is refused with "This identity has not exported its key file.".
+  - An optional "Label", and "Network" as for "New identity…". Press "Import identity". Opened from the wizard, the form has no "Network": wizard step 3 decides it.
+  - Imported where identities already exist, it is secondary and cannot recover this machine's passcode. An identity already on this machine is not imported twice, but if its keys are missing, importing it puts them back.
+  - An imported identity cannot write until its ledger has been checked against this key's records on chain (see "Fetching the ledger" under "Storage").
 - **"Rename…"**: change an identity's label. It only helps you tell identities apart and affects no verdict.
 
 New and imported identities are secondary. The exception is a machine with no identity yet, where the first one created becomes primary.
@@ -1257,9 +1302,9 @@ New and imported identities are secondary. The exception is a machine with no id
 **Readings**
 
 - **"Network"**: where this data folder's network settings came from.
-  - "Ethereum mainnet (taken from the network this Mac chose)"
+  - "Ethereum mainnet" or another preset's name: this data folder's four cells equal that row of Appendix A. When the identity later chooses another network, a data folder that already has one stays as it is.
   - "Custom": set by hand.
-  - An amber "No network set yet".
+  - An amber "No network set yet", with a line under it pointing to "Edit nodes…" to fill it in by hand or from a preset.
 - **"Chain reading"**:
   - "N nodes agree"
   - "Only 1 node responded; no cross-check"
@@ -1270,11 +1315,13 @@ New and imported identities are secondary. The exception is a machine with no id
 
 **Buttons**
 
-- **"Use this Mac's default network"**: appears only when all three are empty. It fills them in from the network this machine chose, with the toast "Network set: Ethereum mainnet". It is refused if this machine chose "Custom".
-- **"Edit nodes…"** opens the editor:
+- **"Edit nodes…"** opens the editor. A data folder with no network is filled in here and only here.
+  - "Preset": pick a preset network of Appendix A and the nodes, chain ID, registry contract and start block are filled in; "Custom" keeps what is typed. A preset only fills the cells: the two save keys below still make it take effect. The read-only networks' "Preset" is the same table.
   - Write nodes as `chain-id=node-url`, separated by spaces, and press "Save nodes".
   - Fill in "Chain ID", "Registry contract" and "Start block" and press "Save chain settings".
-  - Once you have saved your own values, "Network" reads "Custom".
+  - Once you have saved your own values, "Network" reads "Custom"; if the chain ID, registry contract, start block and nodes (in any order) saved equal a row of Appendix A as it is today, it reads that row's name.
+  - Saving other nodes or other chain settings voids the gas estimate and fees in hand; the "Put on chain" card estimates again the next time it opens.
+  - When this identity chose "Custom", the chain ID, registry and nodes, once complete in one role's data folder, are recorded on this identity: the other role's data folder takes them when it opens, so you do not configure them twice. Other identities do not take them.
 - **"Read chain"**: reads the signing key's balance once.
 
 **Node connections.** A node address starts with `https://` or `http://`. For https nodes, the certificate and host name are checked on every connection; if the certificate fails, the chain cannot be read. When a node refuses or a connection fails, the message names the cause (rate limit, credentials needed, wrong network, certificate, timeout and so on), with the node's own words under details.
@@ -1287,6 +1334,18 @@ New and imported identities are secondary. The exception is a machine with no id
   - "Published": "All N files match."
   - "Publication incomplete": "N files missing, M do not match.", listing the missing and mismatched files.
   - "Cannot reach the published address", with the reason.
+
+**Read-only networks.** The "Read-only networks" section under the main network is shared by every identity on this machine and kept in the machine folder; with none added there is no file.
+
+- They are only for checking other people's material: "Verify record", "Look up a ledger", grant verification and due diligence read the main network and every network here. Writing the ledger, putting on chain, the balance and the ledger check use the main network only.
+- "Add" starts a new row; while a row is unsaved, "Add" is not shown. "Preset" offers each preset network of Appendix A, or "Custom" to fill in by hand.
+- Each row takes "Name", "Chain ID", "Registry contract", "Start block" and "Nodes" (one per line); press "Save". Saving only writes on this machine; the chain is not read.
+- "Name": for Ethereum mainnet, OP Mainnet, Base, Arbitrum One and their testnets it is filled in and cannot be changed; any other chain can be named by hand, and without a name it shows as "Chain <chain ID>". The name is shown on this machine only.
+- A row with the same chain and registry contract as one already listed, or as the main network, is refused: "This network is already listed."
+- Each row shows only its name and its reading; opening it shows the cells and three buttons, "Save", "Read the chain" and "Remove". "Remove" asks "Remove this network?" first; press "Remove" again.
+- "Read the chain" gives "Agreed" (every node that answered gave the code of the pinned registry build), "Single source" (one node answered), "Unreachable" (no node answered) or "Fingerprint mismatch" (the registry's code is not the build ZIKARON pins).
+- Before a read-only network is read, the code at its registry is checked every time. A row with "Fingerprint mismatch" is not used that time, and not one anchor on it counts. The main network is not checked this way.
+- Rows on the same chain are read as one window: every registry contract, from the earliest start block. A row that could not be read this time is named in the result, and the others are checked as usual.
 
 #### 11.5 Notifications
 
@@ -1309,7 +1368,7 @@ Settings > Local data.
 
 #### Whole-machine backup
 
-One backup file restores everything: every identity and key on this machine, all local data and all settings. It does not contain the master key, the passcode or the wrong-try count.
+One backup file restores everything: every identity and key on this machine, all local data and all settings. It does not contain the master key, the passcode or the wrong-try count, nor the record of checked facts (asked again after restoring), the read-only networks, or exported record kits with their index and verification results.
 
 - "Last backup": the time, or "Never".
 - "Not backed up": how many entries have been added since.
@@ -1328,11 +1387,17 @@ One backup file restores everything: every identity and key on this machine, all
 
 With only a recovery phrase and no whole-machine backup, only data readable on chain can come back.
 
-#### Fetching the ledger (restored identities)
+#### Fetching the ledger (imported identities)
 
-When you import an identity again from its recovery phrase, private key or key file, its ledger does not come with it. A red box appears at the top of this page, "This identity was restored: its ledger has not been fetched". Until the ledger is fetched, this identity can read but cannot write to its ledger.
+When you import an identity from its recovery phrase, private key or key file, its ledger does not come with it, and the key may have written elsewhere. So an imported identity can read but cannot write at first, and a red box appears at the top of this page, "This identity was imported: its ledger has not been checked against the chain".
 
-To fetch it:
+Whether it can write turns on one thing: this role's ledger has been checked against this key's records on chain, and every record on chain is in the ledger. Where the ledger came from does not matter:
+
+- Once a network is set, the app checks by itself (if one was already set when importing, right after the import). If the chain holds no record of this key (a new key, say) or every record is in the ledger, writing opens.
+- After "Adopt in place" takes over an existing ledger folder, it is checked again, and writing opens if it matches.
+- If the chain holds records the ledger lacks, the box changes to "Newer entries exist elsewhere: N records on chain are not in the fetched ledger" and stays read-only; fetch the ledger from a whole-machine backup.
+
+To fetch it from a whole-machine backup:
 
 1. Choose a whole-machine backup, enter the "Backup password" and press "Fetch ledger".
 2. The app takes this identity's ledger from the backup and compares it with this key's anchors on chain:
@@ -1355,28 +1420,35 @@ Only on a Recorder's Local data page.
 Each role of each identity has its own data folder.
 
 - "Change data folder…": choose another folder and press "Open data folder". This lasts only until you quit; the next launch returns to this identity's own data folder.
+  - Only a folder that is already a data folder (an older one missing a room counts) or an empty folder can be chosen (one holding only files the system leaves, such as `.DS_Store`, `Thumbs.db` or `desktop.ini`, counts as empty); an empty folder gets a data folder laid out in it.
+  - Any other folder (a ledger folder made by the command line, a folder of documents) is refused: "This folder is neither a data folder nor empty.". Nothing is written there and the current data folder stays open. To take over a ledger made by the command line, use "Adopt in place" under "Advanced options" below.
 - "Measure usage": counts the space used and the number of entries.
-- "Import grants folder…" (User): choose a folder and press "Import folder" to import the grant entry files (`<64 hexadecimal digits>.entry`) in it in one go.
+- "Hide entries deleted on this machine" (Recorder): when on, the Records and Ledger lists leave out entries deleted before they went on chain, and their deletion entries (see "Deleting a record" under "Record on chain"); entries deleted after going on chain are still listed. It changes only what the lists show, is off by default, and is kept in this data folder.
+- "Import grants folder…" (User): choose a folder and press "Import folder"; every file in the folder (grant files and grant entry files, whatever they are called) is verified and imported one by one; a file that is not a grant is refused by name and the rest are taken.
+  - Side files the system leaves do not count. A folder with no file at all says "This folder has no files in it."
 - The empty role of a local-key identity has no data folder, so these buttons are unavailable.
 
 **"Advanced options"**
 
 - "Usage limit (bytes)", then "Save limit".
 - "Move to an empty folder":
-  - Choose a folder and press "Move". The data folder moves there and becomes this identity's data folder.
+  - Choose a folder and press "Move". The data folder moves there and becomes this identity's data folder. The copy runs in the background and the key says "Moving"; meanwhile this data can only be read (writing and another move are refused), and only once copied and checked does the app switch to the new place, the old place unchanged.
   - If the chosen folder is not empty, the data goes into a new `ZIKARON` subfolder inside it.
+  - The new place cannot be the current data folder itself or lie inside it (judged by the real path, symbolic links resolved): such a choice is refused with "The new location is inside the current data folder; nothing was copied."
   - The old location is left untouched; delete it yourself afterwards.
-- "Adopt existing ledger folder", then "Adopt in place": takes over an existing ledger folder, re-checking every entry before connecting it.
+- "Adopt existing ledger folder", then "Adopt in place": takes over an existing ledger folder, re-checking every entry before connecting it. For an imported identity, the ledger is then checked against this key's records on chain, and writing opens if it matches (see "Fetching the ledger").
 - "Writing": "Writable", or "Paused: reconcile after restore".
 - "Last reconciled" and "Reconcile now": checks the local ledger offline and, if it passes, allows writing again.
+- "Check everything again": clears this machine's record of checked facts (see "How the chain is read" under Sync); the next sync asks about every anchor again.
 
-"Details" gives the data folder's path, the encryption used, the path of the last whole-machine backup and the instance lock.
+"Details" gives the data folder's path, the local data encryption, the path of the last whole-machine backup and the backup encryption, where the folder setting is kept, the instance lock, and any missing subfolders.
 
 Only one window can write to a data folder. A window opened later can only read, and shows the read-only bar at the top.
 
 ### About
 
-- **"Version"**: `ZIKARON Desk 0.1.0`.
+- **"Version"**: `ZIKARON Desk 0.1.1`.
+- **"Third-party licences"** (folded): every third-party component the app uses, with its version and licence, then each licence text; made at build time from the components this platform actually uses and carried in the app, scrollable.
 - **"Setup check"**: a light for each item, with unfinished ones marked "To set up".
   - Recorder: "Signing key", "Passcode", "Gas", "Create the ledger", "Whole-machine backup".
   - User: "Signing key", "Passcode", "Node setup", "Ready", "Whole-machine backup".
@@ -1384,7 +1456,7 @@ Only one window can write to a data folder. A window opened later can only read,
 
 ### Diagnostics
 
-The "Details" fold at the bottom of the About page: "Cores and signing domains", "Build type", "Fonts", "Log output", "Running tasks", "Last self-check", and "Run self-check" (runs a self-check in the background and writes the result to "Last self-check"). The fonts row says where each face comes from: the Latin and monospace fonts are built into the app; Chinese comes from the system's PingFang on macOS and from Noto Sans SC built into the app on Linux.
+The "Details" fold below "Run wizard again" on the About page: "Cores and signing domains", "Build type", "Fonts", "Log output", "Running tasks", "Last self-check", and "Run self-check" (runs a self-check in the background and writes the result to "Last self-check"). The fonts row says where each face comes from: the Latin and monospace fonts are built into the app; Chinese comes from the system's PingFang on macOS, from the system's Microsoft YaHei UI on Windows (its bold for strong text; Noto Sans SC built into the app when it is not there), and from Noto Sans SC built into the app on Linux.
 
 ---
 
@@ -1392,13 +1464,27 @@ The "Details" fold at the bottom of the About page: "Cores and signing domains",
 
 The command line reads and writes the ledger folder you give it.
 
-A ledger in ZIKARON Desk's own data folder is encrypted, and the command line has no passcode, so it refuses to read one: `E_UNREADABLE` "已锁定:这是 ZIKARON Desk 封存的本机数据,命令行不读" ("locked: this is ZIKARON Desk's sealed local data; the command line does not read it"), exit code 2. To work with the command line, export a "Ledger mirror" first. Each file in the mirror's `entries/` folder is one entry's bytes, named with 64 hexadecimal digits and no suffix. Single files can be read with `show --path` and similar flags. To use them as a `--ledger` folder, copy them into an empty folder and add `.entry` to each file name.
+A ledger in ZIKARON Desk's own data folder is encrypted, and the command line has no passcode, so it refuses to read one: `E_UNREADABLE` followed by the ledger's path, and on the next line "已锁定:这是 ZIKARON Desk 封存的本机数据,命令行不读" ("locked: this is ZIKARON Desk's sealed local data; the command line does not read it"), exit code 2. To work with the command line, export a "Ledger mirror" or a record kit: the `--ledger` of `audit` (and through it `check-grant`, `chain-check` and `depth`) and of `show --entry` can point straight at a mirror folder (the level holding `mirror.json`) or a record kit folder. A record kit is checked by the kit law first and refused with `E_KIT` if it fails. The verbs that write entries, and `init`, take ledger folders only.
+
+**Audited before writing.** Before any entry-writing verb (`init` and `retract` included) writes, "this ledger plus this entry" goes to the core for an offline audit; if it would add a chain finding (the old key writing after a key change, a skipped sequence number, a second entry at one place, a link to the wrong entry), it is refused with `E_WOULD_BREAK`, `names` saying which, and not one byte is written. `--seq` and `--prev` given by hand pass the same gate.
+
+**Node addresses** can be `http://` or `https://`, in any case; https verifies the certificate chain and host name, the same way the app connects. While `anchor` waits for a receipt, a round the node refuses is not an answer: it asks again after a pause until `--wait-secs` runs out, and says `E_UNREACHABLE` only when the node never answered in that time.
+
+**`anchor` estimates before it sends.** After reading the fees it asks the node for a gas estimate of this very transaction (the app's own rule), and the transaction carries one and a half times the estimate, rounded up, at most 200,000. If the node refuses the estimate with an error (a revert, or a rate limit and the like; its words are in `detail`), or the estimate is above 200,000, it is refused with `E_GAS_REFUSED` (exit 1) and nothing is sent; if the node does not answer that question, it says `E_UNREACHABLE` (exit 4) and nothing is sent either.
+
+**Grant files.** `check-grant --grant` takes a grant entry file or a grant file exported by the app (`.zkgrant`): the command line opens it by the app's own reading (the bundle's shape, the kit law over the kit inside, the grant code, and every hop of the code carried in the bundle) and checks the grant the file is for; one that does not open is refused with `E_GRANT_FILE`.
+
+**When an entry is refused.** When a member of an entry is missing or malformed, standard output is `E_ENTRY` with `token` `E_BODY_FIELD` (exit 1); standard error adds one line for people naming the member and the flag that gives it, for example `mode: 缺或不成形,由 --mark 与 --toolchain(或 --file) 给` ("missing or malformed, given by …"). That line is for people only and not part of the output contract.
+
+**Recording a file with `history`.** `history --file <file>` follows the app's own convention for a recorded file: `content` is the SHA-256 of the file's bytes, and `mode` is `{"mark":"bytes-sha256/1","toolchain":<the SHA-256 of the text "bytes-sha256/1">}`. For the same file, the command line and the app write these two members alike. `--file` stands for `--content`, `--mark` and `--toolchain` and cannot be given with them; without `--file`, those three are given as before, and the law refuses what is left out.
+
+**Other.** `audit --out <file>` also saves the audit input this run assembled (its six members), usable as a `chain-check --hop <grant>=<audit input>`. The in-kit path of `kit-export --file <in-kit path>=<file>` is relative to the kit's `files/` folder, and that of `--proof` to `proofs/`. On misuse, the first line of standard error is `<reason> <subject>` (only the flag, value or path at fault), and the second line explains it for people.
 
 | Verb | What it does |
 |---|---|
 | `keygen` | Generate a key and print its address and private key |
 | `init` | Write the ledger's creation entry into an empty ledger |
-| `history` | Append an anchored record |
+| `history` | Append an anchored record (`--file` records a file by the app's convention) |
 | `grant` | Sign a grant and write it to the ledger |
 | `revoke` | Sign a revocation and write it to the ledger (ruling file digest optional) |
 | `adopt` | Write an adoption entry |
@@ -1407,9 +1493,9 @@ A ledger in ZIKARON Desk's own data folder is encrypted, and the command line ha
 | `annotate` | Write a note |
 | `retract` | Write a deletion entry (the target must be a record in this ledger that is not already deleted) |
 | `anchor` | Anchor a hash on chain (through the registry contract, or as a bare self-transfer) |
-| `scan` | Scan for anchors using the chain settings |
-| `audit` | Audit a ledger against scan results and print a report and verdict |
-| `check-grant` | Run the six checks on a grant |
+| `scan` | Scan for anchors using the chain settings (`--endpoint` takes http and https) |
+| `audit` | Audit a ledger against scan results and print a report and verdict (`--ledger` takes a ledger folder, a ledger mirror or a record kit) |
+| `check-grant` | Run the six checks on a grant (`--grant` takes a grant entry file or a grant file) |
 | `chain-check` | Check a sublicense chain hop by hop (`--hop <grant file>[=<audit input file>]`, repeatable) |
 | `depth` | Depth readings for a record |
 | `fpm-sign` | Sign a fingerprint manifest |
@@ -1441,29 +1527,39 @@ Each network comes with two public nodes from different providers, so their answ
 | Chain ID | 1 | 11155111 |
 | Registry contract | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | `0xC29410B882c4C3b77e33659d2f06ac563e7B08a3` |
 | Start block | 26087229 | 11715660 |
-| Nodes | `https://mainnet.gateway.tenderly.co`<br>`https://rpc.flashbots.net` | `https://sepolia.gateway.tenderly.co`<br>`https://rpc.sepolia.ethpandaops.io` |
+| Nodes | `https://mainnet.gateway.tenderly.co`<br>`https://rpc.mevblocker.io` | `https://sepolia.gateway.tenderly.co`<br>`https://rpc.sepolia.ethpandaops.io` |
 
-To use the testnet:
+| | Arbitrum One | OP Mainnet |
+|---|---|---|
+| Chain ID | 42161 | 10 |
+| Registry contract | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | same |
+| Start block | 511445184 | 157735914 |
+| Nodes | `https://arb1.arbitrum.io/rpc`<br>`https://arbitrum.gateway.tenderly.co` | `https://mainnet.optimism.io`<br>`https://optimism.gateway.tenderly.co` |
 
-1. Choose "Custom" in wizard step 3.
-2. In Settings > Network, press "Edit nodes…", enter `11155111=https://sepolia.gateway.tenderly.co 11155111=https://rpc.sepolia.ethpandaops.io` and save the nodes.
-3. Fill in the chain ID, registry contract and start block, and save the chain settings.
+On the two layer-two networks the registry contract is the same build as mainnet's, at the same address.
+
+Each preset node was measured to hold the registry's complete logs since its start block, both nodes of a network matching entry for entry; a query range too wide for a node is refused by it in words, and the app asks again and, after three refusals, splits the range at the limit it names.
+
+To use the testnet: choose "Sepolia testnet" under "Network" when making the identity; or choose "Custom" in wizard step 3, then in Settings > Network press "Edit nodes…", pick "Sepolia testnet" under "Preset", and press "Save nodes" and "Save chain settings".
+
+The mainnet node shipped with 0.1.0, `https://rpc.flashbots.net`, keeps only the last ten or twenty thousand blocks of logs and answers older ones empty, so syncing said "Nodes returned different results." After upgrading, a data folder whose nodes are still exactly the pair 0.1.0 shipped (letter for letter, in order) is switched to the pair above when it opens; nodes you changed are left alone.
 
 ## Appendix B · Files on this machine and encryption
 
 **The machine folder** holds the key store, the identity registry, the machine settings `machine.json`, the record kit index and so on.
 
-- Its location is given by the pointer file `~/.zikaron-desk` (one line holding an absolute path). Without a pointer it is `~/.zikaron-desk.d/`.
+- Its location is given by the pointer file `~/.zikaron-desk` (one line holding an absolute path). Without a pointer it is `~/.zikaron-desk.d/`. On Windows both sit in `%LOCALAPPDATA%\ZIKARON\`: `%LOCALAPPDATA%\ZIKARON\.zikaron-desk` and `%LOCALAPPDATA%\ZIKARON\.zikaron-desk.d\`.
 - Earlier versions kept the machine folder at `~/Library/Application Support/ZIKARON`. If there is no pointer and that folder exists, the app keeps using it.
 
 **The data folders**, one for each role of each identity, hold the ledger, settings, pending queue, received grants and so on.
 
-**Local encryption.** Ledger entries, settings, the pending queue, the identity registry, the record index, and received grants and terms files are all encrypted with a local data key derived from the master key (XChaCha20-Poly1305). While the app is locked none of it can be read, and someone who copies this machine's files cannot read it without the passcode.
+**Local encryption.** Ledger entries, settings, the pending queue, the identity registry, the record index, hand-filled record kit links, the record of checked facts (`checked/facts.json` in the machine folder), and received grants and terms files are all encrypted with a local data key derived from the master key (XChaCha20-Poly1305). While the app is locked none of it can be read, and someone who copies this machine's files cannot read it without the passcode.
 
 **Files that are not encrypted this way**
 
 - Files read before unlocking: the key store itself (encrypted separately), `machine.json`, and the data folder pointer.
-- Exports meant for others: record kits, the record kit index, grant files, credentials, ledger mirrors, key files and whole-machine backups. A whole-machine backup is encrypted with its backup password.
+- Exports meant for others: record kits, the record kit index, kit verification results (`kits/verified/` in the machine folder), grant files, credentials, ledger mirrors, key files and whole-machine backups. A whole-machine backup is encrypted with its backup password.
+- The read-only networks (`read-networks.json` in the machine folder), which hold no account fact.
 - Files other people send you.
 
 **Whole-machine backups** derive their key from the backup password with scrypt (standard parameters N=262144, r=8, p=1) and are encrypted with XChaCha20-Poly1305.

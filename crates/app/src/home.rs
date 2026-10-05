@@ -66,6 +66,77 @@ pub const HOME_ENV: &str = "ZIKARON_DESK_HOME";
 
 
 
+/// Files the system leaves in folders on its own (folder view settings, thumbnail caches). A folder holding
+/// only these is empty to a person, and a home holding them is still a home.
+pub const SIDE_FILES: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
+/// The prefix of the companion files some systems write beside each file copied to a foreign disk.
+pub const SIDE_PREFIX: &str = "._";
+
+/// Whether a name in a folder is one of the system's side files (never a person's file).
+pub fn is_side_file(name: &str) -> bool {
+    SIDE_FILES.contains(&name) || name.starts_with(SIDE_PREFIX)
+}
+
+/// What a folder is, to the one question "may a home open here?": not there yet (the product makes it);
+/// empty (nothing, or only the system's side files); already a home (every name in it is one of the home's
+/// rooms or a side file, at least one room there; an older home missing a room is still a home); or something
+/// else (a ledger folder written by the command line, a folder of documents), with the names that make it so.
+/// A name of a room standing as a file is the home's own (a damaged room), not a stranger's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    Absent,
+    Empty,
+    Home,
+    Other(Vec<String>),
+}
+
+/// Read what a folder is (see [`Place`]). "Change data folder" asks this before laying out rooms there: a home
+/// chosen by a person never lays its rooms beside someone else's files.
+pub fn place_of(root: &Path) -> Result<Place, Fault> {
+    if !root.exists() {
+        return Ok(Place::Absent);
+    }
+    if !root.is_dir() {
+        return Ok(Place::Other(vec![root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()]));
+    }
+    let mut rooms = 0usize;
+    let mut other: Vec<String> = Vec::new();
+    for e in std::fs::read_dir(root).map_err(|e| classify(&e, &root.display().to_string()))? {
+        let e = e.map_err(|e| classify(&e, &root.display().to_string()))?;
+        let name = e.file_name().to_string_lossy().to_string();
+        if is_side_file(&name) {
+            continue;
+        }
+        // A room's name is the home's whatever stands there: a file in a room's place is a damaged room,
+        // which laying out the rooms names ("cannot create"), not a stranger's file.
+        if Slot::ALL.iter().any(|s| s.as_str() == name) {
+            if e.path().is_dir() {
+                rooms += 1;
+            }
+        } else {
+            other.push(name);
+        }
+    }
+    other.sort();
+    Ok(match (rooms, other.is_empty()) {
+        (_, false) => Place::Other(other),
+        (0, true) => Place::Empty,
+        (_, true) => Place::Home,
+    })
+}
+
+/// A home may open here: refused by name ([`Known::NotAHome`], the first names that make it so) when the
+/// folder is neither a home nor empty.
+pub fn may_open_at(root: &Path) -> Result<(), Fault> {
+    match place_of(root)? {
+        Place::Absent | Place::Empty | Place::Home => Ok(()),
+        Place::Other(names) => {
+            let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+            Err(Fault::known(Known::NotAHome, format!("{}: {}", root.display(), shown.join(" "))))
+        }
+    }
+}
+
 /// Lay out a home: the root and four subdirectories, so the product creates what it needs.
 ///
 /// Checked on disk afterwards: returning no error does not mean anything landed. Success means the rooms
@@ -125,47 +196,64 @@ pub fn put_at(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), Fault> {
     // The temporary name must be unique: two paths in one process may write the same file at once (queueing
     // in the frame, dequeuing in the background), and a shared temporary name would mix their bytes before
     // each renamed over the target.
-    let tmp = dir.join(format!(
-        ".{name}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let tmp = dir.join(put_tmp_name(name));
     let p = dir.join(name);
     {
         let mut f = open_owner_only(&tmp)?;
         f.write_all(bytes).map_err(|e| classify(&e, &tmp.display().to_string()))?;
         f.sync_all().map_err(|e| classify(&e, &tmp.display().to_string()))?;
     }
-    std::fs::rename(&tmp, &p).map_err(|e| classify(&e, &p.display().to_string()))
+    zikaron_os::replace(&tmp, &p).map_err(|e| classify(&e, &p.display().to_string()))
+}
+
+/// The temporary name [`put_at`] writes beside its target: `.{name}.{pid}.{nanoseconds}.tmp`.
+fn put_tmp_name(name: &str) -> String {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!(".{name}.{}.{nanos}{PUT_TMP_SUFFIX}", std::process::id())
+}
+
+const PUT_TMP_SUFFIX: &str = ".tmp";
+
+/// Whether a name is one [`put_tmp_name`] writes, by the name alone.
+fn is_put_tmp(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.').and_then(|r| r.strip_suffix(PUT_TMP_SUFFIX)) else { return false };
+    let mut parts = rest.rsplitn(3, '.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(nanos), Some(pid), Some(base)) => {
+            !base.is_empty() && !nanos.is_empty() && nanos.bytes().all(|b| b.is_ascii_digit()) && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// Whether a file name is one of this product's temporary names, by the name alone: what this app's one write
+/// ([`put_at`]), the glue crate's landing (`landing::is_beside_name`) and the store crate's archive writes
+/// (`layout::tmp_shaped`) put beside a target before renaming it over. A leftover one is what a write cut short
+/// left. A file staged for a later commit (`keybox::NEXT`) is not a temporary: it is settled at the next start.
+pub fn is_temp_name(name: &str) -> bool {
+    is_put_tmp(name) || zikaron_glue::landing::is_beside_name(name) || zikaron_store::layout::tmp_shaped(name)
 }
 
 /// Move a file written beside its place (a staged `.zk-next` or a sealed copy, itself written by [`put_at`])
 /// over that place, in one rename. The only rename of a written file outside `put_at`: the vault change, the
 /// settling of staged files and the plain-file migration all take effect through it.
 pub fn rename_over(from: &Path, to: &Path) -> Result<(), Fault> {
-    std::fs::rename(from, to).map_err(|e| classify(&e, &to.display().to_string()))
+    zikaron_os::replace(from, to).map_err(|e| classify(&e, &to.display().to_string()))
 }
 
-/// Create a new file readable and writable by the owner only (0600).
+/// Create a new file readable and writable by its owner only.
 ///
 /// This handles private things of this machine: the key vault (every key's ciphertext and the recovery
-/// seals), the identity registry, the queue, the checklist, settings. `File::create` follows the umask,
-/// commonly 0644, readable by other accounts on the same machine. The files hold no plain text; this is one
-/// more layer. Permissions are set only here, and the temporary file is 0600 from the moment it exists;
-/// renaming keeps them, so there is no window of 0644 before tightening. `create_new`: the temporary name
-/// already carries process and nanoseconds, and a collision is refused by name instead of truncating someone
-/// else's file.
+/// seals), the identity registry, the queue, the checklist, settings. A plain create follows the system's
+/// defaults, commonly readable by other accounts on the same machine. The files hold no plain text; this is
+/// one more layer. The owner-only rule is set on the creation itself (`zikaron_os::owner_only`), so the
+/// temporary file is owner-only from the moment it exists, and replacing keeps it: there is no moment when
+/// others may read it. `create_new`: the temporary name already carries process and nanoseconds, and a
+/// collision is refused by name instead of truncating someone else's file.
 fn open_owner_only(tmp: &Path) -> Result<std::fs::File, Fault> {
-    let mut o = std::fs::OpenOptions::new();
+    let mut o = zikaron_os::Options::new();
     o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
+    zikaron_os::owner_only(&mut o);
     o.open(tmp).map_err(|e| classify(&e, &tmp.display().to_string()))
 }
 
@@ -286,7 +374,14 @@ pub fn user_home() -> Result<Option<PathBuf>, Fault> {
 
 /// Where the pointer file is (`None`: this run does not touch the pointer, see [`user_home`]).
 pub fn pointer_path() -> Result<Option<PathBuf>, Fault> {
-    Ok(user_home()?.map(|u| u.join(POINTER)))
+    Ok(user_home()?.map(|u| pointer_dir(&u).join(POINTER)))
+}
+
+/// The folder the pointer file sits in, given the user's home directory: where the system keeps this app's
+/// machine data by default (`platform::app_data_dir`; on macOS and Linux the home directory itself), beside the
+/// default machine directory and outside it.
+pub fn pointer_dir(user_home: &Path) -> PathBuf {
+    crate::platform::app_data_dir(user_home)
 }
 
 /// Where the older machine directory is (as above).
@@ -330,7 +425,7 @@ pub fn machine_at() -> Result<(PathBuf, Layer), Fault> {
     let Some(u) = user_home()? else {
         return Err(Fault::known(Known::NoHomeDir, crate::lang::t(crate::lang::Key::Tail161).to_string()));
     };
-    let ptr = u.join(POINTER);
+    let ptr = pointer_dir(&u).join(POINTER);
     match std::fs::read(&ptr) {
         Ok(bytes) => {
             return read_machine_pointer(&bytes)
@@ -344,7 +439,7 @@ pub fn machine_at() -> Result<(PathBuf, Layer), Fault> {
     if legacy.is_dir() {
         return Ok((legacy, Layer::Legacy));
     }
-    Ok((u.join(APP_DIR), Layer::Default))
+    Ok((crate::platform::app_data_dir(&u).join(APP_DIR), Layer::Default))
 }
 
 /// The machine directory (where the key vault, registry, `machine.json` and kit index live). See
@@ -397,7 +492,7 @@ fn legacy_pick(machine: &Path) -> Result<Option<PathBuf>, Fault> {
 fn read_machine_pointer(bytes: &[u8]) -> Option<PathBuf> {
     let s = std::str::from_utf8(bytes).ok()?;
     let line = s.strip_suffix('\n')?;
-    if line.is_empty() || line.contains('\n') || line.contains('\r') || !line.starts_with('/') {
+    if line.is_empty() || line.contains('\n') || line.contains('\r') || !Path::new(line).is_absolute() {
         return None;
     }
     Some(PathBuf::from(line))
@@ -414,10 +509,17 @@ pub fn machine_pointer_bytes(machine: &Path) -> Vec<u8> {
 pub fn write_machine_pointer(machine: &Path) -> Result<bool, Fault> {
     let Some(u) = user_home()? else { return Ok(false) };
     let want = machine_pointer_bytes(machine);
-    if std::fs::read(u.join(POINTER)).ok().as_deref() == Some(want.as_slice()) {
+    // Judged by the one reader before it lands: a place whose path does not come back from those bytes (a line
+    // break in it, or bytes a text line cannot carry) is refused by name, never written as a pointer no later
+    // start could read or one that leads somewhere else.
+    if read_machine_pointer(&want).as_deref() != Some(machine) {
+        return Err(Fault::known(Known::MachineShape, machine.display().to_string()));
+    }
+    let dir = pointer_dir(&u);
+    if std::fs::read(dir.join(POINTER)).ok().as_deref() == Some(want.as_slice()) {
         return Ok(false);
     }
-    put_at(&u, POINTER, &want)?;
+    put_at(&dir, POINTER, &want)?;
     Ok(true)
 }
 
@@ -481,6 +583,23 @@ pub fn named_by_env(root: &Path) -> bool {
         return false;
     }
     same_place(&p, root)
+}
+
+/// A canonical path as people and other programs read it. Canonicalizing on Windows gives the extended form
+/// (`\\?\C:\x`, `\\?\UNC\host\share\x`); that prefix is taken off (`C:\x`, `\\host\share\x`). Any other
+/// path, including every unix one, comes back as it was. Paths that are stored or shown pass through here;
+/// paths only compared with other canonical paths do not need to.
+pub fn plain_path(p: PathBuf) -> PathBuf {
+    let Some(t) = p.to_str() else { return p };
+    if let Some(rest) = t.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match t.strip_prefix(r"\\?\") {
+        // Only a drive path is given back plainly; other extended forms (a volume by its identifier) have no
+        // plain spelling.
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') && rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) => PathBuf::from(rest),
+        _ => p,
+    }
 }
 
 /// Whether two paths are the same place on disk. When both exist, compared by canonical path (`/tmp` and
@@ -680,7 +799,13 @@ pub fn write_pointer(home: &Path) -> Result<(), Fault> {
         POINTER_MEMBER.to_string(),
         zikaron::json::Value::Str(home.display().to_string()),
     )]);
-    put_at(&machine, PICKED, &zikaron::json::canon_bytes(&doc))?;
+    let bytes = zikaron::json::canon_bytes(&doc);
+    // Judged by its reader before it lands, as the machine pointer is: a path that does not come back from
+    // these bytes is refused by name.
+    if read_pointer(&bytes).as_deref() != Some(home) {
+        return Err(Fault::known(Known::MachineShape, home.display().to_string()));
+    }
+    put_at(&machine, PICKED, &bytes)?;
     if machine_at()?.1 != Layer::Placed {
         write_machine_pointer(&machine)?;
     }
@@ -700,5 +825,34 @@ pub fn read_pointer(bytes: &[u8]) -> Option<PathBuf> {
             _ => None,
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_temporary_name_this_product_writes_is_read_as_one() {
+        let put = super::put_tmp_name("settings.json");
+        let landing = zikaron_glue::landing::staging_beside(&std::env::temp_dir().join(std::path::Path::new("kit"))).expect("a temporary name").file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let store = zikaron_store::layout::tmp_file_name("0123456789abcdef");
+        for n in [&put, &landing, &store] {
+            assert!(super::is_temp_name(n), "{n} is ours");
+        }
+        for n in ["settings.json", ".DS_Store", ".settings.json.12.tmp.bak", "a.tmp", ".kit.staging-x-0123456789abcdef", ".zks-tmp-xyz"] {
+            assert!(!super::is_temp_name(n), "{n} is not ours");
+        }
+    }
+
+    /// The extended prefix canonicalizing gives on Windows comes off, a share's back to its plain form; a
+    /// plain path, a unix path and an extended form with no plain spelling come back as they were.
+    #[test]
+    fn a_canonical_path_is_shown_plainly() {
+        let plain = |s: &str| super::plain_path(std::path::PathBuf::from(s)).to_string_lossy().into_owned();
+        assert_eq!(plain(r"\\?\C:\Users\a\kit"), r"C:\Users\a\kit");
+        assert_eq!(plain(r"\\?\UNC\host\share\kit"), r"\\host\share\kit");
+        assert_eq!(plain(r"C:\Users\a\kit"), r"C:\Users\a\kit");
+        assert_eq!(plain(r"\\host\share\kit"), r"\\host\share\kit");
+        assert_eq!(plain("/private/tmp/kit"), "/private/tmp/kit");
+        assert_eq!(plain(r"\\?\Volume{0b1c}\kit"), r"\\?\Volume{0b1c}\kit");
     }
 }

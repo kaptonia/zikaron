@@ -60,6 +60,8 @@ pub struct Shelf {
     pub carried: Option<(String, Vec<Vec<u8>>)>,
     /// The publish address pointer in the grant file (publish address level).
     pub pointer: Option<String>,
+    /// The read-only networks (`readnets`): where anchors are read besides the main network.
+    pub reads: Vec<crate::readnets::Net>,
 }
 
 /// The resolved material.
@@ -243,7 +245,9 @@ pub fn find(shelf: &Shelf, want: Want, index: usize) -> Found {
                 }
                 found.misses.extend(named);
             }
-            Err(f) => found.misses.push((Level::Remote, f)),
+            // The address that could not be read says itself as a value too (as a named local place does,
+            // `verifyx::bytes_named`).
+            Err(f) => found.misses.push((Level::Remote, f.at_place(url.trim()))),
         }
     }
     found

@@ -413,16 +413,30 @@ impl Win {
         let reading = crate::retractx::read(&rows);
         let mut done = false;
         let mut close = false;
+        // What is typed and the date range: the list draws by them and "all" picks by them (two closures read
+        // them, one writes).
+        let typed = std::cell::RefCell::new((self.ux.search.get("kit-pick").cloned().unwrap_or_default(), self.ux.range.get("kit-pick").cloned().unwrap_or_default()));
+        let today = (self.shell.clock)();
+        // The rows the search and the date range keep (a subset is still picked by its switches).
+        let keep = |row: &crate::ledgerx::Row, query: &str, range: &(String, String)| {
+            let (tag, summary, _) = row_face(&rows, &reading, row);
+            matches(query, &[&format!("#{}", row.seq), tag, &summary, &row.id]) && crate::when::within(row.anchored_at, &range.0, &range.1)
+        };
         let out = sheet::show(
             ctx,
             sheet::Spec::new("kit-pick", tk::SHEET_WIDE),
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::KitPickTitle), "");
+                {
+                    let (query, range) = &mut *typed.borrow_mut();
+                    search_row(ui, "kit-pick", query, t(Key::SearchLedger), range, today);
+                }
+                let (query, range) = typed.borrow().clone();
                 let Some(st) = me.ux.u3.kit_pick.as_mut() else { return };
                 egui::ScrollArea::vertical().id_salt("kit-pick-list").max_height(260.0).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for row in rows.iter() {
+                    for row in rows.iter().filter(|r| keep(r, &query, &range)) {
                         let (tag, summary, struck) = row_face(&rows, &reading, row);
                         let on = st.ids.iter().any(|x| x.eq_ignore_ascii_case(&row.id));
                         let mut flipped = false;
@@ -459,8 +473,10 @@ impl Win {
                     close = true;
                 }
                 let n = me.ux.u3.kit_pick.as_ref().map(|s| s.ids.len()).unwrap_or(0);
+                // "All" is every row the search and the date range keep.
                 if key::key(ui, t(Key::U3FilterAll), Role::Secondary, true).clicked() {
-                    me.ux.u3.kit_pick = Some(KitPick { ids: rows.iter().map(|r| r.id.to_ascii_lowercase()).collect() });
+                    let (query, range) = typed.borrow().clone();
+                    me.ux.u3.kit_pick = Some(KitPick { ids: rows.iter().filter(|r| keep(r, &query, &range)).map(|r| r.id.to_ascii_lowercase()).collect() });
                 }
                 if key::key(ui, t(Key::KitPickNone), Role::Secondary, n > 0).clicked() {
                     me.ux.u3.kit_pick = Some(KitPick { ids: Vec::new() });
@@ -468,6 +484,9 @@ impl Win {
                 sheet::foot_note(ui, &fill1(Key::KitPickCount, &n.to_string()));
             },
         );
+        let (query, range) = typed.into_inner();
+        self.ux.search.insert("kit-pick", query);
+        self.ux.range.insert("kit-pick", range);
         if out.esc {
             close = true;
         }

@@ -48,7 +48,7 @@ pub fn append(dir: &LedgerDir, entry: &Entry, bytes: &[u8]) -> Result<Stored, Tr
 pub fn pile(dir: &LedgerDir) -> Result<Vec<Vec<u8>>, Trouble> {
     crate::seam();
     let items = dir.pile()?.items;
-    refuse_sealed(&items);
+    refuse_sealed(&dir.root().to_string_lossy(), &items);
     Ok(items)
 }
 
@@ -57,9 +57,10 @@ pub const SEALED_SAID: &str = "已锁定:这是 ZIKARON Desk 封存的本机数�
 
 /// A ledger ZIKARON Desk keeps is sealed local data, and the command line holds no passcode: it reads such a
 /// ledger as the app does while locked, refused by the existing unreadable reason, naming "locked".
-pub fn refuse_sealed(items: &[Vec<u8>]) {
+/// `subject` is the ledger read (its path), named on the first stderr line.
+pub fn refuse_sealed(subject: &str, items: &[Vec<u8>]) {
     if items.iter().any(|b| zikaron_glue::sealed::is_sealed(b)) {
-        crate::out::misuse(crate::codes::Reason::Unreadable, SEALED_SAID);
+        crate::out::misuse(crate::codes::Reason::Unreadable, subject, crate::out::Said::Sealed);
     }
 }
 
@@ -152,3 +153,79 @@ pub fn tip(root: &str, items: &[Vec<u8>]) -> Result<(u64, String), Reason> {
         _ => Err(Reason::TipForked),
     }
 }
+
+/// What writing `candidate` would newly break, as the core judges it: one offline audit of this pile and one
+/// of this pile with the candidate, under the same root, and the chain findings only the second has (law
+/// §8.3's five, hard or not, each as its name). Empty means the candidate adds no finding the pile did not
+/// already have.
+///
+/// Every chain rule is the core's (authority after a succession, sequence gaps, broken links, equivocation,
+/// the root): this layer asks once and compares, so one gate covers the whole class, `--seq`/`--prev` given by
+/// hand included. Not only the hard ones: a sequence gap is a soft finding, and once the walk is uncertain
+/// after it a key that no longer holds the seat is only softly out of place, so a gate on hard findings alone
+/// lets the old key write after any gap. A write by the key that holds the seat, at the tip, adds none. The
+/// root is the one the writer names (`--root`, the same one its tip was asked under) when given; otherwise the
+/// pile's own, and a pile that would hold two roots, whether the candidate gives it the second or it had two
+/// already, cannot be audited under one and is `E_TIP_FORKED` (the gate refuses what it cannot judge); a
+/// ledger with no root at all has nothing to audit and is left to the core's own check of the entry.
+pub fn new_findings(items: &[Vec<u8>], candidate: &[u8], named: Option<&str>) -> Result<Vec<String>, Reason> {
+    crate::seam();
+    let mut all = items.to_vec();
+    all.push(candidate.to_vec());
+    let root = match (named, root_of(&all)) {
+        (Some(r), _) => r.to_string(),
+        (None, Ok(r)) => r,
+        (None, Err(Reason::TipForked)) => return Err(Reason::TipForked),
+        (None, Err(_)) => return Ok(Vec::new()),
+    };
+    let found = |pile: &[Vec<u8>]| -> Vec<(String, String)> {
+        offline_input(&root, pile)
+            .and_then(|i| audit::audit_full(&i))
+            .map(|o| o.findings.iter().map(|f| (f.name.as_str().to_string(), f.entry_id.clone())).collect())
+            .unwrap_or_default()
+    };
+    let before = found(items);
+    let mut names: Vec<String> = found(&all).into_iter().filter(|f| !before.contains(f)).map(|(n, _)| n).collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Why a read-only verb could not read what `--ledger` names.
+pub enum ReadRefused {
+    /// A ledger directory the storage crate refused (its own code).
+    Ledger(Trouble),
+    /// A record package the kit core judged invalid (its verdict and subject).
+    Kit(zikaron_kit::tokens::KitFailToken, Option<String>),
+    /// A mirror bundle whose manifest is not this kind or shape (what it says, as `kind/version`), or does
+    /// not read.
+    Mirror(String),
+    /// A file of the bundle or package that does not read (its path).
+    Unreadable(String),
+}
+
+/// What a read-only verb reads at `path` (`audit`, and through it `check-grant`, `chain-check`, `depth`;
+/// `show --entry`): a mirror bundle by its manifest, read by the names the app writes it with
+/// (`zikaron_glue::mirror`: each listed entry from the entries room); a record package (a disclosure kit)
+/// once the kit core verifies it (`kitdir::verify_kit`), the entries in its entries room; anything else as a
+/// ledger directory, strictly, as before. Whether each entry is an entry is the core's, in the audit. Writing
+/// verbs and `init` never come here: they read ledger directories only.
+pub fn read_any(path: &str) -> Result<Vec<Vec<u8>>, ReadRefused> {
+    crate::seam();
+    let dir = std::path::Path::new(path);
+    if zikaron_glue::mirror::is_bundle(dir) {
+        return zikaron_glue::mirror::entries(dir).map_err(|t| match t {
+            zikaron_glue::mirror::ReadTrouble::Unreadable(p) => ReadRefused::Unreadable(p),
+            zikaron_glue::mirror::ReadTrouble::NotJson(x) | zikaron_glue::mirror::ReadTrouble::NotThisKind(x) => ReadRefused::Mirror(x),
+        });
+    }
+    if zikaron_glue::read::is_kit(dir) {
+        if let zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } = zikaron_kit::kitdir::verify_kit(dir) {
+            return Err(ReadRefused::Kit(verdict, subject));
+        }
+        return zikaron_glue::read::kit_entries(dir).map_err(ReadRefused::Unreadable);
+    }
+    let d = open(path).map_err(ReadRefused::Ledger)?;
+    pile(&d).map_err(ReadRefused::Ledger)
+}
+

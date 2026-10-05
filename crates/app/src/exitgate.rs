@@ -4,8 +4,12 @@
 //! chain is the way facts leave the machine, not the ways a key comes in (those are open: words on a new
 //! machine, an old backup restored, a mark lost). The actions that let facts leave are a closed table
 //! ([`Exit`], answered for every action by `Action::exit`); each of them, as its last step before the effect,
-//! asks [`pass`]: this ledger's lineage's anchors are read from the chain now (no cache, no earlier reading),
-//! this home's ledger is checked entry by entry, and every anchor must have an entry here that passes. An
+//! asks [`pass`]: this ledger's lineage's anchors are read from the chain now: which anchors there are is
+//! asked afresh every time (no earlier reading of the anchor set stands in for it), while the facts about an
+//! anchor several nodes already confirmed alike, under the same block hash and while its log reads the same,
+//! come from this machine's sealed record of checked facts (`checkedx`), and any anchor that record lacks is
+//! asked about as always. This home's ledger is checked entry by entry, and every anchor must have an entry
+//! here that passes. An
 //! anchor without one is refused as `NEWER_ELSEWHERE`, and this home gets the read-only mark that leads to
 //! fetching; a chain that cannot be read is refused by the network codes, `NO_ENDPOINT` or `DISAGREE`.
 
@@ -47,14 +51,26 @@ pub struct Ask {
 /// Take what the gate needs from the shell (no chain read here). Refused by name when a cell is missing:
 /// an exit cannot pass without reading the chain.
 pub fn ask_of(shell: &crate::shell::Shell) -> Result<Ask, Fault> {
-    let chain = shell.settings.chain_id.ok_or_else(|| Fault::known(Known::NoChainId, String::new()))?;
-    let registry = shell.settings.registry.ok_or_else(|| Fault::known(Known::NoRegistry, String::new()))?;
     let root = shell.home.as_ref().map(|h| h.root().to_path_buf()).ok_or_else(|| Fault::known(Known::NoHome, String::new()))?;
-    let eps: Vec<crate::chainx::Endpoint> = shell.endpoints.iter().filter(|e| e.chain == chain).cloned().collect();
+    ask_from(root, &shell.settings, &shell.endpoints, shell.anchor.map(|a| a.hex()))
+}
+
+/// The same for a home that is not the open one: its own settings give the chain cells and the endpoints
+/// (a seat's home may be set to another network than the open one), `own` is that seat's address.
+pub fn ask_for_home(home: &crate::home::Home, own: Option<String>) -> Result<Ask, Fault> {
+    let s = crate::settings::Settings::read(home)?;
+    let eps: Vec<crate::chainx::Endpoint> = s.endpoints.iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
+    ask_from(home.root().to_path_buf(), &s, &eps, own)
+}
+
+fn ask_from(root: PathBuf, s: &crate::settings::Settings, eps: &[crate::chainx::Endpoint], own: Option<String>) -> Result<Ask, Fault> {
+    let chain = s.chain_id.ok_or_else(|| Fault::known(Known::NoChainId, String::new()))?;
+    let registry = s.registry.ok_or_else(|| Fault::known(Known::NoRegistry, String::new()))?;
+    let eps: Vec<crate::chainx::Endpoint> = eps.iter().filter(|e| e.chain == chain).cloned().collect();
     if eps.is_empty() {
         return Err(Fault::known(Known::NoEndpoint, chain.to_string()));
     }
-    Ok(Ask { root, eps, chain, registry, from_block: shell.settings.from_block, own: shell.anchor.map(|a| a.hex()) })
+    Ok(Ask { root, eps, chain, registry, from_block: s.from_block, own })
 }
 
 /// What the gate read (kept for tests and for saying why).
@@ -116,10 +132,44 @@ pub fn read(ask: &Ask) -> Result<Reading, Fault> {
     Ok(Reading { senders, anchored, verified, missing })
 }
 
+/// A home's tail against the chain, judged by the gate's own [`read`] (the same lineage, the same agreement
+/// between nodes): every check that removes a home's read-only mark or writes "newer entries elsewhere"
+/// (the tail check, fetching) asks this, so no narrower question can clear a mark the gate placed.
+pub fn tail(ask: &Ask) -> Result<crate::restorex::Tail, Fault> {
+    let r = read(ask)?;
+    Ok(if r.missing.is_empty() {
+        crate::restorex::Tail::Pass { anchors: r.anchored.len() }
+    } else {
+        crate::restorex::Tail::NewerElsewhere { missing: r.missing.len(), anchors: r.anchored.len() }
+    })
+}
+
+/// What the gate hands an exit when it lets it through: the reading it made, for the home it read. It has no
+/// constructor outside this file, so only [`pass`] makes one; the five effects that let facts leave the
+/// machine (`sign::anchor_send`, `kitx::export`, `badgex::export`, `mirror::export`, `grantfilex::export`) each
+/// take one, so none of them can be reached except through the gate.
+#[derive(Clone, Debug)]
+pub struct Pass {
+    reading: Reading,
+    root: PathBuf,
+}
+
+impl Pass {
+    /// What the gate read.
+    pub fn reading(&self) -> &Reading {
+        &self.reading
+    }
+
+    /// The home the gate read.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+}
+
 /// The gate itself: [`read`], then refuse by name when anything anchored is missing here, placing this home's
 /// read-only mark (the way to fetching what is missing). The mark is an early warning, not what holds: the
-/// next exit reads the chain again.
-pub fn pass(ask: &Ask) -> Result<Reading, Fault> {
+/// next exit reads the chain again. Passing hands the one [`Pass`] the exits take.
+pub fn pass(ask: &Ask) -> Result<Pass, Fault> {
     // Not read (no node, none reached, nodes that disagree): the exit is not done, said as such; this home is
     // not marked.
     let r = read(ask).map_err(|f| f.worded(None, Some(crate::lang::Key::ExitRetryLater)))?;
@@ -130,5 +180,5 @@ pub fn pass(ask: &Ask) -> Result<Reading, Fault> {
         crate::home::Home::open(&ask.root).and_then(|home| crate::restorex::write(&home, state))?;
         return Err(state.fault().worded(Some(crate::lang::Key::ExitBehind), Some(crate::lang::Key::ExitBehindSay)));
     }
-    Ok(r)
+    Ok(Pass { reading: r, root: ask.root.clone() })
 }

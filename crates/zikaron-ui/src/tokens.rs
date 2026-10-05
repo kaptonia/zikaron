@@ -195,6 +195,8 @@ pub const OFF: f32 = 0.45;
 /// Input: 38 high, 15 text, 12 inside.
 pub const INPUT_H: f32 = 38.0;
 pub const INPUT_PAD_X: f32 = 12.0;
+/// The mark at the right edge of a field that opens a picker (the date field's calendar).
+pub const INPUT_ICON: f32 = 14.0;
 /// The label column of a path row and of key-value tables.
 pub const LABEL_W: f32 = 132.0;
 
@@ -236,10 +238,16 @@ pub const SHEET_W: f32 = 440.0;
 pub const SHEET_WIDE: f32 = 520.0;
 pub const SHEET_XWIDE: f32 = 640.0;
 
-/// Side rail 216 wide; items 36 high; 46 kept at the top for the window buttons.
+/// Side rail 216 wide; items 36 high. At the top, macOS keeps 46: its window buttons float over the rail (a
+/// 28 band), with 18 below them. Elsewhere the system's own title bar holds the buttons, above the rail, so
+/// only the 18 below them is kept, and the identity chip sits as far under the title bar as it does under the
+/// buttons on macOS.
 pub const RAIL_W: f32 = 216.0;
 pub const RAIL_ITEM_H: f32 = 36.0;
+#[cfg(target_os = "macos")]
 pub const RAIL_TOP: f32 = 46.0;
+#[cfg(not(target_os = "macos"))]
+pub const RAIL_TOP: f32 = 18.0;
 pub const RAIL_PAD: f32 = 10.0;
 
 /// Toolbar 56 high (10 above its keys).

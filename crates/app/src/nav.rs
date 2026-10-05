@@ -234,11 +234,11 @@ pub fn count(role: Role) -> usize {
     rail(role).iter().map(|g| g.items.len()).sum()
 }
 
-/// The closed tab table of a view for this role (left to right on the page).
-pub fn tabs(view: View, role: Role) -> &'static [u8] {
-    match (view, role) {
-        (View::Verify, Role::Author) => &[tab::VERIFY_CHECK, tab::VERIFY_OTHERS],
-        (View::Verify, Role::Grantee) => &[tab::VERIFY_CHECK, tab::VERIFY_WORK, tab::VERIFY_OTHERS],
+/// The closed tab table of a view (left to right on the page). Both seats verify grants, verify records and
+/// read others' ledgers: checking a record kit asks nothing of the seat.
+pub fn tabs(view: View, _role: Role) -> &'static [u8] {
+    match view {
+        View::Verify => &[tab::VERIFY_CHECK, tab::VERIFY_WORK, tab::VERIFY_OTHERS],
         _ => &[],
     }
 }
@@ -246,7 +246,7 @@ pub fn tabs(view: View, role: Role) -> &'static [u8] {
 /// The alias layer: where an old page lands now. Pages merged into a view land on that view's tab; the
 /// machine family (first run, identity, archive, mirror, skeleton, about) lands on the matching settings
 /// section.
-pub fn home_of(page: Page, role: Role) -> Place {
+pub fn home_of(page: Page, _role: Role) -> Place {
     match page {
         Page::FirstRun | Page::Skeleton | Page::About => Place::Settings(Section::About),
         Page::Identity => Place::Settings(Section::Keys),
@@ -262,10 +262,7 @@ pub fn home_of(page: Page, role: Role) -> Place {
         Page::Watch | Page::Sentinel => Place::View(View::Alerts, 0),
         Page::Check => Place::View(View::Verify, tab::VERIFY_CHECK),
         Page::Reader | Page::Diligence => Place::View(View::Verify, tab::VERIFY_OTHERS),
-        Page::Verifier => match role {
-            Role::Grantee => Place::View(View::Verify, tab::VERIFY_WORK),
-            Role::Author => Place::View(View::Verify, tab::VERIFY_CHECK),
-        },
+        Page::Verifier => Place::View(View::Verify, tab::VERIFY_WORK),
         Page::Vault | Page::Upstreams | Page::Badge => Place::View(View::MyGrants, 0),
         // Checking a received record is part of the grant check page.
         Page::Delivery => Place::View(View::Verify, tab::VERIFY_CHECK),
@@ -437,7 +434,7 @@ impl Progress {
     pub fn of(shell: &crate::shell::Shell) -> Progress {
         Progress {
             key: shell.anchor.is_some(),
-            pin: !matches!(shell.vault, crate::keybox::State::Absent),
+            pin: !shell.vault.absent(),
             network: shell.machine.network.is_some(),
             gas: matches!(&shell.chain, Some(crate::task::Done::Chain { gas_wei: Some(w), .. }) if *w > 0),
             genesis: shell.rooted,

@@ -10,6 +10,7 @@
 
 pub mod button;
 pub mod card;
+pub mod datepick;
 pub mod drop;
 pub mod fold;
 pub mod fonts;
@@ -24,6 +25,7 @@ pub mod menu;
 pub mod motion;
 pub mod page;
 pub mod paint;
+pub mod pick;
 pub mod palette;
 pub mod pin;
 pub mod probe;

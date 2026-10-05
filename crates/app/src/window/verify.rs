@@ -7,7 +7,7 @@ impl Win {
     pub(super) fn verify_page(&mut self, ui: &mut egui::Ui, tab: u8, now: f64) {
         use crate::nav::tab as T;
         match tab {
-            T::VERIFY_WORK if self.shell.settings.role == crate::roles::Role::Grantee => self.kit_verify(ui, now),
+            T::VERIFY_WORK => self.kit_verify(ui, now),
             T::VERIFY_OTHERS => self.others_page(ui, now),
             _ => self.check_page(ui, now),
         }
@@ -19,6 +19,7 @@ impl Win {
         let v = self.shell.verified.clone();
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Verify);
         let mut go = false;
+        let mut add_network: Option<crate::kitsindex::AnchoredOn> = None;
         // A file changed while a pass ran is verified once that pass ends.
         if !busy && std::mem::take(&mut self.ux.u4.verify_again) {
             go = true;
@@ -87,8 +88,11 @@ impl Win {
                         None => (Mark::Todo, t(Key::U4NotAKit).to_string()),
                     };
                     let review = match &x.review {
-                        Ok(a) if a.unanchored.is_empty() && a.anchored > 0 => (Mark::Ok, fill1(Key::U4AnchorsMatch, &a.anchored.to_string())),
+                        Ok(a) if a.unanchored.is_empty() && a.unread.is_empty() && a.anchored > 0 => (Mark::Ok, fill1(Key::U4AnchorsMatch, &a.anchored.to_string())),
+                        // A network left out this pass: what no read chain reaches is not called unanchored.
+                        Ok(a) if a.unanchored.is_empty() && !a.unread.is_empty() => (Mark::Todo, t(Key::U4AnchorsUnread).to_string()),
                         Ok(a) => (Mark::Warn, fill1(Key::U4AnchorsBehind, &a.unanchored.len().to_string())),
+                        Err(_) if x.not_added.is_some() => (Mark::Warn, t(Key::VerifyNotAdded).to_string()),
                         Err(_) => (Mark::Todo, t(Key::U4AnchorsUnread).to_string()),
                     };
                     let label = match &x.review {
@@ -99,10 +103,40 @@ impl Win {
                         Err(_) => (Mark::Todo, t(Key::U4IssuerAuditUnread).to_string()),
                     };
                     states::checks(ui, &[(kit.0, kit.1, None), (review.0, review.1, None), (label.0, label.1, None)], false);
+                    // The kit names a network that is not added: no chain was read; one key adds it.
+                    if let Some(at) = &x.not_added {
+                        let said = format!("{} · {} · {}", self.chain_label(at.chain_id), t(Key::VerifyAuthorSays), t(Key::VerifyAddNetwork));
+                        if states::banner(ui, states::Banner::Warn, &said, |ui| key::key(ui, t(Key::ReadNetAdd), Role::Secondary, true).clicked()) {
+                            add_network = Some(at.clone());
+                        }
+                    }
+                    // Networks read, by name; those not read, each with why.
+                    if x.review.is_ok() && !x.read.is_empty() {
+                        hint(ui, &x.read.iter().map(|c| self.chain_label(*c)).collect::<Vec<_>>().join(t(Key::ListJoin)));
+                    }
+                    for m in &x.missed {
+                        states::okline(ui, Mark::Warn, &format!("{} {}", m.name, t(m.reading.key())));
+                    }
                     if let Some(three) = x.depth.clone().map(crate::depthx::three) {
-                        let first = three.earliest.map(crate::when::when).unwrap_or_else(|| t(Key::None_).to_string());
-                        let span = format!("{} / {}", three.anchored, three.span);
-                        super::kit::stat_cells(ui, &[(t(Key::U3FirstAnchored), &first), (t(Key::U3Deepest), &three.deepest.to_string()), (t(Key::U3Continuity), &span)]);
+                        // A chain not read this pass (none read, or a network left out): a measure that reads
+                        // "none" or falls short may have its anchor on the chain not read, so it says the chain
+                        // was not read. Values read on the chains that were read show as they are.
+                        use crate::depthx::Said;
+                        let (first, deepest, span) = crate::depthx::said(&three, x.review.is_err() || !x.missed.is_empty());
+                        let first = match first {
+                            Said::Is(at) => crate::when::when(at),
+                            Said::Nothing => t(Key::None_).to_string(),
+                            Said::ChainUnread => t(Key::U4ChainUnread).to_string(),
+                        };
+                        let deepest = match deepest {
+                            Said::Is(n) => n.to_string(),
+                            _ => t(Key::U4ChainUnread).to_string(),
+                        };
+                        let span = match span {
+                            Said::Is((a, s)) => format!("{a} / {s}"),
+                            _ => t(Key::U4ChainUnread).to_string(),
+                        };
+                        super::kit::stat_cells(ui, &[(t(Key::U3FirstAnchored), &first), (t(Key::U3Deepest), &deepest), (t(Key::U3Continuity), &span)]);
                     }
                     if !x.records.is_empty() {
                         card::flat_title(ui, t(Key::U4RecordsTitle));
@@ -160,6 +194,32 @@ impl Win {
                             rows.push((t(Key::KitId), Val::mono(k.kit_id.clone())));
                             rows.push((t(Key::U3Verdict), Val::mono(k.verdict.clone())));
                         }
+                        // Where each record's first anchor is: chain, registry, block and transaction in full.
+                        let firsts: Vec<(String, &crate::auditx::FirstAnchor)> = x
+                            .records
+                            .iter()
+                            .filter_map(|r| r.first.as_ref().map(|f| (r.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| t(Key::UnnamedRecord).to_string()), f)))
+                            .collect();
+                        let mut chains: Vec<String> = firsts.iter().map(|(_, f)| f.chain_id.to_string()).collect();
+                        chains.dedup();
+                        let mut registries: Vec<String> = firsts.iter().filter_map(|(_, f)| f.registry.clone()).collect();
+                        registries.sort();
+                        registries.dedup();
+                        if !chains.is_empty() {
+                            rows.push((t(Key::BasisChain), Val::mono(chains.join("\n"))));
+                        }
+                        if !registries.is_empty() {
+                            rows.push((t(Key::SetRegistry), Val::mono(registries.join("\n"))));
+                        }
+                        let placed: Vec<(String, String)> = firsts.iter().map(|(n, f)| (n.clone(), format!("{}\n{}", f.block_number, f.tx))).collect();
+                        for (n, at) in &placed {
+                            rows.push((n.as_str(), Val::mono(at.clone())));
+                        }
+                        match &x.filed {
+                            Some(Ok(p)) => rows.push((t(Key::VerifyResultFile), Val::mono(p.clone()))),
+                            Some(Err(e)) => rows.push((t(Key::VerifyResultFile), Val::Mark(Mark::Bad, e.clone()))),
+                            None => {}
+                        }
                         match &x.review {
                             Ok(a) => rows.push((t(Key::AuditLabel), Val::mono(a.label.clone()))),
                             Err(said) => rows.push((t(Key::U3RawError), Val::mono(said.clone()))),
@@ -169,6 +229,9 @@ impl Win {
                 });
             });
         }
+        if let Some(at) = add_network {
+            self.add_stated_network(&at, now);
+        }
         if go {
             if busy {
                 self.ux.u4.verify_again = true;
@@ -177,5 +240,14 @@ impl Win {
                 self.act(a, now);
             }
         }
+    }
+}
+
+impl Win {
+    /// A chain's name on the face: the name table's, else the one typed for that chain among the read-only
+    /// networks, else "chain <id>".
+    pub(super) fn chain_label(&self, chain: u64) -> String {
+        let typed = self.shell.read_nets.as_ref().and_then(|ns| ns.iter().find(|n| n.chain_id == chain).and_then(|n| n.name.clone()));
+        crate::readnets::chain_name(chain, typed.as_deref())
     }
 }

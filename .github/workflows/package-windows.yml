@@ -1,0 +1,21 @@
+# Build the Windows package on demand: the window binary and the command line for x86_64-pc-windows-msvc,
+# with the building machine's paths mapped to neutral names, laid out in one folder with the licence and the
+# third-party notices for that target, kept as this run's artifact. The one step calls cargo, which runs the
+# workspace's own packaging crate (`zikaron-pack windows`); no script outside Rust is written for it.
+name: package-windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: package
+        run: cargo run --release --locked -p zikaron-pack -- windows --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zikaron-windows-x86_64
+          path: dist/
+          if-no-files-found: error

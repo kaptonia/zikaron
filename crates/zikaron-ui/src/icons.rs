@@ -172,10 +172,12 @@ pub enum Glyph {
     Eye,
     Search,
     More,
+    /// The date field's mark.
+    Calendar,
 }
 
 impl Glyph {
-    pub const ALL: [Glyph; 43] = [
+    pub const ALL: [Glyph; 44] = [
         Glyph::Home,
         Glyph::Ledger,
         Glyph::Anchor,
@@ -219,6 +221,7 @@ impl Glyph {
         Glyph::Eye,
         Glyph::Search,
         Glyph::More,
+        Glyph::Calendar,
     ];
 }
 
@@ -393,6 +396,12 @@ pub fn glyph_path(k: Glyph) -> Vec<Vec<(f32, f32)>> {
         ],
         Glyph::Search => vec![arc(7.0, 7.0, 4.5, 0.0, 360.0), g(&[(10.3, 10.3), (14.0, 14.0)])],
         Glyph::More => vec![g(&[(3.0, 8.0), (3.2, 8.0)]), g(&[(8.0, 8.0), (8.2, 8.0)]), g(&[(13.0, 8.0), (13.2, 8.0)])],
+        Glyph::Calendar => vec![
+            g(&[(2.5, 3.5), (13.5, 3.5), (13.5, 13.5), (2.5, 13.5), (2.5, 3.5)]),
+            g(&[(2.5, 6.5), (13.5, 6.5)]),
+            g(&[(5.5, 2.0), (5.5, 5.0)]),
+            g(&[(10.5, 2.0), (10.5, 5.0)]),
+        ],
     }
 }
 

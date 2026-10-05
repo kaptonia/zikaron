@@ -171,8 +171,10 @@ pub struct Broadcast {
 ///
 /// `backoff` is the list of backoff durations, given by the caller (a shell cell, changeable by tests);
 /// how the transaction is signed and broadcast belongs entirely to the anchoring crate.
+/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to the chain but through the gate.
 #[allow(clippy::too_many_arguments)]
 pub fn anchor_send(
+    _pass: &crate::exitgate::Pass,
     s: &Secret,
     urls: &[String],
     chain: u64,

@@ -45,6 +45,7 @@ pub struct Landed {
     pub dropped: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trouble {
     /// A disk operation failed; the subject is named.
     Io(String),
@@ -313,7 +314,7 @@ pub fn export(out: &Path, mut b: Bundle) -> Result<Landed, Trouble> {
     }
     let dropped = prepare(&mut b)?;
 
-    let staging = landing::staging_beside(out);
+    let staging = landing::staging_beside(out)?;
     let _ = std::fs::remove_dir_all(&staging);
     // Once the staging area exists, every failure path clears it: the section has a single exit.
     let landed = lay_and_verify(&staging, &b);

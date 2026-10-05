@@ -1,6 +1,6 @@
 [package]
 name = "zikaron-store"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
@@ -8,6 +8,8 @@ license = "MIT"
 # never parsed, signed or checked against the chain; names come from the caller, and the layout is a
 # product constant (in src/layout.rs only).
 [dependencies]
+# The operating system's four (here: making a directory's new names last through a power cut).
+zikaron-os = { path = "../zikaron-os" }
 
 # A small helper binary for exercising this crate end to end.
 [[bin]]

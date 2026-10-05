@@ -152,6 +152,8 @@ pub enum Known {
     RestorePartial,
     /// This home could not be created (nothing landed on disk).
     CannotLay,
+    /// The folder chosen as the data folder is neither a data folder nor empty (named in the evidence tail).
+    NotAHome,
     /// No home is open yet.
     NoHome,
     /// The key vault accepted the key but cannot return the same one.
@@ -219,6 +221,10 @@ pub enum Known {
     NotAGrant,
     /// This grant is already in the vault.
     AlreadyHeld,
+    /// A note was given for a grant that is not in the vault (its id in the evidence tail).
+    GrantNotHeld,
+    /// The folder chosen for "import grant folder" holds no file at all (only the system's side files, or nothing).
+    GrantDirEmpty,
     /// This entry is already on chain (queueing it again would only pay gas again).
     AlreadyAnchored,
     /// The kit core does not accept this payload (the kit law §6 token in the evidence tail).
@@ -235,6 +241,7 @@ pub enum Known {
     DeleteUnbacked,
     PasswordsDiffer,
     PasswordShort,
+    PasswordLong,
     IdentitiesShape,
     /// Checking publication needs a local kit to compare with.
     PublishNoKit,
@@ -301,6 +308,12 @@ pub enum Known {
     LocalSetAside,
     /// A place was read but none of the material wanted could be taken from it, and some files there could not be read as entries: named with the place, how many and the first one's reason, never dropped silently.
     EntriesUnreadable,
+    /// A read-only network with the same chain and registry contract is already in the table (or is the main
+    /// network): refused by name, the table unchanged.
+    NetworkListed,
+    /// The new place of a move is this home's root or lies under it (real paths, links resolved): refused before
+    /// one byte is copied, the old home unwritten.
+    InsideHome,
 }
 
 impl Known {
@@ -325,7 +338,7 @@ impl Known {
         Known::NodeRefused,
     ];
 
-    pub const ALL: [Known; 146] = [
+    pub const ALL: [Known; 152] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
@@ -395,6 +408,7 @@ impl Known {
         Known::AlreadyRooted,
         Known::RestorePartial,
         Known::CannotLay,
+        Known::NotAHome,
         Known::NoHome,
         Known::KeyNotStored,
         Known::GitShape,
@@ -427,6 +441,8 @@ impl Known {
         Known::NotThisLedger,
         Known::NotAGrant,
         Known::AlreadyHeld,
+        Known::GrantNotHeld,
+        Known::GrantDirEmpty,
         Known::AlreadyAnchored,
         Known::PayloadRefused,
         Known::ChainIncomplete,
@@ -439,6 +455,7 @@ impl Known {
         Known::DeleteUnbacked,
         Known::PasswordsDiffer,
         Known::PasswordShort,
+        Known::PasswordLong,
         Known::IdentitiesShape,
         Known::PublishNoKit,
         Known::TermsMismatch,
@@ -472,6 +489,8 @@ impl Known {
         Known::DialogUnavailable,
         Known::LocalSetAside,
         Known::EntriesUnreadable,
+        Known::NetworkListed,
+        Known::InsideHome,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -545,6 +564,7 @@ impl Known {
             Known::AlreadyRooted => "ALREADY_ROOTED",
             Known::RestorePartial => "RESTORE_PARTIAL",
             Known::CannotLay => "CANNOT_LAY",
+            Known::NotAHome => "NOT_A_HOME",
             Known::NoHome => "NO_HOME",
             Known::KeyNotStored => "KEY_NOT_STORED",
             Known::GitShape => "GIT_SHAPE",
@@ -577,6 +597,8 @@ impl Known {
             Known::NotThisLedger => "NOT_THIS_LEDGER",
             Known::NotAGrant => "ONLY_GRANTS_HELD",
             Known::AlreadyHeld => "ALREADY_HELD",
+            Known::GrantNotHeld => "GRANT_NOT_HELD",
+            Known::GrantDirEmpty => "GRANT_DIR_EMPTY",
             Known::AlreadyAnchored => "ALREADY_ANCHORED",
             Known::PayloadRefused => "PAYLOAD_REFUSED",
             Known::ChainIncomplete => "CHAIN_UNREACHED",
@@ -589,6 +611,7 @@ impl Known {
             Known::DeleteUnbacked => "DELETE_UNBACKED",
             Known::PasswordsDiffer => "PASSWORDS_DIFFER",
             Known::PasswordShort => "PASSWORD_SHORT",
+            Known::PasswordLong => "PASSWORD_LONG",
             Known::IdentitiesShape => "IDENTITIES_SHAPE",
             Known::PublishNoKit => "PUBLISH_NO_KIT",
             Known::TermsMismatch => "TERMS_MISMATCH",
@@ -622,6 +645,8 @@ impl Known {
             Known::DialogUnavailable => "DIALOG_UNAVAILABLE",
             Known::LocalSetAside => "LOCAL_SET_ASIDE",
             Known::EntriesUnreadable => "ENTRIES_UNREADABLE",
+            Known::NetworkListed => "NETWORK_LISTED",
+            Known::InsideHome => "INSIDE_HOME",
         }
     }
 }
@@ -703,6 +728,7 @@ impl Known {
             Known::AlreadyRooted => L::FaultWhatAlreadyRooted,
             Known::RestorePartial => L::FaultWhatRestorePartial,
             Known::CannotLay => L::FaultWhatCannotLay,
+            Known::NotAHome => L::FaultWhatNotAHome,
             Known::NoHome => L::FaultWhatNoHome,
             Known::KeyNotStored => L::FaultWhatKeyNotStored,
             Known::GitShape => L::FaultWhatGitShape,
@@ -735,6 +761,8 @@ impl Known {
             Known::NotThisLedger => L::FaultWhatNotThisLedger,
             Known::NotAGrant => L::FaultWhatNotAGrant,
             Known::AlreadyHeld => L::FaultWhatAlreadyHeld,
+            Known::GrantNotHeld => L::FaultWhatGrantNotHeld,
+            Known::GrantDirEmpty => L::FaultWhatGrantDirEmpty,
             Known::AlreadyAnchored => L::FaultWhatAlreadyAnchored,
             Known::PayloadRefused => L::FaultWhatPayloadRefused,
             Known::ChainIncomplete => L::FaultWhatChainIncomplete,
@@ -747,6 +775,7 @@ impl Known {
             Known::DeleteUnbacked => L::FaultWhatDeleteUnbacked,
             Known::PasswordsDiffer => L::FaultWhatPasswordsDiffer,
             Known::PasswordShort => L::FaultWhatPasswordShort,
+            Known::PasswordLong => L::FaultWhatPasswordLong,
             Known::IdentitiesShape => L::FaultWhatIdentitiesShape,
             Known::PublishNoKit => L::FaultWhatPublishNoKit,
             Known::TermsMismatch => L::FaultWhatTermsMismatch,
@@ -780,6 +809,8 @@ impl Known {
             Known::DialogUnavailable => L::FaultWhatDialogUnavailable,
             Known::LocalSetAside => L::FaultWhatLocalSetAside,
             Known::EntriesUnreadable => L::FaultWhatEntriesUnreadable,
+            Known::NetworkListed => L::FaultWhatNetworkListed,
+            Known::InsideHome => L::FaultWhatInsideHome,
         }
     }
 
@@ -855,6 +886,7 @@ impl Known {
             Known::AlreadyRooted => L::FaultNextAlreadyRooted,
             Known::RestorePartial => L::FaultNextRestorePartial,
             Known::CannotLay => L::FaultNextCannotLay,
+            Known::NotAHome => L::FaultNextNotAHome,
             Known::NoHome => L::FaultNextNoHome,
             Known::KeyNotStored => L::FaultNextKeyNotStored,
             Known::GitShape => L::FaultNextGitShape,
@@ -887,6 +919,8 @@ impl Known {
             Known::NotThisLedger => L::FaultNextNotThisLedger,
             Known::NotAGrant => L::FaultNextNotAGrant,
             Known::AlreadyHeld => L::FaultNextAlreadyHeld,
+            Known::GrantNotHeld => L::FaultNextGrantNotHeld,
+            Known::GrantDirEmpty => L::FaultNextGrantDirEmpty,
             Known::AlreadyAnchored => L::FaultNextAlreadyAnchored,
             Known::PayloadRefused => L::FaultNextPayloadRefused,
             Known::ChainIncomplete => L::FaultNextChainIncomplete,
@@ -899,6 +933,7 @@ impl Known {
             Known::DeleteUnbacked => L::FaultNextDeleteUnbacked,
             Known::PasswordsDiffer => L::FaultNextPasswordsDiffer,
             Known::PasswordShort => L::FaultNextPasswordShort,
+            Known::PasswordLong => L::FaultNextPasswordLong,
             Known::IdentitiesShape => L::FaultNextIdentitiesShape,
             Known::PublishNoKit => L::FaultNextPublishNoKit,
             Known::TermsMismatch => L::FaultNextTermsMismatch,
@@ -932,6 +967,8 @@ impl Known {
             Known::DialogUnavailable => L::FaultNextDialogUnavailable,
             Known::LocalSetAside => L::FaultNextLocalSetAside,
             Known::EntriesUnreadable => L::FaultNextEntriesUnreadable,
+            Known::NetworkListed => L::FaultNextNetworkListed,
+            Known::InsideHome => L::FaultNextInsideHome,
         }
     }
 }
@@ -998,7 +1035,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::Disagree => "端点之间对不上,承重读取不出绿",
         Known::ChainShape => "链上回来的东西形不对",
         Known::PenHeld => "这本账还握着笔:恢复之后要等一次对锚对账报 COMPLETE",
-        Known::LedgerNotFetched => "还原的身份,账本还没取回:取回全本并以链上的锚核过尾才开写",
+        Known::LedgerNotFetched => "导入的身份,账本还没与链上核过尾:这一席的账本对过这把钥的锚、无缺才开写",
         Known::NewerElsewhere => "取回的账本对不上链上这一位的锚:别处有更新的条目",
         Known::EntryRefused => "法拒了这一枚条目,拒因的 token 在证据尾里",
         Known::NoGenesis => "这本账里还没有创建账本的那一条",
@@ -1008,6 +1045,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::AlreadyRooted => "这本账已经有创建账本的那一条;一本账一个根",
         Known::RestorePartial => "这一束只落了一半,落了哪几条在证据尾里",
         Known::CannotLay => "这一处家建不出来:盘上没有落下东西",
+        Known::NotAHome => "这一处既不是数据目录也不是空文件夹,不开、也不在里面建",
         Known::NoHome => "还没有开着的家",
         Known::KeyNotStored => "本机密钥库说收下了,取回来的却不是同一枚",
         Known::GitShape => "git 那一侧的字节读不成形",
@@ -1040,6 +1078,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::NotThisLedger => "这里的账不是这一条授权签发者的账,不作料",
         Known::NotAGrant => "这一枚过了法,而它不是一枚授权",
         Known::AlreadyHeld => "这一枚授权已在库里",
+        Known::GrantNotHeld => "这一份授权不在保管库里,备注无处可记",
+        Known::GrantDirEmpty => "这一处授权文件夹里一份档也没有",
         Known::AlreadyAnchored => "这一条已经上链,不必再排进待上链",
         Known::PayloadRefused => "这段载荷 K2 不收(它的 token 在证据尾)",
         Known::ChainIncomplete => "上游链级不到根,缺的那一枚在证据尾",
@@ -1052,6 +1092,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::DeleteUnbacked => "这个身份没有备份过,也没有写过移交",
         Known::PasswordsDiffer => "两次输入的密码不一样",
         Known::PasswordShort => "密码太短",
+        Known::PasswordLong => "密码太长,口令格收不下",
         Known::IdentitiesShape => "身份登记表的形不对",
         Known::PublishNoKit => "这处家还没有出过记录包",
         Known::TermsMismatch => "条款文件与所填摘要对不上",
@@ -1085,6 +1126,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::DialogUnavailable => "系统的选档框在这台机器上开不了",
         Known::LocalSetAside => "旧的本机数据封在已找不回的钥下,开不了,已原样挪到一旁",
         Known::EntriesUnreadable => "这一处读到了,可里面有档读不成条目,要的那一本没取到",
+        Known::NetworkListed => "这条网络已在只读网络里",
+        Known::InsideHome => "搬家的新处在这处数据目录里头",
     }
 }
 
@@ -1100,6 +1143,14 @@ pub struct Fault {
     say: Option<crate::lang::Key>,
     /// Likewise, the next-step sentence (`None` uses the closed table's).
     then: Option<crate::lang::Key>,
+    /// For a landing that failed, which of the landing troubles it was, as the glue handed it (the code and
+    /// subject in the tail are made from the same value).
+    landing: Option<zikaron_glue::pack::Trouble>,
+    /// For a place a person named that could not be read, that place as given (the tail says it in words;
+    /// this is the same place as a value).
+    place: Option<String>,
+    /// For a remote answer refused by its status, that status number (the tail says it in words).
+    status: Option<u16>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1126,6 +1177,9 @@ impl Fault {
             tail: tail.into(),
             say: None,
             then: None,
+            landing: None,
+            place: None,
+            status: None,
         }
     }
 
@@ -1144,6 +1198,43 @@ impl Fault {
             _ => (None, None),
         };
         Fault { say, then, ..Fault::known(Known::Landing, format!("{code}: {}", subject.as_ref())) }
+    }
+
+    /// A landing that failed, from the glue's own trouble: the same code, tail and sentences as
+    /// [`Fault::landing`], with the trouble itself kept beside them ([`Fault::landing_trouble`]).
+    pub fn of_landing(t: impl Into<zikaron_glue::pack::Trouble>) -> Fault {
+        let t = t.into();
+        Fault { landing: Some(t.clone()), ..Fault::landing(t.code(), t.subject()) }
+    }
+
+    /// The same fault, saying which place a person named could not be read (kept when one is already said:
+    /// the innermost place wins).
+    pub fn at_place(mut self, place: impl Into<String>) -> Fault {
+        if self.place.is_none() {
+            self.place = Some(place.into());
+        }
+        self
+    }
+
+    /// The same fault, carrying the remote status number it was refused for.
+    pub fn with_status(mut self, status: u16) -> Fault {
+        self.status = Some(status);
+        self
+    }
+
+    /// The remote status number this fault was refused for (`None` for every other fault).
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+
+    /// The place a person named that could not be read (`None` for every other fault).
+    pub fn place(&self) -> Option<&str> {
+        self.place.as_deref()
+    }
+
+    /// Which landing trouble this fault was made from (`None` for every other fault).
+    pub fn landing_trouble(&self) -> Option<&zikaron_glue::pack::Trouble> {
+        self.landing.as_ref()
     }
 
     /// The law refused an entry: the tail is the token's name, the screen's sentence comes from
@@ -1175,7 +1266,7 @@ impl Fault {
     /// changed.
     pub fn unknown(tail: impl Into<String>) -> Fault {
         let tail = tail.into();
-        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None }
+        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None }
     }
 
     pub fn class(&self) -> Class {

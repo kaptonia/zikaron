@@ -121,6 +121,9 @@ pub(super) fn adopt(shell: &mut Shell, dir: &str) -> Result<crate::firstrun::Ado
         crate::auditx::Pen::Held
     };
     shell.reconciled = Some((got.label.clone(), got.complete, got.linked));
+    // A ledger adopted in place opens for writing as any other does: once its tail is checked against the
+    // chain (`check_tail`), after the self-audit above.
+    tail_if_due(shell);
     Ok(got)
 }
 

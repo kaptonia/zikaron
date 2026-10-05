@@ -10,7 +10,7 @@ use super::*;
 /// `ALREADY_HELD` when the root was present, the chain's new hop would never land, and the face would only
 /// say "already in the vault"; the other way round, the new one would land first and the old would then fail,
 /// changing the vault while the face reported failure.
-pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<Vec<String>, crate::fault::Fault> {
+pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String>, String), crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
@@ -20,9 +20,13 @@ pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<Vec<String>
     let all = taken.hops;
     let mut fresh: Vec<&Vec<u8>> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    // The grant this pass is for: the chain's last hop (the code and the grant file carry the chain from the
+    // root down); the hops above it are its upstreams, taken along.
+    let mut end = String::new();
     for b in &all {
         let e = crate::vaultx::admit(b)?;
         let id = e.id_hex();
+        end = id.clone();
         let at = crate::vaultx::path_of(home, &id)?;
         if at.exists() {
             let have = crate::local::read(&at, crate::local::Doc::Held)?.unwrap_or_default();
@@ -54,16 +58,17 @@ pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<Vec<String>
     // After storing, the vault must be listable (the disk read runs as a separate background task, not in the
     // frame); a failed listing only records a trouble.
     relist_held(shell);
-    Ok(ids)
+    Ok((ids, end))
 }
 
-/// Import an existing grant directory: each file whose name matches the store crate's entry names goes
-/// through `import_grant` (admit before storing; failures are not stored); those already in the vault with
-/// identical bytes are skipped. When none were taken and there were refusals, the last refusal is reported.
+/// Import an existing grant directory: every file in it goes through `import_grant`, the one reading of what
+/// a grant is (an entry file, a grant file, a grant code; admit before storing; failures are not stored, each
+/// named); those already in the vault with identical bytes are skipped. When none were taken and there were
+/// refusals, the last refusal is reported. A folder with no file at all is refused by name
+/// (`GRANT_DIR_EMPTY`): never "no file" for a folder that has files.
 ///
-/// The grant directory is read by the store crate's names (the same naming rule as `verifyx::entries_of`
-/// reading a directory): `.DS_Store`, `._*` and other side files dropped by the system are not entries, not
-/// refusals, and do not turn a full import into a partial one.
+/// The system's side files (`home::is_side_file`: `.DS_Store`, `._*` and the like) are not the person's
+/// files: not tried, not refusals, and they do not turn a full import into a partial one.
 pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<String>, Vec<crate::fault::Fault>), crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let d = dir.trim();
@@ -71,15 +76,11 @@ pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<Stri
         .map_err(|e| crate::fault::classify(&e, d))?
         .filter_map(|x| x.ok().map(|x| x.path()))
         .filter(|p| p.is_file())
-        .filter(|p| {
-            p.file_name()
-                .map(|n| zikaron_store::layout::parse_entry_file(&n.to_string_lossy()).is_some())
-                .unwrap_or(false)
-        })
+        .filter(|p| p.file_name().map(|n| !crate::home::is_side_file(&n.to_string_lossy())).unwrap_or(false))
         .collect();
     files.sort();
     if files.is_empty() {
-        return Err(Fault::known(Known::DirEmpty, d.to_string()));
+        return Err(Fault::known(Known::GrantDirEmpty, d.to_string()));
     }
     // Every file has an outcome: taken, already in the vault (skipped), not taken (with reason). Recording
     // only the last refusal and reporting success when any one was taken would make the person think the
@@ -88,7 +89,7 @@ pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<Stri
     let mut refused = Vec::new();
     for p in files {
         match import_grant(shell, &p.display().to_string()) {
-            Ok(mut got) => ids.append(&mut got),
+            Ok((mut got, _)) => ids.append(&mut got),
             Err(f) if f.which() == Some(Known::AlreadyHeld) => {}
             Err(f) => refused.push(f),
         }
@@ -142,8 +143,8 @@ pub(super) fn note_held(shell: &mut Shell, grant: &str, note: &str, issuer_note:
     } else {
         let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
         let held = crate::vaultx::held(home)?;
-        let a = held.iter().find(|h| crate::lastread::grant_form(&h.id) == g).map(|h| h.author.to_ascii_lowercase());
-        Some(a.ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::ContentShape, g.clone()))?)
+        let a = held.iter().find(|h| crate::lastread::grant_form(&h.id) == g).map(|h| crate::lastread::issuer_form(&h.author));
+        Some(a.ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::GrantNotHeld, g.clone()))?)
     };
     shell.commit_settings(|s| {
         if !note.is_empty() {

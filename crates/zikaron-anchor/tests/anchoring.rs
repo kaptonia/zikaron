@@ -385,6 +385,27 @@ fn one_endpoint_on_one_chain_is_a_single_source_however_many_rounds_ran() {
 }
 
 #[test]
+fn an_incomplete_receipt_is_an_answer_so_the_deadline_says_not_yet() {
+    // A node that answers with a receipt lacking its status or block answered: at the deadline that is "not
+    // yet", never "out of sight".
+    struct Half;
+    impl Endpoint for Half {
+        fn call(&mut self, method: &str, _params: &Value) -> Result<W, Trouble> {
+            match method {
+                "eth_getTransactionReceipt" => Ok(w("{\"transactionHash\":\"0x0000000000000000000000000000000000000000000000000000000000000001\"}")),
+                _ => Err(Trouble::Transport("不问这一句".into())),
+            }
+        }
+        fn name(&self) -> String {
+            "half".into()
+        }
+    }
+    let mut ep = Half;
+    let got = send::confirm_each(&mut [&mut ep], &[1u8; 32], std::time::Duration::from_millis(0), &[]);
+    assert!(matches!(got, send::Confirm::NotYet), "收据不全也是答了");
+}
+
+#[test]
 fn a_broadcast_transaction_keeps_its_hash_even_when_the_endpoint_goes_quiet() {
     // An endpoint lost after broadcast is "out of sight", not a verdict, and the transaction hash must
     // remain: the bytes are out.

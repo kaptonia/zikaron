@@ -41,16 +41,21 @@ impl Form {
 pub fn decode(payload: &[u8]) -> Result<Vec<Vec<u8>>, Fault> {
     match zikaron_kit::badge::decode(payload) {
         Ok(entries) => Ok(entries.into_iter().map(|e| e.bytes).collect()),
-        Err(r) => Err(Fault::known(
-            Known::PayloadRefused,
-            format!(
-                "{}{}{}",
-                r.token.as_str(),
-                r.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default(),
-                r.inner.map(|t| format!(" {t:?}")).unwrap_or_default()
-            ),
-        )),
+        Err(r) => Err(refused(r)),
     }
+}
+
+/// The kit core's refusal of a grant code, named (`PAYLOAD_REFUSED` with its token, segment and inner token).
+pub fn refused(r: zikaron_kit::badge::DecodeReject) -> Fault {
+    Fault::known(
+        Known::PayloadRefused,
+        format!(
+            "{}{}{}",
+            r.token.as_str(),
+            r.index.map(|i| crate::lang::filln(crate::lang::Key::Tail087, &[&(i).to_string()])).unwrap_or_default(),
+            r.inner.map(|t| format!(" {t:?}")).unwrap_or_default()
+        ),
+    )
 }
 
 /// Take. Returns (form, one or more byte strings): one per payload segment; an entry file is that whole file;

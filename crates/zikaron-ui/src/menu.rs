@@ -198,7 +198,7 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
     }
     let shown = egui::Area::new(layer.id).order(egui::Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
         ui.multiply_opacity(e);
-        paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Float);
+        paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
         let mut y = rect.top() + 5.0;
         for (i, it) in items.iter().enumerate() {
             match it {
@@ -211,94 +211,22 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
                     y += 11.0;
                 }
                 Item::Row(r) => {
-                    let rh = if r.sub.is_empty() { 34.0 } else { 44.0 };
+                    let rh = row_h(r);
                     let rr = Rect::from_min_size(pos2(rect.left() + 5.0, y), vec2(w - 10.0, rh));
-                    let sense = if r.disabled { egui::Sense::hover() } else { egui::Sense::click() };
-                    let resp = ui.interact(rr, id.with(("row", i)), sense);
-                    let hovered = !r.disabled && resp.hovered();
-                    // In a lens menu the plain rows keep their ink: a light grey ground on hover, darker when
-                    // pressed; elsewhere the hovered row fills with blue and its words turn white.
-                    let hot = hovered && !lens;
-                    if hot {
-                        ui.painter().rect_filled(rr, egui::CornerRadius::same(6), c(C::Accent));
-                    } else if hovered {
-                        let press = resp.is_pointer_button_down_on();
-                        ui.painter().rect_filled(rr, egui::CornerRadius::same(6), c(if press { C::Press } else { C::Hover }));
-                    }
-                    let alpha = if r.disabled { 0.4 } else { 1.0 };
-                    let ink = if hot { palette::ON_SOLID } else { c(C::Ink) }.gamma_multiply(alpha);
-                    let quiet = if hot { palette::ON_SOLID } else { c(C::Ink3) }.gamma_multiply(alpha);
-                    let p = ui.painter();
-                    let mut tx = rr.left() + 12.0;
-                    let right_edge = rr.right() - 12.0;
-                    if let Some(on) = r.check {
-                        if on {
-                            icons::glyph_at(p, Glyph::Ok, pos2(tx + 7.0, rr.center().y), 14.0, if hot { palette::ON_SOLID } else { c(C::Accent) });
-                        }
-                        tx += 14.0 + 8.0;
-                    }
-                    if !r.lead.is_empty() {
-                        p.text(pos2(tx, rr.center().y), egui::Align2::LEFT_CENTER, r.lead, Type::Small.font(), quiet);
-                        tx += 36.0;
-                    }
-                    let mut rx = right_edge;
-                    if r.tick_right {
-                        icons::glyph_at(p, Glyph::Ok, pos2(rx - 7.0, rr.center().y), 14.0, if hot { palette::ON_SOLID } else { c(C::Accent) });
-                        rx -= 14.0 + 8.0;
-                    }
-                    if !r.trail.is_empty() {
-                        let t = p.text(pos2(rx, rr.center().y), egui::Align2::RIGHT_CENTER, r.trail, Type::Small.font(), quiet);
-                        rx = t.left() - 12.0;
-                    }
-                    if let Some((s, tone)) = r.pill {
-                        let pw = mark::pill_w(ui, s, false);
-                        let pr = Rect::from_min_size(pos2(rx - pw, rr.center().y - tokens::PILL_H / 2.0), vec2(pw, tokens::PILL_H));
-                        p.rect_filled(pr, Radius::Pill.egui(), tone.wash());
-                        p.text(pr.center(), egui::Align2::CENTER_CENTER, s, Type::Small.font(), tone.ink());
-                        rx = pr.left() - 12.0;
-                    }
-                    let font = if r.mono { egui::FontId::new(14.0, egui::FontFamily::Monospace) } else { Type::Key.font() };
-                    let room = (rx - tx).max(0.0);
-                    if r.sub.is_empty() {
-                        let lr = paint::at(p, ui, pos2(tx, rr.center().y), egui::Align2::LEFT_CENTER, r.label, if r.mono { Type::MonoSmall } else { Type::Key }, ink, room);
-                        let _ = font;
-                        if r.struck {
-                            p.hline(lr.x_range(), rr.center().y, egui::Stroke::new(1.0_f32, ink));
-                        }
-                    } else {
-                        paint::at(p, ui, pos2(tx, rr.top() + 5.0), egui::Align2::LEFT_TOP, r.label, Type::Small, ink, room);
-                        let sub_c = if hot { palette::ON_SOLID } else if r.sub_ok { c(C::OkInk) } else { c(C::Ink3) };
-                        paint::at(p, ui, pos2(tx, rr.top() + 23.0), egui::Align2::LEFT_TOP, r.sub, Type::Small, sub_c, room);
-                    }
-                    if resp.clicked() {
+                    if draw_row(ui, id.with(("row", i)), rr, r, lens).clicked() {
                         picked = Some(i);
-                    }
-                    if !r.disabled {
-                        let _ = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                     }
                     y += rh;
                 }
                 Item::Who(wr) => {
                     let rr = Rect::from_min_size(pos2(rect.left() + 5.0, y), vec2(w - 10.0, WHO_H));
-                    let resp = ui.interact(rr, id.with(("who", i)), egui::Sense::click());
+                    let resp = draw_who(ui, id.with(("who", i)), rr, wr);
                     if resp.hovered() {
                         ctx.data_mut(|d| d.insert_temp(id.with("hovered-who"), i));
-                    }
-                    let p = ui.painter();
-                    let room = rr.width() - 24.0;
-                    // Two lines, each always there: the name, then the kind with its tags in the accent ink.
-                    paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 6.0), egui::Align2::LEFT_TOP, wr.name, Type::Key, c(C::Ink), room);
-                    let kind_r = paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 26.0), egui::Align2::LEFT_TOP, wr.kind, Type::Small, c(C::Ink3), room);
-                    let mut tx = kind_r.right();
-                    for t in wr.tags {
-                        let dot = p.text(pos2(tx, rr.top() + 26.0), egui::Align2::LEFT_TOP, " \u{b7} ", Type::Small.font(), c(C::Ink3));
-                        let tr = p.text(pos2(dot.right(), rr.top() + 26.0), egui::Align2::LEFT_TOP, *t, Type::Small.font(), c(C::AccentInk));
-                        tx = tr.right();
                     }
                     if resp.clicked() {
                         picked = Some(i);
                     }
-                    let _ = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                     y += WHO_H;
                 }
             }
@@ -349,4 +277,93 @@ pub fn plain_key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, l
         toggle(ui.ctx(), id);
     }
     show(ui.ctx(), id, resp.rect, left, min_w, items)
+}
+
+/// One plain row drawn in `rr` (menus and the pickers share it): hovered rows fill with blue and their words
+/// turn white, except in a lens menu (`lens`), where they keep their ink on a light grey ground.
+pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, rr: Rect, r: &Row, lens: bool) -> egui::Response {
+    let sense = if r.disabled { egui::Sense::hover() } else { egui::Sense::click() };
+    let resp = ui.interact(rr, id, sense);
+    let hovered = !r.disabled && resp.hovered();
+    // In a lens menu the plain rows keep their ink: a light grey ground on hover, darker when
+    // pressed; elsewhere the hovered row fills with blue and its words turn white.
+    let hot = hovered && !lens;
+    if hot {
+        ui.painter().rect_filled(rr, egui::CornerRadius::same(6), c(C::Accent));
+    } else if hovered {
+        let press = resp.is_pointer_button_down_on();
+        ui.painter().rect_filled(rr, egui::CornerRadius::same(6), c(if press { C::Press } else { C::Hover }));
+    }
+    let alpha = if r.disabled { 0.4 } else { 1.0 };
+    let ink = if hot { palette::ON_SOLID } else { c(C::Ink) }.gamma_multiply(alpha);
+    let quiet = if hot { palette::ON_SOLID } else { c(C::Ink3) }.gamma_multiply(alpha);
+    let p = ui.painter();
+    let mut tx = rr.left() + 12.0;
+    let right_edge = rr.right() - 12.0;
+    if let Some(on) = r.check {
+        if on {
+            icons::glyph_at(p, Glyph::Ok, pos2(tx + 7.0, rr.center().y), 14.0, if hot { palette::ON_SOLID } else { c(C::Accent) });
+        }
+        tx += 14.0 + 8.0;
+    }
+    if !r.lead.is_empty() {
+        p.text(pos2(tx, rr.center().y), egui::Align2::LEFT_CENTER, r.lead, Type::Small.font(), quiet);
+        tx += 36.0;
+    }
+    let mut rx = right_edge;
+    if r.tick_right {
+        icons::glyph_at(p, Glyph::Ok, pos2(rx - 7.0, rr.center().y), 14.0, if hot { palette::ON_SOLID } else { c(C::Accent) });
+        rx -= 14.0 + 8.0;
+    }
+    if !r.trail.is_empty() {
+        let t = p.text(pos2(rx, rr.center().y), egui::Align2::RIGHT_CENTER, r.trail, Type::Small.font(), quiet);
+        rx = t.left() - 12.0;
+    }
+    if let Some((s, tone)) = r.pill {
+        let pw = mark::pill_w(ui, s, false);
+        let pr = Rect::from_min_size(pos2(rx - pw, rr.center().y - tokens::PILL_H / 2.0), vec2(pw, tokens::PILL_H));
+        p.rect_filled(pr, Radius::Pill.egui(), tone.wash());
+        p.text(pr.center(), egui::Align2::CENTER_CENTER, s, Type::Small.font(), tone.ink());
+        rx = pr.left() - 12.0;
+    }
+    let font = if r.mono { egui::FontId::new(14.0, egui::FontFamily::Monospace) } else { Type::Key.font() };
+    let room = (rx - tx).max(0.0);
+    if r.sub.is_empty() {
+        let lr = paint::at(p, ui, pos2(tx, rr.center().y), egui::Align2::LEFT_CENTER, r.label, if r.mono { Type::MonoSmall } else { Type::Key }, ink, room);
+        let _ = font;
+        if r.struck {
+            p.hline(lr.x_range(), rr.center().y, egui::Stroke::new(1.0_f32, ink));
+        }
+    } else {
+        paint::at(p, ui, pos2(tx, rr.top() + 5.0), egui::Align2::LEFT_TOP, r.label, Type::Small, ink, room);
+        let sub_c = if hot { palette::ON_SOLID } else if r.sub_ok { c(C::OkInk) } else { c(C::Ink3) };
+        paint::at(p, ui, pos2(tx, rr.top() + 23.0), egui::Align2::LEFT_TOP, r.sub, Type::Small, sub_c, room);
+    }
+    if r.disabled {
+        resp
+    } else {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+}
+
+/// A plain row's height: 34, or 44 with a second line.
+pub(crate) fn row_h(r: &Row) -> f32 {
+    if r.sub.is_empty() { 34.0 } else { 44.0 }
+}
+
+/// One identity row drawn in `rr`: the name, then the kind with its tags in the accent ink.
+pub(crate) fn draw_who(ui: &mut egui::Ui, id: egui::Id, rr: Rect, wr: &Who) -> egui::Response {
+    let resp = ui.interact(rr, id, egui::Sense::click());
+    let p = ui.painter();
+    let room = rr.width() - 24.0;
+    // Two lines, each always there: the name, then the kind with its tags in the accent ink.
+    paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 6.0), egui::Align2::LEFT_TOP, wr.name, Type::Key, c(C::Ink), room);
+    let kind_r = paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 26.0), egui::Align2::LEFT_TOP, wr.kind, Type::Small, c(C::Ink3), room);
+    let mut tx = kind_r.right();
+    for t in wr.tags {
+        let dot = p.text(pos2(tx, rr.top() + 26.0), egui::Align2::LEFT_TOP, " \u{b7} ", Type::Small.font(), c(C::Ink3));
+        let tr = p.text(pos2(dot.right(), rr.top() + 26.0), egui::Align2::LEFT_TOP, *t, Type::Small.font(), c(C::AccentInk));
+        tx = tr.right();
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

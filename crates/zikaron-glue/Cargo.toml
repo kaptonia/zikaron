@@ -1,6 +1,6 @@
 [package]
 name = "zikaron-glue"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
@@ -10,6 +10,8 @@ license = "MIT"
 zikaron = { path = "../zikaron" }
 zikaron-kit = { path = "../zikaron-kit" }
 zikaron-store = { path = "../zikaron-store" }
+# The operating system's four: entropy for temporary names, owner-only files, a directory's names on disk.
+zikaron-os = { path = "../zikaron-os" }
 
 # A small helper binary for exercising this crate end to end; kept apart from the CLI's fixed verb list.
 [[bin]]

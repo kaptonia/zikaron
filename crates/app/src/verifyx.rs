@@ -65,7 +65,7 @@ pub fn source_of(path: &str) -> Result<Source, Fault> {
     if crate::fetchx::is_address(path) {
         return Ok(Source::Remote(crate::fetchx::base_of(path)?));
     }
-    let md = std::fs::symlink_metadata(p).map_err(|e| crate::fault::classify(&e, &p.display().to_string()))?;
+    let md = std::fs::symlink_metadata(p).map_err(|e| crate::fault::classify(&e, &p.display().to_string()).at_place(path.trim()))?;
     if md.is_dir() {
         if p.join(zikaron_glue::names::MANIFEST).is_file() {
             Ok(Source::Kit(p.to_path_buf()))
@@ -77,7 +77,7 @@ pub fn source_of(path: &str) -> Result<Source, Fault> {
     } else if md.is_file() {
         Ok(Source::Bytes(p.to_path_buf()))
     } else {
-        Err(Fault::known(Known::NotAdoptable, crate::lang::filln(crate::lang::Key::Tail027, &[&(p.display()).to_string()])))
+        Err(Fault::known(Known::NotAdoptable, crate::lang::filln(crate::lang::Key::Tail027, &[&(p.display()).to_string()])).at_place(path.trim()))
     }
 }
 
@@ -259,7 +259,8 @@ pub fn bytes_named(typed: &str) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> 
     if typed.trim().is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    bytes_at(&source_of(typed)?)
+    // Whatever stops the reading of a named place says that place as a value too.
+    source_of(typed).and_then(|s| bytes_at(&s)).map_err(|f| f.at_place(typed.trim()))
 }
 
 /// Bytes at a path: a kit is read by its manifest, raw bytes by the store crate's names. The diligence desk
@@ -342,7 +343,8 @@ pub enum OnChain {
     Anchored { first_at: u64 },
     /// The chain was read and no counted anchor reaches it.
     NotAnchored,
-    /// The chain was not read (no network configured, chain unreachable): never shown as "not anchored".
+    /// The chain was not read (no network configured, chain unreachable), or this pass left out a network that
+    /// could hold its anchor ([`unread_where_missed`]): never shown as "not anchored".
     Unread,
 }
 
@@ -357,6 +359,9 @@ pub struct RecordRow {
     pub name: Option<String>,
     pub original: Original,
     pub chain: OnChain,
+    /// The first anchor reaching it, whole (the same reading as `chain`'s time); none when not anchored or not
+    /// read.
+    pub first: Option<crate::auditx::FirstAnchor>,
 }
 
 /// kit law §7.3's `contents` rows: (content, path), read from the manifest unchanged (empty when the manifest
@@ -416,6 +421,7 @@ pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Ve
 pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], fragment: Option<&Value>) -> Vec<RecordRow> {
     crate::trace::mark(crate::feature::Feature::D2);
     let times = fragment.and_then(|f| crate::auditx::first_anchored(bytes, f));
+    let firsts = fragment.and_then(|f| crate::auditx::first_anchors(bytes, f)).unwrap_or_default();
     bytes
         .iter()
         .filter_map(|b| zikaron::entry::check(b).ok())
@@ -436,7 +442,11 @@ pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], fragm
                     None => OnChain::NotAnchored,
                 },
             };
-            RecordRow { id, content, name, original, chain }
+            let first = match chain {
+                OnChain::Anchored { .. } => firsts.iter().find(|(h, _)| *h == id).map(|(_, f)| f.clone()),
+                _ => None,
+            };
+            RecordRow { id, content, name, original, chain, first }
         })
         .collect()
 }
@@ -447,9 +457,28 @@ pub struct AnchorReview {
     pub label: String,
     pub anchors: usize,
     pub asked: usize,
-    /// The ids the report lists as UNANCHORED.
+    /// The ids the report lists as UNANCHORED, when this pass read every network it was to read.
     pub unanchored: Vec<String>,
     pub anchored: usize,
+    /// The ids the report lists as UNANCHORED when this pass left a network out ([`unread_where_missed`]): their
+    /// anchor may be on the chain not read, so they are not called unanchored.
+    pub unread: Vec<String>,
+}
+
+/// A pass that left a network out (unreachable, fingerprint mismatch) cannot say a record it did not reach is
+/// not anchored: its anchor may be on the network not read. So with any network missed, every record row read
+/// "not anchored" reads "chain not read", and the review's unanchored ids move to `unread`. A pass that read
+/// every network it was to read (always so with no read-only network) is left exactly as it is.
+pub fn unread_where_missed(missed: &[crate::widex::Missed], review: &mut Result<AnchorReview, String>, records: &mut [RecordRow]) {
+    if missed.is_empty() {
+        return;
+    }
+    if let Ok(r) = review.as_mut() {
+        r.unread.append(&mut r.unanchored);
+    }
+    for row in records.iter_mut().filter(|row| row.chain == OnChain::NotAnchored) {
+        row.chain = OnChain::Unread;
+    }
 }
 
 /// One verification's reading. Every cell is what the background pass brought back.
@@ -472,6 +501,46 @@ pub struct Verified {
     /// Per record: one row per record when a record bundle was dropped in (directory, grant file, publish
     /// address); empty otherwise.
     pub records: Vec<RecordRow>,
+    /// The network the kit says it is anchored on, when that network is neither the main network nor a
+    /// read-only one: then no chain was read, and the page says which network to add.
+    pub not_added: Option<crate::kitsindex::AnchoredOn>,
+    /// Networks this pass could not read (unreachable, fingerprint mismatch), each named.
+    pub missed: Vec<crate::widex::Missed>,
+    /// The chains this pass read (its basis), by ascending chain id; empty when no chain was read.
+    pub read: Vec<u64>,
+    /// The result file: where it landed, or why it did not (`None`: not written, the network not added or no
+    /// kit).
+    pub filed: Option<Result<String, String>>,
+}
+
+/// The chains a fragment's basis names, by ascending chain id.
+pub fn chains_of(fragment: &Value) -> Vec<u64> {
+    let mut out: Vec<u64> = match fragment.member("basis").and_then(|b| b.member("chains")) {
+        Some(Value::Arr(a)) => a.iter().filter_map(|w| match w.member("chainId") {
+            Some(Value::Int(n)) => Some(*n),
+            _ => None,
+        }).collect(),
+        _ => Vec::new(),
+    };
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The manifest bytes of a kit given as an enumeration.
+pub fn manifest_in(pairs: &[(String, Vec<u8>)]) -> Option<Vec<u8>> {
+    pairs.iter().find(|(p, _)| p == zikaron_glue::names::MANIFEST).map(|(_, b)| b.clone())
+}
+
+/// Where a kit's manifest says it is anchored: the fixed last line of its `note_md` (`kitsindex::split_note`).
+/// The author's statement, a pointer only: no verdict reads it.
+pub fn stated_on(manifest: &[u8]) -> Option<crate::kitsindex::AnchoredOn> {
+    let v = zikaron::json::parse(manifest).ok()?;
+    let note = match v.member(zikaron_glue::names::Field::NoteMd.as_str()) {
+        Some(Value::Str(s)) => s.clone(),
+        _ => return None,
+    };
+    crate::kitsindex::split_note(&note).1
 }
 
 /// Depth reading, taken through the depth page (the same implementation).
@@ -483,7 +552,8 @@ pub fn depth_of(bytes: &[Vec<u8>], fragment: &Value, work: &str) -> Result<Value
 }
 
 /// Every mismatch listed. A failed kit verification (verdict and subject), manifest entries that fail the
-/// law, files whose signature fails, incomplete labels, unanchored entries, records not found: one line each,
+/// law, files whose signature fails, incomplete labels, unanchored entries, entries not reached on a pass that
+/// left a network out, records not found: one line each,
 /// with its subject. An empty list means zero mismatches.
 pub fn mismatches(
     kit: Option<&KitFacts>,
@@ -517,6 +587,9 @@ pub fn mismatches(
             }
             for id in &r.unanchored {
                 out.push(format!("unanchored {id}"));
+            }
+            for id in &r.unread {
+                out.push(format!("unread {id}"));
             }
         }
         Err(said) => out.push(format!("review {said}")),

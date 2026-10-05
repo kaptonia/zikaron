@@ -64,8 +64,9 @@ pub(super) fn export_kit(
         }
         crate::task::stage_at(Kind::Kit, 2);
         // The exit gate, last before the bundle is written.
-        crate::exitgate::pass(&ask)?;
+        let pass = crate::exitgate::pass(&ask)?;
         let made = crate::kitx::export(
+            &pass,
             &home,
             &pick,
             &kept,

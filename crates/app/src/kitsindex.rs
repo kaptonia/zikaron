@@ -18,6 +18,14 @@
 //! path in the `kits` room; a hand-filled one overrides it, recorded in the same room's [`OVERRIDES`] (for
 //! this desk only; readers do not read it). When the publish base changes, rows nobody filled by hand are
 //! reassembled and hand-filled ones stay as they are. There is no second publishing concept.
+//!
+//! ─── `anchoredOn` ───
+//!
+//! Where the kit says it is anchored: the basis of the home it was exported from (chain id, registry, start
+//! block), written by the app's export mouth as the fixed last line of the manifest's `note_md`
+//! ([`AnchoredOn::line`]). The row carries it apart, optional as `link` is, and the row's `note_md` stays the
+//! author's own text: reading the manifest takes that last line off ([`split_note`]). It only points the way;
+//! no verdict reads it.
 
 use crate::fault::{classify, Fault, Known};
 use std::path::{Path, PathBuf};
@@ -42,7 +50,93 @@ pub const FILE: &str = "index.json";
 /// Hand-filled `link`s are recorded here (for this desk only; readers do not read it).
 pub const OVERRIDES: &str = "links.json";
 
-/// One index row (seven cells).
+/// Where an exported kit says it is anchored: its home's basis at export. Spelled in one place, read in one
+/// place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchoredOn {
+    pub chain_id: u64,
+    pub from_block: u64,
+    /// The registry contract, `0x` and forty lowercase hex digits.
+    pub registry: String,
+}
+
+/// The line's fixed head and the separator between its three parts (space, U+00B7, space).
+const LINE_HEAD: &str = "anchored-on: eip155:";
+const LINE_SEP: &str = " \u{b7} ";
+
+impl AnchoredOn {
+    /// The fixed last line of a kit's `note_md`, the same in every language:
+    /// `anchored-on: eip155:<chain> · registry <address> · from <block>`.
+    pub fn line(&self) -> String {
+        format!("{LINE_HEAD}{}{LINE_SEP}registry {}{LINE_SEP}from {}", self.chain_id, self.registry, self.from_block)
+    }
+
+    /// Read one line as written by [`AnchoredOn::line`], whole-line and exact: decimal numbers without leading
+    /// zeros (each within the canonical integer ceiling, so the index row reads back), the address lowercase.
+    /// Anything else is not this line.
+    pub fn of_line(line: &str) -> Option<AnchoredOn> {
+        let rest = line.strip_prefix(LINE_HEAD)?;
+        let (chain, rest) = rest.split_once(LINE_SEP)?;
+        let (registry, from) = rest.strip_prefix("registry ")?.split_once(LINE_SEP)?;
+        let from = from.strip_prefix("from ")?;
+        let decimal = |t: &str| -> Option<u64> {
+            let ok = !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && (t == "0" || !t.starts_with('0'));
+            t.parse::<u64>().ok().filter(|n| ok && *n <= json::MAX_INT)
+        };
+        let lower_hex = registry.len() == 42
+            && registry.starts_with("0x")
+            && registry[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !lower_hex {
+            return None;
+        }
+        Some(AnchoredOn { chain_id: decimal(chain)?, from_block: decimal(from)?, registry: registry.to_string() })
+    }
+
+    fn value(&self) -> Value {
+        Value::Obj(vec![
+            ("chainId".to_string(), Value::Int(self.chain_id)),
+            ("fromBlock".to_string(), Value::Int(self.from_block)),
+            ("registry".to_string(), Value::Str(self.registry.clone())),
+        ])
+    }
+
+    fn of_value(v: &Value) -> Option<AnchoredOn> {
+        let int = |k: &str| match member(v, k) {
+            Some(Value::Int(n)) => Some(*n),
+            _ => None,
+        };
+        let a = AnchoredOn { chain_id: int("chainId")?, from_block: int("fromBlock")?, registry: str_of(v, "registry")? };
+        // The row's cell is the line's three parts: anything the line could not carry is not this cell.
+        (AnchoredOn::of_line(&a.line()).as_ref() == Some(&a)).then_some(a)
+    }
+}
+
+/// A manifest note taken apart: the author's text and the anchoring point its last line carries (only the
+/// last line counts, and only when it is exactly that line). The inverse of [`note_with`].
+pub fn split_note(note: &str) -> (String, Option<AnchoredOn>) {
+    let (author, last) = match note.rsplit_once('\n') {
+        Some((a, l)) => (a, l),
+        None => ("", note),
+    };
+    match AnchoredOn::of_line(last) {
+        Some(at) => (author.to_string(), Some(at)),
+        None => (note.to_string(), None),
+    }
+}
+
+/// The note a kit carries: the author's text, then this home's anchoring point as its last line (none
+/// configured, none added). A note that already ends in such a line has it taken off first, so exporting again
+/// never doubles it.
+pub fn note_with(note: &str, at: Option<&AnchoredOn>) -> String {
+    let author = split_note(note).0;
+    match at {
+        None => author,
+        Some(a) if author.is_empty() => a.line(),
+        Some(a) => format!("{author}\n{}", a.line()),
+    }
+}
+
+/// One index row (seven cells, and `anchoredOn` when the kit says where it is anchored).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     /// The bundle's `kit_id`, lowercase with 0x.
@@ -55,8 +149,10 @@ pub struct Row {
     pub path: String,
     /// Digests of the original files (the `contents` values already in the bundle's MANIFEST).
     pub contents: Vec<String>,
+    /// The author's text: the manifest's `note_md` without its anchoring line.
     pub note_md: String,
     pub link: Option<String>,
+    pub anchored_on: Option<AnchoredOn>,
 }
 
 /// Where the index file is.
@@ -82,11 +178,15 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
 }
 
 fn row_value(r: &Row) -> Value {
-    let mut m = vec![
+    let mut m = Vec::new();
+    if let Some(a) = &r.anchored_on {
+        m.push(("anchoredOn".to_string(), a.value()));
+    }
+    m.extend([
         (contents_key().to_string(), Value::Arr(r.contents.iter().map(|c| Value::Str(c.clone())).collect())),
         ("created".to_string(), Value::Int(r.created)),
         ("id".to_string(), Value::Str(r.id.clone())),
-    ];
+    ]);
     if let Some(l) = &r.link {
         m.push(("link".to_string(), Value::Str(l.clone())));
     }
@@ -132,7 +232,11 @@ pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
         let (Some(id), Some(root), Some(path), Some(note_md)) = (str_of(k, "id"), str_of(k, "root"), str_of(k, "path"), str_of(k, note_key())) else {
             return Err(bad());
         };
-        out.push(Row { id, created, root, path, contents, note_md, link: str_of(k, "link") });
+        let anchored_on = match member(k, "anchoredOn") {
+            None => None,
+            Some(a) => Some(AnchoredOn::of_value(a).ok_or_else(bad)?),
+        };
+        out.push(Row { id, created, root, path, contents, note_md, link: str_of(k, "link"), anchored_on });
     }
     Ok(Some(out))
 }
@@ -171,9 +275,10 @@ fn write_overrides(machine: &Path, o: &[(String, String)]) -> Result<(), Fault> 
     crate::local::put(&machine.join(DIR), OVERRIDES, crate::local::Doc::KitLinks, &json::canon_bytes(&v))
 }
 
-/// On disk, the canonicalized path; otherwise unchanged (`/tmp` and `/private/tmp` are the same place).
+/// On disk, the canonicalized path in its plain spelling (`home::plain_path`: the rows store it, and rows are
+/// compared with it); otherwise unchanged (`/tmp` and `/private/tmp` are the same place).
 fn canon(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    std::fs::canonicalize(p).map(crate::home::plain_path).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// The bundle's relative path in the `kits` room (for assembling `link`): relative to the room when inside
@@ -208,8 +313,13 @@ fn pct(seg: &str) -> String {
 }
 
 /// Read the bundle's own manifest for the digests in the `contents` column (existing values, not recomputed)
-/// and `note_md`.
+/// and the author's `note_md` (its anchoring line taken off).
 pub fn manifest_facts(kit: &Path) -> Result<(Vec<String>, String), Fault> {
+    manifest_row_facts(kit).map(|(c, n, _)| (c, n))
+}
+
+/// As [`manifest_facts`], with the anchoring point the note's last line carries.
+pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<AnchoredOn>), Fault> {
     let p = kit.join(zikaron_glue::names::MANIFEST);
     let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
     let v = json::parse(&bytes).map_err(|t| Fault::known(Known::NotAdoptable, format!("{}: {t:?}", p.display())))?;
@@ -217,20 +327,21 @@ pub fn manifest_facts(kit: &Path) -> Result<(Vec<String>, String), Fault> {
         Some(Value::Arr(a)) => a.iter().filter_map(|r| str_of(r, Field::Content.as_str())).collect(),
         _ => Vec::new(),
     };
-    Ok((contents, str_of(&v, note_key()).unwrap_or_default()))
+    let (note, at) = split_note(&str_of(&v, note_key()).unwrap_or_default());
+    Ok((contents, note, at))
 }
 
 /// Add a row when an export lands. A row is identified by the bundle directory's path (the same bundle
 /// exported to two places is two rows; exporting again to the same place replaces that row). `link` follows
 /// that place's override, otherwise the default.
 pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, created: u64, publish: Option<&str>) -> Result<Row, Fault> {
-    let (contents, note_md) = manifest_facts(kit)?;
+    let (contents, note_md, anchored_on) = manifest_row_facts(kit)?;
     let root = crate::ledgerx::root_of(home)?;
     let mut rows = read(machine)?.unwrap_or_default();
     let o = overrides(machine)?;
-    let path = kit.display().to_string();
+    let path = crate::home::plain_path(kit.to_path_buf()).display().to_string();
     let link = o.iter().find(|(k, _)| *k == path).map(|(_, l)| l.clone()).or_else(|| default_link(publish, &rel_of(&home.dir(crate::home::Slot::Kits), kit)));
-    let row = Row { id: id.to_string(), created, root, path, contents, note_md, link };
+    let row = Row { id: id.to_string(), created, root, path, contents, note_md, link, anchored_on };
     rows.retain(|r| r.path != row.path);
     rows.push(row.clone());
     write(machine, &rows)?;

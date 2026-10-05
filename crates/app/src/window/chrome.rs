@@ -258,7 +258,7 @@ impl Win {
         let mut chip: Option<egui::Rect> = None;
         let mut status = rail::Status::default();
         let (words, voice, progress, sync) = self.status_say();
-        let pin_set = !matches!(self.shell.vault, crate::keybox::State::Absent);
+        let pin_set = !self.shell.vault.absent();
         let (id_name, id_kind) = self.id_chip_words();
         let panel = egui::SidePanel::left("rail")
             .exact_width(tk::RAIL_W)
@@ -267,11 +267,15 @@ impl Win {
             .frame(rail::panel_frame())
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let full = ui.max_rect();
-                // The top of the rail is the window's handle: dragging here drags the window.
-                let grip = egui::Rect::from_min_max(egui::pos2(full.left() - tk::RAIL_PAD, full.top() - tk::RAIL_TOP), egui::pos2(full.right() + tk::RAIL_PAD, full.top()));
-                if ui.interact(grip, ui.id().with("rail-grip"), egui::Sense::drag()).drag_started() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                // On macOS the top of the rail is the window's handle (there is no title bar): dragging here
+                // drags the window. Elsewhere the system's title bar does that.
+                #[cfg(target_os = "macos")]
+                {
+                    let full = ui.max_rect();
+                    let grip = egui::Rect::from_min_max(egui::pos2(full.left() - tk::RAIL_PAD, full.top() - tk::RAIL_TOP), egui::pos2(full.right() + tk::RAIL_PAD, full.top()));
+                    if ui.interact(grip, ui.id().with("rail-grip"), egui::Sense::drag()).drag_started() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
                 }
                 let r = rail::id_chip(ui, &id_name, &id_kind);
                 if r.clicked() {
@@ -388,19 +392,23 @@ impl Win {
                 v
             })
             .collect();
-        let mut items: Vec<menu::Item> = vec![menu::Item::Head(t(Key::IdSwitchTitle))];
+        let mut items: Vec<menu::Item> = Vec::new();
         for (i, r) in rows.iter().enumerate() {
             items.push(menu::Item::Who(menu::Who { name: names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
         }
-        items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::IdDoNew)));
         items.push(menu::row(t(Key::IdDoImport)));
-        items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::SetKeys)));
-        if let Some(i) = menu::show(ctx, id, anchor, true, 236.0, &items) {
-            let n = rows.len();
-            if i >= 1 && i <= n {
-                let r = &rows[i - 1];
+        // A picker: the identities by name, address or kind; the three actions after them always stay.
+        let n = rows.len();
+        let spec = pick::Spec { hint: t(Key::SearchIdentity), empty: t(Key::SearchNone), w: PICK_W, dates: None };
+        let keep = |i: usize, q: &str, _: &str, _: &str| match i {
+            i if i < n => matches(q, &[names[i], &rows[i].id, t(id_kind_key(rows[i].kind()))]),
+            _ => true,
+        };
+        if let Some(i) = pick::show(ctx, id, anchor, true, &spec, &items, &keep) {
+            if i < n {
+                let r = &rows[i];
                 if current.as_deref() != Some(r.id.as_str()) {
                     self.act(Action::SwitchIdentity { id: r.id.clone() }, now);
                     self.ux.hist.clear();
@@ -408,12 +416,12 @@ impl Win {
                     self.ux.place = Some(Place::Home);
                     self.entered(motion::Entry::Fade, now);
                 }
-            } else if i == n + 2 {
+            } else if i == n {
                 self.id_layer_open(IdModal::New);
                 self.act(Action::NewIdentity, now);
-            } else if i == n + 3 {
+            } else if i == n + 1 {
                 self.id_layer_open(IdModal::Import);
-            } else if i == n + 5 {
+            } else if i == n + 2 {
                 self.go(Place::Settings(Section::Keys), now);
             }
         }
@@ -431,7 +439,7 @@ impl Win {
         };
         if let Some(k) = self.running_task() {
             let others = self.ux.asked.iter().filter(|x| **x != k && self.shell.tasks.in_flight(**x)).count();
-            let name = t(task_key(k));
+            let name = t(self.task_word(k));
             let words = if others > 0 { fill2(Key::NavDoingMore, name, &(others + 1).to_string()) } else { fill1(Key::NavDoing, name) };
             return (words, rail::Voice::Task, Some(crate::task::stage(k).and_then(|s| s.frac())), sync);
         }
@@ -495,7 +503,7 @@ impl Win {
             match apply(&mut self.shell, a) {
                 // The round speaks once, when all of it has landed (`sync_landed`).
                 Applied::Started(k) => self.ux.syncing.push(k),
-                Applied::Refused(k) => self.toasts.say(fill1(Key::SaidInFlight, t(task_key(k))), Tone::Bad, now),
+                Applied::Refused(k) => self.toasts.say(fill1(Key::SaidInFlight, t(self.task_word(k))), Tone::Bad, now),
                 Applied::Trouble(f) if crate::watchx::is_network(&f) => self.say_fault(&f, now),
                 _ => {}
             }
@@ -523,7 +531,7 @@ impl Win {
         let mut failed = false;
         for r in results {
             match r {
-                Ok(Done::Chain { gas_wei: Some(w), .. }) => parts.push(fill1(Key::SaidChain, &eth(w))),
+                Ok(Done::Chain { gas_wei: Some(w), .. }) => parts.push(fill1(Key::SaidChain, &eth_held(w))),
                 Ok(Done::Chain { gas_wei: None, .. }) => {
                     failed = true;
                     parts.push(t(Key::SaidChainNone).to_string());
@@ -739,7 +747,7 @@ impl Win {
         if pressed(egui::Key::Comma) {
             self.rail_to(Place::SettingsHome, now);
         }
-        if !matches!(self.shell.vault, crate::keybox::State::Absent) && pressed(egui::Key::L) {
+        if !self.shell.vault.absent() && pressed(egui::Key::L) {
             self.lock_now(now);
         }
         let items: Vec<Place> = crate::nav::rail(self.shell.settings.role).iter().flat_map(|g| g.items.iter().map(|i| i.place)).collect();

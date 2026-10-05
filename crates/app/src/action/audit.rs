@@ -57,19 +57,12 @@ pub(super) fn run_audit(
     mut g: crate::auditx::Ground,
 ) -> Result<Done, crate::fault::Fault> {
     // `toBlock` is asked of the chain now: a fixed number would set the same height for every chain.
-    let head = crate::chainx::ask(eps, "eth_blockNumber", &zikaron::json::Value::Arr(Vec::new()))?;
-    let n = match &head.value {
-        zikaron::json::Value::Str(s) => crate::chainx::wei(s).ok_or_else(|| {
-            crate::fault::Fault::known(crate::fault::Known::ChainShape, crate::lang::filln(crate::lang::Key::Tail022, &[&(s).to_string()]))
-        })?,
-        other => {
-            return Err(crate::fault::Fault::known(
-                crate::fault::Known::ChainShape,
-                crate::lang::filln(crate::lang::Key::Tail023, &[&format!("{:?}", other)]),
-            ))
-        }
-    };
-    g.to_block = (n as u64).max(g.from_block);
+    // The basis chain's height, smallest over its endpoints (`head_block`): each endpoint reports its own,
+    // a block or two apart, and every endpoint has reached the smallest, so the scan up to it still asks for
+    // agreement. Asking every endpoint for one height that must match turned "one node is a block ahead"
+    // into a disagreement.
+    let (n, _) = crate::chainx::head_block(eps, g.chain)?;
+    g.to_block = n.max(g.from_block);
     let home = crate::home::Home::open(root)?;
     let v = crate::auditx::online(&home, eps, &g)?;
     Ok(Done::Audited {
@@ -112,5 +105,11 @@ pub(super) fn set_basis(
         s.from_block = f;
         s.network = None;
     })?;
+    if let Err(f) = super::archive::remember_custom(shell) {
+        shell.faults.push(f);
+    }
+    // A new basis answers the tail question afresh.
+    shell.tail_asked = None;
+    tail_if_due(shell);
     Ok(c)
 }

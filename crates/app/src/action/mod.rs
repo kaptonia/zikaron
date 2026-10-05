@@ -19,15 +19,25 @@ use crate::trace;
 #[derive(Clone, PartialEq, Eq)]
 pub enum ImportForm {
     Words(crate::secret::Secret),
-    PrivateKey(crate::secret::Secret),
+    /// A bare private key, and the key file it lands as in the same pass (`keyfile`). An import that makes the
+    /// primary identity needs it: a primary with no key file has no way back from a forgotten passcode.
+    PrivateKey { key: crate::secret::Secret, keyfile: Option<KeyFileOut> },
     Keystore { path: String, password: crate::secret::Secret },
+}
+
+/// A key file to write: its password twice and the folder it lands in (the cells of "export key file").
+#[derive(Clone, PartialEq, Eq)]
+pub struct KeyFileOut {
+    pub password: crate::secret::Secret,
+    pub again: crate::secret::Secret,
+    pub dir: String,
 }
 
 impl std::fmt::Debug for ImportForm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImportForm::Words(_) => f.write_str("Words(…)"),
-            ImportForm::PrivateKey(_) => f.write_str("PrivateKey(…)"),
+            ImportForm::PrivateKey { keyfile, .. } => write!(f, "PrivateKey {{ key: …, keyfile: {} }}", if keyfile.is_some() { "…" } else { "none" }),
             ImportForm::Keystore { path, .. } => write!(f, "Keystore {{ path: {path:?}, password: … }}"),
         }
     }
@@ -81,14 +91,16 @@ pub enum Action {
     /// Generate twelve new words (in memory only, until the person confirms the copy).
     NewIdentity,
     /// Confirm the copy: three random cells filled back; a match creates the identity. `label` is an optional
-    /// note (for recognition only; no decision reads it).
-    ConfirmIdentity { answers: Vec<(usize, crate::secret::Secret)>, label: String },
+    /// note (for recognition only; no decision reads it). `network` is the network the identity chooses (a row
+    /// name from the known deployments table, or `deploy::CUSTOM`): both its seats' homes take it.
+    ConfirmIdentity { answers: Vec<(usize, crate::secret::Secret)>, label: String, network: String },
     /// Abandon: wipe the words in memory.
     DropFresh,
     /// Import an identity (recovery words, private key, or keystore file plus password). `seat` is the seat
     /// an existing key takes (only that one; the other stays empty); recovery words take both seats, and
-    /// there `seat` only reads the current identity table. `label` is an optional note.
-    ImportIdentity { form: ImportForm, seat: crate::roles::Role, label: String },
+    /// there `seat` only reads the current identity table. `label` is an optional note; `network` as with
+    /// [`Action::ConfirmIdentity`] (an identity imported again keeps the network it had).
+    ImportIdentity { form: ImportForm, seat: crate::roles::Role, label: String, network: String },
     /// Switch to another identity (landing on its author seat).
     SwitchIdentity { id: String },
     /// Delete an identity: only the key slots and the registry row; neither seat's home is deleted. Asks for
@@ -143,15 +155,17 @@ pub enum Action {
     /// Right after unlocking: what the locked time missed, once (the self-audit, the vault review and its
     /// sentinel, the receipt wait; the notices they raise ring once).
     CatchUp,
-    /// Choose a network for this machine (a row name from the known deployments table, or `deploy::CUSTOM`).
-    /// Written to machine settings; the current home, if it has no chain yet, is filled from that row.
+    /// The wizard's network step: the network of the identity the wizard made (a row name from the known
+    /// deployments table, or `deploy::CUSTOM`). Recorded as the current identity's network and as this
+    /// machine's last choice (which choice is selected first next time); the current home takes the row, or
+    /// with "custom" is left without a network, unless the person configured its network by hand.
     ChooseNetwork { name: String },
-    /// "Use this machine's default network" for an older home: fill it from the row this machine chose
-    /// (without one, the table's default row, recorded).
-    UseMachineNetwork,
     // ── Archive and single writer ──
     /// Open a home (creating it if missing) and take the writer lock.
     OpenHome { root: String },
+    /// "Change data folder": open the folder the person chose, only when it is a home or empty (anything else
+    /// refused by name, nothing written).
+    ChangeHome { root: String },
     /// Move the home to another path.
     MigrateHome { to: String },
     /// Change the size cap.
@@ -161,6 +175,9 @@ pub enum Action {
     ExportMirror { to: String },
     /// Reconcile once (background): assemble the audit input for the core. Only COMPLETE releases the pen.
     Reconcile,
+    /// Check everything again: drop this machine's record of chain facts already checked (`checkedx`), so the
+    /// next scan asks about every log.
+    RecheckAll,
     /// Read the chain once (background): balance and two read-only calls.
     ReadChain,
     /// Set chain endpoints (`<chain>=<url>`, several allowed).
@@ -189,6 +206,9 @@ pub enum Action {
     SetAuditEvery { secs: u64 },
     /// The auto-anchor setting (per home, off by default).
     SetAutoAnchor { on: bool },
+    /// Whether the records and ledger pages leave out what a deletion leaves on this machine only (per home,
+    /// off by default; display only).
+    SetHideLocalDeletions { on: bool },
     // Anchoring desk.
     /// Take a content hash (one of three entry points).
     TakeContent { source: crate::anchorx::Source, path: String },
@@ -197,9 +217,6 @@ pub enum Action {
     /// (signed entries stay). `for_` is the optional "recorded for", written into each body as is (parent law
     /// §6.10; this desk does not read it).
     RecordWork { note_md: String, files: Vec<String>, for_: Option<crate::anchorx::For> },
-    /// Check a file: compute its digest, read the ledger now, and answer which entry it is and which
-    /// transaction anchored it, or that this ledger has no such digest.
-    VerifyFile { path: String },
     /// Register a git repository.
     RegisterRepo { path: String },
     // Kit index.
@@ -331,6 +348,10 @@ pub enum Action {
     /// Write a badge (background): cascade from a held grant to its root, encode and self-verify with the kit
     /// core, QR code, land.
     ExportBadge { grant: String, out: String },
+    /// The grant code of a grant, whole: its chain cascaded to the root and encoded (the code the copy key puts
+    /// on the clipboard; the badge and the grant file encode the same chain the same way). Not an exit: the
+    /// code says only what the grant's own entries say.
+    CopyGrantCode { grant: String },
     // Grant files and publication.
     /// Write a grant file (single-file container): chain, terms documents, grant code, publication pointer,
     /// issuer's ledger; lands where the person chose.
@@ -347,11 +368,24 @@ pub enum Action {
     /// person said yes: this seat's home is set aside whole (kept, readable, never written to or let out), and
     /// a fresh one in its place receives the fetched ledger. `from` and `password` as for `FetchLedger`.
     FetchAside { from: String, password: crate::secret::Secret },
+    /// Check the tail of this identity's seats against the chain, whatever their ledgers came from: each seat
+    /// home holding the not-fetched mark is checked (`exitgate::tail`), and a passing one opens for
+    /// writing. The product starts it itself when it falls due (`Shell::tail_due`).
+    CheckTail,
     /// Open old data (a home set aside after a conflict) to read it; where this machine was before is kept
     /// for coming back. The machine pointer does not move.
     ViewOldData { root: String },
     /// Leave old data for the home open before it.
     LeaveOldData,
+    // Read-only networks (machine-wide, every identity's).
+    /// Add a read-only network (`was` empty) or change the one `was` names (chain id, registry), from the cells
+    /// a person typed. Only written to the machine directory's table; no chain is asked.
+    SaveReadNetwork { was: Option<(u64, String)>, name: String, chain: String, registry: String, from_block: String, nodes: String },
+    /// Remove a read-only network (chain id, registry).
+    RemoveReadNetwork { chain: u64, registry: String },
+    /// Read one read-only network once (background): its nodes, and the code at its registry against the
+    /// pinned build.
+    ReadReadNetwork { chain: u64, registry: String },
 }
 
 }
@@ -475,20 +509,24 @@ impl Action {
             | Action::Resume
             | Action::CatchUp
             | Action::ChooseNetwork { .. }
-            | Action::UseMachineNetwork
             | Action::ChangePin { .. }
             | Action::RecoverWords { .. }
             | Action::RecoverKeystore { .. }
             | Action::HideWords
             | Action::OpenHome { .. }
+            | Action::ChangeHome { .. }
             | Action::ViewOldData { .. }
             | Action::LeaveOldData
             | Action::MigrateHome { .. }
             | Action::SetCap { .. }
             | Action::ExportMirror { .. }
             | Action::Reconcile
+            | Action::RecheckAll
             | Action::ReadChain
             | Action::SetEndpoints { .. }
+            | Action::SaveReadNetwork { .. }
+            | Action::RemoveReadNetwork { .. }
+            | Action::ReadReadNetwork { .. }
             | Action::Adopt { .. }
             | Action::ReadLedger
             | Action::OpenEntry { .. }
@@ -496,6 +534,7 @@ impl Action {
             | Action::SetBasis { .. }
             | Action::SetAuditEvery { .. }
             | Action::SetAutoAnchor { .. }
+            | Action::SetHideLocalDeletions { .. }
             | Action::QueueEntry { .. }
             | Action::TakeContent { .. }
             | Action::RegisterRepo { .. }
@@ -532,14 +571,15 @@ impl Action {
             | Action::SetZone { .. }
             | Action::SetAppearance { .. }
             | Action::ExportBadge { .. }
+            | Action::CopyGrantCode { .. }
             | Action::ExportGrantFile { .. }
             | Action::SetPublish { .. }
             | Action::CheckPublished { .. }
             | Action::FetchLedger { .. }
             | Action::FetchAside { .. }
+            | Action::CheckTail
             | Action::RememberAddress { .. }
             | Action::ForgetAddress { .. }
-            | Action::VerifyFile { .. }
             | Action::SetKitLink { .. }
             | Action::DropKitCopy { .. } => false,
         }
@@ -582,25 +622,27 @@ impl Action {
             | Action::BackupKey { .. } => Feature::H2,
             Action::ExportBackup { .. } | Action::PeekBackup { .. } | Action::RestoreBackup { .. } => Feature::H4,
             Action::Resume => Feature::W4,
-            Action::OpenHome { .. } | Action::MigrateHome { .. } | Action::SetCap { .. } => Feature::H3,
+            Action::OpenHome { .. } | Action::ChangeHome { .. } | Action::MigrateHome { .. } | Action::SetCap { .. } => Feature::H3,
             Action::ViewOldData { .. } | Action::LeaveOldData => Feature::H8,
             Action::Measure => Feature::H3,
             Action::ExportMirror { .. }
             | Action::Reconcile
+            | Action::RecheckAll
             | Action::ReadChain
             | Action::SetEndpoints { .. }
             | Action::ChooseNetwork { .. }
-            | Action::UseMachineNetwork => Feature::H4,
+            | Action::SaveReadNetwork { .. }
+            | Action::RemoveReadNetwork { .. }
+            | Action::ReadReadNetwork { .. } => Feature::H4,
             Action::Genesis { .. } | Action::Adopt { .. } => Feature::H5,
-            Action::ReadLedger | Action::OpenEntry { .. } | Action::Annotate { .. } | Action::Retract { .. } => Feature::W1,
+            Action::ReadLedger | Action::OpenEntry { .. } | Action::Annotate { .. } | Action::Retract { .. } | Action::SetHideLocalDeletions { .. } => Feature::W1,
             Action::Audit | Action::SetBasis { .. } | Action::SetAuditEvery { .. } => Feature::W2,
             Action::QueueEntry { .. } | Action::SetAutoAnchor { .. } => Feature::W4,
             Action::TakeContent { .. }
             | Action::RecordWork { .. }
             | Action::RegisterRepo { .. }
             | Action::CheckRepo
-            | Action::TakeDropped { .. }
-            | Action::VerifyFile { .. } => Feature::W3,
+            | Action::TakeDropped { .. } => Feature::W3,
             Action::EstimateGas { .. } | Action::SendBatch { .. } => Feature::W4,
             Action::PickKit { .. } | Action::ExportKit { .. } | Action::SetKitLink { .. } | Action::DropKitCopy { .. } | Action::VetAttachments { .. } => Feature::W5,
             Action::ReadDepth { .. } => Feature::W6,
@@ -626,11 +668,12 @@ impl Action {
             Action::SetReviewEvery { .. } => Feature::D7,
             Action::SetLang { .. } | Action::SetZone { .. } => Feature::H6,
             Action::SetAppearance { .. } => Feature::H0,
-            Action::ExportBadge { .. } => Feature::D9,
+            Action::ExportBadge { .. } | Action::CopyGrantCode { .. } => Feature::D9,
             Action::ExportGrantFile { .. } => Feature::D6,
             Action::SetPublish { .. } | Action::CheckPublished { .. } => Feature::W14,
             Action::FetchLedger { .. } => Feature::H8,
             Action::FetchAside { .. } => Feature::H8,
+            Action::CheckTail => Feature::H8,
             Action::CheckPayload { .. } => Feature::P1,
         }
     }
@@ -677,16 +720,20 @@ impl Action {
             Action::Resume => None,
             Action::CatchUp => None,
             Action::ChooseNetwork { .. } => None,
-            Action::UseMachineNetwork => None,
             Action::OpenHome { .. } => None,
+            Action::ChangeHome { .. } => None,
             Action::ViewOldData { .. } => None,
             Action::LeaveOldData => None,
             Action::MigrateHome { .. } => None,
             Action::SetCap { .. } => None,
             Action::ExportMirror { .. } => Some(Exit::Mirror),
             Action::Reconcile => None,
+            Action::RecheckAll => None,
             Action::ReadChain => None,
             Action::SetEndpoints { .. } => None,
+            Action::SaveReadNetwork { .. } => None,
+            Action::RemoveReadNetwork { .. } => None,
+            Action::ReadReadNetwork { .. } => None,
             Action::Genesis { .. } => None,
             Action::Adopt { .. } => None,
             Action::ReadLedger => None,
@@ -697,9 +744,9 @@ impl Action {
             Action::SetBasis { .. } => None,
             Action::SetAuditEvery { .. } => None,
             Action::SetAutoAnchor { .. } => None,
+            Action::SetHideLocalDeletions { .. } => None,
             Action::TakeContent { .. } => None,
             Action::RecordWork { .. } => None,
-            Action::VerifyFile { .. } => None,
             Action::RegisterRepo { .. } => None,
             Action::SetKitLink { .. } => None,
             Action::DropKitCopy { .. } => None,
@@ -746,11 +793,13 @@ impl Action {
             Action::SetZone { .. } => None,
             Action::SetAppearance { .. } => None,
             Action::ExportBadge { .. } => Some(Exit::Badge),
+            Action::CopyGrantCode { .. } => None,
             Action::ExportGrantFile { .. } => Some(Exit::GrantFile),
             Action::SetPublish { .. } => None,
             Action::CheckPublished { .. } => None,
             Action::FetchLedger { .. } => None,
             Action::FetchAside { .. } => None,
+            Action::CheckTail => None,
         }
     }
 
@@ -891,12 +940,13 @@ pub enum Applied {
     Resumed(bool),
     /// The catch-up after unlocking: which of the self-audit, the vault review and the receipt wait started.
     CaughtUp { audit: bool, review: bool, resume: bool },
-    /// A network row was chosen; `filled` means the current home was filled from it too.
+    /// A network was chosen; `filled` means the current home now has that row's network (false with
+    /// "custom", or when the person configured this home's network by hand).
     NetworkChosen { name: String, filled: bool },
-    /// This home now uses the network row the machine chose.
-    NetworkAdopted { name: String },
     /// The auto-anchor setting was saved.
     AutoAnchor(bool),
+    /// The setting that hides local deletions from the two lists was saved.
+    HideLocalDeletions(bool),
     /// Recovered, with a new passcode.
     Recovered,
     /// The twelve words are shown.
@@ -907,6 +957,8 @@ pub enum Applied {
     KeyBackedUp { path: String, address: Address },
     /// The home is open, with its mode (writer or reader).
     Homed { root: String, mode: crate::lock::Mode },
+    /// The record of checked facts was dropped (`had`: there was one).
+    FactsForgotten { had: bool },
     /// The move finished.
     Migrated { root: String },
     /// The cap changed.
@@ -938,10 +990,10 @@ pub enum Applied {
     /// Batch signing: the ids signed (in drop order), where it stopped (index, path, reason; `None` when all
     /// succeeded), the queue length, and what comes next. Signed entries stay.
     RecordedBatch { ids: Vec<String>, stopped: Option<(usize, String, crate::fault::Fault)>, queued: usize, next: Next },
-    /// The answer of a file check.
-    FileVerdict(Box<crate::recordsx::Verdict>),
     /// A kit's `link` changed (`None`: back to the default with no publication base configured).
     KitLinked { path: String, link: Option<String> },
+    /// The whole grant code of a grant, for the clipboard.
+    GrantCode { text: String },
     /// A kit's index row was removed; `dir_removed` when the directory held exactly this kit and was deleted.
     KitDropped { id: String, dir_removed: bool },
     /// A repository was registered.
@@ -961,6 +1013,8 @@ pub enum Applied {
     GrantFileExported { path: String, why: crate::home::Why, hops: usize, terms: usize, ledger: bool, files: usize },
     /// The publication address was recorded (`None` clears it).
     PublishSet { url: Option<String> },
+    /// The read-only network table was written: how many networks it holds now.
+    ReadNets(usize),
     /// The overlap check ran: how many overlaps.
     Clashed(usize),
     /// A step was ticked, with the next step.
@@ -985,8 +1039,9 @@ pub enum Applied {
     Booked { address: String, on: bool },
     /// A snapshot was saved (no evidential weight), with where and how many bytes.
     Snapshot { path: String, bytes: usize },
-    /// Grants went into the vault (a payload may hold several), with the first id.
-    Held { ids: Vec<String> },
+    /// Grants went into the vault (a payload may hold several), and the grant the pass was for (a chain's last
+    /// hop; empty for a folder of grants).
+    Held { ids: Vec<String>, grant: String },
     /// A folder import took some files and refused others (each refusal is listed in the trouble panel).
     HeldPartly { ids: Vec<String>, refused: usize },
     /// A held grant's upstream location was recorded.
@@ -1057,8 +1112,8 @@ fn gate_first(shell: &mut Shell, a: Action) -> Applied {
     };
     let root = shell.home.as_ref().map(|h| h.root().to_path_buf());
     match shell.tasks.spawn(Kind::Gate, move || {
-        crate::exitgate::pass(&ask)?;
-        Ok(Done::GatePassed { root, then: Box::new(a) })
+        let pass = crate::exitgate::pass(&ask)?;
+        Ok(Done::GatePassed { root, then: Box::new(a), pass: Box::new(pass) })
     }) {
         Spawned::Started => Applied::Started(Kind::Gate),
         Spawned::InFlight => Applied::Refused(Kind::Gate),
@@ -1070,7 +1125,7 @@ fn gate_first(shell: &mut Shell, a: Action) -> Applied {
 /// void here: when another press of an export is being gated already, that gate answers for itself and this
 /// one says nothing (`None`); if not, the export is applied again through the one entry, refused there as any
 /// press would be (locked, no home) or gated again for the home and source now open.
-pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Action, stale: bool) -> Option<Applied> {
+pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Action, pass: &crate::exitgate::Pass, stale: bool) -> Option<Applied> {
     let here = shell.home.as_ref().map(|h| h.root().to_path_buf());
     if stale || here != root {
         if shell.tasks.in_flight(Kind::Gate) {
@@ -1078,10 +1133,23 @@ pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Ac
         }
         return Some(apply(shell, then));
     }
-    shell.gate_cleared = true;
-    let said = apply(shell, then);
-    shell.gate_cleared = false;
-    Some(said)
+    // The export runs with the gate's pass; asked through `apply` it would only be gated again.
+    trace::mark(then.feature());
+    if let Some(k) = held_back(shell, &then) {
+        return Some(shell.trouble(crate::fault::Fault::known(k, String::new())));
+    }
+    Some(match then {
+        Action::ExportMirror { to } => match export_mirror(shell, &to, pass) {
+            Ok((path, entries, added, topped_up)) => Applied::Mirrored { path, entries, added, topped_up },
+            Err(f) => shell.trouble(f),
+        },
+        Action::ExportGrantFile { id, to } => match export_grant_file(shell, &id, &to, pass) {
+            Ok(x) => grant_file_exported(x),
+            Err(f) => shell.trouble(f),
+        },
+        // Only the two exports above are gated through a background pass.
+        other => apply(shell, other),
+    })
 }
 
 /// Apply. The one place the window and the test hooks share.
@@ -1191,6 +1259,11 @@ fn busy_for_rekey(shell: &Shell) -> Option<crate::fault::Fault> {
 /// received while waiting are recorded as usual and left for the next receive.
 pub fn apply_settled(shell: &mut Shell, a: Action) -> Applied {
     let first = apply(shell, a);
+    if let Applied::Started(k) = first {
+        if lands_said(k) {
+            return said_settled(shell, k);
+        }
+    }
     if first != Applied::Started(Kind::Vault) {
         return first;
     }
@@ -1207,6 +1280,87 @@ pub fn apply_settled(shell: &mut Shell, a: Action) -> Applied {
                 return shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, Kind::Vault.as_str().to_string()));
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// The kinds whose action answers where its task lands (`Shell::said`): the slow half runs in the background,
+/// the frame half and the answer come with the landing ([`landed`]).
+pub fn lands_said(k: Kind) -> bool {
+    matches!(k, Kind::Gas | Kind::Take | Kind::Record | Kind::Migrate)
+}
+
+/// The frame half of those kinds, where the result is received; its answer is the one the action gave when it
+/// ran in the frame.
+pub fn landed(shell: &mut Shell, k: Kind, got: Result<Done, crate::fault::Fault>) -> Applied {
+    let lost = |shell: &mut Shell| shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, k.as_str().to_string()));
+    match (k, got) {
+        (Kind::Gas, got) => gas_landed(shell, got),
+        (Kind::Take, Ok(Done::Took { source, content })) => took_landed(shell, source, content),
+        (Kind::Record, Ok(Done::Hashed { note_md, for_, files })) => {
+            let (ids, stopped, n) = record_files(shell, &note_md, files, for_.as_ref());
+            if let Some((_, _, f)) = &stopped {
+                shell.faults.push(f.clone());
+            }
+            Applied::RecordedBatch { ids, stopped, queued: n.queued, next: n.next }
+        }
+        (Kind::Migrate, Ok(Done::Copied { old, root })) => match migrate_landed(shell, &old, &root) {
+            Ok(root) => Applied::Migrated { root },
+            Err(f) => shell.trouble(f),
+        },
+        (_, Err(f)) => shell.trouble(f),
+        (_, Ok(_)) => lost(shell),
+    }
+}
+
+/// Start taking a content: its fingerprint is computed as a task (`Kind::Take`).
+fn take_started(shell: &mut Shell, source: crate::anchorx::Source, p: std::path::PathBuf) -> Applied {
+    match shell.tasks.spawn(Kind::Take, move || crate::anchorx::of(source, &p).map(|content| Done::Took { source, content })) {
+        Spawned::Started => {
+            shell.content = None;
+            shell.said.remove(&Kind::Take);
+            Applied::Started(Kind::Take)
+        }
+        Spawned::InFlight => Applied::Refused(Kind::Take),
+    }
+}
+
+/// An action of those kinds started by [`apply_settled`], waited for where it lands (`Shell::said`), as a
+/// passcode task is.
+fn said_settled(shell: &mut Shell, k: Kind) -> Applied {
+    loop {
+        if let Some(done) = shell.said.remove(&k) {
+            return done;
+        }
+        let finished = shell.tasks.finished_in_flight(k);
+        shell.drain_hold();
+        if !shell.said.contains_key(&k) {
+            if (finished && shell.tasks.in_flight(k)) || !shell.tasks.in_flight(k) {
+                return shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, k.as_str().to_string()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// A gas estimate landed: on an answer the batch's estimate and fees are the shell's (what the send sheet
+/// shows, the balance gate needs and the transaction carries); on a refusal there is no estimate, so this batch
+/// cannot be sent, and the refusal is recorded. The answer is the one the action gave before it ran as a task.
+pub fn gas_landed(shell: &mut Shell, got: Result<Done, crate::fault::Fault>) -> Applied {
+    match got {
+        Ok(Done::Gas { count, gas, calldata, fees, head_time }) => {
+            if let Some(t) = head_time {
+                shell.note_chain_time(t);
+            }
+            shell.gas = Some((count, gas));
+            shell.fees = Some(fees);
+            Applied::Gas { count, gas, calldata }
+        }
+        Ok(_) => shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, Kind::Gas.as_str().to_string())),
+        Err(f) => {
+            shell.gas = None;
+            shell.fees = None;
+            shell.trouble(f)
         }
     }
 }
@@ -1253,7 +1407,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(r) => Applied::Seated(r),
             Err(f) => shell.trouble(f),
         },
-        Action::ReadIdentities => match crate::identity::view(shell.settings.role) {
+        Action::ReadIdentities => match crate::register::view(shell.settings.role) {
             Ok(r) => {
                 let n = r.rows.len();
                 shell.seat_identities(Some(r));
@@ -1268,7 +1422,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
-        Action::ConfirmIdentity { answers, label } => match confirm_identity(shell, &answers, &label) {
+        Action::ConfirmIdentity { answers, label, network } => match confirm_identity(shell, &answers, &label, &network) {
             Ok(started) => started,
             Err(f) => shell.trouble(f),
         },
@@ -1276,7 +1430,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             shell.new_words = None;
             Applied::FreshDropped
         }
-        Action::ImportIdentity { form, seat, label } => match import_identity(shell, form, seat, &label) {
+        Action::ImportIdentity { form, seat, label, network } => match import_identity(shell, form, seat, &label, &network) {
             Ok(started) => started,
             Err(f) => shell.trouble(f),
         },
@@ -1402,10 +1556,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(filled) => Applied::NetworkChosen { name, filled },
             Err(f) => shell.trouble(f),
         },
-        Action::UseMachineNetwork => match use_machine_network(shell) {
-            Ok(name) => Applied::NetworkAdopted { name },
-            Err(f) => shell.trouble(f),
-        },
         Action::SetAutoLock { on, secs } => match set_auto_lock(shell, on, secs) {
             Ok((on, secs)) => Applied::AutoLockSet { on, secs },
             Err(f) => shell.trouble(f),
@@ -1471,6 +1621,10 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(mode) => Applied::Homed { root, mode },
             Err(f) => shell.trouble(f),
         },
+        Action::ChangeHome { root } => match change_home(shell, &root) {
+            Ok(mode) => Applied::Homed { root, mode },
+            Err(f) => shell.trouble(f),
+        },
         Action::ViewOldData { root } => match view_old(shell, &root) {
             Ok(mode) => Applied::Homed { root, mode },
             Err(f) => shell.trouble(f),
@@ -1479,10 +1633,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok((root, mode)) => Applied::Homed { root, mode },
             Err(f) => shell.trouble(f),
         },
-        Action::MigrateHome { to } => match migrate(shell, &to) {
-            Ok(root) => Applied::Migrated { root },
-            Err(f) => shell.trouble(f),
-        },
+        Action::MigrateHome { to } => migrate_begin(shell, &to),
         Action::SetCap { bytes } => match set_cap(shell, bytes) {
             Ok(n) => Applied::Capped(n),
             Err(f) => shell.trouble(f),
@@ -1490,12 +1641,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
 
         // What can be refused without reading the chain is refused before the exit gate starts (the same plan
         // is asked again where the gate landed, on the state then).
-        Action::ExportMirror { to } if !shell.gate_cleared => match mirror_plan(shell, &to) {
+        Action::ExportMirror { to } => match mirror_plan(shell, &to) {
             Ok(_) => gate_first(shell, Action::ExportMirror { to }),
-            Err(f) => shell.trouble(f),
-        },
-        Action::ExportMirror { to } => match export_mirror(shell, &to) {
-            Ok((path, entries, added, topped_up)) => Applied::Mirrored { path, entries, added, topped_up },
             Err(f) => shell.trouble(f),
         },
         Action::Reconcile => {
@@ -1510,6 +1657,10 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Spawned::InFlight => Applied::Refused(Kind::Reconcile),
             }
         }
+        Action::RecheckAll => match crate::checkedx::forget() {
+            Ok(had) => Applied::FactsForgotten { had },
+            Err(f) => shell.trouble(f),
+        },
         Action::ReadChain => {
             let eps = shell.endpoints.clone();
             let Some(who) = shell.anchor else {
@@ -1613,19 +1764,17 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(()) => Applied::AutoAnchor(on),
             Err(f) => shell.trouble(f),
         },
+        Action::SetHideLocalDeletions { on } => match shell.commit_settings(|s| s.hide_local_deletions = on) {
+            Ok(()) => Applied::HideLocalDeletions(on),
+            Err(f) => shell.trouble(f),
+        },
         // ── Anchoring desk ──
+        // The fingerprint reads the whole content, so it is computed as a task (`Kind::Take`); the content lands
+        // in `took_landed`. While it is out there is no content: the previous one is cleared, so the record
+        // sheet cannot go on with the one being replaced.
         Action::TakeContent { source, path } => {
-            match crate::anchorx::of(source, std::path::Path::new(path.trim())) {
-                Ok(c) => {
-                    let hex = c.hex();
-                    shell.content = Some(c);
-                    // A new content was taken; the previous three-step flow is void, since a half-green flow
-                    // left on screen would be a silent failure.
-                    shell.flow = crate::anchorx::Flow::default();
-                    Applied::Took { source, hex }
-                }
-                Err(f) => shell.trouble(f),
-            }
+            let p = std::path::PathBuf::from(path.trim());
+            take_started(shell, source, p)
         }
         Action::RecordWork { note_md, files, for_ } if files.is_empty() => {
             match record_work(shell, &note_md, for_.as_ref()) {
@@ -1633,16 +1782,14 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Err(f) => shell.trouble(f),
             }
         }
-        Action::RecordWork { note_md, files, for_ } => {
-            let (ids, stopped, n) = record_files(shell, &note_md, &files, for_.as_ref());
-            if let Some((_, _, f)) = &stopped {
-                shell.faults.push(f.clone());
-            }
-            Applied::RecordedBatch { ids, stopped, queued: n.queued, next: n.next }
-        }
-        Action::VerifyFile { path } => match verify_file(shell, &path) {
-            Ok(v) => Applied::FileVerdict(Box::new(v)),
-            Err(f) => shell.trouble(f),
+        // Files to record: their fingerprints are computed as a task (`Kind::Record`); the entries are signed and
+        // appended where it lands (`record_files`).
+        Action::RecordWork { note_md, files, for_ } => match shell.tasks.spawn(Kind::Record, move || {
+            let files = hash_files(&files);
+            Ok(Done::Hashed { note_md, for_, files })
+        }) {
+            Spawned::Started => Applied::Started(Kind::Record),
+            Spawned::InFlight => Applied::Refused(Kind::Record),
         },
         Action::VetAttachments { paths } => match shell.tasks.spawn(Kind::Vet, move || {
             let rows = paths
@@ -1665,10 +1812,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok((row, dir_removed)) => Applied::KitDropped { id: row.id, dir_removed },
             Err(f) => shell.trouble(f),
         },
-        Action::TakeDropped { path } => match take_dropped(shell, &path) {
-            Ok((source, hex)) => {
-                Applied::Took { source, hex }
-            }
+        Action::TakeDropped { path } => match dropped_source(&path) {
+            Ok((source, p)) => take_started(shell, source, p),
             Err(f) => shell.trouble(f),
         },
         Action::RegisterRepo { path } => match register_repo(shell, &path) {
@@ -1680,15 +1825,21 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
         // ── Anchor queue ──
-        Action::EstimateGas { count } => match estimate_gas(shell, count) {
-            Ok((g, calldata, fees)) => {
-                shell.gas = Some((count, g));
-                shell.fees = Some(fees);
-                Applied::Gas { count, gas: g, calldata }
-            }
+        // The estimate asks the network, so it runs as a task (`Kind::Gas`, single flight); its answer lands in
+        // `gas_landed`. While it is out there is no estimate: the last reading is cleared so an old number
+        // cannot release a new batch, and the send sheet shows its cell loading with the send key off.
+        Action::EstimateGas { count } => match gas_ask(shell, count) {
+            Ok(ask) => match shell.tasks.spawn(Kind::Gas, move || estimate_on(ask)) {
+                Spawned::Started => {
+                    shell.gas = None;
+                    shell.fees = None;
+                    shell.said.remove(&Kind::Gas);
+                    shell.gas_asked = Some(shell.gas_epoch);
+                    Applied::Started(Kind::Gas)
+                }
+                Spawned::InFlight => Applied::Refused(Kind::Gas),
+            },
             Err(f) => {
-                // Without an estimate this batch cannot be sent: clear the last reading so an old number
-                // cannot release a new batch.
                 shell.gas = None;
                 shell.fees = None;
                 shell.trouble(f)
@@ -1889,11 +2040,11 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         }
         // ── Grant vault ──
         Action::ImportGrant { typed } => match import_grant(shell, &typed) {
-            Ok(ids) => Applied::Held { ids },
+            Ok((ids, grant)) => Applied::Held { ids, grant },
             Err(f) => shell.trouble(f),
         },
         Action::ImportGrantDir { dir } => match import_grant_dir(shell, &dir) {
-            Ok((ids, refused)) if refused.is_empty() => Applied::Held { ids },
+            Ok((ids, refused)) if refused.is_empty() => Applied::Held { ids, grant: String::new() },
             // Nothing taken: report the last refusal; the others go to the trouble panel too.
             Ok((ids, mut refused)) if ids.is_empty() => {
                 let last = refused.pop().expect("非空");
@@ -1950,23 +2101,32 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             },
             Err(f) => shell.trouble(f),
         },
-        Action::ExportGrantFile { id, to } if !shell.gate_cleared => match grant_file_plan(shell, &id, &to) {
+        Action::ExportGrantFile { id, to } => match grant_file_plan(shell, &id, &to) {
             Ok(_) => gate_first(shell, Action::ExportGrantFile { id, to }),
             Err(f) => shell.trouble(f),
         },
-        Action::ExportGrantFile { id, to } => match export_grant_file(shell, &id, &to) {
-            Ok(x) => Applied::GrantFileExported {
-                path: x.path.display().to_string(),
-                why: x.chosen.why,
-                hops: x.hops,
-                terms: x.terms,
-                ledger: x.ledger,
-                files: x.files,
-            },
+        Action::SaveReadNetwork { was, name, chain, registry, from_block, nodes } => {
+            match save_read_network(shell, was, &name, &chain, &registry, &from_block, &nodes) {
+                Ok(n) => Applied::ReadNets(n),
+                Err(f) => shell.trouble(f),
+            }
+        }
+        Action::RemoveReadNetwork { chain, registry } => match remove_read_network(shell, chain, &registry) {
+            Ok(n) => Applied::ReadNets(n),
+            Err(f) => shell.trouble(f),
+        },
+        Action::ReadReadNetwork { chain, registry } => match read_read_network(shell, chain, &registry) {
+            Ok(Spawned::Started) => Applied::Started(Kind::ReadNet),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::ReadNet),
             Err(f) => shell.trouble(f),
         },
         Action::SetPublish { url } => match set_publish(shell, &url) {
             Ok(url) => Applied::PublishSet { url },
+            Err(f) => shell.trouble(f),
+        },
+        Action::CheckTail => match check_tail(shell) {
+            Ok(Spawned::Started) => Applied::Started(Kind::Fetch),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::Fetch),
             Err(f) => shell.trouble(f),
         },
         Action::FetchLedger { from, password } => match fetch_ledger(shell, &from, password) {
@@ -1994,6 +2154,10 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Spawned::Started => Applied::Started(Kind::Publish),
                 Spawned::InFlight => Applied::Refused(Kind::Publish),
             },
+            Err(f) => shell.trouble(f),
+        },
+        Action::CopyGrantCode { grant } => match grant_code(shell, &grant) {
+            Ok(text) => Applied::GrantCode { text },
             Err(f) => shell.trouble(f),
         },
         Action::ExportBadge { grant, out } => match export_badge(shell, &grant, &out) {
@@ -2084,6 +2248,7 @@ mod archive;
 mod audit;
 mod badge;
 mod check;
+mod readnet;
 mod delivery;
 mod depth;
 mod diligence;
@@ -2111,6 +2276,7 @@ use self::archive::*;
 use self::audit::*;
 use self::badge::*;
 pub use self::check::*;
+pub use self::readnet::*;
 use self::delivery::*;
 use self::depth::*;
 use self::diligence::*;
@@ -2131,3 +2297,8 @@ use self::succeed::*;
 use self::vault::*;
 use self::verify::*;
 use self::wizard::*;
+
+/// A grant file landed, as the face reads it.
+fn grant_file_exported(x: crate::grantfilex::Exported) -> Applied {
+    Applied::GrantFileExported { path: x.path.display().to_string(), why: x.chosen.why, hops: x.hops, terms: x.terms, ledger: x.ledger, files: x.files }
+}

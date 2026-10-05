@@ -53,9 +53,17 @@ impl Win {
         }
     }
 
-    /// The row the wizard's network step has selected now.
+    /// The row the wizard's network step has selected now: the one clicked, else the one already chosen
+    /// ([`wiz_network_chosen`](Self::wiz_network_chosen)), else the sheet's default.
     pub(super) fn wiz_network_pick(&self) -> String {
-        self.ux.wiz_network.clone().or_else(|| self.shell.machine.network.clone()).unwrap_or_else(|| crate::deploy::DEFAULT.to_string())
+        self.ux.wiz_network.clone().or_else(|| self.wiz_network_chosen()).unwrap_or_else(|| crate::machine::pick(&self.shell.machine))
+    }
+
+    /// What the wizard's network step stands for now: the current identity's network when it has chosen one of
+    /// this build's choices (the step decides that identity's network), else this machine's last choice.
+    pub(super) fn wiz_network_chosen(&self) -> Option<String> {
+        let row = self.shell.identities.as_ref().and_then(|r| r.now()).and_then(|(row, _)| row.network.clone());
+        row.filter(|n| crate::deploy::is_choice(n)).or_else(|| self.shell.machine.network.clone())
     }
 }
 
@@ -177,7 +185,7 @@ pub(super) fn lamp_mark(l: crate::ledgerx::Lamp) -> Mark {
         // Waiting for the receipt spins only while it is being asked for; with no node to ask, it stands still.
         Lamp::Included | Lamp::Submitted if receipts_stalled() => Mark::Warn,
         Lamp::Included | Lamp::Submitted => Mark::Busy,
-        Lamp::Queued | Lamp::Deleted | Lamp::LocalDeletion => Mark::Todo,
+        Lamp::Queued | Lamp::Deleted | Lamp::LocalDeletion | Lamp::ChainUnread => Mark::Todo,
         Lamp::Landed => Mark::Warn,
         Lamp::Reverted | Lamp::Refused => Mark::Bad,
     }
@@ -203,7 +211,7 @@ pub(super) fn lamp_pill(l: crate::ledgerx::Lamp) -> (PillTone, bool) {
         Lamp::RememberedStale => (PillTone::Grey, false),
         Lamp::Submitted => (PillTone::Warn, !receipts_stalled()),
         Lamp::Included | Lamp::Queued => (PillTone::Warn, false),
-        Lamp::Landed | Lamp::Deleted | Lamp::LocalDeletion => (PillTone::Grey, false),
+        Lamp::Landed | Lamp::Deleted | Lamp::LocalDeletion | Lamp::ChainUnread => (PillTone::Grey, false),
         Lamp::Reverted | Lamp::Refused => (PillTone::Bad, false),
     }
 }
@@ -223,6 +231,7 @@ pub(super) fn lamp_key(l: crate::ledgerx::Lamp, detail: bool) -> Key {
         Lamp::Deleted => Key::V2Deleted,
         Lamp::LocalDeletion => Key::LampLocalDeletion,
         Lamp::Remembered | Lamp::RememberedStale => Key::LampRemembered,
+        Lamp::ChainUnread => Key::U4ChainUnread,
     }
 }
 
@@ -242,30 +251,6 @@ pub(super) fn hm_of(secs: u64) -> String {
     crate::when::when(secs).chars().skip(11).take(5).collect()
 }
 
-/// The answer of "check a file" as one sentence (toast and page line share it).
-pub(super) fn verify_said(v: &crate::recordsx::Verdict) -> String {
-    let said = match (&v.found, &v.anchored, v.remembered_at) {
-        (None, _, _) => return t(Key::VerifyNone).to_string(),
-        (Some((seq, _)), Some(_), Some(at)) => fill2(Key::VerifyFoundRemembered, &seq.to_string(), &hhmm_of(at)),
-        (Some((seq, _)), Some((_, _, Some(at))), None) => fill2(Key::VerifyFound, &seq.to_string(), &crate::when::when(*at)),
-        (Some((seq, _)), Some((_, _, None)), None) => fill1(Key::VerifyFoundNoTime, &seq.to_string()),
-        (Some((seq, _)), None, _) => fill1(Key::VerifyFoundPending, &seq.to_string()),
-    };
-    if v.deleted {
-        format!("{said}{}", t(Key::VerifyDeletedSuffix))
-    } else {
-        said
-    }
-}
-
-/// The status mark of a file check's answer.
-pub(super) fn verify_mark(v: &crate::recordsx::Verdict) -> Mark {
-    match (&v.found, &v.anchored) {
-        (None, _) => Mark::Todo,
-        (Some(_), Some(_)) if !v.deleted => Mark::Ok,
-        (Some(_), _) => Mark::Warn,
-    }
-}
 
 /// Month, day, hour and minute (dated, so a check from days ago does not read as today).
 pub(super) fn hhmm_of(secs: u64) -> String {
@@ -311,6 +296,32 @@ pub(super) fn id_kind_key(k: crate::identity::Kind) -> Key {
 /// first-run wizard by itself when the anchor key is missing or the author seat has no ledger yet.
 pub fn run() -> i32 {
     run_at(Start::Place(Place::Home, false))
+}
+
+/// The line standard error gets when the window takes arguments (the misuse exit, code 2).
+pub const ARGS_LINE: &str = "E_ARGS the window takes no arguments";
+
+/// The window program was given arguments: said once without a window (the line standard error always
+/// carried, and the sentence for a person), and the misuse exit code. The window is not opened.
+pub fn refuse_arguments() -> i32 {
+    speak_this_machines_language();
+    without_window(ARGS_LINE, t(Key::SaidNoWindowArgs).to_string());
+    2
+}
+
+/// Say why there is no window through the platform interface (`platform::say_without_window`), the sentence
+/// in the language this machine last chose: the window never came up to set it, so it is read from the
+/// machine settings here.
+fn without_window(line: &str, sentence: String) {
+    crate::platform::say_without_window(line, &sentence);
+}
+
+/// Speak the language this machine last chose (`machine.json`'s `lang`; unreadable or never chosen: the
+/// build's default), before any window or home has set it.
+fn speak_this_machines_language() {
+    if let Some(l) = crate::machine::read().ok().and_then(|m| m.lang) {
+        crate::lang::set(l);
+    }
 }
 
 /// Open the window on a given page. The shipped binary has no path that calls it; only the test hooks do.
@@ -404,9 +415,51 @@ pub fn run_at(start: Start) -> i32 {
     ) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("{}", fill1(Key::SaidWindowFailed, &e.to_string()));
+            // The line exactly as before (in the language set so far); the sentence in this machine's.
+            let why = e.to_string();
+            let line = fill1(Key::SaidWindowFailed, &why);
+            speak_this_machines_language();
+            without_window(&line, fill1(Key::SaidNoWindowFailed, &why));
             1
         }
+    }
+}
+
+/// The put-on-chain sheet after its key was pressed, frame by frame without a window (no wall clock: each
+/// frame's time is given here): the caller starts the anchoring task as it likes (held, released, failing) and
+/// asks after each frame whether the sheet is still open. The sheet's own rule is measured: it stays open until
+/// that task has landed, well or not, and closes on the landing itself.
+pub struct SendProbe {
+    win: Win,
+    t: f64,
+}
+
+impl SendProbe {
+    /// The sheet for the first `count` entries with its key pressed now (the press's stamp taken from the
+    /// anchoring task's landings, as the key does).
+    pub fn pressed(shell: Shell, count: usize) -> SendProbe {
+        let mut ux = Ux::default();
+        ux.wizard_asked = true;
+        ux.u3.confirm = Some(U3Confirm::Send { count });
+        ux.u3.sending = Some(shell.tasks.landings(crate::task::Kind::Anchor));
+        let mut win = fresh_win(shell, Typed::default(), ux);
+        win.faults_told = usize::MAX;
+        SendProbe { win, t: 0.0 }
+    }
+
+    /// Draw one frame; whether the sheet is open after it.
+    pub fn frame(&mut self, ctx: &egui::Context) -> bool {
+        self.t += 0.1;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 760.0));
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(self.t), ..Default::default() };
+        let win = &mut self.win;
+        let _ = ctx.run(input, |c| win.draw(c));
+        self.win.ux.u3.confirm.is_some()
+    }
+
+    /// The shell under the sheet (the caller's task lives in it).
+    pub fn shell(&mut self) -> &mut Shell {
+        &mut self.win.shell
     }
 }
 

@@ -134,6 +134,23 @@ pub enum Kind {
     /// The exit gate for the exports that write in the frame (a grant file, a record bundle): read the chain
     /// in the background; when it passes, the export itself runs where the result lands.
     Gate,
+    /// Read one read-only network once: its nodes and the code at its registry (`widex::gate`). The read side's
+    /// own task: it holds neither this home's chain read nor the others' ledger page.
+    ReadNet,
+    /// Estimate a batch's gas for the send sheet: the pinned head, `eth_estimateGas`, the base fee and the
+    /// priority fees, at every node of the chain. Network calls never happen in the frame; the answer lands in
+    /// the shell's estimate cells (`action::gas_landed`).
+    Gas,
+    /// Take a file, folder or repository as the content to record: its fingerprint (sha256 over its bytes,
+    /// manifest or commit) is computed here, never in the frame; the content lands in the shell.
+    Take,
+    /// Record works with files: each file's fingerprint is computed here, never in the frame; the entries are
+    /// signed and appended where the result lands, in the order given.
+    Record,
+    /// Move this home: the whole tree is copied to the new place and compared, then the pointer written,
+    /// never in the frame; the lock, the register and the shell follow where it lands. The home is frozen
+    /// meanwhile (`Shell::swapping`).
+    Migrate,
 }
 
 impl Kind {
@@ -142,7 +159,7 @@ impl Kind {
         match self {
             // What a cut would leave half written: a key file, a backup, an export folder, a badge, the key
             // store's own pass, a reconciliation's report.
-            Kind::Keystore | Kind::Backup | Kind::Kit | Kind::Badge | Kind::Vault | Kind::Reconcile => true,
+            Kind::Keystore | Kind::Backup | Kind::Kit | Kind::Badge | Kind::Vault | Kind::Reconcile | Kind::Migrate => true,
             // The network's (a node answers when it answers; each of these lands whole or not at all, and what
             // it leaves on disk is laid out to be picked up again), and the ones that only read.
             Kind::Chain
@@ -165,7 +182,11 @@ impl Kind {
             | Kind::Delivery
             | Kind::Held
             | Kind::Vet
-            | Kind::Gate => false,
+            | Kind::Gate
+            | Kind::ReadNet
+            | Kind::Gas
+            | Kind::Take
+            | Kind::Record => false,
         }
     }
 
@@ -175,7 +196,7 @@ impl Kind {
     /// kind has to say.
     pub fn writes_local(self) -> bool {
         match self {
-            Kind::Fetch | Kind::Audit | Kind::Review | Kind::Anchor | Kind::Reconcile | Kind::Keystore => true,
+            Kind::Fetch | Kind::Audit | Kind::Review | Kind::Anchor | Kind::Reconcile | Kind::Keystore | Kind::Record | Kind::Migrate => true,
             Kind::SelfCheck
             | Kind::Archive
             | Kind::Chain
@@ -196,11 +217,14 @@ impl Kind {
             | Kind::Publish
             | Kind::Vet
             | Kind::Backup
-            | Kind::Gate => false,
+            | Kind::Gate
+            | Kind::ReadNet
+            | Kind::Gas
+            | Kind::Take => false,
         }
     }
 
-    pub const ALL: [Kind; 27] = [
+    pub const ALL: [Kind; 32] = [
         Kind::SelfCheck,
         Kind::Archive,
         Kind::Chain,
@@ -228,6 +252,11 @@ impl Kind {
         Kind::Vet,
         Kind::Backup,
         Kind::Gate,
+        Kind::ReadNet,
+        Kind::Gas,
+        Kind::Take,
+        Kind::Record,
+        Kind::Migrate,
     ];
 
     /// Whether this kind's readings follow the ledger's source. Closed: a new kind must be answered here.
@@ -247,8 +276,12 @@ impl Kind {
             | Kind::Sighting
             | Kind::Review
             | Kind::Held
-            | Kind::Gate => true,
-            Kind::SelfCheck | Kind::Anchor | Kind::Kit | Kind::Book | Kind::Diligence | Kind::Verify | Kind::Delivery | Kind::Badge | Kind::Check | Kind::Keystore | Kind::Vault | Kind::Publish | Kind::Fetch | Kind::Vet | Kind::Backup => false,
+            | Kind::Gate
+            | Kind::Gas
+            | Kind::Take
+            | Kind::Record
+            | Kind::Migrate => true,
+            Kind::SelfCheck | Kind::Anchor | Kind::Kit | Kind::Book | Kind::Diligence | Kind::Verify | Kind::Delivery | Kind::Badge | Kind::Check | Kind::Keystore | Kind::Vault | Kind::Publish | Kind::Fetch | Kind::Vet | Kind::Backup | Kind::ReadNet => false,
         }
     }
 
@@ -281,6 +314,11 @@ impl Kind {
             Kind::Vet => "vet",
             Kind::Backup => "backup",
             Kind::Gate => "gate",
+            Kind::ReadNet => "readnet",
+            Kind::Gas => "gas",
+            Kind::Take => "take",
+            Kind::Record => "record",
+            Kind::Migrate => "migrate",
         }
     }
 }
@@ -288,9 +326,20 @@ impl Kind {
 /// What a task returns. Closed: the background returns only these, and the screen renders by kind.
 #[derive(Clone, Debug)]
 pub enum Done {
+    /// A batch's gas estimate: the batch it was asked for (`count`), the node's estimate, the call data given
+    /// to the node, the fees read at the same nodes with the gas limit the estimate sets, and the chain's time
+    /// when it could be read.
+    Gas { count: usize, gas: u64, calldata: String, fees: zikaron_anchor::send::Fees, head_time: Option<u64> },
+    /// A content taken, its fingerprint computed (`Kind::Take`).
+    Took { source: crate::anchorx::Source, content: crate::anchorx::Content },
+    /// Files to record, each with its fingerprint or the refusal that stopped there (`Kind::Record`; nothing is
+    /// computed past the first refusal), with the note and the "for" cells they are recorded with.
+    Hashed { note_md: String, for_: Option<crate::anchorx::For>, files: Vec<(String, Result<crate::anchorx::Content, crate::fault::Fault>)> },
+    /// This home was copied to `root` and the pointer written (`Kind::Migrate`); `old` is where it was.
+    Copied { old: std::path::PathBuf, root: std::path::PathBuf },
     /// The exit gate passed for this export, read for the home at `root`; the export itself runs where this
     /// lands.
-    GatePassed { root: Option<std::path::PathBuf>, then: Box<crate::action::Action> },
+    GatePassed { root: Option<std::path::PathBuf>, then: Box<crate::action::Action>, pass: Box<crate::exitgate::Pass> },
     /// A whole-machine backup was written and read back.
     BackupMade { path: String, summary: crate::backup::Summary },
     /// A backup was opened with its password (nothing here changed).
@@ -382,7 +431,11 @@ pub enum Done {
         files: Option<usize>,
         /// Levels that could not be read along the way, each named.
         misses: Vec<(crate::supplyx::Level, crate::fault::Fault)>,
+        /// Networks this pass could not read (`widex`), each named; empty with no read-only network.
+        missed: Vec<crate::widex::Missed>,
     },
+    /// One read-only network read (`widex::gate`).
+    NetRead { chain_id: u64, registry: crate::key::Address, nodes: Vec<String>, reading: crate::widex::Reading },
     /// Broadcast, echo matched: those entries are recorded as submitted in the queue file; the shell starts
     /// the receipt wait when it receives this (`action::confirm_batch`).
     Submitted {
@@ -433,6 +486,9 @@ pub enum Done {
     /// Fetched a ledger and checked its tail: entries landed, entries in this home now, the tail check's
     /// answer, which level the bytes came from.
     Fetched { root: std::path::PathBuf, landed: usize, entries: usize, tail: crate::restorex::Tail, from: Option<crate::supplyx::Level> },
+    /// Checked the tail of this identity's marked seat homes against the chain (`action::check_tail`): each
+    /// home and its answer.
+    TailChecked { checked: Vec<(std::path::PathBuf, Result<crate::restorex::Tail, crate::fault::Fault>)> },
     /// Fetching found the fetched ledger and this home's at odds; nothing landed. `offline`: this home's
     /// entries the fetched ledger lacks (they would stay where this home is set aside).
     FetchConflict { root: std::path::PathBuf, offline: usize, fetched: usize, rows: Vec<(crate::ledgerx::Row, Option<u64>)> },

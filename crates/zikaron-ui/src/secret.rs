@@ -24,12 +24,15 @@ pub const CAP: usize = 1024;
 
 pub struct Secret {
     buf: String,
+    /// Whether some text handed in was not taken (it did not fit the block): what the secret holds is then
+    /// shorter than what was given, so a place that keeps it (a key file, a backup) refuses it by name.
+    overflowed: bool,
 }
 
 impl Secret {
     /// An empty secret (the whole block reserved at once).
     pub fn new() -> Secret {
-        Secret { buf: String::with_capacity(CAP) }
+        Secret { buf: String::with_capacity(CAP), overflowed: false }
     }
 
     /// Build from text (a tail that does not fit is not taken).
@@ -53,17 +56,26 @@ impl Secret {
         self.buf.chars().count()
     }
 
-    /// Append text; characters that do not fit are not taken. Returns how many were taken.
+    /// Append text; characters that do not fit are not taken (and the secret remembers it, [`overflowed`]).
+    /// Returns how many were taken.
+    ///
+    /// [`overflowed`]: Secret::overflowed
     pub fn push_str(&mut self, s: &str) -> usize {
         let mut n = 0;
         for c in s.chars() {
             if self.buf.len() + c.len_utf8() > self.buf.capacity() {
+                self.overflowed = true;
                 break;
             }
             self.buf.push(c);
             n += 1;
         }
         n
+    }
+
+    /// Whether some text handed in was not taken because the block was full (cleared with the secret).
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
     }
 
     /// Append one character (not taken when it does not fit; returns false).
@@ -83,6 +95,7 @@ impl Secret {
     pub fn clear(&mut self) {
         let n = self.chars();
         self.remove_chars(0..n);
+        self.overflowed = false;
     }
 
     /// Remove a character range (by character index); the freed bytes are zeroed.
@@ -106,6 +119,7 @@ impl Secret {
         let mut n = 0usize;
         for c in text.chars() {
             if take + c.len_utf8() > room {
+                self.overflowed = true;
                 break;
             }
             take += c.len_utf8();
@@ -180,7 +194,9 @@ impl From<String> for Secret {
 
 impl Clone for Secret {
     fn clone(&self) -> Self {
-        Secret::of(&self.buf)
+        let mut out = Secret::of(&self.buf);
+        out.overflowed = self.overflowed;
+        out
     }
 }
 

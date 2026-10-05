@@ -1,0 +1,39 @@
+# Build and test the workspace on every push and pull request. macOS and Linux must pass before a change
+# joins main (set both checks as required on the main branch); the Windows cell builds and tests the Windows
+# implementation of the platform pieces, and is not required until it has passed here and on a Windows machine.
+# Steps call cargo only, except the Linux cell's one line installing the build dependencies README lists for
+# building from source (configuration).
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+            required: true
+          - name: linux
+            os: ubuntu-latest
+            required: true
+          - name: windows
+            os: windows-latest
+            required: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: linux build dependencies
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev xdg-desktop-portal xdg-desktop-portal-gtk
+      - name: build
+        run: cargo build --workspace --locked
+      - name: test
+        run: cargo test --workspace --locked

@@ -21,27 +21,39 @@ esac
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 DIST="$ROOT/dist"
 WORK="$DIST/linux-work"
+PACK="$TARGET_DIR/release/zikaron-pack"
+NOTICE_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+# Every date the packages record: the moment of the commit being built, unless SOURCE_DATE_EPOCH says another
+# (dpkg-deb reads it for the archive's dates).
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
 
 # Keep local paths (home directory, checkout, build directory) out of the shipped binaries.
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME_DIR=/cargo --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$TARGET_DIR=/target --remap-path-prefix=$ROOT=/zikaron --remap-path-prefix=$HOME=/home"
-cargo build --release --locked -p app -p zikaron-cli
+cargo build --release --locked -p app -p zikaron-cli -p zikaron-pack
 
 rm -rf "$WORK"
-mkdir -p "$DIST"
+mkdir -p "$WORK" "$DIST"
+# The notices for everything the packages install, with the licences of the three fonts this build embeds.
+"$PACK" notices --target "$NOTICE_TARGET" --root app --root zikaron-cli \
+  --with crates/zikaron-ui/fonts/OFL-Inter.txt --with crates/zikaron-ui/fonts/OFL-JetBrainsMono.txt \
+  --with crates/zikaron-ui/fonts/OFL-NotoSansSC.txt --out "$WORK/THIRD-PARTY-LICENSES.txt"
 
 # Lay out the files the way both packages install them under /usr.
 stage() {
   local root="$1"
   install -Dm755 "$TARGET_DIR/release/app" "$root/usr/bin/zikaron-desk"
   install -Dm755 "$TARGET_DIR/release/zikaron" "$root/usr/bin/zikaron"
+  # The toolchain words in each binary's `.comment` (not loaded at run time) zeroed in the staged copies.
+  "$PACK" elf-comment "$root/usr/bin/zikaron-desk" "$root/usr/bin/zikaron"
   install -Dm644 packaging/linux/zikaron-desk.desktop "$root/usr/share/applications/zikaron-desk.desktop"
   for s in 16 24 32 48 64 128 256 512; do
     install -Dm644 "packaging/icon/hicolor/$s.png" "$root/usr/share/icons/hicolor/${s}x${s}/apps/zikaron-desk.png"
   done
   install -Dm644 packaging/icon/zikaron.svg "$root/usr/share/icons/hicolor/scalable/apps/zikaron-desk.svg"
   install -Dm644 LICENSE "$root/usr/share/doc/zikaron-desk/copyright"
+  install -Dm644 "$WORK/THIRD-PARTY-LICENSES.txt" "$root/usr/share/doc/zikaron-desk/THIRD-PARTY-LICENSES.txt"
 }
 
 # .deb

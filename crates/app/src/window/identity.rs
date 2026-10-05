@@ -5,6 +5,31 @@
 use super::*;
 
 impl Win {
+    /// The network an identity made on these sheets takes: the one chosen here, else the one selected first
+    /// (`machine::pick`). Inside the wizard the wizard's own network step decides, so its choice stands.
+    pub(super) fn id_network_now(&self) -> String {
+        if self.ux.wizard.is_some() {
+            return self.wiz_network_pick();
+        }
+        self.ux.id_network.clone().unwrap_or_else(|| crate::machine::pick(&self.shell.machine))
+    }
+
+    /// The "network" row under the note: every row of the known table, then "custom" (`deploy::choices`). Not
+    /// shown inside the wizard, whose network step comes next.
+    fn id_network_row(&mut self, ui: &mut egui::Ui, salt: &str) {
+        if self.ux.wizard.is_some() {
+            return;
+        }
+        let now = self.id_network_now();
+        let names = crate::deploy::choices();
+        let labels: Vec<String> = names.iter().map(|n| network_label(n)).collect();
+        let at = names.iter().position(|n| *n == now).unwrap_or(0);
+        let items: Vec<menu::Item> = labels.iter().enumerate().map(|(i, l)| menu::Item::Row(menu::Row { label: l, check: Some(i == at), ..Default::default() })).collect();
+        if let Some(i) = field(ui, t(Key::SetChain), None, |ui| menu::menu_key(ui, salt, &labels[at], false, 160.0, &items)) {
+            self.ux.id_network = names.get(i).map(|n| n.to_string());
+        }
+    }
+
     pub(super) fn id_sheets(&mut self, ctx: &egui::Context, now: f64) {
         use crate::action::ImportForm;
         let Some(which) = self.ux.id_modal.clone() else { return };
@@ -21,7 +46,7 @@ impl Win {
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
         let busy_note = |ui: &mut egui::Ui| {
             if busy {
-                sheet::foot_note(ui, t(Key::VaultBusy));
+                sheet::busy_note(ui, t(Key::VaultBusy), false);
             }
         };
         let len = crate::keybox::PIN_LEN;
@@ -49,6 +74,7 @@ impl Win {
                         if !confirming {
                             // The label is kept through both steps and lands with the identity.
                             field(ui, t(Key::IdLabel), None, |ui| input::line(ui, &mut me.ux.id_new_label, t(Key::IdLabelHint)));
+                            me.id_network_row(ui, "id-new-network");
                             paint::text(ui, t(Key::IdCopyWords), Type::Note, c(C::Ink2));
                             // Masked by default: twelve words in plain view reach anyone behind, screen
                             // recording and sharing. Click to show; hide again any time.
@@ -82,7 +108,7 @@ impl Win {
                             (Some((_, picks)), true) => {
                                 if page::Page::new().primary_with(ui, t(Key::IdDoConfirm), !busy).1.clicked() {
                                     let answers = picks.iter().zip(me.ux.id_confirm.iter()).map(|(i, w)| (*i, w.clone())).collect();
-                                    go = Some(Action::ConfirmIdentity { answers, label: me.ux.id_new_label.clone() });
+                                    go = Some(Action::ConfirmIdentity { answers, label: me.ux.id_new_label.clone(), network: me.id_network_now() });
                                 }
                             }
                         }
@@ -99,9 +125,15 @@ impl Win {
             IdModal::Import => {
                 let tab = self.ux.id_tab;
                 let into_seat = self.ux.id_seat.unwrap_or(seat);
+                // No primary yet: this import makes it. A bare private key then lands its key file in the
+                // same pass (the action layer refuses it without one), so the cells are asked here.
+                let makes_primary = self.shell.primary.is_none();
                 let ready = match tab {
                     0 => self.ux.id_words.iter().all(|w| !w.expose().trim().is_empty()),
-                    1 => !self.ux.id_hex.expose().trim().is_empty(),
+                    1 => {
+                        !self.ux.id_hex.expose().trim().is_empty()
+                            && (!makes_primary || (!self.ux.id_pw.is_empty() && !self.ux.id_pw2.is_empty() && Self::landing_ok(&self.ux.id_dir)))
+                    }
                     _ => !self.ux.id_ks_path.trim().is_empty(),
                 };
                 let out = sheet::show(
@@ -109,7 +141,7 @@ impl Win {
                     sheet::Spec::new("id-import", tk::SHEET_WIDE).step(tab as u64, sheet::Slide::None),
                     self,
                     |ui, me| {
-                        sheet::title(ui, t(Key::IdImportTitle), t(Key::IdImportSay));
+                        sheet::title(ui, t(Key::IdImportTitle), t(if makes_primary { Key::IdImportPrimarySay } else { Key::IdImportSay }));
                         if let Some(i) = seg::tabs(ui, "id-import-tabs", &[t(Key::IdTabWords), t(Key::IdTabHex), t(Key::IdTabFile)], tab) {
                             me.ux.id_tab = i;
                             me.ux.id_trouble = None;
@@ -127,6 +159,10 @@ impl Win {
                             }
                             1 => {
                                 field(ui, t(Key::IdTabHex), None, |ui| input::secret_line(ui, &mut me.ux.id_hex, t(Key::IdHexHint)));
+                                if makes_primary {
+                                    paint::text(ui, t(Key::IdImportKeyFileSay), Type::Note, c(C::Ink2));
+                                    key_file_cells(ui, me);
+                                }
                             }
                             _ => {
                                 let chosen = (!me.ux.id_ks_path.trim().is_empty()).then(|| width::file_name(&me.ux.id_ks_path));
@@ -157,16 +193,24 @@ impl Win {
                             hint(ui, t(Key::IdImportSeatSay));
                         }
                         field(ui, t(Key::IdLabel), None, |ui| input::line(ui, &mut me.ux.id_new_label, t(Key::IdLabelHint)));
+                        me.id_network_row(ui, "id-import-network");
                         show_trouble(ui);
                     },
                     |ui, me| {
                         if page::Page::new().primary_with(ui, t(Key::IdDoImportGo), ready && !busy).1.clicked() {
                             let form = match me.ux.id_tab {
                                 0 => ImportForm::Words(joined(&me.ux.id_words)),
-                                1 => ImportForm::PrivateKey(me.ux.id_hex.clone()),
+                                1 => ImportForm::PrivateKey {
+                                    key: me.ux.id_hex.clone(),
+                                    keyfile: makes_primary.then(|| crate::action::KeyFileOut {
+                                        password: me.ux.id_pw.clone(),
+                                        again: me.ux.id_pw2.clone(),
+                                        dir: me.ux.id_dir.clone(),
+                                    }),
+                                },
                                 _ => ImportForm::Keystore { path: me.ux.id_ks_path.clone(), password: me.ux.id_ks_pw.clone() },
                             };
-                            go = Some(Action::ImportIdentity { form, seat: into_seat, label: me.ux.id_new_label.clone() });
+                            go = Some(Action::ImportIdentity { form, seat: into_seat, label: me.ux.id_new_label.clone(), network: me.id_network_now() });
                         }
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                         busy_note(ui);
@@ -428,20 +472,7 @@ impl Win {
                         field(ui, t(Key::IdPinGate), None, |ui| {
                             pin::pin_row(ui, "id-backup-pin", &mut me.ux.id_pin, len, me.ux.pin_shake, true, true);
                         });
-                        field(ui, t(Key::IdKeyFilePassword), None, |ui| {
-                            input::secret_line(ui, &mut me.ux.id_pw, "");
-                            // The strength reading warns and never blocks.
-                            if !me.ux.id_pw.is_empty() {
-                                let (lit, m, k) = match crate::keystore::strength(me.ux.id_pw.expose()) {
-                                    crate::keystore::Strength::Weak => (1, Mark::Bad, Key::StrengthWeak),
-                                    crate::keystore::Strength::Fair => (2, Mark::Warn, Key::StrengthFair),
-                                    crate::keystore::Strength::Strong => (3, Mark::Ok, Key::StrengthStrong),
-                                };
-                                pin::strength(ui, lit, m, t(k));
-                            }
-                        });
-                        field(ui, t(Key::IdPasswordAgain), None, |ui| input::secret_line(ui, &mut me.ux.id_pw2, ""));
-                        Self::place_row(ui, Key::IdStore, &mut me.ux.id_dir);
+                        key_file_cells(ui, me);
                         paint::text(ui, t(Key::IdBackupMachineWide), Type::Note, c(C::Ink2));
                         if is_primary && !current_words {
                             paint::text(ui, t(Key::IdPrimaryRecovers), Type::Note, c(C::Ink2));
@@ -537,4 +568,23 @@ impl Win {
             self.ux.id_close();
         }
     }
+}
+
+/// A key file's cells: its password (with the strength reading, which warns and never blocks), the password
+/// again, and the folder it lands in. Exporting a key file and importing a key that becomes primary show
+/// these same cells.
+fn key_file_cells(ui: &mut egui::Ui, me: &mut Win) {
+    field(ui, t(Key::IdKeyFilePassword), None, |ui| {
+        input::secret_line(ui, &mut me.ux.id_pw, "");
+        if !me.ux.id_pw.is_empty() {
+            let (lit, m, k) = match crate::keystore::strength(me.ux.id_pw.expose()) {
+                crate::keystore::Strength::Weak => (1, Mark::Bad, Key::StrengthWeak),
+                crate::keystore::Strength::Fair => (2, Mark::Warn, Key::StrengthFair),
+                crate::keystore::Strength::Strong => (3, Mark::Ok, Key::StrengthStrong),
+            };
+            pin::strength(ui, lit, m, t(k));
+        }
+    });
+    field(ui, t(Key::IdPasswordAgain), None, |ui| input::secret_line(ui, &mut me.ux.id_pw2, ""));
+    Win::place_row(ui, Key::IdStore, &mut me.ux.id_dir);
 }

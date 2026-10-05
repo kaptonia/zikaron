@@ -21,10 +21,9 @@ use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
 use std::path::{Path, PathBuf};
 
-/// The grant code text file in the container (under `files/`). One name, one home.
-pub const CODE_FILE: &str = "zikaron-grant.txt";
-/// The publish address pointer file (under `files/`). One name, one home.
-pub const PUBLISH_FILE: &str = "publish.txt";
+/// The grant code and publish pointer files in the container (under `files/`): named once, in the reading the
+/// app and the command line share (`zikaron_glue::grantfile`).
+pub use zikaron_glue::grantfile::{CODE_FILE, PUBLISH_FILE};
 /// The vault room keeping grant files (under `grants-held/`; mirroring carries the whole vault directory).
 pub const KEPT: &str = "files";
 
@@ -59,52 +58,23 @@ impl Opened {
     }
 }
 
-/// Open a grant file's bytes. A wrong single-file bundle shape (magic, order, caps) is `GRANT_FILE`; failed
-/// kit verification, a missing grant code, or a chain hop missing from the entry table is `GRANT_FILE_KIT`.
-/// Returned only when all pass.
+/// Open a grant file's bytes, by the one reading the app and the command line share
+/// (`zikaron_glue::grantfile::open`). A wrong single-file bundle shape (magic, order, caps) is `GRANT_FILE`;
+/// failed kit verification, a missing grant code, or a chain hop missing from the entry table is
+/// `GRANT_FILE_KIT`; a grant code the kit core refuses is `PAYLOAD_REFUSED`. Returned only when all pass.
 pub fn open_bytes(bytes: &[u8]) -> Result<Opened, Fault> {
+    use zikaron_glue::grantfile::Refused;
     crate::trace::mark(crate::feature::Feature::D6);
-    let pairs = zikaron_glue::container::decode(bytes).map_err(|b| Fault::known(Known::GrantFileBad, format!("{}:{}", b.code(), b.subject())))?;
-    let kit_id = match zikaron_kit::kitdir::verify_enumeration(&pairs) {
-        zikaron_kit::kitdir::KitVerdict::Ok { kit_id, .. } => zikaron::hexfmt::encode(&kit_id),
-        zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } => {
-            return Err(Fault::known(Known::GrantFileKit, format!("{}{}", verdict.as_str(), subject.map(|s| format!(":{s}")).unwrap_or_default())))
+    let o = zikaron_glue::grantfile::open(bytes).map_err(|r| match r {
+        Refused::Shape(b) => Fault::known(Known::GrantFileBad, format!("{}:{}", b.code(), b.subject())),
+        Refused::Kit(verdict, subject) => {
+            Fault::known(Known::GrantFileKit, format!("{}{}", verdict.as_str(), subject.map(|s| format!(":{s}")).unwrap_or_default()))
         }
-    };
-    let under = |dir: &str, rel: &str| format!("{dir}/{rel}");
-    let files_dir = zikaron_glue::names::FILES_DIR;
-    let code = pairs
-        .iter()
-        .find(|(p, _)| *p == under(files_dir, CODE_FILE))
-        .map(|(_, b)| b.clone())
-        .ok_or_else(|| Fault::known(Known::GrantFileKit, format!("E_GRANT_FILE_CODE:{}", under(files_dir, CODE_FILE))))?;
-    let trimmed: Vec<u8> = code.iter().copied().filter(|c| !c.is_ascii_whitespace()).collect();
-    let hops = crate::payloadx::decode(&trimmed)?;
-    let entries_dir = format!("{}/", zikaron_glue::names::ENTRIES_DIR);
-    let ledger: Vec<Vec<u8>> = pairs
-        .iter()
-        .filter(|(p, _)| p.starts_with(&entries_dir))
-        .filter(|(_, b)| zikaron::entry::check(b).is_ok())
-        .map(|(_, b)| b.clone())
-        .collect();
-    for h in &hops {
-        if !ledger.iter().any(|b| b == h) {
-            let id = zikaron::hexfmt::encode(&zikaron::entry::entry_id(h));
-            return Err(Fault::known(Known::GrantFileKit, format!("E_GRANT_FILE_CHAIN:{id}")));
-        }
-    }
-    let terms_dir = format!("{files_dir}/{}/", crate::termsx::ROOM);
-    let terms: Vec<(String, Vec<u8>)> = pairs
-        .iter()
-        .filter(|(p, _)| p.starts_with(&terms_dir))
-        .map(|(p, b)| (p[files_dir.len() + 1..].to_string(), b.clone()))
-        .collect();
-    let publish = pairs
-        .iter()
-        .find(|(p, _)| *p == under(files_dir, PUBLISH_FILE))
-        .map(|(_, b)| String::from_utf8_lossy(b).trim().to_string())
-        .filter(|s| !s.is_empty());
-    Ok(Opened { hops, ledger, terms, publish, kit_id, files: pairs.len() })
+        Refused::NoCode(at) => Fault::known(Known::GrantFileKit, format!("E_GRANT_FILE_CODE:{at}")),
+        Refused::Code(r) => crate::payloadx::refused(r),
+        Refused::Uncarried(id) => Fault::known(Known::GrantFileKit, format!("E_GRANT_FILE_CHAIN:{}", zikaron::hexfmt::encode(&id))),
+    })?;
+    Ok(Opened { hops: o.hops, ledger: o.ledger, terms: o.terms, publish: o.publish, kit_id: zikaron::hexfmt::encode(&o.kit_id), files: o.files })
 }
 
 /// Open a grant file. Check the size first (over the single-file bundle cap is refused without reading it
@@ -145,7 +115,7 @@ pub fn build(chain: &[Vec<u8>], ledger: &[Vec<u8>], terms: &[(String, Vec<u8>)],
         files.push((PUBLISH_FILE.to_string(), u.as_bytes().to_vec()));
     }
     let b = zikaron_glue::pack::Bundle { entries, files, note: "grant-file".to_string(), ..Default::default() };
-    let (pairs, landed) = zikaron_glue::pack::enumerate(b).map_err(|t| Fault::landing(t.code(), t.subject()))?;
+    let (pairs, landed) = zikaron_glue::pack::enumerate(b).map_err(|t| Fault::of_landing(t))?;
     Ok((zikaron_glue::container::encode(&pairs), landed.files))
 }
 
@@ -165,7 +135,8 @@ pub struct Exported {
 /// ledger); each hop with an issuance record in this home and a kept document carries the document; the
 /// publish address comes from the settings cell. It lands in the folder the person chose (named by
 /// `home::choose`, numbered when the name exists), written only through the glue crate's landing.
-pub fn export(home: &Home, id: &str, publish: Option<&str>, folder: &Path) -> Result<Exported, Fault> {
+/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+pub fn export(_pass: &crate::exitgate::Pass, home: &Home, id: &str, publish: Option<&str>, folder: &Path) -> Result<Exported, Fault> {
     let pool = crate::badgex::pool(home)?;
     let chain = crate::badgex::chain_for(&pool, id)?;
     let mine: Vec<Vec<u8>> = home.ledger()?.survey()?.items;
@@ -184,7 +155,7 @@ pub fn export(home: &Home, id: &str, publish: Option<&str>, folder: &Path) -> Re
     if let Some(d) = chosen.at.parent() {
         std::fs::create_dir_all(d).map_err(|e| crate::fault::classify(&e, &d.display().to_string()))?;
     }
-    zikaron_glue::landing::land_bytes(&chosen.at, &bytes).map_err(|t| Fault::landing(t.code(), t.subject()))?;
+    zikaron_glue::landing::land_bytes(&chosen.at, &bytes).map_err(|t| Fault::of_landing(t))?;
     Ok(Exported { path: chosen.at.clone(), chosen, hops: chain.len(), terms: terms.len(), ledger: !ledger.is_empty(), files })
 }
 

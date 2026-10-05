@@ -22,20 +22,39 @@ fn say(v: &Value) -> ExitCode {
 }
 
 fn say_bytes(b: &[u8]) -> ExitCode {
+    say_bytes_as(b, 0)
+}
+
+/// [`say_bytes`] with the exit code the answer carries (a negative answer is not exit 0).
+fn say_bytes_as(b: &[u8], code: u8) -> ExitCode {
     use std::io::Write;
     let mut out = std::io::stdout();
     if out.write_all(b).is_err() || out.flush().is_err() {
         return ExitCode::from(2);
     }
-    ExitCode::SUCCESS
+    ExitCode::from(code)
+}
+
+/// Exit codes of the verbs that judge: the conclusion stands (0), a replay that answered something other than
+/// what was recorded or a report that is neither green nor red (3, as the shell's `audit`), refused (4, as the
+/// shell's scan refusals), the core's no label or a broken chain (1, as the shell's `audit`).
+const PARTIAL: u8 = 3;
+const DENIED: u8 = 1;
+const REFUSED: u8 = 4;
+
+fn refused_as(code: &str, detail: &str, exit: u8) -> ExitCode {
+    say_bytes_as(
+        &canon_bytes(&Value::Obj(vec![
+            ("detail".into(), Value::Str(detail.into())),
+            ("ok".into(), Value::Bool(false)),
+            ("reason".into(), Value::Str(code.into())),
+        ])),
+        exit,
+    )
 }
 
 fn refused(code: &str, detail: &str) -> ExitCode {
-    say(&Value::Obj(vec![
-        ("detail".into(), Value::Str(detail.into())),
-        ("ok".into(), Value::Bool(false)),
-        ("reason".into(), Value::Str(code.into())),
-    ]))
+    refused_as(code, detail, 0)
 }
 
 fn read_wire(path: &str) -> (Vec<u8>, W) {
@@ -183,6 +202,42 @@ fn replay_fragment(path: &str) -> Result<Value, (String, String)> {
     }
 }
 
+/// The conclusion a recording froze when it was made (`expected`, written by `record` as the scan's canonical
+/// fragment); `None` when the recording carries none.
+fn recorded_conclusion(path: &str) -> Option<Value> {
+    let (_, fx) = read_wire(path);
+    let text = fx.member("expected").and_then(|x| x.as_str())?.to_string();
+    if text.is_empty() {
+        return None;
+    }
+    zikaron::json::parse(text.as_bytes()).ok()
+}
+
+/// The offline endpoint rule over several recordings (`agree` and `replay` share it): the same recording given
+/// twice is one source; a chain fewer than two distinct sources read is single-source.
+fn agree_recordings(paths: &[String]) -> Result<endpoints::Reading, (String, String)> {
+    let mut distinct: Vec<String> = paths
+        .iter()
+        .map(|p| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.clone()))
+        .collect();
+    distinct.sort();
+    distinct.dedup();
+    let mut chains: Vec<u64> = distinct.iter().flat_map(|p| chains_in_recording(p)).collect();
+    chains.sort_unstable();
+    chains.dedup();
+    let thin: Vec<u64> = chains
+        .into_iter()
+        .filter(|c| distinct.iter().filter(|p| chains_in_recording(p).contains(c)).count() < 2)
+        .collect();
+    let mut runs: Vec<(String, Value)> = Vec::new();
+    for p in paths {
+        runs.push((p.clone(), replay_fragment(p)?));
+    }
+    endpoints::agree_over(runs, thin).map_err(|d| {
+        ("E_ENDPOINTS_DISAGREE".to_string(), format!("{} 份读数不一致:{}", d.fragments.len(), d.sources.join(" 对 ")))
+    })
+}
+
 /// Which chains a recording names.
 fn chains_in_recording(path: &str) -> Vec<u64> {
     let (_, fx) = read_wire(path);
@@ -217,32 +272,67 @@ fn main() -> ExitCode {
         // agreement stands; a disagreement is named, never decided by majority. The same recording given
         // twice is one source: sources are told apart by path, as live endpoints are by url.
         "agree" => {
-            let mut paths = f.many("recording");
+            let paths = f.many("recording");
             if paths.is_empty() {
                 misuse("usage: zka agree --recording <a.json> --recording <b.json> ...");
             }
-            let mut distinct: Vec<String> = paths
-                .iter()
-                .map(|p| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.clone()))
-                .collect();
-            distinct.sort();
-            distinct.dedup();
-            // How many distinct sources each chain has: fewer than two makes that chain single-source.
-            let mut chains: Vec<u64> = distinct.iter().flat_map(|p| chains_in_recording(p)).collect();
-            chains.sort_unstable();
-            chains.dedup();
-            let thin: Vec<u64> = chains
-                .into_iter()
-                .filter(|c| distinct.iter().filter(|p| chains_in_recording(p).contains(c)).count() < 2)
-                .collect();
-            let mut runs: Vec<(String, Value)> = Vec::new();
-            for p in paths.drain(..) {
-                match replay_fragment(&p) {
-                    Ok(v) => runs.push((p, v)),
-                    Err((code, detail)) => return refused(&code, &detail),
+            match agree_recordings(&paths) {
+                Ok(reading) => say(&reading.value()),
+                Err((code, detail)) => refused(&code, &detail),
+            }
+        }
+        // Replay recordings and say whether they come out as recorded. A recording is a frozen run: its
+        // questions, its answers and the conclusion it reached (`expected`). One recording is replayed as `scan`
+        // does; several as `agree` does (the endpoint rule). The conclusion reached now stands only when it is
+        // the one every given recording froze, byte for byte: `ok` true, exit 0. Anything else is said, never a
+        // bare fragment that reads like success: a different conclusion (`E_REPLAY_DIFFERS`, both sides given,
+        // exit 3), a refusal (the scan's own code, exit 4). A recording without a frozen conclusion cannot be
+        // replayed this way (misuse; `scan` replays it).
+        "replay" => {
+            let paths = f.words.clone();
+            if paths.is_empty() {
+                misuse("usage: zka replay <recording.json> [<recording.json> ...]");
+            }
+            let mut recorded: Vec<Value> = Vec::new();
+            for p in &paths {
+                match recorded_conclusion(p) {
+                    Some(v) => recorded.push(v),
+                    None => misuse(&format!("{p} 没有录下的结论(expected),用 zka scan 回放")),
                 }
             }
-            match endpoints::agree_over(runs, thin) {
+            let now = if paths.len() == 1 { replay_fragment(&paths[0]) } else { agree_recordings(&paths).map(|r| r.fragment) };
+            match now {
+                Err((code, detail)) => refused_as(&code, &detail, REFUSED),
+                Ok(v) if recorded.iter().all(|r| canon_bytes(r) == canon_bytes(&v)) => {
+                    say(&Value::Obj(vec![("ok".into(), Value::Bool(true)), ("replayed".into(), v)]))
+                }
+                Ok(v) => say_bytes_as(
+                    &canon_bytes(&Value::Obj(vec![
+                        ("ok".into(), Value::Bool(false)),
+                        ("reason".into(), Value::Str("E_REPLAY_DIFFERS".into())),
+                        ("recorded".into(), recorded.swap_remove(0)),
+                        ("replayed".into(), v),
+                    ])),
+                    PARTIAL,
+                ),
+            }
+        }
+        // The endpoint rule over the facts a decision reads: each `--answer` is what one endpoint said to the
+        // same question (a transaction, a block); each is cut to the `--facts` named and only then compared.
+        "agree-facts" => {
+            let facts: Vec<String> = f.need("facts").split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
+            let named: Vec<&str> = facts.iter().map(String::as_str).collect();
+            let paths = f.many("answer");
+            if paths.len() < 2 {
+                misuse("usage: zka agree-facts --facts <a,b> --answer <one.json> --answer <two.json> ...");
+            }
+            let mut runs: Vec<(String, Value)> = Vec::new();
+            for p in paths {
+                let (_, w) = read_wire(&p);
+                let v = wire::to_core(&w).unwrap_or_else(|| misuse(&format!("{p} 不是一枚读数")));
+                runs.push((p, endpoints::project(&v, &named)));
+            }
+            match endpoints::agree(runs) {
                 Ok(reading) => say(&reading.value()),
                 Err(d) => refused(
                     "E_ENDPOINTS_DISAGREE",
@@ -275,7 +365,7 @@ fn main() -> ExitCode {
                 let mut https: Vec<(u64, rpc::Http)> = Vec::new();
                 for c in chains_of(&specs) {
                     let url = nth_for(&specs, c, k);
-                    https.push((c, rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http://host:port"))));
+                    https.push((c, rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http:// 或 https:// 地址"))));
                 }
                 let names: Vec<String> = https.iter().map(|(c, h)| format!("{c}={}", h.name())).collect();
                 let mut eps: Vec<(u64, &mut dyn rpc::Endpoint)> =
@@ -311,7 +401,7 @@ fn main() -> ExitCode {
             let mut recorders: Vec<(u64, rpc::Recorder)> = Vec::new();
             for c in chains_of(&specs) {
                 let url = nth_for(&specs, c, 0);
-                let http = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http://host:port"));
+                let http = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http:// 或 https:// 地址"));
                 recorders.push((c, rpc::Recorder::new(Box::new(http))));
             }
             let fragment = {
@@ -353,7 +443,7 @@ fn main() -> ExitCode {
         "anchor" => {
             let specs = endpoint_specs(&f);
             let (chain, url) = specs[0].clone();
-            let mut ep = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http://host:port"));
+            let mut ep = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http:// 或 https:// 地址"));
             let key = {
                 let k = f.need("key");
                 let b = zikaron::hexfmt::decode(&k).unwrap_or_else(|| misuse("私钥不是十六进制"));
@@ -441,13 +531,23 @@ fn main() -> ExitCode {
         "audit" => {
             let path = f.words.first().cloned().unwrap_or_else(|| misuse("usage: zka audit <input.json>"));
             let bytes = std::fs::read(&path).unwrap_or_else(|e| misuse(&format!("读不出 {path}:{e}")));
-            say_bytes(&input::audit(&bytes))
+            // The report goes out unchanged; its label only sets the exit code, by the shell's table (`audit`):
+            // COMPLETE 0, GAPS and UNAVAILABLE 3, a broken chain, no label or an answer that is no report 1.
+            let report = input::audit(&bytes);
+            let label = zikaron::json::parse(&report).ok().and_then(|v| v.member("label").and_then(|l| l.as_str()).map(str::to_string));
+            use zikaron::tokens::Label;
+            let exit = match [Label::Complete, Label::Gaps, Label::Unavailable, Label::BrokenChain].into_iter().find(|l| Some(l.as_str()) == label.as_deref()) {
+                Some(Label::Complete) => 0,
+                Some(Label::Gaps | Label::Unavailable) => PARTIAL,
+                _ => DENIED,
+            };
+            say_bytes_as(&report, exit)
         }
         // §9.7 proof kit capture.
         "kit-capture" => {
             let specs = endpoint_specs(&f);
             let (chain, url) = specs[0].clone();
-            let mut ep = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http://host:port"));
+            let mut ep = rpc::Http::new(&url).unwrap_or_else(|| misuse("端点只认 http:// 或 https:// 地址"));
             let txh = h32(&f.need("tx"));
             let hash = h32(&f.need("hash"));
             let emitter = f.one("emitter").map(|x| h20(&x));
@@ -492,6 +592,6 @@ fn main() -> ExitCode {
                 Err(r) => refused(r.code(), &r.detail()),
             }
         }
-        _ => misuse("usage: zka <scan|agree|scan-live|record|anchor|audit-input|audit|kit-capture|kit-verify> ..."),
+        _ => misuse("usage: zka <scan|agree|replay|scan-live|record|anchor|audit-input|audit|kit-capture|kit-verify> ..."),
     }
 }

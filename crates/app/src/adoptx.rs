@@ -156,7 +156,9 @@ pub fn verify_row(
         ));
     }
     let params = Value::Arr(vec![Value::Str(row.tx.clone())]);
-    let r = crate::chainx::ask(&mine, "eth_getTransactionByHash", &params)?;
+    // Agreement over the transaction facts alone (`chainx::TX_FACTS`): endpoints answer the same transaction
+    // with members of their own, and a sender or calldata that differs still disagrees.
+    let r = crate::chainx::ask_facts(&mine, "eth_getTransactionByHash", &params, &crate::chainx::TX_FACTS)?;
     if matches!(r.value, Value::Null) {
         return Ok(Proof::NoSuchTx);
     }
@@ -293,6 +295,18 @@ pub fn claim_of(text: &str) -> Result<Claim, Fault> {
     if rows.is_empty() {
         return Err(bad("anchors"));
     }
+    // Every member the claimer's adoption entry will carry is read in the law's own spelling (an address of
+    // twenty bytes, a head and each anchor's ids of thirty-two, lower case with `0x`): a signature over any
+    // other spelling never verifies on the claimer's side, so such a text is refused before anything is signed.
+    if !zikaron::hexfmt::is_hex20(&adopter) {
+        return Err(bad("adopter"));
+    }
+    if !zikaron::hexfmt::is_hex32(&prev) {
+        return Err(bad("prev"));
+    }
+    if rows.iter().any(|r| !zikaron::hexfmt::is_hex32(&r.tx) || !zikaron::hexfmt::is_hex32(&r.content)) {
+        return Err(bad("anchor"));
+    }
     let again = zikaron::entry::adoption_preimage(&adopter, &anchors_value(&rows), &prev);
     if again != bytes {
         return Err(bad("canon"));
@@ -385,7 +399,7 @@ pub fn block_of(eps: &[crate::chainx::Endpoint], row: &AnchorRow) -> Option<u64>
     if mine.is_empty() {
         return None;
     }
-    let r = crate::chainx::ask(&mine, "eth_getTransactionByHash", &Value::Arr(vec![Value::Str(row.tx.clone())])).ok()?;
+    let r = crate::chainx::ask_facts(&mine, "eth_getTransactionByHash", &Value::Arr(vec![Value::Str(row.tx.clone())]), &crate::chainx::TX_FACTS).ok()?;
     let b = member(&r.value, "blockNumber")?;
     u64::from_str_radix(b.trim_start_matches("0x"), 16).ok()
 }

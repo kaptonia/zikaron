@@ -42,8 +42,21 @@ use crate::keybox;
 use zikaron::cryptox;
 use zikaron::hexfmt;
 
-/// The source of system entropy. One name, one home.
-pub const ENTROPY: &str = "/dev/urandom";
+/// The source of system entropy, as the operating-system crate names it (for the words of a refusal).
+pub const ENTROPY: &str = zikaron_os::ENTROPY_SOURCE;
+
+/// Fill `buf` from the system's entropy source: the one way this app reads randomness. When it cannot be
+/// read it is refused by name, never replaced by a weaker source.
+pub fn fill_random(buf: &mut [u8]) -> Result<(), Fault> {
+    zikaron_os::fill_random(buf).map_err(|e| classify(&e, ENTROPY))
+}
+
+/// `n` bytes from the system's entropy source (see [`fill_random`]).
+pub fn random(n: usize) -> Result<Vec<u8>, Fault> {
+    let mut b = vec![0u8; n];
+    fill_random(&mut b)?;
+    Ok(b)
+}
 
 /// The base of the key's slot name in the key vault comes from [`crate::places`]: it may be set only once,
 /// and the statement that sets it lives only in the test hooks (the `drive` feature, off in normal builds).
@@ -193,11 +206,9 @@ pub fn generate() -> Result<Secret, Fault> {
     // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
     // are marked too.
     crate::trace::mark(crate::feature::Feature::H2);
-    use std::io::Read;
-    let mut h = std::fs::File::open(ENTROPY).map_err(|e| classify(&e, ENTROPY))?;
     for _ in 0..64 {
         let mut b = [0u8; 32];
-        h.read_exact(&mut b).map_err(|e| classify(&e, ENTROPY))?;
+        fill_random(&mut b)?;
         if let Some(s) = Secret::take(b) {
             return Ok(s);
         }
@@ -208,24 +219,25 @@ pub fn generate() -> Result<Secret, Fault> {
 /// Whether this identity's key for this seat is present now. "Absent" is not an error: first run asks exactly
 /// this.
 ///
-/// Which slot is answered by [`crate::identity::account_now`]: without a register, the slot at the account
-/// base; with a register, the current identity's current seat's slot. An empty current seat answers "absent"
-/// (that seat has no key).
-pub fn present() -> Result<bool, Fault> {
+/// `acct` is the current slot (`identity::account_now`, read by the caller from the register): without a
+/// register, the slot at the account base; with a register, the current identity's current seat's slot. An
+/// empty current seat (`None`) answers "absent" (that seat has no key).
+pub fn present(acct: Option<&str>) -> Result<bool, Fault> {
     // This asks "present?", not "take it out": the vault's `present` reads only slot names in the book on
     // disk and does not touch the master key, so it can answer while the vault is locked or does not exist
     // yet. Using `get` would need the master key: the product asking "is there a key" at startup on a machine
     // without a passcode would get "the key vault is locked", landing in the trouble bar as a toast nobody
     // can act on. The presence question must not go through the lock.
-    let Some(acct) = crate::identity::account_now()? else { return Ok(false) };
-    keybox::present(&acct)
+    let Some(acct) = acct else { return Ok(false) };
+    keybox::present(acct)
 }
 
-/// Put a key into the current slot. An empty current seat is refused by name (no slot, nowhere to put it).
-pub fn install(s: &Secret) -> Result<(), Fault> {
-    let acct = crate::identity::account_now()?
+/// Put a key into the current slot (`acct`, as [`present`] reads it). An empty current seat is refused by
+/// name (no slot, nowhere to put it).
+pub fn install(acct: Option<&str>, s: &Secret) -> Result<(), Fault> {
+    let acct = acct
         .ok_or_else(|| Fault::known(Known::SeatUnseated, crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string()))?;
-    keybox::put(&acct, s.bytes())
+    keybox::put(acct, s.bytes())
 }
 
 /// Put a key into a named slot (used by the identity layer when creating identities; slot names are assembled
@@ -281,11 +293,11 @@ pub(crate) fn from_hex(text: &str) -> Option<Secret> {
     s
 }
 
-/// Load the current slot's key from the key vault. A locked vault is refused by name as `LOCKED`; bytes of
-/// the wrong shape are refused by name, never forced.
-pub fn load() -> Result<Option<Secret>, Fault> {
-    let Some(acct) = crate::identity::account_now()? else { return Ok(None) };
-    load_at(&acct)
+/// Load the current slot's key (`acct`, as [`present`] reads it) from the key vault. A locked vault is
+/// refused by name as `LOCKED`; bytes of the wrong shape are refused by name, never forced.
+pub fn load(acct: Option<&str>) -> Result<Option<Secret>, Fault> {
+    let Some(acct) = acct else { return Ok(None) };
+    load_at(acct)
 }
 
 /// Load the key from a named slot.

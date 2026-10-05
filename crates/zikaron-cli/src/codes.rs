@@ -106,6 +106,17 @@ pub enum Reason {
     /// `zikaron_glue::retraction`). A malformed subject, one not on this ledger's lineage, not a work record,
     /// or already deleted each have a token; the ledger is unchanged.
     Retraction,
+    /// The core's offline audit of this ledger with the entry about to be written finds a chain finding the
+    /// ledger did not already have (a key no longer the authority, a sequence gap, a broken link, an
+    /// equivocation, a second root): nothing is written, and the findings are named.
+    WouldBreak,
+    /// `check-grant`: `--grant` is a grant file (the app's single-file bundle) that does not open by the one
+    /// reading the app uses: its bundle shape, the kit inside, its grant code, or a hop the code names that the
+    /// bundle does not carry (with the refusing layer's token).
+    GrantFile,
+    /// `anchor`: the endpoint refused to estimate the transaction's gas (the call would revert), or estimated
+    /// it above the ceiling (it would run out of gas on chain with the fee paid): nothing is broadcast.
+    GasRefused,
 }
 
 impl Reason {
@@ -132,10 +143,13 @@ impl Reason {
             Reason::AlreadyRooted => "E_ALREADY_ROOTED",
             Reason::NotEmpty => "E_NOT_EMPTY",
             Reason::Retraction => "E_RETRACTION",
+            Reason::WouldBreak => "E_WOULD_BREAK",
+            Reason::GrantFile => "E_GRANT_FILE",
+            Reason::GasRefused => "E_GAS_REFUSED",
         }
     }
 
-    pub const ALL: [Reason; 21] = [
+    pub const ALL: [Reason; 24] = [
         Reason::Args,
         Reason::Unreadable,
         Reason::Key,
@@ -157,6 +171,9 @@ impl Reason {
         Reason::AlreadyRooted,
         Reason::NotEmpty,
         Reason::Retraction,
+        Reason::WouldBreak,
+        Reason::GrantFile,
+        Reason::GasRefused,
     ];
 }
 
