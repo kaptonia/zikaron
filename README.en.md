@@ -4,6 +4,8 @@
 
 Version 0.1.1
 
+Decentralized Infrastructure of Right: <https://kaptonia.github.io/>
+
 A desktop workbench for the zikaron/1 ledger law. It keeps a signed, append-only ledger of content
 hashes, anchors the ledger on an Ethereum chain, issues and checks grants on recorded evidences and works,
 and verifies what others hand over. One app serves two seats: the recorder, who records evidences and
@@ -12,6 +14,19 @@ works and grants rights, and the user, who holds grants and checks what they rec
 The command line `zikaron` offers the same ledger actions as the window, one verb per action. It works on plain
 ledger folders and on the mirror bundles and record packages the app exports; it does not read the local data the
 app keeps sealed.
+
+## Download
+
+The 0.1.1 packages ([release page](https://github.com/kaptonia/zikaron/releases/tag/v0.1.1)):
+
+| Platform | Download |
+|---|---|
+| macOS (Apple silicon, macOS 11 or later) | [`ZIKARON-0.1.1-macos-arm64.dmg`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-macos-arm64.dmg) · [`.pkg` installer](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-macos-arm64.pkg) |
+| Windows 10 / 11 (x86_64) | [`ZIKARON-0.1.1-windows-x86_64.zip`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-windows-x86_64.zip) |
+| Linux (x86_64, glibc 2.31 or later) | [`zikaron-desk_0.1.1_amd64.deb`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/zikaron-desk_0.1.1_amd64.deb) · [`AppImage`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-x86_64.AppImage) |
+| Source | [`zikaron-0.1.1-src.tar.gz`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/zikaron-0.1.1-src.tar.gz) |
+
+Check the SHA-256 against [`SHA256SUMS.txt`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/SHA256SUMS.txt) first, then install as described under "Install" below.
 
 ## Platforms
 
@@ -33,7 +48,7 @@ pinned build, runtime codeHash `0xfa97a1d9b22fab2b52f4e27c9a965b32734c40001b565a
 | Arbitrum One | 42161 | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | 511445184 |
 | OP Mainnet | 10 | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | 157735914 |
 
-Anchoring on mainnet and the two layer-2 networks spends real ETH for gas. Each identity keeps the network it
+Anchoring on mainnet and the two L2 networks spends real ETH for gas. Each identity keeps the network it
 uses: when you create or import an identity, pick any row above under Network; the first-run wizard offers mainnet
 (selected) and a custom network. To try the app out on the testnet, choose Sepolia testnet when you create an
 identity. A custom chain, contract and nodes can also be set in Settings. Settings can also add read-only

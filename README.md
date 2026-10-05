@@ -4,9 +4,24 @@
 
 版本 0.1.1
 
+去中心化法权基础设施：<https://kaptonia.github.io/>
+
 一个面向 zikaron/1 账本法的桌面工作台。它保管一本签名的、只增不改的内容哈希账本，把账本锚定到以太坊链上，为已记录的证据和作品签发、核验授权，并核验别人交来的东西。一个应用服务两种角色：记录者，记录证据和作品并授予权利；使用方，持有授权并核验收到的东西。
 
 命令行 `zikaron` 提供与窗口相同的账本操作，一个动作一个动词。它读写普通的账本文件夹，以及应用导出的镜像包和记录包；应用加封保存的本机数据，命令行不读。
+
+## 下载
+
+0.1.1 的安装包（[发布页](https://github.com/kaptonia/zikaron/releases/tag/v0.1.1)）：
+
+| 平台 | 下载 |
+|---|---|
+| macOS（Apple 芯片，macOS 11 起） | [`ZIKARON-0.1.1-macos-arm64.dmg`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-macos-arm64.dmg) · [`.pkg` 安装包](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-macos-arm64.pkg) |
+| Windows 10 / 11（x86_64） | [`ZIKARON-0.1.1-windows-x86_64.zip`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-windows-x86_64.zip) |
+| Linux（x86_64，glibc 2.31 起） | [`zikaron-desk_0.1.1_amd64.deb`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/zikaron-desk_0.1.1_amd64.deb) · [`AppImage`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/ZIKARON-0.1.1-x86_64.AppImage) |
+| 源码 | [`zikaron-0.1.1-src.tar.gz`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/zikaron-0.1.1-src.tar.gz) |
+
+下载后先用 [`SHA256SUMS.txt`](https://github.com/kaptonia/zikaron/releases/download/v0.1.1/SHA256SUMS.txt) 核对 SHA-256，再按下文「安装」一节安装。
 
 ## 平台
 
@@ -27,7 +42,7 @@
 | Arbitrum One | 42161 | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | 511445184 |
 | OP Mainnet | 10 | `0x36Ea8A857a5FE813429d4D9947000C644A88809A` | 157735914 |
 
-在主网与两条二层网络上锚定要花真实的 ETH 付 gas。每个身份记着自己用的网络：新建或导入身份时在「网络」里选上表任一行；首次启动向导提供主网（默认选中）和自定义网络。想在测试网上试用，新建身份时选「Sepolia 测试网」。自定义的链、合约和节点也可以在设置里配置。设置里还可以添加只读网络，只用来核验别人的材料，不在上面发交易。
+在主网与两条 L2 网络上锚定要花真实的 ETH 付 gas。每个身份记着自己用的网络：新建或导入身份时在「网络」里选上表任一行；首次启动向导提供主网（默认选中）和自定义网络。想在测试网上试用，新建身份时选「Sepolia 测试网」。自定义的链、合约和节点也可以在设置里配置。设置里还可以添加只读网络，只用来核验别人的材料，不在上面发交易。
 
 ## 安装
 
