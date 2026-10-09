@@ -79,8 +79,8 @@ test vectors are `crates/app/tests/local_standard.rs`.
   against the identity opening it.
 - Labels are alike in every home (owner `home-label`, the same place): a label moved between two homes of nobody
   is not told.
-- There is no way back: a file this version writes does not read in a version before it. There it is refused by
-  name and left untouched; it opens again here.
+- There is no way back: an earlier version cannot read the files this version writes. After upgrading, do not open
+  the same data with an earlier version.
 
 ## 6 · Test vectors
 
