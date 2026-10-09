@@ -1,24 +1,19 @@
-//! Depth page. None of the three quantities is computed here.
+//! Depth page. None of the three depth quantities is computed here.
 //!
-//! ─── One implementation, byte-identical readings on both sides ───
+//! The depth reading belongs to [`zikaron_kit::reading::depth`] (kit law §9.2), which the grantee's verifier
+//! also uses, so both sides read depth with the same code and get byte-identical results. This module only
+//! recognizes the record hash cell and fetches the audit outcome.
 //!
-//! The owner of the depth reading is the kit crate's [`zikaron_kit::reading::depth`] (kit law §9.2), and the
-//! grantee seat's verifier reads it too. So "byte-identical on both sides" is not two copies compared, but
-//! only one.
-//!
-//! This layer does two parameter jobs: recognize a record hash cell, and fetch the audit outcome.
-//!
-//! ─── No external report file (as kit law §9) ───
-//!
-//! Self-reported depth has zero evidentiary weight; the honest deliverable is always the disclosure kit,
-//! and the buyer computes for themselves. So this file has no path to disk: no `fs::write`, no `land_bytes`;
-//! the reading lives only on the face.
+//! No report file is written (kit law §9): self-reported depth carries no evidentiary weight. The honest
+//! deliverable is always the disclosure kit, from which the buyer computes depth themselves. So this module
+//! has no path to disk; the reading lives only on the page.
 
 use crate::fault::{Fault, Known};
 use zikaron::json::Value;
 use zikaron_kit::reading;
 
-/// A record hash cell. Unrecognized is refused by name, never asking depth with an empty string.
+/// Parses a record hash cell. Anything but a hex32 value is refused by name, so depth is never asked for an
+/// empty string.
 pub fn work_of(typed: &str) -> Result<String, Fault> {
     let t = typed.trim();
     if t.is_empty() {
@@ -30,10 +25,10 @@ pub fn work_of(typed: &str) -> Result<String, Fault> {
     Ok(t.to_string())
 }
 
-/// Record hashes that appear in this ledger (the path choosing directly from entries).
+/// Record hashes that appear in this ledger (for choosing directly from entries).
 ///
-/// Reads history's `content` (the same predicate as kit law §9.2); byte order, deduplicated, so two passes
-/// over one ledger give the same list.
+/// Reads each history entry's `content`, the same field the kit reads (kit law §9.2); sorted and
+/// deduplicated, so repeated passes over one ledger give the same list.
 pub fn works_in(items: &[Vec<u8>]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for b in items {
@@ -52,7 +47,7 @@ pub fn works_in(items: &[Vec<u8>]) -> Vec<String> {
     out
 }
 
-/// The three quantities laid out for the face. Every cell is taken from the kit crate's reading; nothing is
+/// The three quantities laid out for the page. Every field is taken from the kit crate's reading; nothing is
 /// recomputed.
 pub struct Three {
     /// Whether the input is well formed (as the kit crate says).
@@ -68,7 +63,7 @@ pub struct Three {
     /// Most continuous: anchored count and span.
     pub anchored: u64,
     pub span: u64,
-    /// The kit crate's result, unchanged (read when the face lays out things beyond the eleven cells).
+    /// The kit crate's result, unchanged (for anything the page shows beyond these fields).
     pub value: Value,
 }
 
@@ -116,11 +111,11 @@ pub enum Said<T> {
     ChainUnread,
 }
 
-/// The three depth cells as a page says them, for a pass that did or did not leave a chain unread (`unread`:
-/// no chain read, or a network left out). A cell that reads "none" or falls short may have its anchor on the
-/// chain not read, so with `unread` it says the chain was not read; a value read on the chains that were read
-/// shows as it is. Without `unread`, and for a work this ledger does not hold (no chain could change that),
-/// every cell is as the kit crate read it. One rule for every page.
+/// The three depth cells as a page shows them. `unread` means a chain was not read this pass (none read, or
+/// a network skipped). Then a cell that reads "none" or falls short may have its anchor on the unread chain,
+/// so it shows "chain not read"; a value found on the chains that were read shows as is. Without `unread`, or
+/// for a work this ledger does not hold (no chain could change that), every cell is as the kit read it. Every
+/// page uses this one rule.
 pub fn said(t: &Three, unread: bool) -> (Said<u64>, Said<u64>, Said<(u64, u64)>) {
     let unread = unread && t.found;
     let first = match t.earliest {
@@ -133,8 +128,8 @@ pub fn said(t: &Three, unread: bool) -> (Said<u64>, Said<u64>, Said<(u64, u64)>)
     (first, deepest, continuity)
 }
 
-/// Read depth once. The audit outcome comes from the core (the input assembly has one owner), the three
-/// quantities from the kit crate; this layer computes not one number.
+/// Reads depth once: the audit outcome from the core (`auditx`), the three quantities from the kit crate. No
+/// number is computed here.
 pub fn read(items: &[Vec<u8>], fragment: &Value, work: &str) -> Result<Three, Fault> {
     let outcome = crate::auditx::outcome_of(items, fragment)?;
     Ok(three(reading::depth(Some(&outcome), work)))

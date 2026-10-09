@@ -1,0 +1,4 @@
+# The toolchain every build of this workspace uses (local, CI and the release builds), pinned so the bytes a
+# release carries can be built again from source.
+[toolchain]
+channel = "1.97.1"

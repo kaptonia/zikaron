@@ -1,10 +1,8 @@
 //! Grant drafter, and the grant register with the double-sale gate.
 //!
-//! ─── The drafter decides nothing ───
-//!
-//! A grant's field format follows law §6.3, judged by the core's thirteen steps. This layer only lays a few
-//! cells out as an object; a mistake is refused by the law at once, and what turns red is the law's token,
-//! not a sentence made up here.
+//! The drafter decides nothing: a grant's field format follows law §6.3 and is judged by the core's
+//! thirteen-step entry check. This module only lays a few cells out as an object; a mistake is refused by
+//! the core at once, and the error shown is the spec's token, not a message made up here.
 
 use crate::fault::{Fault, Known};
 use crate::home::Home;
@@ -13,7 +11,7 @@ use zikaron::tokens::EntryType;
 
 // ───────────────────────── Drafting (law §6.3) ─────────────────────────
 
-/// The form's cells. Empty optional cells do not go into the body (law §6.10: extra members belong to
+/// The form's cells. Empty optional cells are left out of the body (law §6.10: extra members belong to
 /// readings; giving fewer is not an error).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
@@ -24,14 +22,13 @@ pub struct Draft {
     pub from: String,
     pub to: String,
     pub scope_md: String,
-    /// The kit reading (treated as data by law §6.10); the face states "kit reading, not base law grammar".
+    /// The kit reading (treated as data by law §6.10); the page labels it "kit reading, not base grammar".
     pub upstream: String,
 }
 
-/// Lay out as law §6.3's body. Key names are JSON keys, not the law's words (as in `entryx`).
+/// Lays out law §6.3's body. Key names are JSON keys, not spec tokens (as in `entryx`).
 ///
-/// Judging the format belongs to the core's thirteen steps: hex20 / hex32 / from ≤ to are not written here at
-/// all.
+/// Format checks (hex20 / hex32 / from ≤ to) belong to the core's entry check and are not repeated here.
 pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
     let need = |s: &str, what: &str| -> Result<String, Fault> {
         let t = s.trim();
@@ -74,8 +71,8 @@ pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
                 ]),
             ));
         }
-        // The window is one object whose two cells are both present or both absent (law §6.3); when only half
-        // is given, say so at once, instead of letting the law check report a sentence about object members.
+        // The window is one object whose two cells are both present or both absent (law §6.3). With only
+        // half given, say so at once instead of letting the core report a message about object members.
         _ => {
             return Err(Fault::known(
                 Known::FieldMissing,
@@ -87,16 +84,15 @@ pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
     Ok(Value::Obj(body))
 }
 
-/// Draft a grant's bytes.
+/// Drafts a grant's bytes.
 ///
-/// This layer neither records nor queues: those two steps are in the action, and each has its own color.
+/// Recording and queueing are separate steps in the action, each with its own status colour.
 pub fn draft(
     secret: &crate::key::Secret,
     d: &Draft,
     head: (u64, String),
 ) -> Result<crate::entryx::Sealed, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W7);
     let body = grant_body(d)?;
     crate::entryx::seal(
@@ -125,15 +121,15 @@ pub struct Row {
     /// Where exclusivity comes from: the record made at signing, or the older list in the settings file (no
     /// terms document).
     pub exclusive_from: crate::termsx::Exclusive,
-    /// The terms document kept at signing (relative path in the `kits` room); `None` when there is none.
+    /// The terms document kept at signing (relative path under `kits`); `None` when there is none.
     pub doc: Option<String>,
-    /// The name the face shows for that document (`termsx::Record::shown_name`).
+    /// The display name of that document (`termsx::Record::shown_name`).
     pub doc_name: Option<String>,
     /// Whether this ledger has a revocation referencing it.
     pub revoked: bool,
 }
 
-/// A row's state badge now. Closed; there is no fifth.
+/// A row's state badge now. Closed set of five.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Badge {
     /// Within the window.
@@ -141,8 +137,7 @@ pub enum Badge {
     /// Expired.
     Expired,
     /// The window has not opened yet. Kept apart from "expired": calling an exclusive license that starts
-    /// next month "expired" would tell the person the opposite. A range check written only on the upper bound
-    /// is the form this prevents.
+    /// next month "expired" would tell the user the opposite of the truth.
     NotYet,
     /// Revoked.
     Revoked,
@@ -197,8 +192,7 @@ fn text<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
     }
 }
 
-/// A grant's window (law §6.3); grants in others' ledgers are read the same way (shared with the readers of
-/// other people's ledgers).
+/// A grant's window (law §6.3); also used for grants in other people's ledgers.
 pub fn window_of(body: &Value) -> Option<(u64, u64)> {
     let Value::Obj(m) = body else { return None };
     let (_, w) = m.iter().find(|(k, _)| k == "window")?;
@@ -212,10 +206,10 @@ pub fn window_of(body: &Value) -> Option<(u64, u64)> {
     Some((g("from")?, g("to")?))
 }
 
-/// Read the register once. One row per grant in the pile; revocation is decided by revocations in this ledger
-/// that reference it (law §6.4: revoking is an act of the ledger that issued it). Exclusivity and documents
-/// are read from the issuance record (`termsx`, written once at signing); `legacy` is the older list in the
-/// settings file (read-only historical bookkeeping).
+/// Reads the register once: one row per grant in the ledger. A grant counts as revoked when a revocation in
+/// this ledger references it (law §6.4: only the issuing ledger can revoke). Exclusivity and documents come
+/// from the issuance record (`termsx`, written once at signing); `legacy` is the older exclusive list in the
+/// settings file (read-only, kept for data written by older versions).
 pub fn table(home: &Home, legacy: &[String]) -> Result<Vec<Row>, Fault> {
     let records = crate::termsx::records(home)?;
     let survey = home
@@ -268,8 +262,8 @@ pub fn filter(rows: &[Row], grantee: &str, work: &str) -> Vec<Row> {
         .collect()
 }
 
-/// Whether two windows overlap. A side without a window counts as "forever" (law §6.3: what a grant without a
-/// window means belongs to the terms), so it overlaps anything.
+/// Whether two windows overlap. A side without a window counts as "forever" (law §6.3: what a grant without
+/// a window means is up to the terms), so it overlaps anything.
 pub fn overlaps(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> bool {
     match (a, b) {
         (Some((a0, a1)), Some((b0, b1))) => a0 <= b1 && b0 <= a1,
@@ -277,12 +271,12 @@ pub fn overlaps(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> bool {
     }
 }
 
-/// The double-sale gate. Same record, overlapping windows, and the existing one carries the local exclusive
-/// flag: it fires only when all three hold.
+/// The double-sale gate: fires only when the record matches, the windows overlap, and the existing grant
+/// carries the local exclusive flag.
 ///
-/// The limit is in the third: terms are a hash, and a machine cannot read exclusivity from them, so this gate
-/// stops "the author's own note of exclusivity at issuance", not "the law says these two exclude each other".
-/// The face states this (law §6.3: two grants say nothing about each other).
+/// The third condition is the limit: terms are a hash, so exclusivity cannot be read from them by machine.
+/// The gate enforces the author's own note of exclusivity at issuance, not a spec rule that two grants
+/// exclude each other (law §6.3: two grants say nothing about each other). The page says so.
 pub fn conflicts(rows: &[Row], work: &str, window: Option<(u64, u64)>) -> Vec<Row> {
     let w = work.trim().to_ascii_lowercase();
     rows.iter()
@@ -298,12 +292,11 @@ pub fn conflicts(rows: &[Row], work: &str, window: Option<(u64, u64)>) -> Vec<Ro
 
 /// The body of `revocation` (law §6.4: `grant` required hex32, `case` optional hex32).
 ///
-/// Who issues the `case` is named by the terms (law §6.4: a court judgment, an arbitration award or a case
-/// file within the ecosystem all qualify); this layer does not judge who issued it and only puts the digest
-/// in. A revocation without `case` says exactly what it says: revoked, citing no decision.
+/// Who issues the `case` is up to the terms (law §6.4: a court judgment, an arbitration award or a case file
+/// within the ecosystem all qualify); this module does not judge the issuer and only records the digest. A
+/// revocation without `case` says exactly that: revoked, citing no decision.
 pub fn revocation_body(grant: &str, case: &str) -> Result<Value, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W9);
     let g = grant.trim();
     if g.is_empty() {
@@ -318,18 +311,17 @@ pub fn revocation_body(grant: &str, case: &str) -> Result<Value, Fault> {
     Ok(Value::Obj(body))
 }
 
-/// Three in a row: a grant, the revocations referencing it, and their anchors.
+/// A grant's story: the grant and the revocations referencing it.
 pub struct Story {
     pub grant: Option<Row>,
     /// (revocation id, the decision digest it cites).
     pub revocations: Vec<(String, Option<String>)>,
 }
 
-/// Link the three into one story. Revoking is an act of the ledger that issued the grant (law §6.4), so only
-/// this ledger is searched.
+/// Links a grant with its revocations. Only the issuing ledger can revoke (law §6.4), so only this ledger
+/// is searched.
 pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W9);
     let want = grant_id.trim().to_string();
     let survey = home
@@ -354,10 +346,10 @@ pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
     Ok(Story { grant: rows.into_iter().find(|r| r.id == want), revocations })
 }
 
-/// Whether the draft form may be signed: grantee, record and terms fingerprint are there, none of the three
-/// hex cells mixes cases (the law refuses checksum addresses by name), and a preset validity has chain time to
-/// count from. A preset without chain time has no window to sign; signing anyway would write a grant with no
-/// window at all, which is not what a person who chose "30 days" asked for.
+/// Whether the draft form may be signed: grantee, record and terms fingerprint are present, none of the
+/// three hex cells mixes cases (the core refuses checksum addresses by name), and a preset validity has chain
+/// time to count from. Without chain time a preset has no window, and signing would write a grant with no
+/// window at all, which is not what someone who chose "30 days" asked for.
 pub fn draft_ready(grantee: &str, work: &str, terms: &str, upstream: &str, preset_days: u32, chain_now: Option<u64>) -> bool {
     let mixed_case = [grantee, terms, upstream].iter().any(|x| x.trim().strip_prefix("0x").map(|h| h.bytes().any(|b| b.is_ascii_uppercase())).unwrap_or(false));
     let preset_unfilled = preset_days > 0 && chain_now.is_none();

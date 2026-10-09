@@ -1,9 +1,6 @@
-//! Checks of the command line: real binaries for behavior (exit codes, stdout bytes, trace marks) and source
-//! scans for discipline (no third-party crates, no direct ledger writes, a closed flag list, law literals in
-//! one place).
-//!
-//! Real runs use `CARGO_BIN_EXE_zikaron`, the binary cargo builds for this package, so the tests always drive
-//! the product's own entry point.
+//! Command-line checks: the real binary for behavior (exit codes, stdout bytes, trace marks) and source scans
+//! for discipline (no third-party crates, no direct ledger writes, a closed flag list, spec literals in one
+//! place). Runs use `CARGO_BIN_EXE_zikaron`, the binary cargo builds for this package.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,8 +30,7 @@ fn sources() -> Vec<(String, String)> {
     out
 }
 
-/// A test's own temporary directory, removed when the test lets go of it (passing or failing), so no run
-/// leaves anything in the temporary directory.
+/// A per-test temporary directory, removed on drop whether the test passes or fails.
 struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -78,6 +74,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Ran {
     let o = Command::new(BIN)
         .args(args)
         .current_dir(dir)
+        .env(zikaron_os::HOME_VAR, own_home())
         .output()
         .expect("起不动 zikaron");
     Ran {
@@ -86,6 +83,14 @@ fn run_in(dir: &Path, args: &[&str]) -> Ran {
     }
 }
 
+/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
+/// runs never share a record or touch the real one.
+fn own_home() -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
+}
+
+
 const A_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 // Behavior: real binaries.
@@ -93,8 +98,8 @@ const A_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6
 #[test]
 fn a_misuse_writes_not_one_byte_to_stdout() {
     let w = scratch("misuse");
-    // Misuse as in HARNESS: exit 2 and zero bytes on stdout. Whether there are bytes is how downstream tells
-    // an answer from misuse without parsing.
+    // Misuse (see `HARNESS.md`): exit 2 and zero bytes on stdout, so callers can tell misuse from an answer
+    // without parsing.
     for args in [
         vec!["conjure"],
         vec!["keygen", "--seed", "1"],
@@ -117,7 +122,8 @@ fn a_misuse_names_its_subject_on_the_first_line_of_stderr() {
         .expect("起不动");
     let err = String::from_utf8_lossy(&o.stderr);
     let first = err.lines().next().unwrap_or_default();
-    assert_eq!(first, "E_UNREADABLE /nowhere/at/all");
+    // The path is user input: reported by argument position (the verb is #1) and length, never echoed.
+    assert_eq!(first, "E_UNREADABLE #3 (15 bytes)");
 }
 
 #[test]
@@ -150,8 +156,8 @@ fn an_answer_is_canonical_json_with_members_in_byte_order() {
 #[test]
 fn the_law_refuses_what_the_shell_hands_it_and_the_token_comes_back_verbatim() {
     let w = scratch("token");
-    // `mode` is a member the law requires. The shell does not judge it: with both flags missing the body has
-    // no such member and the core returns `E_BODY_FIELD`.
+    // `mode` is required by the spec. The CLI does not check it: with both flags missing the body lacks the
+    // member and the core returns `E_BODY_FIELD`.
     let r = run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]);
     assert_eq!(r.code, 0, "建档该绿");
     let r = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--content", &format!("0x{}", "aa".repeat(32))]);
@@ -185,8 +191,8 @@ fn partial_gets_its_own_exit_code_and_is_never_folded_into_green() {
         .expect("答里没有 entryId")
         .to_string();
     let file = format!("b/{}.entry", id.trim_start_matches("0x"));
-    // An unanchored grant: check four UNKNOWN, verdict PARTIAL. It exits 3, not 0: folded into green, a buyer
-    // would take an unanchored grant as a green light.
+    // An unanchored grant: check four UNKNOWN, verdict PARTIAL, exit 3 rather than 0 so it is never read as a
+    // pass.
     let c = run_in(&w, &["check-grant", "--grant", &file, "--ledger", "b"]);
     assert_eq!(c.code, 3, "PARTIAL 该有自己那一格");
     assert!(String::from_utf8_lossy(&c.out).contains("\"verdict\":\"PARTIAL\""));
@@ -195,7 +201,7 @@ fn partial_gets_its_own_exit_code_and_is_never_folded_into_green() {
 #[test]
 fn a_world_that_cannot_answer_is_not_a_world_that_answers_no() {
     let w = scratch("unanswered");
-    // Law §9.4: a scan failure is the absence of an answer. No endpoint exits 4, not 1.
+    // `zikaron/1` §9.4: a scan failure is the absence of an answer. No endpoint exits 4, not 1.
     let port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("绑不到端口");
         let p = l.local_addr().expect("读不出端口").port();
@@ -225,8 +231,8 @@ fn every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_thei
         .expect("起不动");
     assert_eq!(o.status.code(), Some(0));
     let marks = std::fs::read_to_string(&trace).unwrap_or_default();
-    // The trace marks show this run passed through the command line itself, the core (canonical form and
-    // thirteen steps) and storage (append).
+    // Trace marks show the run passed through the CLI, the core (canonical form and audit) and storage
+    // (append).
     for id in ["V1", "K1", "A1"] {
         assert!(marks.lines().any(|l| l.trim() == id), "痕迹里没有 {id}:{marks}");
     }
@@ -286,8 +292,7 @@ fn the_crate_leans_on_nothing_but_the_four_bases() {
 
 #[test]
 fn the_ledger_is_never_touched_by_hand() {
-    // Directories only through storage: the file that reads and writes the ledger (`ledger.rs`) has no
-    // standard-library disk operation.
+    // Ledger disk access goes through the storage crate only: `ledger.rs` uses no std disk operation.
     let text = src("ledger.rs");
     for forbidden in ["std::fs::", "File::", "read_dir", "create_dir", "remove_"] {
         assert!(!text.contains(forbidden), "ledger.rs 里出现了 {forbidden}");
@@ -296,8 +301,8 @@ fn the_ledger_is_never_touched_by_hand() {
 
 #[test]
 fn no_law_literal_lives_outside_the_bases() {
-    // Law bytes come from the core and kit core constants (spec, type names, signing domains, KIT_OK /
-    // BADGE_OK); none is written again here.
+    // Spec bytes (spec id, type names, signing domains, KIT_OK / BADGE_OK) come from core and kit constants;
+    // none is repeated here.
     let forbidden = [
         "\"zikaron/1\"",
         "\"zikaron.kit/1\"",
@@ -322,8 +327,7 @@ fn no_law_literal_lives_outside_the_bases() {
 
 #[test]
 fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
-    // Flag names are closed (`ALL_FLAGS` plus `MORE_FLAGS`): a verb asking for a flag outside them would
-    // reject it as misuse at `close`.
+    // Flag names are a closed set (`ALL_FLAGS` plus `MORE_FLAGS`); any other flag is misuse at `close`.
     let text = src("verbs.rs");
     let mut asked: Vec<String> = Vec::new();
     for call in ["a.one(\"", "a.need(\"", "a.many(\"", "a.u64_of(\"", "a.key(\""] {
@@ -345,9 +349,9 @@ fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
 }
 
 #[test]
-fn the_twenty_one_verbs_are_twenty_one_and_each_one_answers() {
+fn the_twenty_two_verbs_are_twenty_two_and_each_one_answers() {
     let names = zikaron_cli::verbs::VERBS;
-    assert_eq!(names.len(), 21);
+    assert_eq!(names.len(), 22);
     let text = src("verbs.rs");
     for v in names {
         assert!(text.contains(&format!("\"{v}\" =>")), "{v} 没有分发的落点");
@@ -355,7 +359,7 @@ fn the_twenty_one_verbs_are_twenty_one_and_each_one_answers() {
     let mut sorted = names.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), 21, "二十一个名字里有重的");
+    assert_eq!(sorted.len(), 22, "二十二个名字里有重的");
 }
 
 #[test]
@@ -385,12 +389,11 @@ fn the_output_key_table_and_the_reason_table_have_no_twin_spellings() {
 #[test]
 fn the_entropy_well_is_read_by_length_and_has_no_fallback() {
     let text = src("entropy.rs");
-    // The source never ends, so reading to end would hang; reading exactly the length is the only way.
-    // The command line reads the system's source only through the operating-system crate, which reads exactly
-    // the length (the source never ends, so reading to end would hang).
+    // System entropy is read only through `zikaron_os`, which reads exactly the requested length (the source
+    // never ends, so reading to end would hang).
     assert!(text.contains("zikaron_os::fill_random("), "熵只经 zikaron_os 那一处取");
     assert!(!text.contains("fs::read("), "整档读一个无尽的档会挂住");
-    // Unavailable is said: no second source and no makeshift fallback.
+    // Unavailable entropy is reported: no second source and no fallback.
     assert!(!text.to_lowercase().contains("fallback"));
     let os = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zikaron-os/src/lib.rs")).expect("zikaron-os");
     assert!(os.contains("imp::fill_random(buf)"), "取熵在 zikaron-os 里每个系统一份实现");
@@ -447,8 +450,7 @@ fn the_cli_schema_carries_the_whole_exit_table_and_every_reason() {
 
 #[test]
 fn not_one_of_the_twenty_verbs_passes_without_marking_the_trace() {
-    // Every verb emits its trace mark: each of the twenty-one runs once (most stop at missing-flag misuse, and
-    // the mark is emitted at dispatch), and the trace must show it.
+    // Every verb emits its trace mark at dispatch; each runs once (most stop at missing-flag misuse).
     for verb in zikaron_cli::verbs::VERBS {
         let w = scratch(&format!("mark-{verb}"));
         let trace = w.join("trace.log");
@@ -590,7 +592,7 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
         )
     };
 
-    // Success: the landed bytes equal the answer's byte for byte.
+    // Success: the written file equals the answer's document byte for byte.
     let r = sign("fpm.json");
     assert_eq!(r.code, 0, "{}", String::from_utf8_lossy(&r.out));
     let answered = String::from_utf8_lossy(&r.out)
@@ -621,6 +623,8 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
     let r = sign("locked/fpm.json");
     assert_eq!(r.code, 1, "{}", String::from_utf8_lossy(&r.out));
     assert!(!locked.join("fpm.json").exists(), "落不下去却留下了一份");
+    let said = String::from_utf8_lossy(&r.out).into_owned();
+    assert!(said.contains("\"detail\":\"E_IO: ") && said.contains("locked"), "盘错的 detail 带码与系统原话:{said}");
     let leftovers: Vec<String> = std::fs::read_dir(&locked)
         .expect("列不动")
         .filter_map(|x| x.ok())
@@ -649,8 +653,8 @@ fn the_shell_holds_no_bare_write_to_a_path_the_caller_gave() {
 
 #[test]
 fn stdout_has_one_writer_and_that_writer_never_returns() {
-    // "Misuse writes zero bytes to stdout" is held by control flow: `emit` is the only writer and never
-    // returns, so nothing can print and then refuse. This scan states it once.
+    // "Misuse writes zero bytes to stdout" holds by control flow: `emit` is the only writer and never returns,
+    // so nothing can print and then refuse.
     for (name, text) in sources() {
         let code: String = text
             .lines()
@@ -667,7 +671,7 @@ fn stdout_has_one_writer_and_that_writer_never_returns() {
     let out_rs = src("out.rs");
     // The writer never returns.
     assert!(out_rs.contains("pub fn emit(a: Answer) -> !"), "emit 不再是不返回的:两个出口就不互斥了");
-    assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: &str, said: Said) -> !"));
+    assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: Subject, said: Said) -> !"));
     // Exactly two exits.
     assert_eq!(out_rs.matches("std::process::exit").count(), 2, "out.rs 里的退出口不是两处");
     // `Exit::Misuse` appears only in out.rs and codes.rs, so no answer can claim to be misuse.
@@ -729,6 +733,7 @@ fn not_one_path_that_exits_two_writes_a_byte_to_stdout() {
         vec!["kit-export", "--ledger", "b", "--out", "p", "--entry", "0xZZ", "--note", ""],
         vec!["show", "--ledger", "b"],
         vec!["show", "--ledger", "b", "--entry", "zz"],
+        vec!["contract", "--ledger", "b"],
     ];
     let mut two = 0usize;
     for c in &cases {
@@ -767,7 +772,7 @@ fn the_cli_schema_lists_every_flag_the_code_knows() {
     real.dedup();
     assert_eq!(real.len(), m, "码里的旗名闭表有重名");
     assert_eq!(listed, real, "§八 与旗名闭表对不上");
-    assert_eq!(listed.len(), 53, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
+    assert_eq!(listed.len(), 56, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
 }
 
 // init: one ledger, one root.
@@ -894,8 +899,8 @@ fn init_on_a_ledger_that_already_holds_two_roots_names_the_fork() {
 #[test]
 fn a_write_by_hand_into_a_ledger_that_already_holds_two_roots_is_refused() {
     // The write gate audits under one root; a pile that already holds two (two keys each wrote a genesis)
-    // cannot be judged, and the gate refuses what it cannot judge, `--seq` and `--prev` given by hand (no tip
-    // asked) included.
+    // cannot be audited, so the gate refuses the write, even with `--seq` and `--prev` given by hand (no tip
+    // lookup).
     let w = scratch("write-fork");
     let other_key = format!("0x{}", "17".repeat(32));
     let one = run_in(&w, &["init", "--ledger", "one", "--key", A_KEY, "--statement", "开端"]);
@@ -914,8 +919,8 @@ fn a_write_by_hand_into_a_ledger_that_already_holds_two_roots_is_refused() {
     assert_eq!(r.code, 1, "两个根的账本该拒:{}", String::from_utf8_lossy(&r.out));
     assert_eq!(reason_of(&r), "E_TIP_FORKED");
     assert_eq!(files_of(&w.join("b")), before, "零条目落地");
-    // Naming the root (`--root`) is how a writer picks its line in such a ledger: the gate audits under that
-    // root, the same one the tip is asked under, and the write by the key that holds it lands.
+    // Naming the root (`--root`) picks a line in such a ledger: the gate audits under that root (the same one
+    // the tip is looked up under), and a write by the key that holds it succeeds.
     let author = files_of(&w.join("one")).into_iter().find_map(|(_, b)| zikaron::entry::check(&b).ok()).map(|e| e.author).expect("创世作者");
     let named = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--root", &author, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
     assert_eq!(named.code, 0, "点名根之后照写:{}", String::from_utf8_lossy(&named.out));
@@ -1000,4 +1005,28 @@ fn a_retraction_the_convention_forbids_is_refused_by_name_and_not_one_byte_moves
         assert_eq!(files_of(&w.join("b")), before, "{argv:?} 拒了而账本动了");
     }
     let _ = std::fs::remove_dir_all(&w);
+}
+
+/// A failed storage disk operation answers `detail` as its code followed by `: ` and the system's message
+/// (operation, path, OS text); kit output disk failures do the same.
+#[cfg(unix)]
+#[test]
+fn a_disk_failure_says_the_systems_words_in_detail() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = scratch("p5-io");
+    let locked = w.join("locked");
+    std::fs::create_dir_all(&locked).expect("建不出");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("改不了权限");
+    let r = run_in(&w, &["init", "--ledger", "locked/b", "--key", A_KEY, "--statement", "开端"]);
+    let said = String::from_utf8_lossy(&r.out).into_owned();
+    assert_eq!(r.code, 1, "{said}");
+    assert!(said.contains("\"reason\":\"E_LEDGER\"") && said.contains("\"detail\":\"E_IO: ") && said.contains("locked/b"), "{said}");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("改不了权限");
+    assert_eq!(run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code, 0);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("改不了权限");
+    let k = run_in(&w, &["kit-export", "--ledger", "b", "--out", "locked/pack", "--note", ""]);
+    let said = String::from_utf8_lossy(&k.out).into_owned();
+    assert_eq!(k.code, 1, "{said}");
+    assert!(said.contains("\"detail\":\"E_IO: ") && said.contains("\"path\":"), "{said}");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
 }

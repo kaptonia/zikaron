@@ -1,5 +1,4 @@
-//! Library tests of the anchoring crate: each assertion checks a sentence of law §9 or a reading of this
-//! layer.
+//! Library tests of the anchoring crate against zikaron-v1 §9 (`base/zikaron-v1.md`).
 //!
 //! Fixture replay, anvil scenarios and kit tampering run end to end elsewhere; these tests check the
 //! library's own decisions and copy nothing from `base/`: every sample is built here.
@@ -100,7 +99,7 @@ fn an_unknown_transaction_type_has_no_sender() {
     assert_eq!(tx::read(&w(object)).unwrap().sender, None);
 }
 
-// The §9.1 containment test.
+// The calldata containment test (zikaron-v1 §9.1).
 
 #[test]
 fn containment_reads_only_the_two_aligned_families_of_offsets() {
@@ -122,7 +121,7 @@ fn containment_reads_only_the_two_aligned_families_of_offsets() {
     assert!(!scan::calldata_carries(&cut, &word), "整字要整个落在里面");
 }
 
-// §9.4 deduplication and endpoint checks.
+// Deduplication and endpoint checks (zikaron-v1 §9.4).
 
 fn rec(chain: u64, bn: u64, tx_byte: u8, hash_byte: u8) -> scan::AnchorRec {
     scan::AnchorRec {
@@ -358,11 +357,10 @@ fn a_log_missing_its_data_member_is_no_anchor() {
 
 #[test]
 fn an_unreadable_signature_field_is_the_endpoints_fault_and_says_so() {
-    // yParity is only 0 or 1; any other value means the endpoint's answer does not hold, not that the law
-    // gives no sender.
+    // yParity is only 0 or 1; any other value is the endpoint's fault, not a transaction without a sender.
     let object = "{\"chainId\":\"0x7a69\",\"gas\":\"0x1\",\"hash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"input\":\"0x\",\"maxFeePerGas\":\"0x2\",\"maxPriorityFeePerGas\":\"0x1\",\"nonce\":\"0x0\",\"r\":\"0x11\",\"s\":\"0x22\",\"to\":\"0x1111111111111111111111111111111111111111\",\"type\":\"0x2\",\"value\":\"0x0\",\"yParity\":\"0x5\"}";
     assert!(matches!(tx::read(&w(object)), Err(tx::Bad::Shape("yParity"))));
-    // The lawful case still has no sender: a legacy v = 27 transaction whose signature names no chain.
+    // A legacy v = 27 transaction, whose signature names no chain, is a valid case.
     let legacy = "{\"gas\":\"0x1\",\"gasPrice\":\"0x1\",\"hash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"input\":\"0x\",\"nonce\":\"0x0\",\"r\":\"0x11\",\"s\":\"0x22\",\"to\":\"0x1111111111111111111111111111111111111111\",\"type\":\"0x0\",\"v\":\"0x1b\",\"value\":\"0x0\"}";
     assert!(matches!(tx::read(&w(legacy)), Err(tx::Bad::HashMismatch)), "它先过哈希那一关:这一份是手写的,哈希对不上");
 }
@@ -399,6 +397,10 @@ fn an_incomplete_receipt_is_an_answer_so_the_deadline_says_not_yet() {
         fn name(&self) -> String {
             "half".into()
         }
+        /// No address: the place is the name.
+        fn place(&self) -> String {
+            self.name()
+        }
     }
     let mut ep = Half;
     let got = send::confirm_each(&mut [&mut ep], &[1u8; 32], std::time::Duration::from_millis(0), &[]);
@@ -427,6 +429,10 @@ fn a_broadcast_transaction_keeps_its_hash_even_when_the_endpoint_goes_quiet() {
         }
         fn name(&self) -> String {
             "flaky".into()
+        }
+        /// No address: the place is the name.
+        fn place(&self) -> String {
+            self.name()
         }
     }
     let mut ep = Flaky { sent: false };
@@ -484,8 +490,7 @@ fn the_core_reads_the_callers_own_bytes_and_not_a_rewritten_copy() {
 
 #[test]
 fn every_public_verb_of_this_crate_marks_the_trace() {
-    // Trace marks are diagnostics and never decide anything; this pins the shape "every public entry point
-    // emits": each public verb's body starts with the call. The list follows the verbs.
+    // Trace marks are diagnostics only; every public entry point's body starts with the `seam()` call.
     let src = |f: &str| std::fs::read_to_string(format!("{}/src/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
     for (file, sig) in [
         ("scan.rs", "pub fn run("),

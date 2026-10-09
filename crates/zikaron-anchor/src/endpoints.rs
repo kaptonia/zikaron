@@ -9,6 +9,7 @@
 use zikaron::json::{canon_bytes, Value};
 
 /// A multi-endpoint reading.
+#[derive(Clone, Debug)]
 pub struct Reading {
     /// The fragment all endpoints agreed on.
     pub fragment: Value,
@@ -24,6 +25,7 @@ pub struct Reading {
 }
 
 /// A disagreement between endpoints.
+#[derive(Clone, Debug)]
 pub struct Disagreement {
     pub sources: Vec<String>,
     /// The fragment bytes each endpoint gave, in source order.
@@ -70,8 +72,30 @@ pub fn project(answer: &Value, facts: &[&str]) -> Value {
 
 /// Convergence for one chain or without chain ids: fewer than two sources is single-source.
 pub fn agree(runs: Vec<(String, Value)>) -> Result<Reading, Disagreement> {
-    let thin = if runs.len() < 2 { vec![0] } else { Vec::new() };
+    let thin = if distinct_places(runs.iter().map(|(n, _)| n.as_str())) < 2 { vec![0] } else { Vec::new() };
     agree_over(runs, thin)
+}
+
+/// How many places these names are (`zikaron_net::place_key`: the same node written twice, in another case or
+/// with its default port spelled out, is one place). Every single-source verdict counts sources here.
+pub fn distinct_places<'a>(names: impl IntoIterator<Item = &'a str>) -> usize {
+    let mut keys: Vec<String> = names.into_iter().map(zikaron_net::place_key).collect();
+    keys.sort();
+    keys.dedup();
+    keys.len()
+}
+
+/// The chains among `chains` that fewer than two distinct places answered for (`places`: chain id and the
+/// address that answered), ascending. The one count behind every "single source" a scan or an audit says.
+pub fn thin_chains(places: &[(u64, String)], chains: &[u64]) -> Vec<u64> {
+    let mut thin: Vec<u64> = chains
+        .iter()
+        .copied()
+        .filter(|c| distinct_places(places.iter().filter(|(x, _)| x == c).map(|(_, u)| u.as_str())) < 2)
+        .collect();
+    thin.sort_unstable();
+    thin.dedup();
+    thin
 }
 
 impl Reading {
@@ -87,4 +111,47 @@ impl Reading {
             ("sources".into(), Value::Arr(self.sources.iter().map(|s| Value::Str(s.clone())).collect())),
         ])
     }
+}
+
+/// Run `work` on every item at once, each on a thread of its own, and give the results in the items' order.
+/// The one place this crate starts threads: a question asked of every node ([`ask_each`]) and a scan run at
+/// every node at once both come here. The system refusing a thread does not lose the item: it is worked on
+/// this thread instead (slower, not wrong). A worker that panics gives `lost()` in its place.
+pub fn each<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> R + Sync, lost: impl Fn() -> R) -> Vec<R> {
+    if items.len() <= 1 {
+        return items.into_iter().map(&work).collect();
+    }
+    let slots: Vec<std::sync::Mutex<Option<T>>> = items.into_iter().map(|t| std::sync::Mutex::new(Some(t))).collect();
+    let take = |i: usize| slots[i].lock().unwrap_or_else(|e| e.into_inner()).take();
+    std::thread::scope(|s| {
+        let (work, take) = (&work, &take);
+        let started: Vec<Option<std::thread::ScopedJoinHandle<'_, Option<R>>>> = (0..slots.len())
+            .map(|i| std::thread::Builder::new().name(format!("zikaron-ask-{i}")).spawn_scoped(s, move || take(i).map(work)).ok())
+            .collect();
+        started
+            .into_iter()
+            .enumerate()
+            .map(|(i, h)| match h {
+                Some(h) => h.join().ok().flatten().unwrap_or_else(&lost),
+                None => take(i).map(work).unwrap_or_else(&lost),
+            })
+            .collect()
+    })
+}
+
+/// Ask every node one question at once (each with patience: `patience::ask`), and give the answers in the
+/// nodes' order, each with its node's name. Every question starts at the same moment, so all of them share
+/// one deadline's worth of time; the slowest node, not the sum of them, sets how long the question takes.
+/// A node whose asking stopped short (its worker panicked) keeps its name: the names are put back by place.
+pub fn ask_each(nodes: Vec<(String, Box<dyn crate::rpc::Endpoint + Send>)>, method: &str, params: &Value) -> Vec<(String, Result<crate::wire::W, crate::rpc::Trouble>)> {
+    let names: Vec<String> = nodes.iter().map(|(n, _)| n.clone()).collect();
+    each(
+        nodes,
+        |(_, mut ep)| crate::patience::ask(ep.as_mut(), method, params),
+        || Err(crate::rpc::Trouble::Transport("asking this node stopped short".into())),
+    )
+    .into_iter()
+    .zip(names)
+    .map(|(got, name)| (name, got))
+    .collect()
 }

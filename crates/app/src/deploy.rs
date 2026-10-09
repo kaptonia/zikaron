@@ -1,44 +1,40 @@
-//! Known deployments table. Constants compiled into the product: the shipped build reads no external switch.
+//! Known deployments table, compiled into the product; the shipped build reads no external switch.
 //!
-//! A row's shape: row name, chain id, registry contract, scan start block, two public nodes from different
-//! sources (for cross-checking), and the node pairs this row shipped with before. The chain id, contract,
-//! start block and node literals always come from this table: the machine-level settings file records only the
-//! row name it last chose (which row the wizard and the new-identity sheet select first), an identity records
-//! the row name it chose, and a home that takes a row copies it into its own settings file (each home's readers
-//! read their own settings). The presets of the network editor and of the read-only networks are this table.
+//! Each row has a name, chain id, registry contract, scan start block, two public nodes from different
+//! providers (for cross-checking), and the node pairs the row shipped with before. Chain id, contract, start
+//! block and node literals always come from this table: the machine-level settings file records only the row
+//! name last chosen (preselected by the wizard and the new-identity sheet), an identity records the row name it
+//! chose, and a home that takes a row copies its values into the home's own settings file. The presets of the
+//! network editor and of the read-only networks are this table.
 //!
 //! Four rows: Ethereum mainnet ([`DEFAULT`]), the Sepolia testnet, Arbitrum One and OP Mainnet. The mainnet
 //! registry is the same pinned build as the testnet one (runtime codeHash `0xfa97a1d9…f57d`,
-//! `base/zikaron-core/contracts/CODEHASH.md`), deployed at block 26087229. On Arbitrum One and OP Mainnet the
-//! registry is that same pinned build at the same address as on mainnet (the same deployment bytes from the
-//! same deployer), deployed at the row's start block.
+//! `base/zikaron-core/contracts/CODEHASH.md`), deployed at block 26087229. On Arbitrum One and OP Mainnet it is
+//! the same pinned build at the same address as on mainnet (same deployment bytes, same deployer), deployed at
+//! the row's start block.
 //!
-//! ─── How the public nodes were chosen ───
+//! Public node selection: a node qualifies when it holds the full log history from the row's start block. Both
+//! nodes of a row returned identical registry logs over the same windows from the start block to the head, and
+//! a node refuses an over-wide window with an error (the scanner splits at the limit it names,
+//! `zikaron_anchor::scan`) rather than answering short. Every node uses TLS and answers the row's chain id.
+//! Rejected: nodes that answer older logs empty (they would read "anchored" as "not anchored"; nodes that keep
+//! only the last ten or twenty thousand blocks do this once the start block falls outside that range), nodes
+//! that limit log queries to 10 to 1000 blocks (one audit would need hundreds of queries), and paid,
+//! rate-limited or discontinued nodes.
 //!
-//! A node qualifies when it holds the complete history from the row's start block to now: asked for the
-//! registry's logs over the same windows, both nodes of a row matched entry for entry, from the start block to
-//! the head, and a window too wide for a node is refused by it in words (the scanner splits the window at the
-//! limit it names, `zikaron_anchor::scan`), never answered short. Every node is TLS and answers the row's chain
-//! id. Not qualified: a node that answers older logs empty (it would read "anchored" as "not anchored"; one
-//! that keeps only the last ten or twenty thousand blocks does this once the start block leaves its window),
-//! one whose log window is limited to 10 to 1000 blocks (one audit would need hundreds of queries), and one
-//! that is paid, rate-limited or discontinued.
-//!
-//! ─── Nodes a row shipped with before ───
-//!
-//! A home takes a row's nodes when it is filled, so changing the table reaches only homes filled later. A
-//! row's earlier pairs stay in the row ([`Deployment::was`]): a writer opening a home whose nodes are one of
-//! them, letter for letter and in order, takes the row's pair of today and saves once (`action::open_home_at`);
-//! a home with any other nodes was changed by a person and is left as it is.
+//! Earlier node pairs: a home copies a row's nodes when it is filled, so changing the table only reaches homes
+//! filled later. A row keeps its earlier pairs ([`Deployment::was`]); opening a home for writing whose nodes
+//! exactly match one of them (same text, same order) switches it to today's pair and saves once
+//! (`action::open_home_at`). A home with any other nodes was edited by a person and is left alone.
 
 use crate::lang::Key;
 
 /// One known deployment row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deployment {
-    /// Row name: what the machine-level and home settings files record. One name, one home.
+    /// Row name, as recorded in the machine-level and home settings files.
     pub name: &'static str,
-    /// The name on the face.
+    /// Display name.
     pub label: Key,
     pub chain_id: u64,
     /// Registry contract (hex, with `0x`).
@@ -60,7 +56,7 @@ pub const KNOWN: [Deployment; 4] = [
         registry: "0x36Ea8A857a5FE813429d4D9947000C644A88809A",
         from_block: 26_087_229,
         nodes: ["https://mainnet.gateway.tenderly.co", "https://rpc.mevblocker.io"],
-        // Shipped until 0.1.1: that node keeps the last ten to twenty thousand blocks of logs and answers
+        // Shipped in 0.1.0: that node keeps the last ten to twenty thousand blocks of logs and answers
         // older windows empty, so every scan from the start block disagreed with the other node.
         was: &[["https://mainnet.gateway.tenderly.co", "https://rpc.flashbots.net"]],
     },
@@ -116,8 +112,8 @@ pub fn is_choice(name: &str) -> bool {
     name == CUSTOM || named(name).is_some()
 }
 
-/// A network filled in by hand (the "custom" choice, once a seat has all of it): chain id, registry contract,
-/// scan start block and the nodes (`chain=url`), as the seat saved them.
+/// A network filled in by hand (the "custom" choice, once all of it is filled in): chain id, registry
+/// contract, scan start block and nodes (`chain=url`), as saved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Custom {
     pub chain_id: u64,
@@ -133,8 +129,8 @@ pub enum Network<'a> {
     Custom(&'a Custom),
 }
 
-/// The network a choice names: a table row by its name; [`CUSTOM`] with what was filled in by hand, or nothing
-/// while none is; anything else nothing.
+/// The network a choice names: a table row by its name; [`CUSTOM`] with the hand-filled network, or `None`
+/// while there is none; anything else `None`.
 pub fn resolve<'a>(name: Option<&str>, custom: Option<&'a Custom>) -> Option<Network<'a>> {
     match (name.and_then(named), name, custom) {
         (Some(d), _, _) => Some(Network::Known(d)),
@@ -143,9 +139,9 @@ pub fn resolve<'a>(name: Option<&str>, custom: Option<&'a Custom>) -> Option<Net
     }
 }
 
-/// The four cells of the network editor as a preset fills them (chain id, registry, start block, nodes): what
-/// the cells say is what saving through the editor's two keys writes. The editor of the main network and of the
-/// read-only networks fill from here.
+/// The network editor's four cells as a preset fills them (chain id, registry, start block, nodes); saving
+/// through the editor writes exactly what the cells say. Both the main network editor and the read-only
+/// networks' editor fill from here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cells {
     pub chain: String,
@@ -158,8 +154,8 @@ pub struct Cells {
 }
 
 impl Deployment {
-    /// The registry contract read as an address (the table literals are checked before compiling; unreadable
-    /// means the table is wrong, said at once).
+    /// The registry contract as an address. The table literals are checked, so a parse failure means the
+    /// table itself is wrong and panics at once.
     pub fn registry_address(&self) -> crate::key::Address {
         crate::key::Address::parse(&self.registry.to_lowercase()).expect("已知部署表里的登记合约是一枚合法地址")
     }
@@ -190,9 +186,9 @@ fn specs(chain: u64, nodes: &[&str; 2]) -> Vec<String> {
     nodes.iter().map(|u| format!("{chain}={u}")).collect()
 }
 
-/// The row whose values of today a home's network equals cell for cell: the same chain, registry contract and
-/// start block, and the same nodes as a set (in any order). One cell different is no row. Only what the network
-/// line says reads it; what a home or an identity recorded as chosen is not changed by it.
+/// The row whose current values a home's network matches exactly: same chain, registry contract and start
+/// block, and the same nodes as a set (any order). Any difference gives `None`. Only the network line's
+/// display reads it; it does not change what a home or an identity recorded as chosen.
 pub fn same_as_row(chain_id: Option<u64>, registry: Option<crate::key::Address>, from_block: u64, endpoints: &[String]) -> Option<&'static Deployment> {
     let nodes = |specs: &[String]| -> std::collections::BTreeSet<String> {
         specs.iter().map(|x| crate::chainx::Endpoint::parse(x).map(|e| e.spec()).unwrap_or_else(|| x.clone())).collect()
@@ -203,8 +199,7 @@ pub fn same_as_row(chain_id: Option<u64>, registry: Option<crate::key::Address>,
     })
 }
 
-/// The row whose earlier pair these endpoints are, letter for letter and in order; `None` when they are no
-/// earlier pair of any row.
+/// The row that shipped these endpoints as an earlier pair (same text, same order); `None` if no row did.
 pub fn shipped_before(endpoints: &[String]) -> Option<&'static Deployment> {
     KNOWN.iter().find(|d| d.was_specs().iter().any(|p| p.as_slice() == endpoints))
 }

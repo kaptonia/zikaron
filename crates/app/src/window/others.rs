@@ -1,5 +1,5 @@
-//! Others' ledgers (both seats; the grantee's reading adds the grant conflict check and the key lineage):
-//! read by author address, an overview and the entry list, each entry opening a read-only detail page.
+//! Others' ledgers, for both seats (the grantee's reading adds the grant conflict check and key lineage):
+//! read by author address, shown as an overview and an entry list, each entry opening a read-only detail page.
 
 use super::*;
 
@@ -64,15 +64,13 @@ impl Win {
                 });
                 fold::fold(ui, "others-more", t(Key::U3MoreOptions), |ui| {
                     ui.spacing_mut().item_spacing.y = tk::S3;
-                    // Record content: a local file or folder (kit, grant file, ledger folder) or an https
-                    // publish address.
+                    // Record content: a local file or folder (kit, grant file, ledger folder) or an https publish
+                    // address.
                     field(ui, t(Key::U3BytesWhere), None, |ui| {
                         let dir = if grantee { &mut self.typed.dg_dir } else { &mut self.typed.rd_dir };
                         let (_, pick) = width::line_then(ui, dir, t(Key::BytesWhereHint), true, |ui| key::key(ui, t(Key::PickFolder), Role::Secondary, true).clicked());
-                        if pick {
-                            if let Some(p) = crate::platform::choose_path(crate::platform::Pick::FileOrFolder) {
-                                *dir = p;
-                            }
+                        if let Some(p) = path_answer(ui.ctx(), egui::Id::new(("zikaron-path-bytes-where", grantee)), pick, crate::platform::Pick::FileOrFolder) {
+                            *dir = p;
                         }
                         if crate::fetchx::is_address(dir) {
                             if let Err(f) = crate::fetchx::base_of(dir) {
@@ -161,18 +159,18 @@ impl Win {
         });
     }
 
-    /// Four tiles, where the ledger came from, the grantee's conflict check, and the grant history (no
-    /// addresses in front).
+    /// The overview: four tiles, where the ledger came from, the grantee's conflict check, and the grant history
+    /// (no addresses up front).
     fn others_overview(&mut self, ui: &mut egui::Ui, v: &OtherView) {
         let grantee = v.dil.is_some();
-        // The ledger's bytes go through the four sources: which one supplied them, which failed.
+        // The ledger's bytes are sought from four sources: which one supplied them, which failed.
         let supply = match (grantee, self.shell.book.as_ref(), v.dil.as_ref()) {
             (false, Some(Done::Book { from, files, misses, .. }), _) => Some((from.clone(), *files, misses.clone())),
             (true, _, Some(x)) => Some((x.from.clone(), x.files, x.misses.clone())),
             _ => None,
         };
         let unobtained = matches!(supply, Some((None, _, _)));
-        // Networks this pass could not read, each named.
+        // Name each network this pass could not read.
         let missed: Vec<crate::widex::Missed> = match (grantee, self.shell.book.as_ref(), v.dil.as_ref()) {
             (false, Some(Done::Book { missed, .. }), _) => missed.clone(),
             (true, _, Some(x)) => x.missed.clone(),
@@ -186,7 +184,7 @@ impl Win {
         } else {
             (label_human(&v.label), if v.label == zikaron::tokens::Label::Complete.as_str() { Mark::Ok } else { Mark::Warn })
         };
-        // Content not obtained: the record and grant counts say so, never 0 ("none in the ledger").
+        // Content not obtained: the record and grant counts say so, never 0 (which would mean "none in the ledger").
         let count = |n: usize| if unobtained { t(Key::NotObtained).to_string() } else { n.to_string() };
         let when = v.latest.map(crate::when::day).or_else(|| last.map(|s| format!("#{s}"))).unwrap_or_else(|| t(Key::None_).to_string());
         let last_say = last.map(|s| format!("#{s}")).unwrap_or_default();
@@ -255,7 +253,7 @@ impl Win {
                         }
                         if let Some(three) = x.depth.clone().map(crate::depthx::three) {
                             // A network left out this pass: "deepest" with no anchor read says the chain was not
-                            // read (the same rule as the verify page, `depthx::said`).
+                            // read (same rule as the verify page, `depthx::said`).
                             let deepest = match crate::depthx::said(&three, !x.missed.is_empty()).1 {
                                 crate::depthx::Said::Is(n) => n.to_string(),
                                 _ => t(Key::U4ChainUnread).to_string(),
@@ -298,8 +296,8 @@ impl Win {
         });
     }
 
-    /// The entry list, newest first; deleted records struck through by this desk's reading. Returns the seq
-    /// of a clicked row.
+    /// The entry list, newest first, with records this desk reads as deleted struck through. Returns the seq of
+    /// a clicked row.
     fn others_list(&mut self, ui: &mut egui::Ui, v: &OtherView) -> Option<u64> {
         let mut timeline = v.timeline.clone();
         timeline.sort_by(|a, b| b.seq.cmp(&a.seq));
@@ -328,8 +326,8 @@ impl Win {
         hit.clicked.map(|i| timeline[i].seq)
     }
 
-    /// Another ledger's entry, read only: summary, on-chain state and the first anchor time; the author and
-    /// the entry id under details.
+    /// Another ledger's entry, read only: summary, on-chain state and first anchor time; the author and entry id
+    /// under details.
     pub(super) fn other_entry(&mut self, ui: &mut egui::Ui, seq: u64, _now: f64) {
         let Some(v) = self.other_view() else {
             states::empty(ui, Glyph::Others, t(Key::U3OthersNotRead));
@@ -369,7 +367,7 @@ impl Win {
     }
 }
 
-/// Which source supplied the material, in plain words (this Mac, the vault, a record kit, a publish address).
+/// Which source supplied the material, in plain words (this machine, the vault, a record kit, a publish address).
 pub(super) fn level_key(l: crate::supplyx::Level) -> Key {
     match l {
         crate::supplyx::Level::Local => Key::SourceLocal,
@@ -379,7 +377,7 @@ pub(super) fn level_key(l: crate::supplyx::Level) -> Key {
     }
 }
 
-/// The words beside a grey check: what is missing (where to get it is the gap's sentence).
+/// The words beside a grey check: what is missing (where to get it is in the gap's sentence).
 pub(super) fn gap_words(g: &crate::checkx::Gap) -> String {
     use crate::checkx::Gap;
     match g {
@@ -405,7 +403,7 @@ pub(super) fn gap_note(g: &crate::checkx::Gap) -> Key {
     }
 }
 
-/// Where exclusivity comes from, in plain words (recorded at signing, the former list, none).
+/// Where exclusivity comes from, in plain words (recorded at signing, the former list, or none).
 pub(super) fn exclusive_key(x: crate::termsx::Exclusive) -> Key {
     match x {
         crate::termsx::Exclusive::Signed => Key::ExclusiveSigned,

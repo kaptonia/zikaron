@@ -2,7 +2,7 @@
 //! entrance, the full-window layers (the first-run wizard and the passcode gate), the sheets above them, the
 //! whole-window drop, and the keyboard.
 //!
-//! Every destination comes from the `nav` table and every key goes through `action::apply`; nothing here
+//! Every destination comes from the `nav` table and every button goes through `action::apply`; nothing here
 //! decides anything about the ledger.
 
 use super::*;
@@ -44,8 +44,8 @@ impl Win {
         }
     }
 
-    /// The page changed: set how it enters, key the entrance anew, bring the shell's page along (tests and the
-    /// trace channel read it), and drop what belonged to the page before.
+    /// The page changed: set how it enters, restart the entrance animation, sync the shell's page (tests and the
+    /// trace channel read it), and drop what belonged to the previous page.
     fn entered(&mut self, how: motion::Entry, now: f64) {
         self.ux.entry = how;
         self.ux.entry_key = self.ux.entry_key.wrapping_add(1);
@@ -137,7 +137,7 @@ impl Win {
         self.entered(motion::Entry::Root, now);
     }
 
-    /// The intent of pages folded into a parent item. Closed: each new `Page` makes the compiler demand
+    /// The intent of pages folded into a parent item. Exhaustive: each new `Page` makes the compiler ask
     /// whether it has an intent here.
     pub(super) fn arrive(&mut self, p: Page) {
         match p {
@@ -273,9 +273,7 @@ impl Win {
                 {
                     let full = ui.max_rect();
                     let grip = egui::Rect::from_min_max(egui::pos2(full.left() - tk::RAIL_PAD, full.top() - tk::RAIL_TOP), egui::pos2(full.right() + tk::RAIL_PAD, full.top()));
-                    if ui.interact(grip, ui.id().with("rail-grip"), egui::Sense::drag()).drag_started() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                    }
+                    grip_acts(ctx, &ui.interact(grip, ui.id().with("rail-grip"), egui::Sense::click_and_drag()));
                 }
                 let r = rail::id_chip(ui, &id_name, &id_kind);
                 if r.clicked() {
@@ -303,7 +301,7 @@ impl Win {
                         places.push(item.place);
                     }
                 }
-                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("rail-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt("rail-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
                     if let Some(i) = rail::nav(ui, &lines, lit_i) {
                         picked = places.get(i).copied();
                     }
@@ -392,23 +390,21 @@ impl Win {
                 v
             })
             .collect();
-        let mut items: Vec<menu::Item> = Vec::new();
+        // The identity lens menu: a title, the identities (the one in use under the blue lens), then the
+        // actions in two groups.
+        let mut items: Vec<menu::Item> = vec![menu::Item::Head(t(Key::IdSwitchTitle))];
         for (i, r) in rows.iter().enumerate() {
             items.push(menu::Item::Who(menu::Who { name: names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
         }
+        items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::IdDoNew)));
         items.push(menu::row(t(Key::IdDoImport)));
+        items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::SetKeys)));
-        // A picker: the identities by name, address or kind; the three actions after them always stay.
-        let n = rows.len();
-        let spec = pick::Spec { hint: t(Key::SearchIdentity), empty: t(Key::SearchNone), w: PICK_W, dates: None };
-        let keep = |i: usize, q: &str, _: &str, _: &str| match i {
-            i if i < n => matches(q, &[names[i], &rows[i].id, t(id_kind_key(rows[i].kind()))]),
-            _ => true,
-        };
-        if let Some(i) = pick::show(ctx, id, anchor, true, &spec, &items, &keep) {
-            if i < n {
-                let r = &rows[i];
+        if let Some(i) = menu::show(ctx, id, anchor, true, 236.0, &items) {
+            let n = rows.len();
+            if i >= 1 && i <= n {
+                let r = &rows[i - 1];
                 if current.as_deref() != Some(r.id.as_str()) {
                     self.act(Action::SwitchIdentity { id: r.id.clone() }, now);
                     self.ux.hist.clear();
@@ -416,19 +412,19 @@ impl Win {
                     self.ux.place = Some(Place::Home);
                     self.entered(motion::Entry::Fade, now);
                 }
-            } else if i == n {
+            } else if i == n + 2 {
                 self.id_layer_open(IdModal::New);
                 self.act(Action::NewIdentity, now);
-            } else if i == n + 1 {
+            } else if i == n + 3 {
                 self.id_layer_open(IdModal::Import);
-            } else if i == n + 2 {
+            } else if i == n + 5 {
                 self.go(Place::Settings(Section::Keys), now);
             }
         }
     }
 
-    /// The status line's words, voice, progress and the sync key's layer. A long task in progress comes
-    /// first ("in progress: …" with its bar), then syncing, a failed sync, the last sync time, or never.
+    /// The status line's text, voice, progress and the sync button's state. A long task in progress comes first
+    /// ("in progress: …" with its bar), then syncing, a failed sync, the last sync time, or never.
     fn status_say(&mut self) -> (String, rail::Voice, Option<Option<f32>>, rail::Sync) {
         let sync = if !self.ux.syncing.is_empty() {
             rail::Sync::Busy
@@ -481,8 +477,8 @@ impl Win {
         self.entered(motion::Entry::Root, now);
     }
 
-    /// Refresh chain state (the sync key): the chain query, and the self-audit or the vault re-check for the
-    /// seat. The interface does not wait. With no node configured it says by name where to add one.
+    /// Refresh chain state (the sync button): the chain query, and the self-audit or the vault re-check for the
+    /// seat. The interface does not wait. With no node configured it says where to add one.
     pub(super) fn refresh_chain(&mut self, now: f64) {
         if self.shell.endpoints.is_empty() {
             self.toasts.say_full(t(Key::NavNoNodes), "", "", Tone::Bad, now);
@@ -501,7 +497,7 @@ impl Win {
         self.ux.synced_at = None;
         for a in wants {
             match apply(&mut self.shell, a) {
-                // The round speaks once, when all of it has landed (`sync_landed`).
+                // The round reports once, when all of it has landed (`sync_landed`).
                 Applied::Started(k) => self.ux.syncing.push(k),
                 Applied::Refused(k) => self.toasts.say(fill1(Key::SaidInFlight, t(self.task_word(k))), Tone::Bad, now),
                 Applied::Trouble(f) if crate::watchx::is_network(&f) => self.say_fault(&f, now),
@@ -510,8 +506,8 @@ impl Win {
         }
     }
 
-    /// A sync round's landings: when the last of its tasks lands, one toast says both readings ("key balance
-    /// · ledger check"), and the key shows its check.
+    /// A sync round's landings: when the last of its tasks lands, one toast reports both readings ("key balance
+    /// · ledger check"), and the button shows its check mark.
     pub(super) fn sync_landed(&mut self, landed: &[crate::task::Outcome], now: f64) {
         if self.ux.syncing.is_empty() {
             return;
@@ -568,9 +564,7 @@ impl Win {
             }
             let full = ui.max_rect();
             let grip = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 10.0));
-            if ui.interact(grip, ui.id().with("page-grip"), egui::Sense::drag()).drag_started() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
+            grip_acts(ctx, &ui.interact(grip, ui.id().with("page-grip"), egui::Sense::click_and_drag()));
             let route = self.route();
             let detail = !route.is_root() && matches!(route, Route::Work(_) | Route::Pending(_) | Route::Grant(_) | Route::Entry(_) | Route::Other(_) | Route::Held(_));
             zikaron_ui::probe::route(ctx, &route.name());
@@ -613,7 +607,7 @@ impl Win {
             let p = motion::enter(ctx, egui::Id::new("zikaron-page-entry"), key, 0.0, how.dur(), motion::Curve::Ease);
             let (off, alpha) = how.at(p);
             let route_salt = motion::key_of(&(self.ux.stack, route.name(), key));
-            let shown = egui::ScrollArea::vertical().drag_to_scroll(false).id_salt(("page", route_salt)).auto_shrink([false, false]).show(&mut body, |ui| {
+            let shown = egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt(("page", route_salt)).auto_shrink([false, false]).show(&mut body, |ui| {
                 egui::Frame::new()
                     .inner_margin(egui::Margin { left: tk::PAGE_PAD as i8, right: tk::PAGE_PAD as i8, top: tk::S3 as i8, bottom: tk::PAGE_PAD as i8 })
                     .show(ui, |ui| {
@@ -691,7 +685,7 @@ impl Win {
         }
     }
 
-    /// The keys at the right of a view's own page's toolbar.
+    /// The buttons at the right of a view's own page's toolbar.
     fn toolbar_acts(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
         use crate::nav::{tab as T, View};
         let Route::Root(place) = route else { return };
@@ -737,7 +731,7 @@ impl Win {
         if !self.rail_shown() || sheet::up(ctx) || self.any_sheet() {
             return;
         }
-        let pressed = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k));
+        let pressed = |k: egui::Key| chord(ctx, k);
         if pressed(egui::Key::OpenBracket) {
             self.back(now);
         }
@@ -767,9 +761,9 @@ impl Win {
         matches!(self.route(), Route::Kit | Route::NewGrant | Route::Relicense | Route::Root(Place::View(View::Verify, T::VERIFY_CHECK)))
     }
 
-    /// The whole-window drop: while a file is dragged over a page that takes drops as a whole, the veil
-    /// covers the window; dropped, the recorder's file opens the new-record sheet with it, the user's goes to
-    /// record verification. Several files at once are refused with the usual sentence.
+    /// The whole-window drop: while a file is dragged over a page that takes drops as a whole, the veil covers
+    /// the window; when dropped, the author seat opens the new-record sheet with the file and the grantee seat
+    /// goes to record verification. Several files at once are refused with the usual message.
     fn whole_drop(&mut self, ctx: &egui::Context, now: f64) {
         let open = self.rail_shown() && !self.any_sheet() && !self.page_takes_drops();
         let author = self.shell.settings.role == crate::roles::Role::Author;
@@ -832,8 +826,31 @@ fn route_page(route: &Route, root: Place, role: crate::roles::Role) -> Option<Pa
     })
 }
 
-/// Tasks that run long enough to show on a key and on the rail.
+/// Tasks that run long enough to show on a button and on the rail.
 fn task_long(k: crate::task::Kind) -> bool {
     use crate::task::Kind;
     !matches!(k, Kind::Ledger | Kind::Grants | Kind::Held | Kind::Vet | Kind::Vault)
+}
+
+/// The one way the window reads a shortcut: ⌘ (Ctrl off macOS) with `k`, taken so nothing else reads it too.
+///
+/// The key read is the one egui reports for the press; the windowing layer reports the layout's own key when
+/// egui knows it and the physical key otherwise. So on a layout without Latin letters (Cyrillic, Greek, kana)
+/// ⌘ with the key where L sits arrives as L and locks. There is no further fallback to the physical key: on a
+/// Latin layout that moves letters (Dvorak) the key where L sits types another letter, and ⌘ with it is that
+/// letter's shortcut, not ⌘L.
+pub(super) fn chord(ctx: &egui::Context, k: egui::Key) -> bool {
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k))
+}
+
+/// What the window's handles do (the top of the rail on macOS, the band over the page): dragging moves the
+/// window; a double click maximizes it, or puts a maximized one back, as a title bar does.
+fn grip_acts(ctx: &egui::Context, r: &egui::Response) {
+    if r.drag_started() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if r.double_clicked() {
+        let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
 }

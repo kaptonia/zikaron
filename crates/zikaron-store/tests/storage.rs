@@ -190,7 +190,7 @@ fn the_strict_read_is_the_pile_and_refuses_rather_than_shorten() {
     assert_eq!(t.names, vec!["README.txt".to_string()]);
 }
 
-// Unix only: the link is made the unix way (on Windows a link is another kind of file; its own form, later).
+// Unix only: the link is made the unix way (on Windows a link is another kind of file).
 #[cfg(unix)]
 #[test]
 fn a_symlink_wearing_an_entry_name_is_not_an_entry() {

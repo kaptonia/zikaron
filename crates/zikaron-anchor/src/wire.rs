@@ -199,7 +199,12 @@ impl<'a> P<'a> {
             }
             p.i > s
         };
+        // The integer part is `0` or starts with 1 to 9 (RFC 8259 §6): `-032005` and `03` are not numbers.
+        let int_at = self.i;
         if !digits(self) {
+            return None;
+        }
+        if self.b.get(int_at) == Some(&b'0') && self.i - int_at > 1 {
             return None;
         }
         if self.b.get(self.i) == Some(&b'.') {
@@ -279,6 +284,17 @@ impl<'a> P<'a> {
         let s = self.b.get(self.i..self.i + 4)?;
         self.i += 4;
         u32::from_str_radix(std::str::from_utf8(s).ok()?, 16).ok()
+    }
+}
+
+/// One answer cut down, on the wire, to the facts a decision reads: an object keeps only the named members, in
+/// the order named; any other answer stands whole (as `endpoints::project` does over law values). Cut before
+/// [`to_core`]: a member no decision reads (a fee history's fractional `gasUsedRatio`, a number past the law's
+/// ceiling) never makes the facts it does read unreadable.
+pub fn project(w: &W, facts: &[&str]) -> W {
+    match &w.body {
+        Body::Obj(ms) => W { body: Body::Obj(facts.iter().filter_map(|f| ms.iter().find(|(k, _)| k == f).cloned()).collect()), start: w.start, end: w.end },
+        _ => w.clone(),
     }
 }
 

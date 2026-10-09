@@ -220,13 +220,27 @@ struct Chain<'a> {
 }
 
 impl<'a> Chain<'a> {
+    /// Ask with patience (`patience::ask`: a rate limit and a server error are waited out by the one table).
     fn ask(&mut self, method: &str, params: Vec<Value>) -> Result<W, Refusal> {
-        match self.ep.call(method, &Value::Arr(params)) {
-            Ok(v) => Ok(v),
-            Err(Trouble::Node(e)) => Err(Refusal::Unanswered { chain: self.id, what: format!("{method} 被拒:{e}") }),
-            Err(Trouble::NotServed(k)) => Err(Refusal::Unanswered { chain: self.id, what: format!("录制里没有这一问:{k}") }),
-            Err(Trouble::Transport(e)) => Err(Refusal::Unanswered { chain: self.id, what: format!("{method} 传输坏了:{e}") }),
-            Err(Trouble::Contradiction(k)) => Err(Refusal::Malformed(format!("录制自相矛盾:{k}"))),
+        crate::patience::ask(self.ep, method, &Value::Arr(params)).map_err(|t| self.refused(method, t))
+    }
+
+    /// [`Chain::ask`], also telling whether the node still refused for its rate (after the patience table's
+    /// pauses) rather than for what was asked ([`rate_limited`]).
+    fn ask_paced(&mut self, method: &str, params: Vec<Value>) -> Result<W, (Refusal, bool)> {
+        crate::patience::ask(self.ep, method, &Value::Arr(params)).map_err(|t| {
+            let limited = rate_limited(&t);
+            (self.refused(method, t), limited)
+        })
+    }
+
+    /// A trouble as the scan's refusal.
+    fn refused(&self, method: &str, t: Trouble) -> Refusal {
+        match t {
+            Trouble::Node(e) => Refusal::Unanswered { chain: self.id, what: format!("{method} 被拒:{e}") },
+            Trouble::NotServed(k) => Refusal::Unanswered { chain: self.id, what: format!("录制里没有这一问:{k}") },
+            Trouble::Transport(e) => Refusal::Unanswered { chain: self.id, what: format!("{method} 传输坏了:{e}") },
+            Trouble::Contradiction(k) => Refusal::Malformed(format!("录制自相矛盾:{k}")),
         }
     }
 
@@ -282,19 +296,29 @@ impl<'a> Chain<'a> {
     }
 
     /// `Ok(None)`: this boundary could not be asked (the node declined); `Ok(Some(true))`: the address has
-    /// code.
+    /// code ([`code_at`]).
     fn code_at(&mut self, who: &[u8; 20], block: u64) -> Result<Option<bool>, Refusal> {
-        let params = vec![Value::Str(hex20(who)), Value::Str(hex_quantity(block))];
-        match self.ep.call("eth_getCode", &Value::Arr(params)) {
-            Ok(v) => {
-                let b = v.as_str().and_then(hexfmt::decode).ok_or(Refusal::Malformed("eth_getCode 的答不是字节串".into()))?;
-                Ok(Some(!b.is_empty()))
-            }
-            Err(Trouble::Node(_)) => Ok(None),
-            Err(Trouble::NotServed(k)) => Err(Refusal::Unanswered { chain: self.id, what: format!("录制里没有这一问:{k}") }),
-            Err(Trouble::Transport(e)) => Err(Refusal::Unanswered { chain: self.id, what: format!("eth_getCode 传输坏了:{e}") }),
-            Err(Trouble::Contradiction(k)) => Err(Refusal::Malformed(format!("录制自相矛盾:{k}"))),
+        code_at(self.ep, self.id, who, block)
+    }
+}
+
+/// Whether `who` has code at `block` on one node of chain `chain` (`eth_getCode`): `Ok(Some(true))` it has,
+/// `Ok(Some(false))` it has none, `Ok(None)` the node declined (this boundary could not be asked: §9.3
+/// UNPROVEN). Asked with patience as every other question of the scan (`patience::ask`): a rate limit is waited
+/// out by the one table before the node's word is taken as a decline; a node still limited after the table's
+/// pauses declined. A broken transport, a question a recording lacks, or an answer that is not bytes is no
+/// answer at all.
+pub fn code_at(ep: &mut dyn Endpoint, chain: u64, who: &[u8; 20], block: u64) -> Result<Option<bool>, Refusal> {
+    let params = vec![Value::Str(hex20(who)), Value::Str(hex_quantity(block))];
+    match crate::patience::ask(ep, "eth_getCode", &Value::Arr(params)) {
+        Ok(v) => {
+            let b = v.as_str().and_then(hexfmt::decode).ok_or(Refusal::Malformed("eth_getCode 的答不是字节串".into()))?;
+            Ok(Some(!b.is_empty()))
         }
+        Err(Trouble::Node(_)) => Ok(None),
+        Err(Trouble::NotServed(k)) => Err(Refusal::Unanswered { chain, what: format!("录制里没有这一问:{k}") }),
+        Err(Trouble::Transport(e)) => Err(Refusal::Unanswered { chain, what: format!("eth_getCode 传输坏了:{e}") }),
+        Err(Trouble::Contradiction(k)) => Err(Refusal::Malformed(format!("录制自相矛盾:{k}"))),
     }
 }
 
@@ -520,8 +544,45 @@ const TRIES: usize = 3;
 const MAX_ASKS: usize = 4096;
 
 /// Words that introduce a limit. The number must follow the word: a node's sentence carries many numbers
-/// (block numbers, error codes, result counts).
-const LIMIT_WORDS: [&str; 8] = ["maximum", "max", "limited to", "limit", "up to", "at most", "more than", "range"];
+/// (block numbers, error codes, result counts). `only` is Arbitrum's official node: `query spans 268435456
+/// blocks (1 to 268435456), but only 10000000 are allowed for this request`.
+const LIMIT_WORDS: [&str; 9] = ["maximum", "max", "limited to", "limit", "up to", "at most", "more than", "range", "only"];
+
+/// Whether a refusal says the node is limiting its rate, and not that the range was too wide: the patience
+/// table's class (`patience::class_of`: a 429, or a rate-limit marker in words naming no range). A rate
+/// refusal carries no range limit, so no number is read from it.
+fn rate_limited(t: &Trouble) -> bool {
+    crate::patience::class_of(t) == crate::patience::Class::RateLimited
+}
+
+/// Set the pauses a scan waits before asking a rate-limited log question again: now every pause of the
+/// patience table (`patience::set_waits`; `Some` of anything takes every pause as its first entry, zero in
+/// a test; `None`: the table's own).
+pub fn set_rate_backoff(pauses: Option<Vec<std::time::Duration>>) {
+    crate::patience::set_waits(pauses.map(|p| p.first().copied().unwrap_or_default()));
+}
+
+/// The widest log range each node took after its range was cut, by node, for the life of this process: the
+/// next window asked of that node starts at it, instead of being refused down to it again (a node that takes
+/// 10,000 blocks is asked 10,000 at a time from then on). Only ever narrowed.
+static SPANS: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The range this node is known to take ([`SPANS`]), if it was ever cut.
+pub fn known_span(node: &str) -> Option<u64> {
+    SPANS.lock().unwrap_or_else(|e| e.into_inner()).get(node).copied()
+}
+
+/// Remember that this node took `span` blocks after its range was cut (the narrower of what is known).
+fn remember_span(node: &str, span: u64) {
+    let mut g = SPANS.lock().unwrap_or_else(|e| e.into_inner());
+    let at = g.entry(node.to_string()).or_insert(span);
+    *at = (*at).min(span);
+}
+
+/// Forget every node's known range (for tests, or a run that starts over).
+pub fn forget_spans() {
+    SPANS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
 
 /// The limit a node reports in its refusal, if any. `range: 50000`, `limited to 1000 blocks`, `up to a 2K
 /// block range` and `more than 10000 results` each carry one.
@@ -597,13 +658,23 @@ fn number_after(rest: &str) -> Option<(u64, usize)> {
 /// node's reported limit or halving, and that question too has [`TRIES`] tries. Asking again counts toward
 /// [`MAX_ASKS`], never toward [`MAX_SHRINKS`]; if one block is still refused, pass the node's sentence on (a
 /// refusal is not "zero logs").
+///
+/// A node limiting its rate ([`rate_limited`]) is not asked again at once and its range is not shrunk: the
+/// patience table asked it again after each of its pauses already (`patience::ask`), so a refusal still
+/// limited is passed on. Shrinking would only send more, smaller questions to a node that asks for fewer.
+///
+/// A node whose range was cut before in this process ([`known_span`]) is asked at that range from the start;
+/// a range cut in this window is remembered once a question at it is answered.
 fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<W>, Refusal> {
     let mut logs: Vec<W> = Vec::new();
     if w.to_block < w.from_block {
         return Ok(logs);
     }
-    let whole = w.to_block - w.from_block + 1;
-    let mut span = whole;
+    // Saturating: a window from block 0 to the last there is spans one more block than a u64 counts.
+    let whole = (w.to_block - w.from_block).saturating_add(1);
+    // Kept by place, not by the name said: two nodes on one host (`…/eth/<key>`, `…/polygon/<key>`) are two.
+    let node = chain.ep.place();
+    let mut span = known_span(&node).map_or(whole, |k| k.clamp(MIN_SPAN, whole));
     let mut at = w.from_block;
     let mut shrinks = 0usize;
     let mut asks = 0usize;
@@ -623,7 +694,9 @@ fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<
             });
         }
         asks += 1;
-        match chain.ask("eth_getLogs", vec![log_filter(w, at, end, t0)]) {
+        match chain.ask_paced("eth_getLogs", vec![log_filter(w, at, end, t0)]) {
+            // Still limited after the patience table's pauses: passed on as it is.
+            Err((e, true)) => return Err(e),
             Ok(answered) => {
                 // An answer that is not a log list was not answered: reading it as zero logs would turn an
                 // unusable answer into a complete empty anchor set.
@@ -636,8 +709,15 @@ fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<
                 logs.append(&mut got);
                 at = end.saturating_add(1);
                 refused = 0;
+                if shrinks > 0 {
+                    remember_span(&node, span);
+                }
+                // The last block there is was read: `at` cannot move past it.
+                if end == u64::MAX {
+                    break;
+                }
             }
-            Err(e) => {
+            Err((e, false)) => {
                 refused += 1;
                 if refused < TRIES {
                     continue;
@@ -911,5 +991,257 @@ mod said_limit_tests {
         assert_eq!(number_after(" 2,0000"), Some((2, 2)));
         assert_eq!(number_after(" 5000,000"), Some((5000, 5)));
         assert_eq!(number_after(" 2,000k"), Some((2_000_000, 7)));
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    /// A node answering log questions by a rule over `(from, to, how many asked before)`; every question's
+    /// range is kept in order.
+    struct Logs<F: FnMut(u64, u64, usize) -> Result<W, Trouble>> {
+        rule: F,
+        asked: Vec<(u64, u64)>,
+        methods: Vec<String>,
+        /// A name of its own: a node's known range is kept by place for the life of the process.
+        name: String,
+        /// Its place, when it is not its name (two nodes said alike, one host, paths apart).
+        place: Option<String>,
+    }
+
+    impl<F: FnMut(u64, u64, usize) -> Result<W, Trouble>> Endpoint for Logs<F> {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            self.methods.push(method.to_string());
+            let at = |k: &str| -> u64 {
+                match params {
+                    Value::Arr(ps) => match ps.first() {
+                        Some(Value::Obj(f)) => f.iter().find(|(n, _)| n == k).and_then(|(_, v)| v.as_str()).and_then(|h| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
+                        _ => 0,
+                    },
+                    _ => 0,
+                }
+            };
+            let (from, to) = (at("fromBlock"), at("toBlock"));
+            let n = self.asked.len();
+            self.asked.push((from, to));
+            (self.rule)(from, to, n)
+        }
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+        fn place(&self) -> String {
+            self.place.clone().unwrap_or_else(|| self.name.clone())
+        }
+    }
+
+    fn logs<F: FnMut(u64, u64, usize) -> Result<W, Trouble>>(rule: F) -> Logs<F> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let name = format!("logs-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+        Logs { rule, asked: Vec::new(), methods: Vec::new(), name, place: None }
+    }
+
+    fn window(from: u64, to: u64) -> Window {
+        Window { chain_id: 1, from_block: from, to_block: to, registries: vec![[0x11; 20]], senders: vec![[0x22; 20]] }
+    }
+
+    fn empty() -> Result<W, Trouble> {
+        Ok(W::of(crate::wire::Body::Arr(Vec::new())))
+    }
+
+    fn node_says(code: i64, message: &str) -> Trouble {
+        Trouble::Node(format!("{{\"code\":{code},\"message\":\"{message}\"}}"))
+    }
+
+    fn scan_window<F: FnMut(u64, u64, usize) -> Result<W, Trouble>>(node: &mut Logs<F>, w: &Window) -> Result<Vec<W>, Refusal> {
+        let mut chain = Chain { id: w.chain_id, ep: node };
+        logs_over_window(&mut chain, w, &topic0())
+    }
+
+    fn no_pauses() {
+        set_rate_backoff(Some(vec![std::time::Duration::ZERO; crate::said::RATE_BACKOFF.len()]));
+    }
+
+    /// A refusal asked again at once answers on the third try: three questions, the range whole.
+    #[test]
+    fn a_refused_range_is_asked_again_before_it_is_split() {
+        let mut node = logs(|_, _, n| if n < 2 { Err(node_says(-32000, "busy")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
+        assert_eq!(node.asked, vec![(1, 1000); 3]);
+    }
+
+    /// Refused three times, the range shrinks to the limit the node states, else by half; one block still refused
+    /// passes the node's words on; the shrinks are bounded.
+    #[test]
+    fn a_range_shrinks_to_the_stated_limit_or_by_half() {
+        let mut node = logs(|f, t, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
+        assert_eq!(&node.asked[3..], &[(1, 50), (51, 100)]);
+        let mut node = logs(|f, t, _| if t - f + 1 > 25 { Err(node_says(-32000, "try a smaller range")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
+        assert_eq!(node.asked[3], (1, 50), "no number: half");
+        assert_eq!(node.asked[6], (1, 25));
+        let mut node = logs(|_, _, _| Err(node_says(-32000, "always no")));
+        match scan_window(&mut node, &window(1, 1)) {
+            Err(Refusal::Unanswered { what, .. }) => assert!(what.contains("always no"), "{what}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(node.asked.len(), TRIES);
+        let mut node = logs(|_, _, _| Err(node_says(-32000, "always no")));
+        assert!(scan_window(&mut node, &window(1, 1 << 20)).is_err());
+        assert_eq!(node.asked.len(), TRIES * (MAX_SHRINKS + 1), "the shrinks are bounded");
+    }
+
+    /// A node's range cut once is remembered for the life of the process, by node: the next window at that node
+    /// starts at the cut range (no three refusals and a shrink again); another node starts whole.
+    #[test]
+    fn a_nodes_cut_range_is_remembered_for_the_next_window() {
+        let rule = |f: u64, t: u64, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() };
+        let mut node = logs(rule);
+        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
+        assert_eq!(known_span(&node.name), Some(50));
+        node.asked.clear();
+        assert!(scan_window(&mut node, &window(101, 200)).is_ok());
+        assert_eq!(node.asked, vec![(101, 150), (151, 200)], "asked at the remembered range from the start");
+        // A window narrower than the remembered range is asked whole.
+        node.asked.clear();
+        assert!(scan_window(&mut node, &window(201, 210)).is_ok());
+        assert_eq!(node.asked, vec![(201, 210)]);
+        // Another node is not this one.
+        let mut other = logs(|_, _, _| empty());
+        assert!(scan_window(&mut other, &window(1, 100)).is_ok());
+        assert_eq!((other.asked.clone(), known_span(&other.name)), (vec![(1, 100)], None));
+    }
+
+    /// A node's range is kept by its place, not by its display name: two nodes with the same name (one host,
+    /// `…/eth/<key>` and `…/polygon/<key>`), the first cut to 50, the second still asked its whole window.
+    #[test]
+    fn two_nodes_said_alike_keep_their_ranges_apart() {
+        let mut eth = logs(|f: u64, t: u64, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() });
+        let mut polygon = logs(|_, _, _| empty());
+        polygon.name = eth.name.clone();
+        eth.place = Some(format!("{}/eth", eth.name));
+        polygon.place = Some(format!("{}/polygon", polygon.name));
+        assert!(scan_window(&mut eth, &window(1, 100)).is_ok());
+        assert_eq!(known_span(&eth.place()), Some(50));
+        assert!(scan_window(&mut polygon, &window(1, 100)).is_ok());
+        assert_eq!(polygon.asked, vec![(1, 100)], "the other place is asked whole");
+        assert_eq!(known_span(&polygon.place()), None);
+    }
+
+    /// A remembered range only ever narrows: remembered at 50, then cut to 25, it is 25; a wider range taken later
+    /// (100) leaves it at 25.
+    #[test]
+    fn a_nodes_remembered_range_keeps_the_narrowest() {
+        let node = logs(|_, _, _| empty()).name;
+        remember_span(&node, 50);
+        assert_eq!(known_span(&node), Some(50));
+        remember_span(&node, 25);
+        assert_eq!(known_span(&node), Some(25), "narrowed");
+        remember_span(&node, 100);
+        assert_eq!(known_span(&node), Some(25), "never widened");
+    }
+
+    /// Past the ask bound the window is refused as unfinished, never as zero logs; an answer that is not a log list
+    /// is refused.
+    #[test]
+    fn an_unfinished_window_is_refused_never_empty() {
+        let mut node = logs(|f, t, _| if t > f { Err(node_says(-32000, "limited to 1 block")) } else { empty() });
+        match scan_window(&mut node, &window(1, 5000)) {
+            Err(Refusal::Unanswered { what, .. }) => assert!(what.contains(&MAX_ASKS.to_string()), "{what}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(node.asked.len(), MAX_ASKS);
+        let mut node = logs(|_, _, _| Ok(W::of(crate::wire::Body::Null)));
+        assert!(matches!(scan_window(&mut node, &window(1, 10)), Err(Refusal::Unanswered { .. })));
+    }
+
+    /// The window's extreme edges: from block 0 to the last block there is counts without overflow and
+    /// ends after the last block.
+    #[test]
+    fn a_window_to_the_last_block_ends() {
+        let mut node = logs(|_, _, _| empty());
+        assert!(scan_window(&mut node, &window(0, u64::MAX)).is_ok());
+        // One block more than a u64 counts: the span saturates, so the last block is a question of its own.
+        assert_eq!(node.asked, vec![(0, u64::MAX - 1), (u64::MAX, u64::MAX)]);
+        let mut node = logs(|_, _, _| empty());
+        assert!(scan_window(&mut node, &window(u64::MAX, u64::MAX)).is_ok());
+        assert_eq!(node.asked.len(), 1);
+    }
+
+    /// A node limiting its rate is asked the same range again after each pause and never has its range shrunk;
+    /// past the pauses its refusal is passed on. A number in a rate-limit sentence is not read as a range limit; a
+    /// 429 is a rate limit; a refusal naming a range is a range refusal even with the rate-limit code.
+    #[test]
+    fn a_rate_limited_node_is_waited_out_and_its_range_kept() {
+        no_pauses();
+        let pauses = crate::said::RATE_BACKOFF.len();
+        let mut node = logs(|_, _, _| Err(node_says(-32005, "rate limit: max 25 requests per second")));
+        assert!(scan_window(&mut node, &window(1, 1000)).is_err());
+        assert_eq!(node.asked, vec![(1, 1000); 1 + pauses], "the same range, once and once after each pause");
+        let mut node = logs(|_, _, n| if n == 0 { Err(node_says(-32005, "daily request limit exceeded")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
+        assert_eq!(node.asked, vec![(1, 1000); 2]);
+        let mut node = logs(|_, _, _| Err(crate::rpc::status("https://n.example", 429)));
+        assert!(scan_window(&mut node, &window(1, 1000)).is_err());
+        assert_eq!(node.asked, vec![(1, 1000); 1 + pauses]);
+        // "more than 10000 results" with -32005 names results: a range refusal, split as one.
+        let mut node = logs(|f, t, _| if t - f + 1 > 500 { Err(node_says(-32005, "query returned more than 10000 results")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
+        assert_eq!(node.asked[TRIES], (1, 500));
+        // The rate-limit code without rate-limit words is not waited out: asked again at once, then split.
+        let mut node = logs(|_, _, _| Err(node_says(-32005, "query timeout exceeded")));
+        assert!(scan_window(&mut node, &window(1, 1 << 10)).is_err());
+        assert_eq!(node.asked.len(), TRIES * (MAX_SHRINKS + 1));
+        let mut node = logs(|f, t, _| if t > f { Err(node_says(-32005, "maximum 1 block per query")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 3)).is_ok());
+        assert_eq!(node.asked[TRIES], (1, 1));
+        // A limit exceeded on the range is the range's.
+        let mut node = logs(|f, t, _| if t - f + 1 > 500 { Err(node_says(-32000, "block range limit exceeded")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
+        assert_eq!(node.asked[TRIES], (1, 500));
+    }
+
+    /// Arbitrum's official node and Sepolia's ethpandaops node, their refusals as they were returned
+    /// (2026-10-05): each is read at its own limit, so the next question already fits.
+    #[test]
+    fn two_public_nodes_state_their_range_in_their_own_words() {
+        let arbitrum = "{\"code\":-32602,\"message\":\"query spans 268435456 blocks (1 to 268435456), but only 10000000 are allowed for this request; narrow the block range\"}";
+        let mut node = logs(|f, t, _| if t - f + 1 > 10_000_000 { Err(Trouble::Node(arbitrum.into())) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 30_000_000)).is_ok());
+        assert_eq!(&node.asked[TRIES..], &[(1, 10_000_000), (10_000_001, 20_000_000), (20_000_001, 30_000_000)]);
+        let arbitrum_wide = "{\"code\":-32602,\"message\":\"query spans 16777216 blocks (1 to 16777216), but only 30000 are allowed for this request; narrow the block range, or add an address filter\"}";
+        assert_eq!(said_limit(&format!("eth_getLogs 被拒:{arbitrum_wide}"), 16_777_216), Some(30_000));
+        let sepolia = "{\"data\":{\"code\":\"ErrGetLogsExceededMaxAllowedRange\",\"message\":\"getLogs request exceeded max allowed range\",\"details\":{\"requestRange\":1048576,\"maxAllowedRange\":30000}},\"code\":-32012,\"message\":\"getLogs request exceeded max allowed range\"}";
+        let mut node = logs(|f, t, _| if t - f + 1 > 30_000 { Err(Trouble::Node(sepolia.into())) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 60_000)).is_ok());
+        assert_eq!(&node.asked[TRIES..], &[(1, 30_000), (30_001, 60_000)]);
+    }
+
+    /// A transaction the node says it does not have (`null`, a lawful empty answer) drops the log from the anchor
+    /// set without a failure and without a further question; a gateway's page never arrives here as `null` (the
+    /// reading of answers refuses it first).
+    #[test]
+    fn a_transaction_the_node_does_not_have_is_no_anchor() {
+        let t0 = topic0();
+        let mut padded = [0u8; 32];
+        padded[12..].copy_from_slice(&[0x22; 20]);
+        let log = crate::wire::parse(
+            format!(
+                "{{\"address\":\"{}\",\"blockNumber\":\"0x5\",\"data\":\"0x\",\"logIndex\":\"0x0\",\"topics\":[\"{}\",\"{}\",\"0x{}\"],\"transactionHash\":\"0x{}\"}}",
+                hex20(&[0x11; 20]),
+                hexfmt::encode(&t0),
+                hexfmt::encode(&padded),
+                "33".repeat(32),
+                "44".repeat(32)
+            )
+            .as_bytes(),
+        )
+        .expect("a log");
+        let mut node = logs(|_, _, _| Ok(W::of(crate::wire::Body::Null)));
+        let mut chain = Chain { id: 1, ep: &mut node };
+        let got = registry_record(&mut chain, &window(1, 10), &log, &t0, &Known::default(), &mut Vec::new());
+        assert!(matches!(got, Ok(None)));
+        assert_eq!(node.methods, vec!["eth_getTransactionByHash".to_string()]);
     }
 }

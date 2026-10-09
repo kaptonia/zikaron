@@ -1,8 +1,8 @@
-//! Settings: role, size cap, chain endpoints and basis, assorted bookkeeping. This file holds no absolute
-//! path, which is how "any copy is equivalent" holds (see the `home` file header).
+//! Settings: role, size cap, chain endpoints and basis, and assorted local bookkeeping. The file holds no
+//! path of the home itself, so any copy of a home is equivalent (see the `home` module header).
 //!
-//! Older files still open: reading picks only the keys it knows and ignores the rest. Extra cells written by
-//! earlier versions still open, have no effect, and are not written again on the next write.
+//! Reading takes only the members it knows; any other member (written by an older or newer version) has no
+//! effect and is written back unchanged (`Settings::extra`).
 
 use crate::fault::{classify, Fault, Known};
 use crate::home::{Home, Slot};
@@ -10,28 +10,25 @@ use crate::key::Address;
 use crate::roles::Role;
 use zikaron::json::{self, Value};
 
-/// The settings file's name. One name, one home.
+/// The settings file name.
 pub const FILE: &str = "desk.json";
 
-/// Default size cap (bytes). Changeable, not removable: a missing cap is no cap.
+/// Default size cap in bytes. The cap can be changed but not removed.
 pub const CAP_DEFAULT: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Where and when the last bundle was exported.
 ///
-/// This is content the user chose, not a record of where this home is: it says where the mirror should go,
-/// picked by the person. Copying the home elsewhere carries it along, still pointing where the person chose.
-/// That does not conflict with "any copy is equivalent"; writing the home's own path into the home would (and
-/// that stays zero).
+/// This is a destination the person chose, not a record of where this home is, so copying the home carries
+/// it along unchanged. That keeps copies equivalent; writing the home's own path into the home would not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MirrorRecord {
     pub path: String,
     pub at: u64,
 }
 
-/// A registered git repository: its path, and which commit was anchored last.
+/// A registered git repository: its path and the last anchored commit.
 ///
-/// As with [`MirrorRecord`]: content the person chose, not a record of where this home is, so copies stay
-/// equivalent.
+/// Like [`MirrorRecord`], this is content the person chose, not the home's location.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoRecord {
     pub path: String,
@@ -39,64 +36,63 @@ pub struct RepoRecord {
     pub last_commit: String,
 }
 
-/// How often the self-audit clock runs (seconds). Zero means it never runs by itself (only when the person
-/// clicks).
+/// Default self-audit period in seconds. Zero means it runs only when the person clicks.
 pub const AUDIT_EVERY_DEFAULT: u64 = 300;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub role: Role,
     pub cap_bytes: u64,
-    /// Chain endpoints, spelled `<chain id>=<url>`. This is configuration, not a path, so copies stay
-    /// equivalent.
+    /// Chain endpoints as `<chain id>=<url>`. Configuration, not a path, so copies stay equivalent.
     pub endpoints: Vec<String>,
-    /// The last bundle export record. None means never exported.
+    /// The last bundle export; `None` means never exported.
     pub mirror: Option<MirrorRecord>,
-    /// The three basis cells (law §9.4): which chain, which registry, which block to scan from. Empty means
-    /// not configured: the self-audit clock then cannot ask the chain, the face says so, and an offline pass
-    /// never passes for an online one.
+    /// The three basis fields (law §9.4): chain, registry, and the block to scan from. Empty means not
+    /// configured: the self-audit clock cannot query the chain, the UI says so, and an offline pass is never
+    /// shown as an online one.
     pub chain_id: Option<u64>,
     pub registry: Option<Address>,
     pub from_block: u64,
-    /// Self-audit clock period (seconds).
+    /// Self-audit period in seconds.
     pub audit_every: u64,
     /// The registered git repository.
     pub repo: Option<RepoRecord>,
-    /// The former local exclusive list (read-only historical bookkeeping).
+    /// The former local exclusivity list, kept read-only for older homes.
     ///
-    /// Exclusivity is now carried by the issuance record written once at signing (`termsx`); this list is
-    /// read and never written, the face marks it "no terms document", and the double-sale gate still reads it
-    /// (`legacy` in `grantx::table`).
+    /// Exclusivity is now carried by the issuance record written once at signing (`termsx`). This list is
+    /// read but never changed; the UI marks its entries "no terms document", and the double-sale check still
+    /// reads it (`legacy` in `grantx::table`).
     pub exclusive: Vec<String>,
-    /// Address book, purely local. Only what the person pasted in; this layer neither discovers nor
-    /// enumerates addresses, so it never becomes a directory.
+    /// Address book, purely local: only what the person pasted in. This layer never discovers or enumerates
+    /// addresses, so it never becomes a directory.
     pub book: Vec<String>,
-    /// Where each vault grant's upstream bytes are (local bookkeeping, not in the entry bytes).
+    /// Where each vault grant's upstream bytes are stored (local bookkeeping, not part of any entry).
     pub upstreams: Vec<(String, String)>,
-    /// Vault periodic re-check period (seconds); zero means it never runs by itself.
+    /// Vault re-check period in seconds; zero means it never runs by itself.
     pub review_every: u64,
-    /// Keys the sentinel has alerted (`<kind>:<grant>`); one alert per grant per kind.
+    /// Keys the sentinel has already alerted (`sentinelx::key_of`); each event alerts once.
     pub alarmed: Vec<String>,
-    /// Which language the interface speaks. None means never chosen (then the default Chinese); the cell is
-    /// written only once chosen.
+    /// Interface language. `None` means never chosen (Chinese by default); written only once chosen.
     pub lang: Option<crate::lang::Lang>,
-    /// The time zone moments are shown in; none chosen reads as UTC.
+    /// Time zone for displayed moments; `None` reads as UTC.
     pub zone: Option<crate::when::Zone>,
-    /// Auto anchor (off by default): on means estimate gas and show the confirmation card right after
-    /// recording; off means only add to the ledger and wait for the person to anchor by hand. Anchoring costs
-    /// money and cannot be undone, so by default it is not spent for the person. The cell is written only
-    /// when on, so a settings file that never touched it stays byte-identical.
+    /// Members this version does not know (written by a newer version), kept and written back unchanged so
+    /// the newer version still finds them after an older one has saved.
+    pub extra: Vec<(String, Value)>,
+    /// Auto anchor, off by default. On: estimate gas and show the confirmation card right after recording.
+    /// Off: only add to the ledger and wait for the person to anchor by hand. Anchoring costs money and cannot
+    /// be undone, so it is not spent on the person's behalf by default. Written only when on, so a file that
+    /// never touched it stays byte-identical.
     pub auto_anchor: bool,
-    /// Display only: the records and ledger pages leave out what stays on this machine after a deletion (a
-    /// deleted entry never published, and its local deletion). Off by default; nothing else reads it.
+    /// Display only: the records and ledger pages hide what remains on this machine after a deletion (a
+    /// deleted entry that was never published, and its local deletion). Off by default; nothing else reads it.
     pub hide_local_deletions: bool,
     /// Which choice this home's network came from: a row of the known deployments table, or "custom" taken
-    /// from what its identity recorded (`None` when configured by the person or not yet configured). Cleared
-    /// when the person changes the basis or nodes: the face line shows that row's name only when
-    /// that is really so.
+    /// from what its identity recorded (`None` when configured by hand or not configured). Cleared when the
+    /// person changes the basis or nodes, so the UI shows the row's name only while it is accurate.
     pub network: Option<String>,
-    /// Publish address: where the recorder puts record bundles on static hosting; `https://` only. The
-    /// publish address pointer in grant files takes it; "check publication" fetches file by file against it.
+    /// Publish address: where the person puts record bundles on static hosting; `https://` only. The
+    /// publish-address pointer in grant files uses it, and "check publication" fetches each file against it.
     /// Any other form reads as not configured.
     pub publish: Option<String>,
     /// The person's own names for held grants (`0x…` grant id, name), typed when adding a grant. Purely
@@ -134,9 +130,17 @@ impl Default for Settings {
             publish: None,
             grant_notes: Vec::new(),
             issuer_notes: Vec::new(),
+            extra: Vec::new(),
         }
     }
 }
+
+/// The members this version reads and writes; any other is kept as it came (`Settings::extra`).
+const MEMBERS: [&str; 22] = [
+    "alarmed", "auditEvery", "autoAnchor", "book", "capBytes", "chainId", "endpoints", "exclusive", "fromBlock", "grantNotes",
+    "hideLocalDeletions", "issuerNotes", "lang", "mirror", "network", "publish", "registry", "repo", "reviewEvery", "role",
+    "upstreams", "zone",
+];
 
 fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     match v {
@@ -146,11 +150,11 @@ fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
 }
 
 impl Settings {
-    /// Read. No file returns the defaults: "never set" is not an error.
+    /// Read. A missing file returns the defaults: "never set" is not an error.
     pub fn read(home: &Home) -> Result<Settings, Fault> {
         let p = home.dir(Slot::Settings).join(FILE);
-        // Sealed (`local::Doc::Settings`): no file returns the defaults; locked or not opening is refused by
-        // name (reading it as defaults would let the next write overwrite the person's settings).
+        // Sealed (`local::Doc::Settings`). A locked vault or a file that does not open is an error, not
+        // defaults: reading defaults would let the next write overwrite the person's settings.
         let Some(bytes) = crate::local::read(&p, crate::local::Doc::Settings)? else {
             return Ok(Settings::default());
         };
@@ -289,11 +293,15 @@ impl Settings {
             },
             grant_notes: pairs(&v, "grantNotes", "grant"),
             issuer_notes: pairs(&v, "issuerNotes", "issuer"),
+            extra: match &v {
+                Value::Obj(ms) => ms.iter().filter(|(k, _)| !MEMBERS.contains(&k.as_str())).cloned().collect(),
+                _ => Vec::new(),
+            },
         })
     }
 
-    /// Write. Overwriting the old settings is intended, so this writes directly; what must refuse overwriting
-    /// is documents, not settings.
+    /// Write. Overwriting old settings is intended, so this writes directly (documents, not settings, must
+    /// refuse overwriting).
     pub fn write(&self, home: &Home) -> Result<(), Fault> {
         let mut m = vec![
             ("auditEvery".to_string(), Value::Int(self.audit_every)),
@@ -397,26 +405,31 @@ impl Settings {
             m.push(("hideLocalDeletions".to_string(), Value::Bool(true)));
         }
         m.push(("reviewEvery".to_string(), Value::Int(self.review_every)));
+        // Members this version does not know go back unchanged.
+        for (k, v) in &self.extra {
+            if !m.iter().any(|(n, _)| n == k) {
+                m.push((k.clone(), v.clone()));
+            }
+        }
         let bytes = json::canon_bytes(&Value::Obj(m));
-        // Writing to disk has one method (`local::put`: sealed, written aside, then renamed).
+        // Every disk write goes through `local::put` (sealed, written aside, then renamed).
         crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Settings, &bytes)
     }
 
-    /// Whether over the cap. Computed from the bytes on disk now, not from memory.
+    /// Whether usage exceeds the cap, computed from the bytes on disk now. Returns (used, cap) when over.
     pub fn over_cap(&self, home: &Home) -> Result<Option<(u64, u64)>, Fault> {
         let used = home.usage()?;
         Ok(if used > self.cap_bytes { Some((used, self.cap_bytes)) } else { None })
     }
 }
 
-/// Migration: move a whole home to another path.
+/// Move a whole home to another path.
 ///
-/// Three steps: the target must lie outside this home (`outside_home`) and be empty (no overwriting), copy file
-/// by file, then verify bytes file by file. On failure the new copy is left in place and the error is named, and
-/// not one byte of the old is touched: when a move fails, the copy still standing must be the old one.
+/// The target must lie outside this home ([`outside_home`]) and be empty (nothing is overwritten); files are
+/// copied one by one, then compared byte for byte. On failure the copy is left in place, the error is
+/// returned, and the old home is not touched: after a failed move, the old home must still be the valid one.
 pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::H3);
     outside_home(from.root(), to)?;
     if to.exists() && std::fs::read_dir(to).map(|mut d| d.next().is_some()).unwrap_or(false) {
@@ -432,12 +445,12 @@ pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
     Ok(home)
 }
 
-/// A move's new place must not be this home's root or lie under it. Copying a tree into itself would copy the
-/// copy again, one level deeper each time, until the path grew too long, leaving a half-nested tree inside the
-/// old home. The rule is the containment of the two places, decided before one byte is written, not something
-/// found halfway through the copy. Both are read as real paths: symbolic links resolved, and for a new place
-/// that does not exist yet, its deepest existing ancestor resolved with the rest appended. The other way round
-/// (the old root under the new place) needs no rule of its own: such a new place is not empty.
+/// A move target must not be this home's root or lie under it: copying a tree into itself would copy the copy
+/// again, one level deeper each time, until the path grew too long, leaving a half-nested tree in the old
+/// home. This is decided from the two paths before any byte is written. Both are compared as real paths
+/// (symbolic links resolved; for a target that does not exist yet, its deepest existing ancestor is resolved
+/// and the rest appended). The reverse case (old root under the target) needs no check: such a target is not
+/// empty.
 pub fn outside_home(root: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> {
     let root = std::fs::canonicalize(root).map_err(|e| classify(&e, &root.display().to_string()))?;
     let target = real_path(to)?;

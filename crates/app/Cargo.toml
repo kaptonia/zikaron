@@ -1,7 +1,7 @@
 [package]
 name = "app"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 license = "MIT"
 
 [lib]
@@ -28,7 +28,7 @@ zikaron-glue = { path = "../zikaron-glue" }
 # The operating system's four (entropy, owner-only files, syncing, replacing rename): one place per system.
 zikaron-os = { path = "../zikaron-os" }
 # Third party: the egui family. On the app side only the `window` module touches it.
-eframe = { version = "0.31.1", default-features = false, features = ["glow"] }
+eframe = { version = "0.33", default-features = false, features = ["glow"] }
 # Third-party cryptography: on the app side only the `cryptx` module touches these.
 scrypt = { version = "0.11", default-features = false }
 aes = "0.8"
@@ -46,7 +46,7 @@ hkdf = "0.12"
 # H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
 # portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.31.1", default-features = false, features = ["glow", "x11", "wayland"] }
+eframe = { version = "0.33", default-features = false, features = ["glow", "x11", "wayland"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 log = "0.4"
 # The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).

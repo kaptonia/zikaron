@@ -39,7 +39,7 @@ pub fn line(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32, max_w: f32) ->
     let fit = crate::width::elide_to(ui, s, t.font(), max_w.max(0.0));
     let r = ui.add(egui::Label::new(egui::RichText::new(&fit).font(t.font()).color(colour)).wrap_mode(egui::TextWrapMode::Extend));
     if fit != s {
-        r.on_hover_text(s)
+        crate::layer::tip(r, s)
     } else {
         r
     }

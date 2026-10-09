@@ -2,21 +2,16 @@ use super::*;
 
 pub(super) fn genesis(shell: &mut Shell, statement: &str) -> Result<(String, Enqueued), crate::fault::Fault> {
     shell.may_write_entries()?;
-    // One ledger, one root: genesis lands only in an empty ledger. Genesis is the ledger's first entry; if
-    // the ledger holds anything at all (the pile from the store crate's lenient read, or skipped files), the
-    // new one would not be first. So the precondition is that both the pile and the skipped list are empty,
-    // and there is no second path to write it (the same rule as the CLI's `init`, both reading the store
-    // crate and the core).
+    // One ledger, one root: genesis must be the first entry, so it is written only when both the pile (the
+    // store's lenient read) and the skipped list are empty. The CLI's `init` applies the same rule.
     //
-    // Asking only "skipped list non-empty refuses, a seq 0 in the pile the core recognizes refuses, otherwise
-    // write" is not enough: a file with an entry name but broken bytes is read into the pile by the store
-    // (not the skipped list), the core refuses it and it is not counted, so a root would be written beside
-    // it; a ledger with entries but no root likewise. So the check asks "is it empty".
+    // Checking only for a recognized seq-0 entry is not enough: a file with an entry name but broken bytes is
+    // read into the pile, rejected by the core and not counted, so a root would be written beside it; the
+    // same holds for a ledger with entries but no root.
     //
-    // Refusals use this desk's existing words: the core recognizing seq 0 ids (one or several) →
-    // ALREADY_ROOTED; any other non-empty → LEDGER. The evidence tail is a gap turned into an action
-    // sentence: with the item count, saying how to get out from this home. All judging is in the store and
-    // the core; this layer only counts.
+    // Refusals: one or more seq-0 entries recognized by the core gives `AlreadyRooted`; anything else
+    // non-empty gives `Ledger`, with the item counts. All judging is in the store and the core; this layer
+    // only counts.
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
@@ -26,8 +21,8 @@ pub(super) fn genesis(shell: &mut Shell, statement: &str) -> Result<(String, Enq
     if !survey.items.is_empty() || !survey.skipped.is_empty() {
         let checked: Vec<Option<zikaron::entry::Entry>> =
             survey.items.iter().map(|b| zikaron::entry::check(b).ok()).collect();
-        // seq 0 entries the core recognizes, deduplicated by id (one entry stored under two names is one
-        // root; two entries from the same key are two roots).
+        // seq-0 entries the core recognizes, deduplicated by id (one entry stored under two names is one root;
+        // two entries from the same key are two roots).
         let mut roots: Vec<String> = checked
             .iter()
             .flatten()
@@ -62,34 +57,32 @@ pub(super) fn genesis(shell: &mut Shell, statement: &str) -> Result<(String, Enq
     ledger
         .append(&name, &sealed.bytes)?;
     shell.book_changed();
-    // The root is queued right away: the same exit as records, grants and published revocations (`enqueue`,
-    // the queueing body of `queue_it`). With auto anchor on it is sent with the queue; off, it stays queued
-    // for manual sending (returning right after writing genesis would leave the root never anchored).
+    // Queue the root right away, through the same path as records, grants and revocations (`enqueue`, the body
+    // of `queue_it`). With auto-anchor on it is sent with the queue; otherwise it waits for manual sending.
     let (_, n) = enqueue(shell, &sealed.id);
     Ok((sealed.id, n))
 }
 
-/// Queue an existing ledger's root once. A ledger recorded before genesis was queued has its root neither
-/// queued nor anchored; without this, that ledger could never show an anchored root. Triggered once by the
-/// home-opening verb, not by the wall clock.
+/// Queues an existing ledger's root once. Ledgers created before genesis was queued automatically have a root
+/// that was never queued or anchored; without this they could never show an anchored root. Runs once when a
+/// home is opened, not on a timer.
 ///
-/// Only on the side that can write this ledger (readers, broken chain, held pen, handed over, restored but
-/// not fetched: none).
+/// Only on the side that can write this ledger (not for readers, a broken chain, a held pen, a handed-over
+/// ledger, or a restored home not yet fetched).
 ///
-/// Only with a chain reading in hand: this home has a chain id, and there is this pass's audit report or the
-/// last audit's set (the disk cache, filtered by the current chain id). Queuing without a reading would, for
-/// a restored, fetched or adopted ledger whose root was anchored long ago while both local records are empty,
-/// queue it again and pay gas again. Knowing nothing means no backfill; it waits until an audit has run and
-/// the home is opened again. With a reading, any of "in the reading", "queued in the queue file", "recorded
-/// as anchored in the queue file" means no backfill. Queueing goes through the same [`enqueue`]; it is not a
-/// press by the person, so "send or wait next" shows no confirmation card, and the root stays queued for the
+/// Only with a chain reading in hand: this home has a chain id, and there is this session's audit report or
+/// the last audit's cached set (filtered by the current chain id). Without a reading, a restored, fetched or
+/// adopted ledger whose root was anchored long ago would be queued and paid for again, so nothing is
+/// backfilled until an audit has run and the home is reopened. With a reading, the root is skipped if it is in
+/// the reading, already queued, or recorded as anchored in the queue file. Queueing uses the same
+/// [`enqueue`]; since the person pressed nothing, no confirmation card is shown and the root waits for the
 /// next anchoring.
 pub(super) fn backfill_root(shell: &mut Shell) {
     if !shell.rooted || shell.unfetched.is_some() || shell.may_write_entries().is_err() || shell.settings.chain_id.is_none() {
         return;
     }
-    // Only a whole reading counts (`auditx::whole`): in an incomplete one, "root not in the anchor set" does
-    // not mean the root is unanchored, and backfilling would anchor it again.
+    // Only a complete reading counts (`auditx::whole`): in an incomplete one, a root missing from the anchor
+    // set may still be anchored, and backfilling would anchor it again.
     let known: Option<Vec<String>> = match (shell.audit.as_ref(), shell.remembered.as_ref()) {
         (Some(a), _) if crate::auditx::whole(&a.label, a.asked, &a.unanswered) => Some(crate::ledgerx::anchored_of(&a.report).into_iter().map(|(h, _)| h).collect()),
         (None, Some(r)) if r.whole => Some(r.rows.iter().map(|(h, _)| h.clone()).collect()),
@@ -109,33 +102,33 @@ pub(super) fn adopt(shell: &mut Shell, dir: &str) -> Result<crate::firstrun::Ado
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
     let got = crate::firstrun::adopt(std::path::Path::new(dir), home);
-    // Adoption changed this home's ledger (on success or failure): what was read from the ledger is reread
-    // from the new source; the pen and the broken-chain banner are not touched here.
+    // Adoption changed this home's ledger (whether or not it succeeded), so reread everything derived from it.
+    // The pen and the broken-chain banner are not touched here.
     shell.source_changed(crate::shell::Source::Ledger);
     remeasure(shell);
     let got = got?;
-    // The pen follows what the self-audit after adoption said.
+    // The pen follows the self-audit run after adoption.
     shell.pen = if got.complete {
         crate::auditx::Pen::Granted
     } else {
         crate::auditx::Pen::Held
     };
     shell.reconciled = Some((got.label.clone(), got.complete, got.linked));
-    // A ledger adopted in place opens for writing as any other does: once its tail is checked against the
-    // chain (`check_tail`), after the self-audit above.
+    // A ledger adopted in place opens for writing like any other: once its tail is checked against the chain
+    // (`check_tail`), after the self-audit above.
     tail_if_due(shell);
     Ok(got)
 }
 
-/// Measure again after the ledger changed (background; not started again while one is in flight, whose landed
-/// reading is already after the change).
+/// Re-measures the home in the background after the ledger changed. A measurement already in flight is not
+/// restarted, since its result already reflects the change.
 pub(super) fn remeasure(shell: &mut Shell) {
     if let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) {
         shell.tasks.spawn(Kind::Archive, move || measure(&root));
     }
 }
 
-/// Walk the disk to measure a home. Runs on a background thread, so it touches no egui.
+/// Walks the disk to measure a home. Runs on a background thread, so it never touches egui.
 pub(super) fn measure(root: &std::path::Path) -> Result<Done, crate::fault::Fault> {
     crate::task::stage_at(crate::task::Kind::Archive, 0);
     let home = crate::home::Home::open(root)?;
@@ -149,9 +142,10 @@ pub(super) fn measure(root: &std::path::Path) -> Result<Done, crate::fault::Faul
         }
         Err(_) => (0, 0, 0),
     };
-    let machine_items = crate::backup::count_now().ok();
-    // The state of the last exported bundle needs reading settings and verifying the whole bundle, both disk
-    // reads, so it goes with this background pass rather than staying in the frame.
+    // The item count recorded at the last backup (`backup::measured`).
+    let machine_items = crate::machine::read().and_then(|m| crate::backup::measured(m.backup.as_ref()));
+    // The last exported bundle's state needs the settings and a full bundle verification, both disk reads, so
+    // it is done in this background pass rather than on the UI thread.
     let rec = crate::settings::Settings::read(&home)?.mirror;
     let mirror = crate::mirror::status(rec.as_ref());
     Ok(Done::Archive { bytes, items, skipped, mirror, records, machine_items })

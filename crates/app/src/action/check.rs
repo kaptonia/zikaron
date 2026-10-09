@@ -1,11 +1,11 @@
 use super::*;
 
-/// Check. Runs on a background thread; zero permissions: reads no key, writes no home, sends no transaction,
-/// saves no settings.
+/// The check page, run on a background thread with no privileges: it reads no key, writes no home, sends no
+/// transaction and saves no settings.
 ///
-/// Endpoints and basis are filled in on the page; when the page is empty it borrows the open home's (reading,
-/// never changing it), so it works without an identity. Reading files, scanning the chain and judging are all
-/// in `checkx::run`; here the input only passes a shape gate before going to the background.
+/// Endpoints and basis come from the page; empty fields borrow the open home's (read only), so it works
+/// without an identity. Reading files, scanning the chain and judging all happen in `checkx::run`; here the
+/// input only passes a shape check before going to the background.
 pub(super) fn check_payload(
     shell: &mut Shell,
     typed: &str,
@@ -17,8 +17,8 @@ pub(super) fn check_payload(
     (file, terms): (String, String),
 ) -> Result<Spawned, crate::fault::Fault> {
     let injected = crate::checkx::now_of(now)?;
-    // The input shape gate only asks "empty or not"; reading files and decoding happen in the background (no
-    // disk in the frame).
+    // The shape check only asks whether the input is empty; reading files and decoding happen in the
+    // background.
     if typed.trim().is_empty() {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::FieldMissing,
@@ -28,29 +28,38 @@ pub(super) fn check_payload(
     let typed = typed.trim().to_string();
     let mut shelf = shelf_of(shell, ledgers);
     shelf.reads = read_nets_now()?;
-    // Endpoints: the page's when filled; otherwise borrow the home's configured ones (read-only).
+    // Endpoints: the page's if filled; otherwise the home's configured ones (read-only).
     let mut eps: Vec<crate::chainx::Endpoint> = Vec::new();
     let mut bad: Vec<String> = Vec::new();
+    // A refused line is reported as `Endpoint::typed` words it, never echoing the line itself, which may carry
+    // a node's API key. One sentence per line.
     for line in endpoints.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        match crate::chainx::Endpoint::parse(line) {
-            Some(e) => eps.push(e),
-            None => bad.push(line.to_string()),
+        match crate::chainx::Endpoint::typed(line) {
+            Ok(e) => eps.push(e),
+            Err(said) => bad.push(said),
         }
     }
     if !bad.is_empty() {
-        return Err(crate::fault::Fault::known(
-            crate::fault::Known::SettingsShape,
-            crate::lang::filln(crate::lang::Key::Tail066, &[&(bad.join(" ")).to_string()]),
-        ));
+        return Err(crate::fault::Fault::known(crate::fault::Known::SettingsShape, bad.join(" · ")));
     }
+    // Every field typed on the page is shape-checked before anything is borrowed or reported missing: an
+    // unreadable registry or start block is refused by name here, never hidden behind "no registry
+    // configured". Missing fields are reported later, where the check reads them.
+    let registry_typed = registry.trim();
+    let typed_registry = match registry_typed {
+        "" => None,
+        r => Some(Address::parse(r).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::AddressShape, r.to_string()))?),
+    };
+    let typed_from: Option<u64> = match from_block.trim() {
+        "" => None,
+        f => Some(f.parse().map_err(|_| crate::fault::Fault::known(crate::fault::Known::SettingsShape, crate::lang::filln(crate::lang::Key::Tail025, &[&format!("{f:?}")])))?),
+    };
     if eps.is_empty() {
         eps = shell.endpoints.clone();
     }
-    // Compute the main chain id once, shared by basis and chain time. With a single endpoint it is that one;
-    // when endpoints span several chains the home's configured main chain id wins (it must be among the
-    // endpoints); with neither there is none. Computing it only on the basis branch would make chain time
-    // absent whenever the registry is not configured (basis cannot be built), while chain time needs only a
-    // chain id.
+    // Compute the main chain id once, shared by the basis and chain time: the single endpoint's chain; with
+    // several chains, the home's configured chain if it is among them; otherwise none. Chain time needs only a
+    // chain id, so it must not depend on the basis, which also needs a registry.
     let chain: Option<u64> = {
         let mut chains: Vec<u64> = eps.iter().map(|e| e.chain).collect();
         chains.sort_unstable();
@@ -62,24 +71,16 @@ pub(super) fn check_payload(
             _ => None,
         }
     };
-    // Basis: the chain id from above, registry and start block from the page; when not filled, borrow the
-    // home's.
+    // Basis: the chain id from above, registry and start block from the page, or the home's when not filled.
     let ground: Result<crate::auditx::Ground, crate::fault::Fault> = (|| {
-        let registry_typed = registry.trim();
-        let reg = if registry_typed.is_empty() {
-            shell.settings.registry.ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new()))?
-        } else {
-            Address::parse(registry_typed).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::AddressShape, registry_typed.to_string()))?
+        let reg = match typed_registry {
+            Some(r) => r,
+            None => shell.settings.registry.ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new()))?,
         };
-        let from: u64 = if from_block.trim().is_empty() {
-            if registry_typed.is_empty() { shell.settings.from_block } else { 0 }
-        } else {
-            from_block.trim().parse().map_err(|_| {
-                crate::fault::Fault::known(
-                    crate::fault::Known::SettingsShape,
-                    crate::lang::filln(crate::lang::Key::Tail025, &[&format!("{:?}", from_block.trim())]),
-                )
-            })?
+        let from: u64 = match (typed_from, typed_registry) {
+            (Some(f), _) => f,
+            (None, None) => shell.settings.from_block,
+            (None, Some(_)) => 0,
         };
         let chain = chain.ok_or_else(|| {
             crate::fault::Fault::known(
@@ -98,10 +99,20 @@ pub(super) fn check_payload(
     }))
 }
 
-/// The places the check page and vault re-check take material from (`supplyx`'s `Shelf`), gathered here in
-/// one place: every seat's home in the local register, the vault's kept grant file room and the recorded
-/// upstream locations, and the places the person points to (one line per hop). Only paths and addresses; disk
-/// reads happen in the background.
+/// The record place for a page that reads a single place (reader, diligence). More than one non-empty line
+/// (split at `\n`, `\r` or both) is refused by name rather than silently reading only the first; the error
+/// carries the line count.
+pub fn one_place(dir: &str) -> Result<&str, crate::fault::Fault> {
+    let lines = dir.split(['\n', '\r']).filter(|l| !l.trim().is_empty()).count();
+    if lines > 1 {
+        return Err(crate::fault::Fault::known(crate::fault::Known::PlaceOneLine, lines.to_string()));
+    }
+    Ok(dir.trim())
+}
+
+/// The places the check page and vault re-check take material from (`supplyx::Shelf`): every seat's home in
+/// the local register, the vault's kept grant file and recorded upstream locations, and the places the person
+/// gives (one line per hop). Only paths and addresses; disk reads happen in the background.
 pub fn shelf_of(shell: &Shell, manual: &str) -> crate::supplyx::Shelf {
     let mut homes: Vec<(String, std::path::PathBuf)> = Vec::new();
     if let Some(reg) = shell.identities.as_ref() {
@@ -124,9 +135,8 @@ pub fn shelf_of(shell: &Shell, manual: &str) -> crate::supplyx::Shelf {
     }
 }
 
-/// The read-only networks as the machine directory holds them now, for a path that reads someone else's
-/// material. A machine with no machine directory has no table; a table that cannot be read refuses the action
-/// by name.
+/// The read-only networks currently in the machine directory, for paths that read someone else's material.
+/// No machine directory means no table; an unreadable table refuses the action by name.
 pub fn read_nets_now() -> Result<Vec<crate::readnets::Net>, crate::fault::Fault> {
     match crate::home::machine_dir() {
         Ok(m) => crate::readnets::read(&m),

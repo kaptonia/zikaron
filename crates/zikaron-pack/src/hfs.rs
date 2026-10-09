@@ -1,9 +1,8 @@
-//! An HFS+ volume made from a folder records, for every file and folder in its catalog, the owner and group
-//! of the user who made it and the moments it was made; a user who is not the administrator cannot change
-//! them through the file system. They are rewritten in the catalog itself: every owner and group that is not
-//! the administrator's (0) becomes 99, the "unknown" owner that a mounted volume shows as whoever looks at
-//! it, and every date becomes one given moment; both volume headers carry the same moment. Nothing else in the
-//! volume changes (sizes, extents, contents).
+//! An HFS+ volume built from a folder records, for every catalog entry, the creating user's owner and group
+//! and its timestamps, which a non-root user cannot change through the file system. So they are rewritten in
+//! the catalog directly: every owner and group other than root (0) becomes 99 (the "unknown" owner, shown on
+//! mount as whoever is looking), and every date becomes one given moment, also set in both volume headers.
+//! Nothing else changes (sizes, extents, contents).
 
 /// Seconds between 1904-01-01 (the HFS epoch) and 1970-01-01.
 const HFS_EPOCH: u64 = 2_082_844_800;
@@ -31,8 +30,8 @@ fn put32(b: &mut [u8], o: usize, v: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// A B-tree file of the volume: its extents (start block, block count), up to the eight the volume header
-/// holds.
+/// A B-tree file of the volume: its extents (start block, block count), up to the eight held in the volume
+/// header.
 struct Fork {
     extents: Vec<(u64, u64)>,
     size: u64,
@@ -81,7 +80,7 @@ pub fn neutral_owners(vol: &mut [u8], epoch: u64) -> Result<Report, String> {
     let when = u32::try_from(epoch + HFS_EPOCH).map_err(|_| "the moment is out of HFS range".to_string())?;
     let block = be32(vol, 1024 + 40)? as usize;
     let total = be32(vol, 1024 + 44)? as usize;
-    // Both volume headers: create, modify and checked dates (the backup date stays as made, zero).
+    // Both volume headers: create, modify and checked dates (the backup date stays zero).
     let alternate = (total * block).min(vol.len()).checked_sub(1024).ok_or("volume too small")?;
     for h in [1024, alternate] {
         if be16(vol, h)? != sig {

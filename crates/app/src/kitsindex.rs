@@ -1,10 +1,10 @@
-//! Record bundle index.
+//! Record bundle (kit) index.
 //!
-//! Bundles live in each identity's home (`<home>/kits/…`), and sibling apps need one place to find "which
-//! bundles were exported on this machine, and where". Homes may not store absolute paths (any copy of a home
+//! Bundles live in each identity's home (`<home>/kits/…`), and sibling apps need one place to find which
+//! bundles were exported on this machine, and where. Homes may not store absolute paths (any copy of a home
 //! is equivalent), so the index lives in the machine directory: `<machine directory>/kits/index.json`. Only
-//! this desk rewrites it, atomically (through `home::put_at`: temporary name then rename, 0600); it is
-//! written empty at window start when absent, and rewritten together with the pointer when the home moves.
+//! this app rewrites it, atomically (`home::put_at`: temporary name then rename, mode 0600). It is created
+//! empty at startup when absent, and rewritten when the home moves.
 //!
 //! ─── Shape ───
 //!
@@ -14,26 +14,23 @@
 //!
 //! ─── `link` ───
 //!
-//! By default it is assembled from that home's publish base (`settings.publish`) plus the bundle's relative
-//! path in the `kits` room; a hand-filled one overrides it, recorded in the same room's [`OVERRIDES`] (for
-//! this desk only; readers do not read it). When the publish base changes, rows nobody filled by hand are
-//! reassembled and hand-filled ones stay as they are. There is no second publishing concept.
+//! By default `link` is the home's publish base (`settings.publish`) plus the bundle's path relative to the
+//! `kits` directory. A hand-filled link overrides it and is recorded in [`OVERRIDES`] (read only by this app).
+//! When the publish base changes, rows without an override are reassembled; overridden rows are kept.
 //!
 //! ─── `anchoredOn` ───
 //!
-//! Where the kit says it is anchored: the basis of the home it was exported from (chain id, registry, start
-//! block), written by the app's export mouth as the fixed last line of the manifest's `note_md`
-//! ([`AnchoredOn::line`]). The row carries it apart, optional as `link` is, and the row's `note_md` stays the
-//! author's own text: reading the manifest takes that last line off ([`split_note`]). It only points the way;
-//! no verdict reads it.
+//! Where the kit says it is anchored: the chain id, registry and start block of the home it was exported
+//! from, written at export as the fixed last line of the manifest's `note_md` ([`AnchoredOn::line`]). The row
+//! keeps it in a separate optional field, and the row's `note_md` is the author's text with that line removed
+//! ([`split_note`]). Informational only; no check depends on it.
 
 use crate::fault::{classify, Fault, Known};
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 use zikaron_glue::names::Field;
 
-/// The two index cells named as in kit law (`contents`, `note_md`): the literals come from kit law's own name
-/// table, and the shell writes no copy.
+/// The `contents` and `note_md` key names, taken from the shared kit name table rather than copied here.
 fn contents_key() -> &'static str {
     Field::Contents.as_str()
 }
@@ -41,17 +38,37 @@ fn note_key() -> &'static str {
     Field::NoteMd.as_str()
 }
 
-/// The index's form literal. One name, one home.
+/// The index's form literal.
 pub const FORM: &str = "zikaron.kits-index/1";
-/// The room in the machine directory that holds the index.
+/// The directory in the machine directory that holds the index.
 pub const DIR: &str = "kits";
 /// Index file name.
 pub const FILE: &str = "index.json";
-/// Hand-filled `link`s are recorded here (for this desk only; readers do not read it).
+/// Hand-filled `link`s are recorded here (read only by this app, not by other index readers).
 pub const OVERRIDES: &str = "links.json";
 
-/// Where an exported kit says it is anchored: its home's basis at export. Spelled in one place, read in one
-/// place.
+/// Every kind of export and where it lands. Two have fixed places under the machine directory (the kits index
+/// file, and a directory of kit verification results); the other four go wherever the user picks. The path
+/// builders (`path_in`, `verifiedx::path_of`) use the same constants.
+pub const EXPORTS: [Export; 6] = [
+    Export { name: "kitsIndex", place: Some(&[DIR, FILE]), room: false },
+    Export { name: "kitVerifications", place: Some(&[DIR, crate::verifiedx::DIR]), room: true },
+    Export { name: "kit", place: None, room: false },
+    Export { name: "mirror", place: None, room: false },
+    Export { name: "machineBackup", place: None, room: false },
+    Export { name: "grantFile", place: None, room: false },
+];
+
+/// One row of [`EXPORTS`]: the export's name, its path under the machine directory (`None` when the user picks
+/// the place), and whether that path is a directory of exports (`room`) rather than a single file.
+#[derive(Clone, Copy, Debug)]
+pub struct Export {
+    pub name: &'static str,
+    pub place: Option<&'static [&'static str]>,
+    pub room: bool,
+}
+
+/// Where an exported kit says it is anchored: its home's chain, registry and start block at export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchoredOn {
     pub chain_id: u64,
@@ -71,9 +88,9 @@ impl AnchoredOn {
         format!("{LINE_HEAD}{}{LINE_SEP}registry {}{LINE_SEP}from {}", self.chain_id, self.registry, self.from_block)
     }
 
-    /// Read one line as written by [`AnchoredOn::line`], whole-line and exact: decimal numbers without leading
-    /// zeros (each within the canonical integer ceiling, so the index row reads back), the address lowercase.
-    /// Anything else is not this line.
+    /// Parse a line written by [`AnchoredOn::line`], exactly: decimal numbers without leading zeros (each within
+    /// the canonical JSON integer limit, so the index row reads back) and a lowercase address. Anything else is
+    /// `None`.
     pub fn of_line(line: &str) -> Option<AnchoredOn> {
         let rest = line.strip_prefix(LINE_HEAD)?;
         let (chain, rest) = rest.split_once(LINE_SEP)?;
@@ -106,27 +123,37 @@ impl AnchoredOn {
             _ => None,
         };
         let a = AnchoredOn { chain_id: int("chainId")?, from_block: int("fromBlock")?, registry: str_of(v, "registry")? };
-        // The row's cell is the line's three parts: anything the line could not carry is not this cell.
+        // Only values that round-trip through the line form are accepted.
         (AnchoredOn::of_line(&a.line()).as_ref() == Some(&a)).then_some(a)
     }
 }
 
-/// A manifest note taken apart: the author's text and the anchoring point its last line carries (only the
-/// last line counts, and only when it is exactly that line). The inverse of [`note_with`].
+/// Split a manifest note into the author's text and the anchoring point, which only the last non-empty line
+/// can carry, and only when it matches exactly. Lines split at `\n` (a preceding `\r` belongs to the break);
+/// whitespace-only lines count as empty, so trailing blank lines neither hide the anchoring line nor survive
+/// its removal. The inverse of [`note_with`].
 pub fn split_note(note: &str) -> (String, Option<AnchoredOn>) {
-    let (author, last) = match note.rsplit_once('\n') {
-        Some((a, l)) => (a, l),
-        None => ("", note),
-    };
-    match AnchoredOn::of_line(last) {
-        Some(at) => (author.to_string(), Some(at)),
-        None => (note.to_string(), None),
+    let mut at = note.len();
+    for piece in note.split_inclusive('\n').collect::<Vec<_>>().into_iter().rev() {
+        at -= piece.len();
+        let line = piece.strip_suffix('\n').unwrap_or(piece);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        // The author's text is everything before this line, its own last line break left out.
+        let before = &note[..at];
+        let author = before.strip_suffix('\n').map(|b| b.strip_suffix('\r').unwrap_or(b)).unwrap_or(before);
+        return match AnchoredOn::of_line(line) {
+            Some(a) => (author.to_string(), Some(a)),
+            None => (note.to_string(), None),
+        };
     }
+    (note.to_string(), None)
 }
 
-/// The note a kit carries: the author's text, then this home's anchoring point as its last line (none
-/// configured, none added). A note that already ends in such a line has it taken off first, so exporting again
-/// never doubles it.
+/// The note a kit carries: the author's text, then the anchoring line when one is given. An existing
+/// anchoring line is removed first, so exporting again never doubles it.
 pub fn note_with(note: &str, at: Option<&AnchoredOn>) -> String {
     let author = split_note(note).0;
     match at {
@@ -204,8 +231,8 @@ pub fn bytes_of(rows: &[Row]) -> Vec<u8> {
     ]))
 }
 
-/// Read the index. No file gives `None`; a `form` other than [`FORM`] or a row with missing cells is refused
-/// by name (never quietly used as empty).
+/// Read the index. No file gives `None`; a `form` other than [`FORM`] or a row with missing cells is an
+/// error, never silently treated as empty.
 pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
     let p = path_in(machine);
     let bytes = match std::fs::read(&p) {
@@ -246,7 +273,7 @@ pub fn write(machine: &Path, rows: &[Row]) -> Result<(), Fault> {
     crate::home::put_at(&machine.join(DIR), FILE, &bytes_of(rows))
 }
 
-/// At window start: write an empty index when there is none. Returns whether it wrote.
+/// At startup: write an empty index when there is none. Returns whether it wrote.
 pub fn ensure(machine: &Path) -> Result<bool, Fault> {
     if path_in(machine).exists() {
         return Ok(false);
@@ -275,14 +302,14 @@ fn write_overrides(machine: &Path, o: &[(String, String)]) -> Result<(), Fault> 
     crate::local::put(&machine.join(DIR), OVERRIDES, crate::local::Doc::KitLinks, &json::canon_bytes(&v))
 }
 
-/// On disk, the canonicalized path in its plain spelling (`home::plain_path`: the rows store it, and rows are
-/// compared with it); otherwise unchanged (`/tmp` and `/private/tmp` are the same place).
+/// The canonical path in the plain form rows store (`home::plain_path`), so `/tmp` and `/private/tmp` compare
+/// equal; the path unchanged when it does not exist.
 fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).map(crate::home::plain_path).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// The bundle's relative path in the `kits` room (for assembling `link`): relative to the room when inside
-/// it, otherwise the bundle directory's name.
+/// The bundle's path for assembling `link`: relative to the `kits` directory when inside it, otherwise the
+/// bundle directory's name.
 pub fn rel_of(kits_room: &Path, kit: &Path) -> String {
     let (room, kit) = (canon(kits_room), canon(kit));
     match kit.strip_prefix(&room) {
@@ -291,15 +318,14 @@ pub fn rel_of(kits_room: &Path, kit: &Path) -> String {
     }
 }
 
-/// The default `link`: the publish base (recognized by `fetchx::base_of`, ending in `/`) plus the path
-/// within, plus `/`. No base configured means none.
+/// The default `link`: the publish base (validated by `fetchx::base_of`, ending in `/`) plus the relative
+/// path and a trailing `/`. `None` when no base is configured.
 pub fn default_link(publish: Option<&str>, rel: &str) -> Option<String> {
     let base = crate::fetchx::base_of(publish?).ok()?;
     if rel.is_empty() {
         return None;
     }
-    // The path is percent-encoded segment by segment (spaces, non-ASCII and reserved characters never go into
-    // an address raw).
+    // Percent-encode each segment so spaces, non-ASCII and reserved characters never appear raw in the URL.
     let enc: Vec<String> = rel.split('/').map(pct).collect();
     Some(format!("{}{}/", base.as_str(), enc.join("/")))
 }
@@ -312,13 +338,13 @@ fn pct(seg: &str) -> String {
         .collect()
 }
 
-/// Read the bundle's own manifest for the digests in the `contents` column (existing values, not recomputed)
-/// and the author's `note_md` (its anchoring line taken off).
+/// Read the bundle's manifest for the `contents` digests (as recorded, not recomputed) and the author's
+/// `note_md` without its anchoring line.
 pub fn manifest_facts(kit: &Path) -> Result<(Vec<String>, String), Fault> {
     manifest_row_facts(kit).map(|(c, n, _)| (c, n))
 }
 
-/// As [`manifest_facts`], with the anchoring point the note's last line carries.
+/// As [`manifest_facts`], plus the anchoring point from the note's last line.
 pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<AnchoredOn>), Fault> {
     let p = kit.join(zikaron_glue::names::MANIFEST);
     let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
@@ -331,9 +357,9 @@ pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<Anc
     Ok((contents, note, at))
 }
 
-/// Add a row when an export lands. A row is identified by the bundle directory's path (the same bundle
-/// exported to two places is two rows; exporting again to the same place replaces that row). `link` follows
-/// that place's override, otherwise the default.
+/// Add a row after an export. Rows are keyed by bundle directory path: the same bundle exported to two places
+/// is two rows, and exporting again to the same place replaces the row. `link` uses that path's override,
+/// otherwise the default.
 pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, created: u64, publish: Option<&str>) -> Result<Row, Fault> {
     let (contents, note_md, anchored_on) = manifest_row_facts(kit)?;
     let root = crate::ledgerx::root_of(home)?;
@@ -348,12 +374,12 @@ pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, creat
     Ok(row)
 }
 
-/// Hand-fill `link`: non-empty overrides and is recorded; empty removes the override and returns to the
-/// default (assembled from that home's publish base).
+/// Set `link` by hand: a non-empty value is recorded as an override; an empty one removes the override and
+/// restores the default from the home's publish base.
 pub fn set_link(machine: &Path, path: &str, link: &str, root: &str, kits_room: &Path, publish: Option<&str>) -> Result<Option<String>, Fault> {
     let mut rows = read(machine)?.unwrap_or_default();
-    // Only rows exported from this ledger (`root`) change: returning to the default needs that home's publish
-    // base, and other homes' rows are changed in their own homes.
+    // Only rows exported from this ledger (`root`) change: restoring the default needs this home's publish
+    // base, and other homes' rows are edited from those homes.
     let Some(at) = rows.iter().position(|r| r.path == path && r.root.eq_ignore_ascii_case(root)) else {
         return Err(Fault::known(Known::SubjectMissing, path.to_string()));
     };
@@ -373,9 +399,8 @@ pub fn set_link(machine: &Path, path: &str, link: &str, root: &str, kits_room: &
     Ok(now)
 }
 
-/// The publish base changed: among rows exported from this ledger (`root`), those nobody filled by hand get
-/// `link` reassembled on the new base (whether or not the bundle is in the `kits` room, assembled the same
-/// way as the default at add time). Returns how many rows changed.
+/// After the publish base changes: rows from this ledger (`root`) without an override get `link` rebuilt on
+/// the new base, the same way as at add time. Returns how many rows changed.
 pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str>) -> Result<usize, Fault> {
     let Some(mut rows) = read(machine)? else { return Ok(0) };
     let o = overrides(machine)?;
@@ -396,11 +421,9 @@ pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str
     Ok(n)
 }
 
-/// Delete the local copy: the row is removed; the bundle directory is deleted entirely only when the bundle
-/// there is exactly the one this row names (the bundle id computed from the manifest equals the row's `id`;
-/// the ledger is untouched). When that place is already gone or holds another bundle (deleted in Finder, a
-/// new one exported under the same name), only the row is removed and no other bundle is touched. Returns
-/// (the removed row, whether the directory was deleted).
+/// Delete the local copy. The row is always removed; the bundle directory is deleted only when its manifest's
+/// bundle id equals the row's `id`, so a directory that is gone or now holds another bundle is never touched.
+/// The ledger is not affected. Returns the removed row and whether the directory was deleted.
 pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     let mut rows = read(machine)?.unwrap_or_default();
     let Some(at) = rows.iter().position(|r| r.path == path) else {
@@ -423,8 +446,8 @@ pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     Ok((row, same))
 }
 
-/// When the home moves: rows whose bundle path is under the old home get the new home as prefix (together
-/// with the pointer). Returns how many rows changed.
+/// When the home moves: rows whose bundle path is under the old home are re-prefixed with the new home.
+/// Returns how many rows changed.
 pub fn rebase(machine: &Path, from: &Path, to: &Path) -> Result<usize, Fault> {
     let Some(mut rows) = read(machine)? else { return Ok(0) };
     let (from_c, to) = (canon(from), canon(to));
@@ -440,7 +463,7 @@ pub fn rebase(machine: &Path, from: &Path, to: &Path) -> Result<usize, Fault> {
         }
     }
     if n > 0 {
-        // Hand-filled overrides are recorded by bundle path: when the path changes, that cell follows.
+        // Overrides are keyed by bundle path, so they move with it.
         let mut o = overrides(machine)?;
         let mut touched = false;
         for (k, _) in o.iter_mut() {

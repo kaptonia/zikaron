@@ -1,7 +1,7 @@
 //! **Pickers**: every "open it and choose a row from a list" is one floating card with a search field on top
 //! (and, for lists whose rows carry a time, "start date · end date" under it), then the rows in a scrolling
 //! column. The card is a menu's card ([`crate::menu`]): the floating surface, grown from its anchor's corner
-//! from 0.97 over 120 ms and played backwards when it leaves; a press outside it ([`crate::layer::menu_guard`]),
+//! from 0.97 over 120 ms and played backwards when it leaves; a press outside it ([`crate::layer::under`]),
 //! Esc, or picking a row closes it. Rows are a menu's rows ([`crate::menu::Row`], [`crate::menu::Who`]),
 //! drawn by the same functions; rows that cannot be picked stay grey.
 //!
@@ -10,7 +10,7 @@
 
 use crate::datepick;
 use crate::menu::{self, Item};
-use crate::motion::{self, Curve};
+
 use crate::paint;
 use crate::palette::{c, Lift, C};
 use crate::tokens::{self, Radius, Type};
@@ -66,20 +66,23 @@ pub fn key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, caret: 
     if resp.clicked() {
         menu::toggle(ui.ctx(), id);
     }
-    show(ui.ctx(), id, resp.rect, false, spec, items, keep)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, false, spec, items, keep)
 }
 
 /// Draw an open picker under `anchor` (aligned to its left edge when `left`, its right edge otherwise).
 /// Returns the picked row's index (into `items`).
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
+    show_from(ctx, None, id, anchor, left, spec, items, keep)
+}
+
+/// As [`show`], for a picker whose anchor lies in `parent` (an overlay it then hangs above; see
+/// [`crate::layer::under`]).
+#[allow(clippy::too_many_arguments)]
+pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
     if !menu::is_open(ctx, id) {
         return None;
     }
-    let age = motion::age(ctx, id.with("age"), 0);
-    let e = Curve::Ease.at((age / tokens::FAST).clamp(0.0, 1.0));
-    if age < tokens::FAST {
-        ctx.request_repaint();
-    }
+    let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
     // What was typed belongs to this opening only.
     let opened = ctx.data(|d| d.get_temp::<u64>(id.with("opened"))).unwrap_or(0);
     let mut typed = ctx.data(|d| d.get_temp::<Typed>(id.with("typed"))).filter(|t| t.opened == opened).unwrap_or(Typed { opened, ..Default::default() });
@@ -92,20 +95,21 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, spec: &
     };
     let list_h: f32 = kept.iter().map(|i| row_h(&items[*i])).sum::<f32>().max(34.0).min(LIST_MAX_H);
     let head_h = tokens::INPUT_H + if spec.dates.is_some() { tokens::S2 + tokens::INPUT_H } else { 0.0 };
-    let w = spec.w.min(ctx.screen_rect().width() - 16.0);
+    let w = spec.w.min(ctx.content_rect().width() - 16.0);
     let h = PAD + INSET + head_h + INSET + list_h + PAD;
-    let x = if left { anchor.left() } else { anchor.right() - w };
-    let x = x.clamp(8.0, (ctx.screen_rect().right() - w - 8.0).max(8.0));
-    let rect = Rect::from_min_size(pos2(x, anchor.bottom() + 6.0), vec2(w, h));
-    let origin = if left { rect.left_top() } else { rect.right_top() };
+    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), left);
+    let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + vec2(0.0, -4.0 * (1.0 - e)) });
-    let guarded = crate::layer::menu_guard(ctx, layer);
-    // Above its guard now, so a date card opened inside it lands above both.
-    ctx.move_to_top(layer);
+    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + drop.moved * (1.0 - e) });
+    crate::layer::place(ctx, layer, parent);
+    let mut guarded = false;
     let mut picked = None;
-    egui::Area::new(layer.id).fade_in(false).order(egui::Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
+    crate::layer::over(ctx, layer).show(ctx, |ui| {
+        // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
+        // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
+        guarded = crate::layer::under(ui, crate::layer::Under::Guard);
+        crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
         paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
         let inner = Rect::from_min_max(pos2(rect.left() + INSET, rect.top() + PAD + INSET), pos2(rect.right() - INSET, rect.bottom() - PAD));
@@ -149,8 +153,8 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, spec: &
         ui.allocate_rect(rect, egui::Sense::hover());
     });
     ctx.data_mut(|d| d.insert_temp(id.with("typed"), typed));
-    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin);
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin, drop.moved);
+    let esc = crate::layer::esc(ctx, id);
     if picked.is_some() || guarded || esc {
         menu::set(ctx, id, false);
     }

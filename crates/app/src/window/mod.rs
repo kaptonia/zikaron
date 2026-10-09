@@ -1,18 +1,18 @@
-//! The single window: the only place in the app that uses the egui family; no other module uses eframe.
+//! The single window: the only module that uses egui and eframe.
 //!
-//! Every field on these pages has a real source: the build from `cfg`, the anchor key from the key vault, the
-//! address derived from that key, the home's mode from its lock, usage and entry counts from background disk
-//! walks, chain figures from background queries, the pen state from the last reconciliation's label. What
-//! cannot be read is said to be unread, never shown as a colored reading.
+//! Every field shown has a real source: the build from `cfg`, the anchor key from the key vault, the address
+//! derived from it, the home's mode from its lock, usage and entry counts from background disk walks, chain
+//! figures from background queries, the pen state from the last reconciliation's label. Anything that cannot
+//! be read is shown as unread, never as a colored reading.
 //!
-//! No sentence is hard-coded: every text goes through `lang::t` (the tests scan this module and fail on any
+//! No sentence is hard-coded: all text goes through `lang::t` (tests scan this module and fail on any
 //! Chinese literal).
 //!
-//! The UI frame never blocks and never touches the disk or network: it only drains; disk reads and chain
-//! queries run in background tasks.
+//! The UI frame never blocks and never touches the disk or network: it only drains results; disk reads and
+//! chain queries run in background tasks.
 //!
-//! Sizes, colors and motion come only from `zikaron_ui`; pages lay out its controls and say nothing about
-//! pixels or colors themselves.
+//! Sizes, colors and motion come only from `zikaron_ui`; pages arrange its controls and never set pixels or
+//! colors themselves.
 
 use crate::action::{apply, Action, Applied};
 use crate::auditx::Pen;
@@ -33,12 +33,19 @@ use zikaron_ui::toast::{Toasts, Tone};
 use zikaron_ui::tokens::{self as tk, Type};
 use zikaron_ui::{card, datepick, drop, fold, full, input, kv, mark, menu, motion, page, paint, pick, pin, rail, seg, sheet, skin, states, table, toggle, width};
 
-/// Initial window size, defined once.
+/// Initial window size.
 pub const W: f32 = 1180.0;
 pub const H: f32 = 760.0;
+/// The minimum window size, derived from the layout's floors. Width: the side rail, the page padding on both
+/// sides and the main column's minimum (any narrower and a page's two columns could not stack). Height: the
+/// toolbar plus the tallest fixed block shown without scrolling (the passcode gate's recovery grid).
+pub const MIN_W: f32 = zikaron_ui::tokens::RAIL_W + 2.0 * zikaron_ui::tokens::PAGE_PAD + zikaron_ui::tokens::MAIN_MIN_W;
+pub const MIN_H: f32 = 560.0;
 
 #[derive(Default)]
 struct Typed {
+    /// The proxy address being typed (settings, network page, "enter one").
+    proxy: String,
     home: String,
     cap: String,
     migrate: String,
@@ -53,16 +60,15 @@ struct Typed {
     work_note: String,
     /// Files of a batch signing (as many as were dropped). Empty means one entry for the content at hand.
     batch_files: Vec<String>,
-    /// The four "recorded for" fields (application, other party's identity, number, role), passed to the
-    /// action layer as typed.
+    /// The four "recorded for" fields (application, other party's identity, number, role), passed to the action
+    /// layer as typed.
     for_fields: [String; 4],
-    /// Where to fetch a restored identity's ledger from: kit, ledger directory, backup or publication
-    /// address.
+    /// Where to fetch a restored identity's ledger from: kit, ledger directory, backup or publication address.
     fetch_from: String,
     repo_path: String,
     // Kits, depth, grants and checklist.
     pick_from: String,
-    /// Entries named in the entry picker (ids, comma-separated; any subset via one switch per entry).
+    /// Entries named in the entry picker (comma-separated ids; any subset).
     pick_ids: String,
     pick_to: String,
     kit_attach: String,
@@ -127,21 +133,23 @@ struct Win {
     toasts: Toasts,
     typed: Typed,
     reaped: Option<crate::task::Reaped>,
-    /// The opened entry (details read from disk now). Lives only on the interface side.
+    /// The opened entry (details read from disk). Interface-side only.
     opened: Option<crate::ledgerx::Detail>,
-    /// When the self-audit clock last started on its own (interface clock).
+    /// When the self-audit timer last started on its own (interface clock).
     last_tick: f64,
     /// Whether the double-sale dialog is up.
     clash_modal: bool,
-    /// The three fields at the last overlap check. It runs again only when they change.
+    /// The fields at the last overlap check; it reruns only when they change.
     clash_key: String,
-    /// How many recorded troubles have been told (an index into `Shell::faults`).
+    /// How many recorded troubles have been reported (an index into `Shell::faults`).
     faults_told: usize,
     ux: Ux,
+    /// Asks the user for a path (the system file dialog; a windowless run supplies its own).
+    asker: crate::platform::Asker,
 }
 
-/// The four places things are written: the landing toast says where and, when it differs from the choice,
-/// why.
+/// The four kinds of written output: the landing toast says where each went and, when that differs from the
+/// choice, why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Out {
     Kit,
@@ -154,214 +162,43 @@ enum Out {
 const OLD_DATA_TAG: u64 = u64::MAX;
 
 impl Win {
-    /// One frame. The window's `update` only calls this; it does not use `eframe::Frame`, so tests can
-    /// call the same code in a headless frame (`probe_face`).
+    /// One frame. `update` only calls this and does not use `eframe::Frame`, so tests can run the same code in
+    /// a headless frame (`probe_face`).
     fn draw(&mut self, ctx: &egui::Context) {
         zikaron_ui::probe::begin(ctx);
         let now = ctx.input(|i| i.time);
         skin::follow(ctx, self.appearance());
-        let landed = self.shell.drain_at(now);
-        // An anchoring landed and talked to the node: ask the chain once more and record chain time.
-        if landed.iter().any(|o| matches!(o.result, Ok(Done::Anchored { .. }))) && self.shell.anchor.is_some() && !self.shell.endpoints.is_empty() {
-            self.auto(Action::ReadChain, now);
+        // Every landing goes through the one registry (`landing`).
+        self.land(ctx, now);
+        // Results of requests made through the command line's door are reported like a click's.
+        for a in std::mem::take(&mut self.shell.door_told) {
+            self.told(a, None, now);
         }
-        // A new check landing closes the issuer-ledger field: it was opened for the last pass's gap.
-        if landed.iter().any(|o| matches!(o.result, Ok(Done::Checked(_)))) {
-            self.ux.u3.ck_source_open = None;
-        }
-        self.sync_landed(&landed, now);
-        // A refused exit gate is the answer of the place that pressed the export (a refusal from a gate started
-        // on an earlier source belongs to that one).
-        for o in &landed {
-            if let (crate::task::Kind::Gate, false, Err(f)) = (o.kind, o.stale, &o.result) {
-                if let Some(site) = self.ux.gate_site.take() {
-                    self.vault_back(site, Applied::Trouble(f.clone()), now);
+        // Resume a submitted anchoring: after the receipt wait's deadline, ask every fifteen seconds until included.
+        // Never resent automatically.
+        // A resend pressed while a receipt check was out is judged, once no check is out, against what that check
+        // read: if the offer is gone (included, or no longer a resend) it is dropped and the card closes; if the
+        // offer is now above the cap the user saw, the card stays up with the new figures and nothing is sent;
+        // otherwise it is sent once, at fees no higher than the cap shown.
+        if let Some((tx, cap)) = self.ux.u3.bump_press.clone() {
+            if !self.shell.tasks.in_flight(crate::task::Kind::Anchor) {
+                self.ux.u3.bump_press = None;
+                let offer = self.shell.stuck.as_ref().filter(|s| s.txs.last() == Some(&tx)).map(|s| s.offer.clone());
+                match offer {
+                    Some(crate::task::Offer::Resend { fees, .. } | crate::task::Offer::Unheld { fees, .. }) if fees.max_fee <= cap => self.bump_go(tx, cap, now),
+                    Some(crate::task::Offer::Resend { .. } | crate::task::Offer::Unheld { .. }) => {}
+                    _ => self.ux.u3.confirm = None,
                 }
             }
         }
-        // The kinds that answer in `said` are told where that answer is taken (below), not here.
-        let claimed: Vec<_> = landed.into_iter().filter(|o| !crate::action::lands_said(o.kind)).filter(|o| self.ux.claim(o.kind)).collect();
-        for o in claimed {
-            let kind = o.kind;
-            // A long key shows how the task the person started landed (a check, or red and a shake).
-            let good = match &o.result {
-                Ok(d) => !done_is_bad(d),
-                Err(_) => false,
-            };
-            // A passed exit gate is not how the export went: the export runs where the gate landed and its own
-            // answer sets the key (below, from `gate_said`).
-            if !matches!(o.result, Ok(Done::Submitted { .. }) | Ok(Done::GatePassed { .. })) {
-                self.ux.landed.insert(kind, (good, now));
-            }
-            let out = match &o.result {
-                Ok(Done::Kit { .. }) => Some(Out::Kit),
-                Ok(Done::Badge(_)) => Some(Out::Badge),
-                _ => None,
-            };
-            let (said, tone) = match o.result {
-                Ok(Done::Check(r)) => (fill2(Key::SaidSelfCheck, &r.found().to_string(), &r.marks.to_string()), Tone::Note),
-                Ok(Done::Archive { bytes, items, .. }) => (fill2(Key::SaidMeasured, &size_say(bytes), &items.to_string()), Tone::Note),
-                Ok(Done::Chain { gas_wei, .. }) => match gas_wei {
-                    Some(w) => (fill1(Key::SaidChain, &eth_held(w)), Tone::Note),
-                    None => (t(Key::SaidChainNone).to_string(), Tone::Bad),
-                },
-                Ok(Done::Reconciled { label, complete, .. }) => (fill1(Key::SaidReconciled, &label_human(&label)), if complete { Tone::Note } else { Tone::Bad }),
-                Ok(Done::Audited { label, complete, entries, .. }) => {
-                    (fill2(Key::SaidAudited, &label_human(&label), &entries.to_string()), if complete { Tone::Note } else { Tone::Bad })
-                }
-                Ok(Done::Ledger { rows, strays, .. }) => (fill2(Key::SaidLedger, &rows.len().to_string(), &strays.to_string()), if strays == 0 { Tone::Note } else { Tone::Bad }),
-                Ok(Done::Depth { work, .. }) => (fill1(Key::SaidDepth, &self.work_seq_say(&work)), Tone::Note),
-                // Files that were no longer the chosen records' originals when the kit was written did not go
-                // in: say how many.
-                Ok(Done::Kit { path, left_out, unreadable, .. }) if !left_out.is_empty() || !unreadable.is_empty() => (
-                    crate::lang::filln(Key::SaidKitLeftOut, &[&folder_of(&path), &left_out.len().to_string(), &unreadable.len().to_string()]),
-                    Tone::Bad,
-                ),
-                Ok(Done::Kit { path, .. }) => (fill1(Key::SaidKit, &folder_of(&std::path::Path::new(&path).parent().map(|p| p.display().to_string()).unwrap_or_default())), Tone::Note),
-                Ok(Done::Keystore(crate::task::Keystore::BackedUp { path, .. })) => (fill1(Key::SaidKeyBackedUp, &folder_of(&path)), Tone::Note),
-                Ok(Done::BackupMade { path, .. }) => (fill1(Key::SaidBackupMade, &width::file_name(&path)), Tone::Note),
-                // The backup's contents go on the confirmation card: no toast.
-                Ok(Done::BackupSeen { .. }) => continue,
-                // Passcode tasks are finished by the shell; the answer is in `vault_said` and told below.
-                Ok(Done::Vault(_)) => continue,
-                // Those kinds were filtered out above (`said`).
-                Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) => continue,
-                // An export's gate passed: the shell ran the export, its answer is in `gate_said` and told below.
-                Ok(Done::GatePassed { .. }) => continue,
-                // Attachment digests land silently: their row updates itself.
-                Ok(Done::Vetted(_)) => continue,
-                // The existing-anchor table and a read claim: results are on the card, no toast.
-                Ok(Done::KeyAnchors { .. }) | Ok(Done::Claim { .. }) => continue,
-                Ok(Done::Adopt { proofs, .. }) => (
-                    fill2(Key::SaidProofs, &proofs.len().to_string(), &proofs.iter().filter(|p| p.ok()).count().to_string()),
-                    if proofs.iter().all(|p| p.ok()) { Tone::Note } else { Tone::Bad },
-                ),
-                // The new key's history is read on its sheet: no toast.
-                Ok(Done::Sighting { .. }) => continue,
-                // A read-only network's reading shows on its own row: no toast.
-                Ok(Done::NetRead { .. }) => continue,
-                Ok(Done::Book { anchors, entries, .. }) => (fill2(Key::SaidBook, &anchors.to_string(), &entries.to_string()), if entries == 0 { Tone::Bad } else { Tone::Note }),
-                Ok(Done::Grants { rows, .. }) => (fill1(Key::SaidGrants, &rows.len().to_string()), Tone::Note),
-                Ok(Done::Diligence(r)) => (
-                    fill2(Key::SaidDiligence, &if r.label.is_empty() { t(Key::OnlyAnchors).to_string() } else { label_human(&r.label) }, &r.anchors.to_string()),
-                    if r.double_sold() { Tone::Bad } else { Tone::Note },
-                ),
-                Ok(Done::Verified(v)) => (fill1(Key::SaidVerifiedWork, &v.mismatches.len().to_string()), if v.mismatches.is_empty() { Tone::Note } else { Tone::Bad }),
-                Ok(Done::Delivery(d)) => (
-                    fill1(Key::SaidDelivery, t(if d.matched() { Key::DeliveryMatch } else { Key::DeliveryMismatch })),
-                    if d.matched() { Tone::Note } else { Tone::Bad },
-                ),
-                Ok(Done::Reviewed { cards, .. }) => (
-                    fill1(Key::SaidReviewed, &cards.len().to_string()),
-                    if cards.iter().any(|x| x.verdict == zikaron_kit::tokens::CheckVerdict::Fail.as_str()) { Tone::Bad } else { Tone::Note },
-                ),
-                // Vault listing gets no toast: a reading done on opening and after imports.
-                Ok(Done::Held { .. }) => continue,
-                Ok(Done::Published { read, .. }) => {
-                    if read.complete() {
-                        (format!("{} · {}", t(Key::PublishOk), fill1(Key::PublishOkSay, &read.total.to_string())), Tone::Note)
-                    } else {
-                        (format!("{} · {}", t(Key::PublishPartial), fill2(Key::PublishPartialSay, &read.missing.len().to_string(), &read.differ.len().to_string())), Tone::Bad)
-                    }
-                }
-                Ok(Done::Badge(b)) => (fill2(Key::SaidBadge, &folder_of(&b.txt.parent().map(|p| p.display().to_string()).unwrap_or_default()), &b.hops.to_string()), Tone::Note),
-                // A conflict is answered by its card on the home page, not by a toast.
-                Ok(Done::FetchConflict { .. }) => continue,
-                // A tail check the product started itself says nothing: a passing one lifts the read-only bar,
-                // a gap changes what the bar says.
-                Ok(Done::TailChecked { .. }) => continue,
-                Ok(Done::FetchedAside { fetched, .. }) => {
-                    let said = match *fetched {
-                        Done::Fetched { entries, tail: crate::restorex::Tail::Pass { anchors }, .. } => fill2(Key::SaidFetched, &entries.to_string(), &anchors.to_string()),
-                        Done::Fetched { entries, tail: crate::restorex::Tail::NewerElsewhere { missing, .. }, .. } => fill2(Key::SaidFetchedNewer, &entries.to_string(), &missing.to_string()),
-                        _ => String::new(),
-                    };
-                    let view = vec![(t(Key::NavLook).to_string(), zikaron_ui::toast::Act::Tag(OLD_DATA_TAG))];
-                    self.toasts.say_keys(said, t(Key::KeptAsOld), "", Tone::Note, now, view);
-                    continue;
-                }
-                Ok(Done::Fetched { entries, tail, .. }) => match tail {
-                    crate::restorex::Tail::Pass { anchors } => (fill2(Key::SaidFetched, &entries.to_string(), &anchors.to_string()), Tone::Note),
-                    crate::restorex::Tail::NewerElsewhere { missing, .. } => (fill2(Key::SaidFetchedNewer, &entries.to_string(), &missing.to_string()), Tone::Bad),
-                },
-                Ok(Done::Checked(x)) => (
-                    fill1(Key::SaidChecked, verdict_human(&x.judged.verdict)),
-                    if x.judged.verdict == zikaron_kit::tokens::CheckVerdict::Fail.as_str() { Tone::Bad } else { Tone::Note },
-                ),
-                // Broadcast landed: the shell starts the receipt wait. The person's task toasts when the
-                // receipt lands, so its claim is returned.
-                Ok(Done::Submitted { .. }) => {
-                    self.ux.asked.push(crate::task::Kind::Anchor);
-                    continue;
-                }
-                // "Sent, but failed on chain" is only for a receipt status other than 1.
-                Ok(Done::Anchored { tx, state, .. }) if crate::action::receipt_failed(&state) => {
-                    self.say_fault(&crate::fault::Fault::known(crate::fault::Known::SendFailed, tx), now);
-                    continue;
-                }
-                // Included says "N anchored"; not yet receipted says "N submitted, waiting".
-                Ok(Done::Anchored { sent, confirmed, .. }) => {
-                    if confirmed {
-                        (fill1(Key::SaidSent, &sent.to_string()), Tone::Note)
-                    } else {
-                        (fill1(Key::SaidSubmitted, &sent.to_string()), Tone::Note)
-                    }
-                }
-                // Failed: the shell recorded it; non-network faults are told by `tell_faults` (with details);
-                // network faults do not go that way, and this task was started by the person.
-                Err(f) => {
-                    if crate::watchx::is_network(&f) && f.then_key() != Some(Key::ExitRetryLater) {
-                        self.say_fault(&f, now);
-                    }
-                    continue;
-                }
-            };
-            // A task the person left the page of says where to look ("view" goes back there).
-            let view = self.task_away(kind).then(|| vec![(t(Key::NavLook).to_string(), zikaron_ui::toast::Act::Tag(kind as u64))]).unwrap_or_default();
-            let why = out.and_then(|x| self.landing_note(x)).unwrap_or_default();
-            self.toasts.say_keys(said, &why, "", tone, now, view);
-        }
-
-        // The actions whose slow half ran in the background landed: each answer goes back to where it started.
-        for k in crate::task::Kind::ALL {
-            if let Some(a) = self.shell.said.remove(&k) {
-                self.said_back(k, a, now);
-            }
-        }
-        // A passcode task landed: the answer goes back to whoever started it.
-        if let Some(a) = self.shell.vault_said.take() {
-            let site = self.ux.vault_site.take();
-            let a = self.told(a, None, now);
-            if let Some(site) = site {
-                self.vault_back(site, a, now);
-            }
-        }
-        // An export whose gate passed ran where the gate landed: its answer is told here, and the long key shows
-        // how the export itself went (a gate read again for another home starts over).
-        if let Some(a) = self.shell.gate_said.take() {
-            if !matches!(a, Applied::Started(_)) {
-                self.ux.landed.insert(crate::task::Kind::Gate, (!matches!(a, Applied::Trouble(_) | Applied::Refused(_)), now));
-            }
-            let a = self.told(a, None, now);
-            // The export's own answer goes back to the place that pressed it (a gate read again keeps waiting).
-            if !matches!(a, Applied::Started(_)) {
-                if let Some(site) = self.ux.gate_site.take() {
-                    self.vault_back(site, a, now);
-                }
-            }
-        }
-        // A file dialog that could not open says why (the platform interface keeps it; read once per frame).
-        if let Some(f) = crate::platform::take_trouble() {
-            self.shell.faults.push(f);
-        }
-        // Resume a submitted anchor after a while: the receipt wait has a deadline; from then on it asks every
-        // fifteen seconds until included. Never resent.
         if self.shell.queue.submitted().is_empty() {
             self.shell.resume_blocked = None;
+        } else if self.ux.u3.bump_press.is_some() {
+            // A resend is waiting for the current check to end: no new check starts first.
         } else if now - self.shell.resumed_at > 15.0 {
             self.shell.resumed_at = now;
-            // Through the action layer's own entry (`Action::Resume`); asked first whether that entry holds it
-            // back now (locked, resealing), so a known refusal is not sent every fifteen seconds.
+            // Go through the action layer (`Action::Resume`), asking first whether it would refuse now (locked,
+            // resealing), so a known refusal is not sent every fifteen seconds.
             if crate::action::held_back(&self.shell, &Action::Resume).is_none() {
                 let _ = crate::action::apply(&mut self.shell, Action::Resume);
             }
@@ -369,7 +206,7 @@ impl Win {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((15.0 - (now - self.shell.resumed_at)).max(0.5)));
         }
         set_receipts_stalled(self.shell.resume_blocked.is_some());
-        // Idle auto-lock: counted from the last human input; at the configured time, the lock path.
+        // Idle auto-lock, counted from the last user input.
         if ctx.input(|i| !i.events.is_empty() || i.pointer.delta() != egui::Vec2::ZERO) {
             self.ux.last_input = now;
         }
@@ -378,14 +215,13 @@ impl Win {
             self.sheets_clear();
         }
         if self.shell.unlocked() {
-            // Something must wake a frame at that moment (egui does not repaint while idle).
+            // Schedule a frame for that moment (egui does not repaint while idle).
             let due = self.ux.last_input + self.shell.machine.auto_lock_secs as f64 - now;
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(due.max(0.5)));
         }
-        // What just rang (the sentinel's alarms first, then the notices), read once: the one toast says the
-        // first and counts the rest, which the alerts page lists. Held until this start has asked whether the
-        // first-run wizard opens (it may open this very frame); while the wizard is open nothing rang is said
-        // (the alerts page still lists it), so setting up is not interrupted.
+        // New alerts (the sentinel's alarms first, then notices), read once: one toast names the first and counts
+        // the rest, which the alerts page lists. Held until this start has decided whether the first-run wizard
+        // opens (possibly this frame); while the wizard is open no alert is toasted, so setup is not interrupted.
         let quiet = self.ux.wizard.is_some();
         let mut rang: Vec<String> = Vec::new();
         if self.ux.wizard_asked {
@@ -407,7 +243,7 @@ impl Win {
             let more = if rang.len() > 1 { fill1(Key::SaidMoreAlerts, &(rang.len() - 1).to_string()) } else { String::new() };
             self.toasts.say_full(first.clone(), &more, "", Tone::Alert, now);
         }
-        // The first unlock after upgrading settled the primary identity: said once, by what recovers it.
+        // The first unlock after an upgrade settled the primary identity: say so once, naming what recovers it.
         if self.shell.primary_settled.take().is_some() {
             let k = match self.shell.primary {
                 Some((_, crate::keybox::PrimaryKind::KeyFile)) => Key::PrimaryOnlyKeyFile,
@@ -415,16 +251,17 @@ impl Win {
             };
             self.toasts.say_full(t(k).to_string(), "", "", Tone::Note, now);
         }
-        // Something rang: request the system's attention (the dock icon bounces), once per ringing.
+        // On a new alert, request the system's attention (the dock icon bounces), once per alert.
         if std::mem::take(&mut self.shell.attention) && !quiet {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
         }
 
         self.shortcuts(ctx, now);
-        // Rail, toolbar and page; the first-run wizard and the passcode gate as full-window layers; sheets
-        // above all of them.
+        // Rail, toolbar and page; the first-run wizard and the passcode gate as full-window layers; sheets above all.
         self.chrome(ctx, now);
         self.tick(ctx, now);
+        // If a place asked for a path this frame, open the dialog now without blocking the frame.
+        self.paths_ask(ctx);
         self.tell_faults(now);
         self.toasts.set_labels(t(Key::ToastDetail), t(Key::ToastHideDetail), t(Key::ToastClose));
         let left = if self.rail_shown() { tk::RAIL_W } else { 0.0 };
@@ -439,8 +276,8 @@ impl Win {
             }
         }
         zikaron_ui::layer::fade_out(ctx);
-        // Background work lands through a channel the frame only drains: while any is in flight, look again
-        // shortly (moving pieces ask for their own frames).
+        // Background work lands through a channel the frame only drains: while any is in flight, repaint again
+        // shortly (animations request their own frames).
         if !self.shell.tasks.flying().is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -452,7 +289,7 @@ impl Win {
     }
 }
 
-/// Whether a landed result reads as failed on its long key (red and a shake) though it is not an error.
+/// Whether a landed result counts as failed on its long key (red and a shake) even though it is not an error.
 fn done_is_bad(d: &Done) -> bool {
     match d {
         Done::Verified(v) => !v.mismatches.is_empty(),
@@ -476,8 +313,8 @@ impl eframe::App for Win {
         self.draw(ctx);
     }
 
-    /// Clear the canvas to the page ground. It defaults to black, and a gap between two surfaces would show
-    /// it as a dark band.
+    /// Clear the canvas to the page ground. The default is black, which would show as a dark band in any gap
+    /// between two surfaces.
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
         zikaron_ui::palette::canvas()
     }
@@ -486,13 +323,13 @@ impl eframe::App for Win {
         if let Applied::Stopped(r) = apply(&mut self.shell, Action::Quit) {
             self.reaped = Some(r);
         }
-        // Quitting locks: the master key is wiped at once and the next window starts at the passcode gate.
+        // Quitting locks: the master key is wiped at once and the next start opens at the passcode gate.
         crate::keybox::lock();
     }
 }
 
-/// Gaps come with an action sentence. Where a watch row's "next" leads: an unanswered node goes to network
-/// settings; expiring holdings and missing chains go to my grants.
+/// Where a watch row's "next" leads: an unanswered node goes to network settings; expiring holdings and
+/// missing chains go to my grants.
 fn gap_target(g: crate::watchx::Gap) -> Place {
     use crate::watchx::Say;
     match g.say {
@@ -502,7 +339,7 @@ fn gap_target(g: crate::watchx::Gap) -> Place {
     }
 }
 
-/// As above, the settled place (the link is named after it).
+/// The settled place for [`gap_target`] (the link is named after it).
 fn gap_place(g: crate::watchx::Gap, role: crate::roles::Role) -> Place {
     match gap_target(g) {
         Place::Page(p) => crate::nav::home_of(p, role),
@@ -513,7 +350,7 @@ fn gap_place(g: crate::watchx::Gap, role: crate::roles::Role) -> Place {
 fn gap_say(g: crate::watchx::Gap) -> String {
     use crate::watchx::Say;
     let n = g.n.to_string();
-    // Windows are said in days (rounded up: something due in a few hours is due within a day).
+    // Time spans are given in days, rounded up (something due in a few hours is due within a day).
     let days = g.secs.map(|s| s.div_ceil(86_400).max(1).to_string()).unwrap_or_default();
     match g.say {
         Say::UnanchoredRead => fill1(Key::GapUnanchoredRead, &n),
@@ -525,6 +362,7 @@ fn gap_say(g: crate::watchx::Gap) -> String {
         Say::BackupRead => fill1(Key::GapMirrorRead, &n),
         Say::BackupNever => t(Key::GapBackupNever).to_string(),
         Say::BackupBehind => fill1(Key::GapBackupBehind, &n),
+        Say::BackupFailed => t(Key::GapBackupFailed).to_string(),
         Say::AuditRun => fill1(Key::GapAuditRun, &n),
         Say::AuditGaps => fill1(Key::GapAuditGaps, &n),
         Say::AuditUnavailable => fill1(Key::GapAuditUnavailable, &n),
@@ -540,13 +378,64 @@ fn gap_say(g: crate::watchx::Gap) -> String {
 }
 
 impl Win {
-    /// What a task in flight is called: by its kind, except the fetch kind's flight while it checks the tail
-    /// (that check is not a fetch, and is not called one).
+    /// The name of a task in flight: by its kind, except that the fetch kind is named differently while it
+    /// checks the tail (that check is not a fetch).
     fn task_word(&self, k: crate::task::Kind) -> Key {
         if k == crate::task::Kind::Fetch && self.shell.fetch_checks_tail {
             Key::TaskCheckTail
         } else {
             task_key(k)
+        }
+    }
+}
+
+impl Win {
+    /// Put file dialog answers that landed this frame into the path mail, under the place that asked. A cancel
+    /// delivers nothing; a failed dialog is reported by name like any task refusal. An answer no place takes
+    /// within two frames is dropped: the place that asked is gone.
+    fn paths_landed(&mut self, ctx: &egui::Context, landed: &[crate::task::Outcome]) {
+        let pass = ctx.cumulative_pass_nr();
+        for o in landed.iter().filter(|o| o.kind == crate::task::Kind::Path) {
+            let ticket = ctx.data_mut(|d| d.get_temp_mut_or_default::<PathMail>(path_mail()).ticket.take());
+            match &o.result {
+                Ok(Done::Path(Some(p))) => {
+                    if let Some(site) = ticket {
+                        ctx.data_mut(|d| d.get_temp_mut_or_default::<PathMail>(path_mail()).answer = Some((site, p.clone(), pass)));
+                    }
+                }
+                // A cancel delivers nothing; the shell records a failed dialog wait like any task refusal and
+                // reports it.
+                Ok(_) | Err(_) => {}
+            }
+        }
+        ctx.data_mut(|d| {
+            let m = d.get_temp_mut_or_default::<PathMail>(path_mail());
+            if m.answer.as_ref().is_some_and(|a| a.2 + 2 < pass) {
+                m.answer = None;
+            }
+        });
+    }
+
+    /// Open the file dialog a place asked for this frame without blocking the frame (the answer is awaited in
+    /// the background, `task::Kind::Path`). One dialog at a time: while one is open, nothing more opens.
+    fn paths_ask(&mut self, ctx: &egui::Context) {
+        let Some((site, kind)) = ctx.data_mut(|d| d.get_temp_mut_or_default::<PathMail>(path_mail()).asked.take()) else {
+            return;
+        };
+        // One dialog at a time: a place asking while one is open (perhaps hidden behind the window) is told so,
+        // never left with nothing happening.
+        if self.shell.tasks.in_flight(crate::task::Kind::Path) {
+            let now = ctx.input(|i| i.time);
+            self.toasts.say(t(Key::PathAlreadyOpen), Tone::Note, now);
+            return;
+        }
+        match (self.asker)(kind) {
+            Ok(wait) => {
+                if crate::action::wait_path(&mut self.shell, wait) == crate::task::Spawned::Started {
+                    ctx.data_mut(|d| d.get_temp_mut_or_default::<PathMail>(path_mail()).ticket = Some(site));
+                }
+            }
+            Err(f) => self.shell.faults.push(f),
         }
     }
 }
@@ -582,18 +471,21 @@ fn task_key(k: crate::task::Kind) -> Key {
         Kind::Gate => Key::TaskGate,
         Kind::Backup => Key::WizBackupTitle,
         Kind::ReadNet => Key::TaskReadNet,
+        Kind::Basis => Key::TaskBasis,
         Kind::Gas => Key::U3GasEstimate,
         Kind::Take => Key::TaskTake,
         Kind::Record => Key::TaskRecord,
         Kind::Migrate => Key::TaskMigrate,
+        Kind::Path => Key::TaskPath,
+        Kind::CliPath => Key::TaskCliPath,
     }
 }
 
 impl Win {
-    /// Apply an action and tell the result as a toast; there is no silent branch. Returns its `Applied`, so
-    /// the page whose key was pressed reads its own result instead of guessing from the shared shell.
+    /// Apply an action and report the result as a toast; no branch is silent. Returns the `Applied` so the page
+    /// whose key was pressed reads its own result instead of guessing from the shared shell.
     fn act(&mut self, a: Action, now: f64) -> Applied {
-        // Clear the previous entry before opening another: stale details on screen would pose as current.
+        // Clear the previous entry before opening another, so stale details never pose as current.
         if matches!(a, Action::OpenEntry { .. }) {
             self.opened = None;
         }
@@ -601,21 +493,20 @@ impl Win {
             Action::OpenEntry { id } => Some(id.clone()),
             _ => None,
         };
-        // The sequence number the next entry takes, read before the table goes stale (toasts name entries by
-        // number).
+        // The sequence number the next entry takes, read before the table goes stale (toasts name entries by number).
         self.ux.next_seq = self.shell.rows.as_ref().map(|(r, _)| r.iter().map(|x| x.seq + 1).max().unwrap_or(0));
-        // A long action records where it was started, so the rail can go back there and its landing can
-        // say "view" when the person has left.
+        // A long action records where it started, so the rail can go back there and its landing can offer "view"
+        // once the user has left.
         if let Some(k) = task_of(&a) {
             self.ux.origin.retain(|(x, _, _)| *x != k);
             let h = self.hist().clone();
             self.ux.origin.push((k, self.ux.stack, h));
         }
-        // Tell the troubles recorded before this press first; those this press records are told below.
+        // Report troubles recorded before this press first; those this press records are reported below.
         self.tell_faults(now);
         let applied = apply(&mut self.shell, a);
-        // A new exit gate is the only one whose answer is awaited: a place recorded for an earlier gate no
-        // longer waits (the place that pressed this one records itself, `vault_or`).
+        // Only the newest exit gate's answer is awaited: a place recorded for an earlier gate stops waiting (the
+        // place that pressed this one records itself via `vault_or`).
         if applied == Applied::Started(crate::task::Kind::Gate) {
             self.ux.gate_site = None;
         }
@@ -627,7 +518,7 @@ impl Win {
         self.ux.next_seq.map(|n| format!("#{n}")).unwrap_or_default()
     }
 
-    /// An entry named for a toast: "#seq" when the table knows it, else nothing longer than a short id.
+    /// An entry named for a toast: "#seq" when the table knows it, else a short id.
     fn entry_say(&self, id: &str) -> String {
         self.shell
             .rows
@@ -660,13 +551,13 @@ impl Win {
             .unwrap_or_else(|| t(Key::Unnamed).to_string())
     }
 
-    /// Tell one result (toast and the card's two sentences). Results done in the frame and passcode tasks
-    /// landing (`vault_said`) both go here.
+    /// Report one result (toast and the card's two sentences). Used both for results done in the frame and for
+    /// passcode tasks landing in the background (`vault_said`).
     fn told(&mut self, applied: Applied, want: Option<String>, now: f64) -> Applied {
         let (said, tone) = match applied.clone() {
             // Turning to a page is navigation: no toast.
             Applied::Shown(_) => (String::new(), Tone::Note),
-            // A task the person started toasts once when it lands; while running only the rail mentions it.
+            // A task the user started toasts once when it lands; while running, only the rail mentions it.
             Applied::Started(k) => {
                 self.ux.asked.push(k);
                 (String::new(), Tone::Note)
@@ -675,8 +566,8 @@ impl Win {
             Applied::Stopped(r) => (fill1(Key::SaidReaped, &r.joined.to_string()), Tone::Note),
             Applied::AnchorKey(_) => (t(Key::SaidAnchorKeyPlain).to_string(), Tone::Note),
             Applied::Seated(r) => (fill1(Key::SaidSeated, t(id_seat_key(r))), Tone::Note),
-            // Reading identities, generating or wiping new words, showing or hiding: the result is on the
-            // sheet, no toast.
+            // Reading identities, generating or wiping new words, showing or hiding: the result is on the sheet, no
+            // toast.
             Applied::Identities(_) | Applied::FreshWords | Applied::WordsShown | Applied::WordsHidden => (String::new(), Tone::Note),
             // Unlock and lock get no toast (the gate itself changes); set, change and recovery each get one.
             Applied::Unlocked | Applied::LockedUp => (String::new(), Tone::Note),
@@ -684,7 +575,7 @@ impl Win {
             Applied::AutoAnchor(on) => (fill1(Key::SaidAutoAnchor, t(if on { Key::On } else { Key::Off })), Tone::Note),
             Applied::HideLocalDeletions(on) => (fill1(Key::SaidHideLocalDeletions, t(if on { Key::On } else { Key::Off })), Tone::Note),
             Applied::NetworkChosen { name, .. } => (fill1(Key::SaidNetworkChosen, &network_label(&name)), Tone::Note),
-            // Idle locking: "idle N minutes locks" when on or when the time changes, "auto-lock off" when off.
+            // Idle lock: "locks after N idle minutes" when on or changed, "auto-lock off" when off.
             Applied::AutoLockSet { on: true, secs } => (fill1(Key::SaidAutoLockOn, &(secs / 60).to_string()), Tone::Note),
             Applied::AutoLockSet { on: false, .. } => (t(Key::SaidAutoLockOff).to_string(), Tone::Note),
             Applied::PrimarySet { id } => (fill1(Key::SaidPrimarySet, &self.id_name(&id)), Tone::Note),
@@ -692,10 +583,10 @@ impl Win {
                 format!("{} · {}", t(Key::SaidBackupRestored), backup_content(&sm)),
                 Tone::Note,
             ),
-            // Background resumptions and the catch-up after unlocking: their own results speak when they land.
+            // Background resumptions and the post-unlock catch-up report their own results when they land.
             Applied::Resumed(_) | Applied::CaughtUp { .. } => (String::new(), Tone::Note),
-            // The reset closes the gate and the wizard returns to step 1; a sentence is still said because a
-            // file was deleted, and that must leave a trace on screen.
+            // The reset closes the gate and the wizard returns to step 1; a sentence is still shown because a file
+            // was deleted, and that must leave a visible trace.
             Applied::KeyboxReset => (t(Key::SaidKeyboxReset).to_string(), Tone::Note),
             Applied::Recovered => (t(Key::SaidRecovered).to_string(), Tone::Note),
             Applied::FreshDropped => {
@@ -710,11 +601,11 @@ impl Win {
                 self.ux.id_confirm = Default::default();
                 self.ux.id_words_open = false;
                 self.ux.id_words_seen = false;
-                // Hitting an identity already in the registry restored the vault slot it was missing.
+                // Matching an identity already in the registry restored its missing vault slot.
                 let name = if self.ux.id_new_label.trim().is_empty() { t(Key::Unnamed).to_string() } else { self.ux.id_new_label.trim().to_string() };
                 if !restored && self.shell.unfetched.is_some() {
-                    // An identity restored from its secret: said on the spot that only what the chain holds
-                    // comes back (its ledger is fetched from a whole-machine backup).
+                    // An identity restored from its secret: say at once that only what the chain holds comes back
+                    // (its ledger must be fetched from a whole-machine backup).
                     self.toasts.say_full(fill1(Key::SaidIdentityMade, &name), t(Key::ChainOnlyRestore), "", Tone::Note, now);
                     (String::new(), Tone::Note)
                 } else {
@@ -750,7 +641,7 @@ impl Win {
             }
             Applied::AdoptedInPlace { entries, linked, label } => (fill3(Key::SaidAdopted, &entries.to_string(), &linked.to_string(), &label_human(&label)), Tone::Note),
             Applied::Opened { .. } => {
-                // Details are read from disk by the action layer (never in the frame); this only shows them.
+                // The action layer reads details from disk (never in the frame); this only shows them.
                 self.read_detail(want.as_deref());
                 (String::new(), Tone::Note)
             }
@@ -773,7 +664,7 @@ impl Win {
             }
             Applied::Basis { chain } => (fill1(Key::SaidBasis, &chain.to_string()), Tone::Note),
             Applied::Every(n) => (fill1(Key::SaidAuditEvery, &n.to_string()), Tone::Note),
-            // The fingerprint is computed quietly: the chosen file shows only its name and size.
+            // The fingerprint is computed quietly; the chosen file shows only its name and size.
             Applied::Took { .. } => (String::new(), Tone::Note),
             Applied::Recorded { queued, .. } => {
                 let seq = self.new_seq();
@@ -784,8 +675,8 @@ impl Win {
                 self.shell.stale_rows();
                 match stopped {
                     None => (fill2(Key::SaidBatch, &ids.len().to_string(), &queued.to_string()), Tone::Note),
-                    // The stop sentence carries the reason (its raw text in the details); the same fault the
-                    // action recorded is told here, not again as a toast of its own that would replace this one.
+                    // The stop sentence carries the reason (raw text in the details). This reports the fault the
+                    // action recorded, so it is not toasted again separately (which would replace this toast).
                     Some((i, p, f)) => {
                         self.faults_told = self.shell.faults.len();
                         let said = fill3(Key::SaidBatchStopped, &ids.len().to_string(), &(i + 1).to_string(), &format!("{} · {}", folder_of(&p), f.human()));
@@ -817,7 +708,7 @@ impl Win {
                 (fill2(Key::SaidGranted, &seq, &queued.to_string()), Tone::Note)
             }
             Applied::GrantFileExported { path, why, hops, terms, .. } => {
-                // When the location differs from the choice, a second sentence naming where it went.
+                // When the location differs from the choice, a second sentence says where it went.
                 let second = why.say().map(|k| fill1(k, &width::file_name(&path))).unwrap_or_default();
                 self.toasts.say_full(fill3(Key::SaidGrantFile, &folder_of(&path), &hops.to_string(), &terms.to_string()), &second, "", Tone::Note, now);
                 (String::new(), Tone::Note)
@@ -841,7 +732,7 @@ impl Win {
                 (fill2(Key::SaidRevoked, &seq, &queued.to_string()), Tone::Note)
             }
             Applied::Storied { grant, revocations } => (fill2(Key::SaidStoried, &self.entry_say(&grant), &revocations.to_string()), Tone::Note),
-            // A claim was read: the result is on the sheet. Signed: the signature is on the sheet.
+            // A claim was read or signed: the result is on the sheet.
             Applied::ClaimRead => (String::new(), Tone::Note),
             Applied::Attested { .. } => (t(Key::SaidAttestedPlain).to_string(), Tone::Note),
             Applied::Cosigned { .. } => (t(Key::SaidCosignedPlain).to_string(), Tone::Note),
@@ -856,8 +747,8 @@ impl Win {
             }
             Applied::Snapshot { path, .. } => (fill1(Key::SaidSnapshotPlain, &folder_of(&path)), Tone::Note),
             Applied::HeldPartly { ids, refused } => {
-                // Refused files are recorded one by one at the end of the shell's list; their reasons go into
-                // this toast's details instead of one toast each.
+                // Refused files are recorded one by one at the end of the shell's list; their reasons go into this
+                // toast's details rather than one toast each.
                 let from = self.shell.faults.len().saturating_sub(refused);
                 let why = self.shell.faults[from..].iter().map(|f| format!("{} · {}", f.human(), f.raw())).collect::<Vec<_>>().join("\n");
                 self.faults_told = self.shell.faults.len();
@@ -865,7 +756,7 @@ impl Win {
                 (String::new(), Tone::Bad)
             }
             Applied::Held { ids, .. } => (fill1(Key::SaidHeldPlain, &ids.len().to_string()), Tone::Note),
-            // Names typed with the grant go in with it: the add's own toast already said so.
+            // Names typed with the grant were stored with it; the add's own toast already said so.
             Applied::HeldNoted { .. } => (String::new(), Tone::Note),
             Applied::Upstream { grant } => {
                 let issuer = self.held_issuer_name(&grant);
@@ -875,21 +766,30 @@ impl Win {
             Applied::Spoken(l) => (fill1(Key::SaidLang, l.label()), Tone::Note),
             Applied::Zoned(z) => (fill1(Key::SaidZone, zone_label(z)), Tone::Note),
             Applied::Appeared(a) => (fill1(Key::SaidAppearance, appearance_label(&a)), Tone::Note),
+            Applied::ProxySet(c) => (fill1(Key::SaidProxy, &proxy_label(&c)), Tone::Note),
+            // What is at the command line's install location shows on its row, no toast.
+            Applied::CliPathRead(_) => (String::new(), Tone::Note),
+            Applied::CliAnchorSet(to) => (fill1(Key::SaidCliAnchor, t(cli_anchor_label(to))), Tone::Note),
+            // The request shows now and the system's attention is asked once; the user sends from the queue page.
+            Applied::SendAsked { count } => {
+                self.shell.attention = true;
+                (fill1(Key::SaidSendAsked, &count.to_string()), Tone::Alert)
+            }
             Applied::Booked { on, .. } => (t(if on { Key::SaidBookedOn } else { Key::SaidBookedOff }).to_string(), Tone::Note),
             Applied::Trouble(f) => {
-                // When the double-sale guard hits, its sheet comes up (the refusal is CONFLICT).
+                // When the double-sale guard hits (`CONFLICT`), its sheet comes up.
                 if f.which() == Some(crate::fault::Known::Conflict) {
                     self.clash_modal = true;
                 }
-                // Network faults do not go through `tell_faults`: this press is told here.
+                // Network faults do not go through `tell_faults`, so this press reports them here.
                 if crate::watchx::is_network(&f) {
                     self.say_fault(&f, now);
                 }
                 (String::new(), Tone::Bad)
             }
         };
-        // What comes after queueing, answered once: with auto-anchor on, estimate gas and show the
-        // confirmation sheet; off, the toast adds "waiting in the ledger to be anchored by hand".
+        // After queueing: with auto-anchor on, estimate gas and show the confirmation sheet; off, the toast adds
+        // "waiting in the ledger to be anchored by hand".
         let next = match &applied {
             Applied::Genesised { next, .. }
             | Applied::Recorded { next, .. }
@@ -908,7 +808,7 @@ impl Win {
             _ => None,
         };
         let why = out.and_then(|x| self.landing_note(x));
-        // Recorded while the chain cannot be read: one more line (anchoring checks against the chain first).
+        // Recorded while the chain cannot be read: add a line (anchoring checks against the chain first).
         let offline = matches!(applied, Applied::Recorded { .. } | Applied::Queued { .. }) && self.shell.status.is_some();
         if !said.is_empty() {
             if offline {
@@ -934,8 +834,8 @@ impl Win {
         applied
     }
 
-    /// When an action whose answer goes back to its place starts a background task (a passcode task, or an
-    /// export's exit gate), record where it started; when it does not, answer that place at once.
+    /// When an action whose answer goes back to its place starts a background task (a passcode task or an
+    /// export's exit gate), record where it started; otherwise answer that place at once.
     fn vault_or(&mut self, site: VaultSite, r: Applied, now: f64) {
         if r == Applied::Started(crate::task::Kind::Vault) {
             self.ux.vault_site = Some(site);
@@ -946,7 +846,7 @@ impl Win {
         }
     }
 
-    /// The answer to a passcode place (both immediate and landed in the background go here).
+    /// Deliver an answer to a passcode place, whether immediate or landed from the background.
     fn vault_back(&mut self, site: VaultSite, r: Applied, now: f64) {
         match site {
             VaultSite::Wizard => match r {
@@ -978,13 +878,13 @@ impl Win {
                     self.ux.gate_clear();
                 }
                 Applied::Trouble(f) => {
-                    // One failure: shake the row; the sentence under the cells.
+                    // One failure: shake the row and show the sentence under the cells.
                     self.ux.pin_shake = Some(now);
                     self.ux.pin_again.clear();
-                    // On the final failure the "wrong passcode" line is not written: the whole card turns into
-                    // "locked · 5 wrong passcodes", and "0 tries left" would contradict it on the same frame.
+                    // On the final failure, skip the "wrong passcode" line: the card turns into "locked · 5 wrong
+                    // passcodes", and "0 tries left" would contradict it in the same frame.
                     let burnt = self.shell.vault.is(crate::keybox::State::LockedOut) && f.which() == Some(crate::fault::Known::PinWrong);
-                    // Derivation parameters below the floor: the gate switches to the reseal path.
+                    // Key derivation parameters below the floor: the gate switches to the reseal path.
                     if f.which() == Some(crate::fault::Known::KdfBelowFloor) {
                         self.ux.gate_reseal = true;
                         self.ux.pin_shake = None;
@@ -992,7 +892,7 @@ impl Win {
                     self.ux.gate_trouble = if burnt {
                         None
                     } else if f.which() == Some(crate::fault::Known::PinWrong) {
-                        // "Wrong passcode" carries the tries left (in the refusal's tail).
+                        // "Wrong passcode" carries the tries left (from the refusal's tail).
                         Some(fill1(Key::PinWrongLeft, f.tail()))
                     } else if f.which() == Some(crate::fault::Known::KdfBelowFloor) {
                         Some(format!("{} {}", f.human(), f.next()))
@@ -1034,19 +934,19 @@ impl Win {
                 | Applied::IdentityDeleted { .. }
                 | Applied::IdentityNamed { .. }
                 | Applied::KeyBackedUp { .. }
-                // Once the key backup's background task starts, close the sheet: encryption runs in the
-                // background, the identity page says so, and the landing toasts.
+                // Once the key backup's background task starts, close the sheet: encryption runs in the background,
+                // the identity page says so, and the landing toasts.
                 | Applied::Started(crate::task::Kind::Keystore) => self.ux.id_close(),
                 _ => {}
             },
         }
     }
 
-    /// Judge the first passcode entry's shape as soon as it has eight characters.
+    /// Check the first passcode entry's shape as soon as it has eight characters.
     ///
-    /// Same closed table as the action layer (`keybox::pin_trouble`); the interface only says it earlier: a
-    /// valid shape moves on to "enter again", an invalid one is refused at once (the row shakes, the cells
-    /// clear). The action layer still judges; this only saves typing a second time.
+    /// Uses the same rules as the action layer (`keybox::pin_trouble`), only earlier: a valid shape moves on to
+    /// "enter again", an invalid one is refused at once (the row shakes, the cells clear). The action layer
+    /// still checks; this only saves typing it twice.
     ///
     /// `inline` writes the sentence under the cells; otherwise a toast. Returns true when accepted.
     fn take_first_pin(&mut self, now: f64, inline: bool) -> bool {
@@ -1059,7 +959,7 @@ impl Win {
             Some(why) => {
                 self.ux.pin_shake = Some(now);
                 let f = crate::fault::Fault::known(crate::fault::Known::PinShape, why.as_str().to_string());
-                // All-same, sequential and date-like passcodes get "too simple"; a wrong shape the rules.
+                // All-same, sequential and date-like passcodes get "too simple"; a wrong shape gets the rules.
                 let said = t(if why == crate::keybox::PinTrouble::Shape { Key::PinRules } else { Key::PinTooSimple });
                 if inline {
                     self.ux.gate_trouble = Some(said.to_string());
@@ -1077,12 +977,12 @@ impl Win {
         if f.then_key() == Some(Key::ExitBehindSay) {
             next = fill1(Key::ExitBehindSay, f.tail());
         }
-        // With no passcode on this machine yet, "enter the passcode to unlock" cannot be done: set one first.
+        // With no passcode on this machine yet, "enter the passcode to unlock" is impossible: say to set one first.
         if f.which() == Some(crate::fault::Known::Locked) && self.shell.vault.absent() {
             next = t(Key::FaultNextNoPinYet).to_string();
         }
-        // Insufficient balance says what is needed and what there is, and offers "copy address" (the address
-        // to fund is this signing address).
+        // Insufficient balance says what is needed and what there is, and offers "copy address" (this signing
+        // address is the one to fund).
         let mut act: Option<(String, String)> = None;
         if f.which() == Some(crate::fault::Known::InsufficientFunds) {
             if let Some((need, have)) = crate::action::funds_of(f.tail()) {
@@ -1093,15 +993,15 @@ impl Win {
         self.toasts.say_with(what, &next, &f.raw(), Tone::Bad, now, act);
     }
 
-    /// Troubles are told when they happen. Each recorded and untold trouble becomes a toast with details;
-    /// network faults only reach the rail's status line. This is the raw text's only outlet.
+    /// Report troubles as they happen: each recorded, unreported trouble becomes a toast with details; network
+    /// faults only reach the rail's status line. This is the only place the raw text is shown.
     fn tell_faults(&mut self, now: f64) {
         let n = self.shell.faults.len();
         if self.faults_told > n {
             self.faults_told = n;
         }
-        // While the gate is up, "the vault is locked" gets no toast: the gate says the same. Nothing is said
-        // as a toast about the gate at all: its errors are said under its cells.
+        // While the gate is up, no toast for "the vault is locked" or for passcode errors: the gate shows them
+        // under its cells.
         let shut = self.shell.vault.gate_up();
         for i in self.faults_told..n {
             let f = self.shell.faults[i].clone();
@@ -1116,8 +1016,8 @@ impl Win {
         self.faults_told = n;
     }
 
-    /// Text pasted into the add-grant sheet: when read as a path that does not exist, the screen says the
-    /// content is not recognized, with the reason folded into the error details.
+    /// Text pasted into the add-grant sheet that reads as a nonexistent path: say the content is not recognized,
+    /// with the reason in the error details.
     fn import_face(&self, f: &crate::fault::Fault) -> Option<(&'static str, &'static str)> {
         let typed = self.typed.vt_typed.trim();
         let not_a_file = f.which() == Some(crate::fault::Known::FileMissing) && !std::path::Path::new(typed).exists();
@@ -1125,7 +1025,7 @@ impl Win {
     }
 }
 
-/// The task a press starts, for actions that run in the background (their keys run the long-action phases).
+/// The task a press starts, for actions that run in the background (their keys show long-action phases).
 fn task_of(a: &Action) -> Option<crate::task::Kind> {
     use crate::task::Kind;
     Some(match a {
@@ -1144,7 +1044,7 @@ fn task_of(a: &Action) -> Option<crate::task::Kind> {
         Action::SelfCheck => Kind::SelfCheck,
         Action::CheckPublished { .. } => Kind::Publish,
         Action::ReadDepth { .. } => Kind::Depth,
-        Action::SendBatch { .. } => Kind::Anchor,
+        Action::SendBatch { .. } | Action::BumpFee { .. } => Kind::Anchor,
         Action::FetchLedger { .. } => Kind::Fetch,
         Action::FetchAside { .. } => Kind::Fetch,
         _ => return None,
@@ -1153,14 +1053,13 @@ fn task_of(a: &Action) -> Option<crate::task::Kind> {
 
 /// Where the window starts.
 pub enum Start {
-    /// An old page (a test driver's `show <page>`), landing on its current place (`nav::home_of`).
+    /// An old page (used by test drivers), landing on its current place (`nav::home_of`).
     Page(Page),
-    /// A place; true in the second field opens the wizard at start (a test driver's `show Wizard`).
+    /// A place; `true` in the second field opens the wizard at start (used by test drivers).
     Place(Place, bool),
 }
 
-/// Layout readings of one face at a given viewport (read by a test driver's `page --viewport`; the judgment
-/// is elsewhere).
+/// Layout readings of one face at a given viewport, for layout tests (the judgment is made elsewhere).
 pub struct FaceReading {
     /// Viewport width.
     pub width: f32,
@@ -1193,8 +1092,7 @@ pub struct FaceReading {
     pub tiles: Vec<(egui::Rect, bool)>,
 }
 
-/// Whether a cell's text fits (a test driver's `page --viewport` counts by it; the judgment is
-/// elsewhere).
+/// Whether a cell's text fits, for layout tests (the judgment is made elsewhere).
 pub struct CellFit {
     pub width: f32,
     /// Text shapes starting in this cell that are wider than the cell or pass its right edge.
@@ -1210,18 +1108,18 @@ struct WorkLine {
     id: String,
     seq: u64,
     lamp: crate::ledgerx::Lamp,
-    /// The deletion read by the convention: the retraction's seq.
+    /// The deletion read by the retraction convention: the retraction's seq.
     deleted: Option<u64>,
     row: crate::ledgerx::Row,
 }
 
-/// Interface-side state of the window. Lives only on the interface side; not one byte goes to disk.
+/// Interface-side state of the window. Never written to disk.
 #[derive(Default)]
 struct Ux {
-    /// Where the wizard was opened from (seat, stack, place): its way out returns there.
-    wiz_from: Option<(crate::roles::Role, Stack, Option<Place>)>,
-    /// The wizard was opened on a true first run (no passcode and no identity at that moment): it offers no
-    /// way out for the whole run, whatever its steps set meanwhile.
+    /// Where the wizard was opened from (seat, stack, place); its way out returns there.
+    wiz_from: Option<(crate::roles::Role, Stack, Option<Place>, Option<History>)>,
+    /// The wizard was opened on a true first run (no passcode and no identity then): it offers no way out for
+    /// the whole run, whatever its steps set meanwhile.
     wiz_fresh: bool,
     /// The wizard's "exit?" card is up (new words not yet checked).
     wiz_exit_ask: bool,
@@ -1236,23 +1134,22 @@ struct Ux {
     bk_trouble: Option<crate::fault::Fault>,
     /// The backup password for fetching a restored identity's ledger.
     fetch_pw: crate::secret::Secret,
-    /// The backup password of the last fetch, kept until fetching answers: a conflict's "fetch and replace"
-    /// uses it (the card asks nothing more).
+    /// The backup password of the last fetch, kept until the fetch answers: a conflict's "fetch and replace"
+    /// reuses it (the card asks for nothing more).
     fetch_held: crate::secret::Secret,
-    /// Where each writer decided to land when pressed (and why it differs from the choice).
+    /// Where each writer decided to write when pressed (and why it differs from the choice).
     landings: Vec<(Out, crate::home::Chosen)>,
-    /// The text in each list page's search field (per face; interface only).
+    /// The text in each list page's search field (per face).
     search: std::collections::BTreeMap<&'static str, String>,
-    /// The date range under each list's search field: start and end day, `YYYY-MM-DD` or empty (per face;
-    /// interface only).
+    /// The date range under each list's search field: start and end day, `YYYY-MM-DD` or empty (per face).
     range: std::collections::BTreeMap<&'static str, (String, String)>,
     /// The current place. `None` until settled (the first frame follows `shell.page`).
     place: Option<Place>,
-    /// Which view the person is in, and each view's history of pages.
+    /// Which view the user is in, and each view's page history.
     stack: Stack,
     hist: std::collections::BTreeMap<Stack, History>,
-    /// How the page on screen entered, and a counter that changes with every page change (entrances key on
-    /// it).
+    /// How the page on screen entered, and a counter that changes on every page change (entrance animations
+    /// key on it).
     entry: motion::Entry,
     entry_key: u64,
     /// The page's body scroll offset last frame (the toolbar's hairline and detail titles follow it).
@@ -1275,14 +1172,18 @@ struct Ux {
     open_nodes: bool,
     /// The settings publication field was filled once from the settings file.
     publish_seeded: bool,
+    /// "Enter one" is picked for the proxy and not yet saved (the address line shows).
+    proxy_manual: bool,
+    /// The proxy address line was filled once from the machine settings.
+    proxy_seeded: bool,
     open_cadence: bool,
-    /// Background tasks the person started (one per kind, may repeat). Only these toast when they land.
+    /// Background tasks the user started (one per kind, may repeat). Only these toast when they land.
     asked: Vec<crate::task::Kind>,
     /// How each kind of task last landed: whether it went well, and when (long keys read it).
     landed: std::collections::BTreeMap<crate::task::Kind, (bool, f64)>,
     /// Where each long task was started: its view and that view's history then.
     origin: Vec<(crate::task::Kind, Stack, History)>,
-    /// The sync key's round: the kinds still out, what has landed of it, and when it last landed well.
+    /// The sync key's round: the kinds still out, what has landed, and when it last landed well.
     syncing: Vec<crate::task::Kind>,
     sync_said: Vec<Result<Done, crate::fault::Fault>>,
     synced_at: Option<f64>,
@@ -1292,10 +1193,9 @@ struct Ux {
     wiz_statement: String,
     /// The network row chosen in the wizard's network step.
     wiz_network: Option<String>,
-    /// The gas step: "I have sent it" was pressed and its reading of the chain not yet looked at; when the
-    /// reading showed a balance (the step goes on a second later); the reading showed none.
-    /// After "I have sent it": the chain reading's landing count at that press (the answer is a landing after
-    /// it, never one that was already there).
+    /// The gas step: `wiz_gas_asked` is the chain reading's landing count when "I have sent it" was pressed
+    /// (only a later landing answers it); `wiz_gas_seen` is when a reading showed a balance (the step moves on
+    /// a second later); `wiz_gas_not_seen` means the reading showed none.
     wiz_gas_asked: Option<u64>,
     wiz_gas_seen: Option<f64>,
     wiz_gas_not_seen: bool,
@@ -1329,11 +1229,11 @@ struct Ux {
     id_switch_open: Option<String>,
     /// The name of the identity being deleted (for its toast).
     id_deleting: Option<String>,
-    /// Two readings taken when the delete sheet opens: which seats' ledgers already hold entries, and
-    /// whether the backup file is on disk now. Both walk the disk, so they are read when the sheet opens.
+    /// Two readings taken when the delete sheet opens (both walk the disk): which seats' ledgers already hold
+    /// entries, and whether the backup file exists.
     id_delete_ledgers: Vec<crate::roles::Role>,
     id_delete_backup: Option<crate::identity::BackupSeen>,
-    /// Where a move would land: computed once when the directory is chosen.
+    /// Where a move would land, computed once when the directory is chosen.
     migrate_landing: Option<crate::home::Chosen>,
     id_hex: crate::secret::Secret,
     id_ks_path: String,
@@ -1376,6 +1276,9 @@ struct Ux {
     gate_reseal: bool,
     /// The last human input (interface clock, seconds; the idle lock reads it).
     last_input: f64,
+    /// When the "enable command line" row was last drawn; when drawn again after a pause, its location is
+    /// read anew.
+    cli_path_seen: f64,
     /// When a sheet refused a press (it shakes).
     sheet_shake: Option<f64>,
     /// Sizes of chosen files, read once per path.
@@ -1384,7 +1287,7 @@ struct Ux {
     files_of: std::collections::BTreeMap<String, Vec<String>>,
 }
 
-/// Where a passcode task started. Closed: when it lands, each member returns the answer to its place.
+/// Where a passcode task started. When it lands, the answer returns to that place.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum VaultSite {
     /// Setting the passcode in the wizard's first step.
@@ -1480,14 +1383,14 @@ impl Ux {
         self.id_pw.clear();
         self.id_pw2.clear();
         self.id_pin.clear();
-        // The show-words and change-passcode sheets also have passcode rows, cleared when the sheet closes.
+        // The show-words and change-passcode sheets also have passcode rows, cleared on close.
         self.pin.clear();
         self.pin_again.clear();
         self.pin_old.clear();
         self.pin_shake = None;
     }
 
-    /// Whether a landing should toast: when it is a kind the person started, consume one and answer yes.
+    /// Whether a landing should toast: if it is a kind the user started, consume one and return true.
     fn claim(&mut self, k: crate::task::Kind) -> bool {
         match self.asked.iter().position(|x| *x == k) {
             Some(i) => {
@@ -1502,10 +1405,12 @@ impl Ux {
 /// Which commit a confirmation sheet is waiting on.
 #[derive(Clone, Debug, PartialEq)]
 enum U3Confirm {
-    /// Delete a work record (the retraction convention): the `history` entry's id.
+    /// Delete a work record (retraction convention): the `history` entry's id.
     Retract { subject: String },
-    /// Send: the first few queued entries go out as one batch (gas estimate shown first).
+    /// Send: the first queued entries go out as one batch (gas estimate shown first).
     Send { count: usize },
+    /// Resend a stuck batch with higher fees: the batch whose last transaction is `tx`.
+    Bump { tx: String },
     /// Gas could not be estimated: say so, with a retry that estimates the same batch again.
     NoEstimate { count: usize, why: String, next: String, raw: String },
     /// Issue a grant.
@@ -1532,16 +1437,19 @@ struct U3 {
     form: Option<U3Form>,
     /// The succession sheet is on its confirmation step.
     succeed_confirm: bool,
-    /// The batch whose gas the open send sheet is still to estimate, and when that sheet opened (the node is
-    /// asked once the sheet has come up).
+    /// The batch whose gas the open send sheet still has to estimate, and when the sheet opened (the node is
+    /// asked once the sheet is up).
     send_after_estimate: Option<usize>,
     estimate_from: f64,
     /// The batch a gas estimate is out for (`Kind::Gas`); its answer lands in `shell.said`.
     estimating: Option<usize>,
-    /// The files a record in the background is writing (`Kind::Record`): what stays in the form when it stops.
+    /// A resend the user pressed while a receipt check was out: its last transaction and the cap the card
+    /// showed. Sent once, as soon as that check ends (no new check starts meanwhile).
+    bump_press: Option<(String, u64)>,
+    /// The files a background record task is writing (`Kind::Record`): what stays in the form when it stops.
     recording: Option<Vec<String>>,
-    /// "Confirm and send" was pressed on the send sheet: the anchoring task's landing count then (the sheet
-    /// closes on a landing after it, never on one already there).
+    /// "Confirm and send" was pressed on the send sheet: the anchoring task's landing count at that moment (the
+    /// sheet closes on a later landing, never on one already there).
     sending: Option<u64>,
     led_filter: usize,
     audit_open: bool,
@@ -1564,13 +1472,13 @@ struct U3 {
     revoke_case: String,
     /// The grant being revoked ("#n"), for its toast.
     revoking: Option<String>,
-    /// Disclosure kit: the key made from the pick fields and the table size, and that pick's reading.
+    /// Disclosure kit: the key built from the pick fields and table size, and that pick's reading.
     kit_preview: Option<(String, Result<(Vec<String>, Vec<String>), String>)>,
     /// Kit name preview for the attachment list.
     kit_names: Option<(String, Vec<(String, Result<Option<(String, bool)>, String>)>)>,
-    /// The chosen records' originals: the pick key and the list `kitx::originals` built.
+    /// The chosen records' originals: the pick key and the list built by `kitx::originals`.
     kit_orig: Option<(String, Result<Vec<crate::kitx::Listed>, String>)>,
-    /// Originals the person removed (by path); the rest travel with the kit.
+    /// Originals the user removed (by path); the rest travel with the kit.
     kit_orig_off: std::collections::BTreeSet<String>,
     /// This pick's originals gate (same key as the list).
     kit_admit: Option<(String, Option<crate::kitx::Originals>)>,
@@ -1582,10 +1490,9 @@ struct U3 {
     sighting_asked: Option<String>,
     /// Import existing anchors: the key already listed (empty means this key).
     adopt_asked: Option<String>,
-    /// Import existing anchors: rows the person switched off (tx|digest); all on by default.
+    /// Import existing anchors: rows the user switched off (tx|digest); all on by default.
     adopt_off: std::collections::BTreeSet<String>,
-    /// Import existing anchors: paste was pressed; the next frame's paste event goes into the signature
-    /// field.
+    /// Import existing anchors: paste was pressed; the next frame's paste event goes into the signature field.
     sig_paste: bool,
     /// Attest for someone: the claim text already read.
     at_read: Option<String>,
@@ -1595,13 +1502,12 @@ struct U3 {
     terms: Option<TermsFile>,
 }
 
-/// Entries named in the pick list now (by id; an empty list chose nothing).
+/// Entries named in the pick list (by id; empty means none chosen).
 struct KitPick {
     ids: Vec<String>,
 }
 
-/// The terms file of a new grant: file name, size, fingerprint, and the disk path (read at signing to keep a
-/// copy).
+/// The terms file of a new grant: file name, size, fingerprint, and disk path (read at signing to keep a copy).
 struct TermsFile {
     path: String,
     name: String,
@@ -1645,7 +1551,7 @@ struct U4 {
     import_err: Option<(String, String, String)>,
     /// The unpacked grant file from the add-grant sheet (the text, its reading).
     grant_file_seen: Option<(String, Option<Result<String, crate::fault::Fault>>)>,
-    /// The confirmation sheet after a cinnabar key.
+    /// The confirmation sheet after a cinnabar key (one that commits to the ledger or chain).
     confirm: Option<U4Confirm>,
     /// A relicense was signed on this page: it offers "put on chain".
     relicense_signed: bool,
@@ -1667,6 +1573,7 @@ mod faces;
 mod gate;
 mod grants;
 mod home;
+mod landing;
 mod identity;
 mod kit;
 mod ledger;
@@ -1693,8 +1600,8 @@ pub(super) fn backup_content(s: &crate::backup::Summary) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// Every kind of task is called by its own name in the side bar and the task list: no kind borrows another
-    /// kind's words (a borrowed name tells the person a different task is running).
+    /// Every task kind has its own name in the side bar and task list; a borrowed name would tell the user a
+    /// different task is running.
     #[test]
     fn every_task_kind_has_its_own_name() {
         let mut seen: Vec<super::Key> = Vec::new();

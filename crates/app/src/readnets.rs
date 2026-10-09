@@ -1,16 +1,15 @@
-//! Read-only networks: the networks this machine also reads when it verifies someone else's material.
+//! Read-only networks: extra networks this machine reads when verifying someone else's material.
 //!
-//! The main network (each home's own settings) is the only one this desk writes to or reads its own ledger
-//! on: anchoring, receipts, balance, gas, self-audit, the tail check and both gates. Reading someone else's
-//! ledger, kit or grant reads the main network and every network in this table, so a kit anchored on another
-//! chain verifies without the person moving their own network there and back.
+//! The main network (from each home's settings) is the only one the app writes to or reads its own ledger
+//! on: anchoring, receipts, balance, gas, self-audit, the tail check and the gates. Reading someone else's
+//! ledger, kit or grant uses the main network plus every network in this table, so a kit anchored on another
+//! chain verifies without the user switching their own network back and forth.
 //!
-//! ─── Where ───
+//! ─── Storage ───
 //!
 //! One file in the machine directory ([`FILE`], form literal [`FORM`]), shared by every identity on this
-//! machine, written through `home::put_at` (temporary name then replace, owner-only). It holds no account
-//! fact, so it is plain. An empty table is no file: removing the last network removes it, and a machine that
-//! never added one has none.
+//! machine and written through `home::put_at` (temporary name then rename, owner-only). It holds no account
+//! data, so it is stored plain. An empty table means no file: removing the last network deletes it.
 //!
 //! ─── Shape ───
 //!
@@ -19,10 +18,9 @@
 //!
 //! ─── Names ───
 //!
-//! A node answers a chain id, never a name. The names come from one table here ([`known_name`]), for display
-//! only: a chain the table knows takes its name from it and none is stored; any other chain keeps the name a
-//! person typed (optional; without one it shows as "chain <id>"). A name never reaches a verdict or a result
-//! file.
+//! A node reports a chain id, never a name. Names are for display only and come from [`known_name`]: a known
+//! chain uses the table's name and none is stored; any other chain keeps the optional name the user typed
+//! (shown as "chain <id>" without one). Names never affect a verdict or a result file.
 
 use crate::fault::{classify, Fault, Known};
 use crate::key::Address;
@@ -30,12 +28,12 @@ use crate::lang::Key;
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// The table's form literal. One name, one home.
+/// The table's form literal.
 pub const FORM: &str = "zikaron.read-networks/1";
 /// The table's file name in the machine directory.
 pub const FILE: &str = "read-networks.json";
 
-/// The chains this desk can name, and the key of each name. Display only; the only such table.
+/// Chains with built-in display names, and each name's string key.
 const NAMES: [(u64, Key); 8] = [
     (1, Key::DeployMainnet),
     (10, Key::ChainOpMainnet),
@@ -52,7 +50,7 @@ pub fn known_name(chain_id: u64) -> Option<Key> {
     NAMES.iter().find(|(c, _)| *c == chain_id).map(|(_, k)| *k)
 }
 
-/// A chain's name on the face: the table's, else the one typed, else "chain <id>".
+/// A chain's display name: the built-in one, else the typed one, else "chain <id>".
 pub fn chain_name(chain_id: u64, typed: Option<&str>) -> String {
     match (known_name(chain_id), typed.map(str::trim).filter(|t| !t.is_empty())) {
         (Some(k), _) => crate::lang::t(k).to_string(),
@@ -69,24 +67,24 @@ pub struct Net {
     pub from_block: u64,
     /// Node addresses (`http://` or `https://`), at least one, each once.
     pub nodes: Vec<String>,
-    /// The typed name; only for a chain [`known_name`] does not know.
+    /// The typed name; only stored for chains [`known_name`] does not know.
     pub name: Option<String>,
 }
 
 impl Net {
-    /// Its name on the face.
+    /// Its display name.
     pub fn name(&self) -> String {
         chain_name(self.chain_id, self.name.as_deref())
     }
 
-    /// Whether this is the network `(chain, registry)` names.
+    /// Whether this is the network identified by `(chain_id, registry)`.
     pub fn is(&self, chain_id: u64, registry: &Address) -> bool {
         self.chain_id == chain_id && self.registry == *registry
     }
 
     /// Its nodes as endpoints of its chain.
     pub fn endpoints(&self) -> Vec<crate::chainx::Endpoint> {
-        self.nodes.iter().map(|u| crate::chainx::Endpoint { chain: self.chain_id, url: u.clone() }).collect()
+        self.nodes.iter().map(|u| crate::chainx::Endpoint::at(self.chain_id, u.as_str())).collect()
     }
 
     fn value(&self) -> Value {
@@ -103,8 +101,8 @@ impl Net {
     }
 }
 
-/// Read the cells a person typed into one network. Each cell that cannot be read is refused by name; nothing
-/// is written here.
+/// Parse the fields the user typed for one network. Each invalid field is reported by name; nothing is
+/// written.
 pub fn cells(name: &str, chain: &str, registry: &str, from_block: &str, nodes: &str) -> Result<Net, Fault> {
     let number = |t: &str, tail: Key| -> Result<u64, Fault> {
         let t = t.trim();
@@ -120,7 +118,7 @@ pub fn cells(name: &str, chain: &str, registry: &str, from_block: &str, nodes: &
     let mut list: Vec<String> = Vec::new();
     for u in nodes.split_whitespace() {
         if zikaron_net::parse(u).is_none() {
-            return Err(Fault::known(Known::SettingsShape, crate::lang::fill1(Key::Tail093, u)));
+            return Err(Fault::known(Known::SettingsShape, crate::chainx::address_said(u)));
         }
         if !list.iter().any(|x| x == u) {
             list.push(u.to_string());
@@ -141,7 +139,7 @@ pub fn path_in(machine: &Path) -> PathBuf {
     machine.join(FILE)
 }
 
-/// The table's canonical bytes. Writing and reading share one source.
+/// The table's canonical bytes.
 pub fn bytes_of(nets: &[Net]) -> Vec<u8> {
     json::canon_bytes(&Value::Obj(vec![
         ("form".to_string(), Value::Str(FORM.to_string())),
@@ -156,8 +154,8 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// Read the table. No file is an empty table; a file that is not this form is refused by name (never read as
-/// empty, which would let the next save drop what it held).
+/// Read the table. No file is an empty table; a malformed file is an error (never read as empty, or the next
+/// save would drop its contents).
 pub fn read(machine: &Path) -> Result<Vec<Net>, Fault> {
     let p = path_in(machine);
     let bytes = match std::fs::read(&p) {
@@ -165,8 +163,13 @@ pub fn read(machine: &Path) -> Result<Vec<Net>, Fault> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(classify(&e, &p.display().to_string())),
     };
-    let bad = || Fault::known(Known::SettingsShape, p.display().to_string());
-    let v = json::parse(&bytes).map_err(|t| Fault::known(Known::SettingsShape, format!("{}: {t:?}", p.display())))?;
+    from_bytes(&bytes, &p.display().to_string())
+}
+
+/// Parse the table from bytes (the file's, or a whole-machine backup's); `said` names the source in errors.
+pub fn from_bytes(bytes: &[u8], said: &str) -> Result<Vec<Net>, Fault> {
+    let bad = || Fault::known(Known::SettingsShape, said.to_string());
+    let v = json::parse(bytes).map_err(|t| Fault::known(Known::SettingsShape, format!("{said}: {t:?}")))?;
     if !matches!(member(&v, "form"), Some(Value::Str(f)) if f == FORM) {
         return Err(bad());
     }
@@ -211,9 +214,9 @@ pub fn write(machine: &Path, nets: &[Net]) -> Result<(), Fault> {
     crate::home::put_at(machine, FILE, &bytes_of(nets))
 }
 
-/// Add a network, or change the one at `was`. A network whose chain and registry are already in the table
-/// (another row, or the main network `main`) is refused by name and nothing is written. Saving only writes;
-/// no chain is asked. Returns the table as written.
+/// Add a network, or replace the one identified by `was`. A chain and registry already present (in another
+/// row, or as the main network `main`) is refused and nothing is written. No chain is contacted. Returns the
+/// table as written.
 pub fn save(machine: &Path, was: Option<(u64, Address)>, net: Net, main: Option<(u64, Address)>) -> Result<Vec<Net>, Fault> {
     let mut nets = read(machine)?;
     let at = match was {
@@ -233,7 +236,7 @@ pub fn save(machine: &Path, was: Option<(u64, Address)>, net: Net, main: Option<
     Ok(nets)
 }
 
-/// Remove a network. One that is not in the table is refused by name.
+/// Remove a network. Removing one that is not in the table is an error.
 pub fn remove(machine: &Path, chain_id: u64, registry: &Address) -> Result<Vec<Net>, Fault> {
     let mut nets = read(machine)?;
     let before = nets.len();
@@ -249,6 +252,8 @@ pub fn remove(machine: &Path, chain_id: u64, registry: &Address) -> Result<Vec<N
 mod tests {
     use super::*;
 
+    /// Saved networks read back in order; duplicates (including the main network) are refused; an empty
+    /// table deletes the file.
     #[test]
     fn a_table_reads_back_what_it_wrote_and_an_empty_one_is_no_file() {
         let dir = std::env::temp_dir().join(format!("zk-readnets-{}", std::process::id()));
@@ -272,6 +277,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Each kind of invalid field is rejected with its own error.
     #[test]
     fn cells_that_cannot_be_read_are_refused_by_name() {
         let reg = "0x0d6b94a2e7c1305f8b6d2a49e0c73f51b8a977a1";

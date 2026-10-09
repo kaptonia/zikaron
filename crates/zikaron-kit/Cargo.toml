@@ -1,7 +1,7 @@
 [package]
 name = "zikaron-kit"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 license = "MIT"
 
 # The kit core embeds the zikaron/1 core (kit law §13.4): canon, acceptance, signing and audit all go

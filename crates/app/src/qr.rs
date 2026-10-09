@@ -1,13 +1,15 @@
-//! QR code (the image of the badge). Byte mode, error correction level L, version chosen automatically,
-//! mask fixed at zero.
+//! QR codes for badges: byte mode, error correction level L, smallest fitting version, mask chosen by
+//! penalty, and every symbol read back before it is returned.
 //!
-//! A minimal implementation of ISO/IEC 18004: only the path the badge needs. The version table holds only
-//! level L (kit law §6's cap of 2953 is exactly the capacity of version 40 level L byte mode, so this table
-//! and that cap share a source). The mask is fixed at number zero: every mask produces a valid code, and
-//! choosing a mask only affects readability, not correctness.
+//! A minimal implementation of ISO/IEC 18004 covering only what badges need. The version table holds only
+//! level L (the 2953-byte payload cap of kit law §6 is exactly version 40 level L byte-mode
+//! capacity). Every mask gives a valid code, but not an equally readable one: all eight are drawn and the one
+//! with the lowest penalty is kept (§7.8.3, [`penalty`]). The symbol is then decoded by this module's own
+//! reader ([`decode`]: format and version information, unmasking, every block's error correction, the byte
+//! segment); one that does not return its bytes is never handed out ([`NotMade::SelfCheck`]).
 //!
-//! The output is a square matrix (true is black); rendering it as SVG belongs to `badgex`; this file writes
-//! nothing to disk.
+//! The output is a square matrix (true is black); SVG rendering is done by `badgex`. Nothing is written to
+//! disk.
 
 /// Per version: error correction codewords per block; per group (block count, data codewords per block).
 /// Level L.
@@ -72,6 +74,8 @@ const ALIGN: [&[usize]; 41] = [
 pub struct Code {
     pub version: usize,
     pub size: usize,
+    /// The mask the symbol is drawn with (0 to 7), the one [`make`] found to score lowest.
+    pub mask: u8,
     pub modules: Vec<Vec<bool>>,
 }
 
@@ -245,13 +249,21 @@ fn version_bits(v: u32) -> u32 {
     (v << 12) | rem
 }
 
-/// Encode a code. `None` when it does not fit (the kit crate's cap has refused long before).
-pub fn encode(bytes: &[u8]) -> Option<Code> {
-    let v = version_for(bytes.len())?;
+/// Why a code could not be made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotMade {
+    /// More bytes than version 40 level L holds (the kit crate's payload cap normally rejects this earlier).
+    TooLong,
+    /// The drawn symbol does not decode back to its bytes ([`decode`]), so it is not handed out.
+    SelfCheck,
+}
+
+/// The function patterns of a version (finders, separators, alignment, timing, the dark module) drawn, and
+/// which modules they and the format and version information take (`true`: not a data module).
+fn base(v: usize) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
     let size = 17 + 4 * v;
     let mut m = vec![vec![false; size]; size];
-    let mut f = vec![vec![false; size]; size];  // function pattern reservation
-
+    let mut f = vec![vec![false; size]; size];
     let set = |m: &mut Vec<Vec<bool>>, f: &mut Vec<Vec<bool>>, r: usize, c: usize, on: bool| {
         m[r][c] = on;
         f[r][c] = true;
@@ -319,15 +331,14 @@ pub fn encode(bytes: &[u8]) -> Option<Code> {
             }
         }
     }
-    // Data: zigzag placement, mask zero.
-    let codewords = interleave(&data_stream(bytes, v), v);
-    let mut bits: Vec<bool> = Vec::with_capacity(codewords.len() * 8);
-    for cw in &codewords {
-        for i in (0..8).rev() {
-            bits.push((cw >> i) & 1 == 1);
-        }
-    }
-    let mut k = 0usize;
+    (m, f)
+}
+
+/// The data modules in their zigzag order (two columns at a time from the right, up then down, the timing
+/// column skipped): where each data bit goes, and where [`decode`] reads it from.
+fn data_order(f: &[Vec<bool>]) -> Vec<(usize, usize)> {
+    let size = f.len();
+    let mut out = Vec::new();
     let mut col = size as isize - 1;
     let mut upward = true;
     while col > 0 {
@@ -338,20 +349,35 @@ pub fn encode(bytes: &[u8]) -> Option<Code> {
             let r = if upward { size - 1 - step } else { step };
             for dc in 0..2 {
                 let c = (col - dc) as usize;
-                if f[r][c] {
-                    continue;
+                if !f[r][c] {
+                    out.push((r, c));
                 }
-                let bit = if k < bits.len() { bits[k] } else { false };
-                k += 1;
-                let masked = if (r + c) % 2 == 0 { !bit } else { bit };
-                m[r][c] = masked;
             }
         }
         upward = !upward;
         col -= 2;
     }
-    // Format information (mask zero).
-    let fb = format_bits(0);
+    out
+}
+
+/// Whether mask `k` (ISO/IEC 18004 table 10) flips the module at row `r`, column `c`.
+fn masked(k: u8, r: usize, c: usize) -> bool {
+    match k {
+        0 => (r + c) % 2 == 0,
+        1 => r % 2 == 0,
+        2 => c % 3 == 0,
+        3 => (r + c) % 3 == 0,
+        4 => (r / 2 + c / 3) % 2 == 0,
+        5 => (r * c) % 2 + (r * c) % 3 == 0,
+        6 => ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+        _ => ((r + c) % 2 + (r * c) % 3) % 2 == 0,
+    }
+}
+
+/// Write the format information (level L, mask `k`) in both of its places.
+fn put_format(m: &mut [Vec<bool>], k: u8) {
+    let size = m.len();
+    let fb = format_bits(k as u32);
     let bit = |i: usize| (fb >> i) & 1 == 1;  // i is the bit index, 14 the most significant
     // First copy: top left, most significant first.
     for i in 0..6 {
@@ -370,7 +396,78 @@ pub fn encode(bytes: &[u8]) -> Option<Code> {
     for i in 0..8 {
         m[8][size - 8 + i] = bit(7 - i);
     }
+}
+
+/// The penalty of a finished symbol (ISO/IEC 18004 §7.8.3), lower reads better: N1 runs of five or more
+/// modules of one colour in a row or column (3, plus 1 per module past five), N2 each 2×2 block of one colour
+/// (3), N3 each 1:1:3:1:1 finder-like pattern with four light modules on one side, the quiet zone counting
+/// as light (40), N4 the distance of the dark share from half, in steps of five per cent (10 per step).
+pub fn penalty(m: &[Vec<bool>]) -> u32 {
+    let size = m.len();
+    let mut score = 0u32;
+    // N1 and N3, along rows then columns.
+    for horizontal in [true, false] {
+        for i in 0..size {
+            let at = |j: usize| if horizontal { m[i][j] } else { m[j][i] };
+            let mut run = 0usize;
+            let mut colour = false;
+            for j in 0..size {
+                if j > 0 && at(j) == colour {
+                    run += 1;
+                } else {
+                    if run >= 5 {
+                        score += 3 + (run - 5) as u32;
+                    }
+                    colour = at(j);
+                    run = 1;
+                }
+            }
+            if run >= 5 {
+                score += 3 + (run - 5) as u32;
+            }
+            // The line with four light modules of quiet zone at each end.
+            let line: Vec<bool> = std::iter::repeat_n(false, 4).chain((0..size).map(at)).chain(std::iter::repeat_n(false, 4)).collect();
+            let core = [true, false, true, true, true, false, true];
+            for s in 0..=line.len() - 7 {
+                if line[s..s + 7] != core {
+                    continue;
+                }
+                let light_before = s >= 4 && line[s - 4..s].iter().all(|x| !x);
+                let light_after = s + 11 <= line.len() && line[s + 7..s + 11].iter().all(|x| !x);
+                if light_before || light_after {
+                    score += 40;
+                }
+            }
+        }
+    }
+    // N2.
+    for r in 0..size - 1 {
+        for c in 0..size - 1 {
+            let x = m[r][c];
+            if m[r][c + 1] == x && m[r + 1][c] == x && m[r + 1][c + 1] == x {
+                score += 3;
+            }
+        }
+    }
+    // N4.
+    let dark: usize = m.iter().map(|row| row.iter().filter(|x| **x).count()).sum();
+    let total = size * size;
+    let k = ((dark * 20).abs_diff(total * 10)).div_ceil(total).saturating_sub(1);
+    score + 10 * k as u32
+}
+
+/// Draw the symbol for these bytes with mask `k`.
+fn drawn(bytes: &[u8], v: usize, k: u8) -> Code {
+    let (mut m, f) = base(v);
+    let codewords = interleave(&data_stream(bytes, v), v);
+    let order = data_order(&f);
+    for (i, &(r, c)) in order.iter().enumerate() {
+        let bit = codewords.get(i / 8).map(|cw| (cw >> (7 - i % 8)) & 1 == 1).unwrap_or(false);
+        m[r][c] = bit ^ masked(k, r, c);
+    }
+    put_format(&mut m, k);
     // Version information.
+    let size = m.len();
     if v >= 7 {
         let vb = version_bits(v as u32);
         for i in 0..18 {
@@ -380,7 +477,139 @@ pub fn encode(bytes: &[u8]) -> Option<Code> {
             m[size - 11 + b][a] = on;
         }
     }
-    Some(Code { version: v, size, modules: m })
+    Code { version: v, size, mask: k, modules: m }
+}
+
+/// Make a code: the smallest version that holds the bytes, drawn with each of the eight masks, keeping the
+/// lowest [`penalty`] (the lower mask number on a tie), then decoded with [`decode`]; a symbol that does not
+/// decode back to these bytes is never returned.
+pub fn make(bytes: &[u8]) -> Result<Code, NotMade> {
+    let v = version_for(bytes.len()).ok_or(NotMade::TooLong)?;
+    let code = (0..8u8).map(|k| drawn(bytes, v, k)).min_by_key(|c| (penalty(&c.modules), c.mask)).ok_or(NotMade::TooLong)?;
+    match decode(&code) {
+        Ok(back) if back == bytes => Ok(code),
+        _ => Err(NotMade::SelfCheck),
+    }
+}
+
+/// [`make`] with mask `k` forced regardless of penalty (every mask must still decode correctly).
+pub fn make_with_mask(bytes: &[u8], k: u8) -> Result<Code, NotMade> {
+    let v = version_for(bytes.len()).ok_or(NotMade::TooLong)?;
+    let code = drawn(bytes, v, k % 8);
+    match decode(&code) {
+        Ok(back) if back == bytes => Ok(code),
+        _ => Err(NotMade::SelfCheck),
+    }
+}
+
+/// Encode bytes as a code. `None` when they do not fit or (never observed) the symbol does not decode back;
+/// [`make`] says which.
+pub fn encode(bytes: &[u8]) -> Option<Code> {
+    make(bytes).ok()
+}
+
+/// Why a symbol could not be decoded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotRead {
+    /// The side is not 17 + 4·v for a version from 1 to 40, or a row is not that long.
+    Size,
+    /// Neither copy of the format information is within three bits of a valid one, or it is not level L.
+    Format,
+    /// The version information (from version 7) is within three bits of no version, or of another one.
+    Version,
+    /// A block's error correction does not check (the symbol is damaged; this reader corrects nothing).
+    Damaged,
+    /// The data is not one byte-mode segment that fits.
+    Data,
+}
+
+/// Decode a symbol: format information (either copy, within three bits), the version (from the size, and from
+/// version 7 also its version information), the data modules unmasked in order, every block's error
+/// correction checked, and the single byte-mode segment's bytes. [`make`] runs this on every code it makes.
+pub fn decode(code: &Code) -> Result<Vec<u8>, NotRead> {
+    let m = &code.modules;
+    let size = m.len();
+    if size < 21 || (size - 17) % 4 != 0 || size > 177 || m.iter().any(|row| row.len() != size) {
+        return Err(NotRead::Size);
+    }
+    let v = (size - 17) / 4;
+    // Format information: the copy nearest a valid word, level L only.
+    let read_bits = |places: &[(usize, usize)]| places.iter().fold(0u32, |acc, &(r, c)| (acc << 1) | m[r][c] as u32);
+    let first: Vec<(usize, usize)> = (0..6).map(|i| (8, i)).chain([(8, 7), (8, 8), (7, 8)]).chain((0..6).rev().map(|i| (i, 8))).collect();
+    let second: Vec<(usize, usize)> = (0..7).map(|i| (size - 1 - i, 8)).chain((0..8).map(|i| (8, size - 8 + i))).collect();
+    let nearest = |word: u32| {
+        (0..32u32)
+            .map(|d| (((d << 10) | bch(d, 5, 0x537, 11)) ^ 0x5412, d))
+            .map(|(valid, d)| ((valid ^ word).count_ones(), d))
+            .min()
+            .filter(|(dist, _)| *dist <= 3)
+            .map(|(_, d)| d)
+    };
+    let data = nearest(read_bits(&first)).or_else(|| nearest(read_bits(&second))).ok_or(NotRead::Format)?;
+    if data >> 3 != 0b01 {
+        return Err(NotRead::Format);
+    }
+    let k = (data & 7) as u8;
+    if v >= 7 {
+        let copy = |swap: bool| (0..18).rev().fold(0u32, |acc, i| {
+            let (a, b) = (i / 3, size - 11 + i % 3);
+            (acc << 1) | if swap { m[b][a] } else { m[a][b] } as u32
+        });
+        let near = |word: u32| (7..=40u32).map(|x| ((version_bits(x) ^ word).count_ones(), x)).min().filter(|(d, _)| *d <= 3).map(|(_, x)| x);
+        if near(copy(false)).or_else(|| near(copy(true))) != Some(v as u32) {
+            return Err(NotRead::Version);
+        }
+    }
+    let (_, f) = base(v);
+    let order = data_order(&f);
+    let mut codewords = vec![0u8; order.len() / 8];
+    for (i, &(r, c)) in order.iter().enumerate().take(codewords.len() * 8) {
+        if m[r][c] ^ masked(k, r, c) {
+            codewords[i / 8] |= 1 << (7 - i % 8);
+        }
+    }
+    // Deinterleave into blocks and check each block's error correction.
+    let (log, exp) = gf_tables();
+    let (ec_n, groups) = EC_L[v - 1];
+    let lens: Vec<usize> = groups.iter().flat_map(|(n, k)| std::iter::repeat_n(*k as usize, *n as usize)).collect();
+    let mut blocks: Vec<Vec<u8>> = lens.iter().map(|_| Vec::new()).collect();
+    let mut at = 0usize;
+    let max_d = lens.iter().copied().max().unwrap_or(0);
+    for i in 0..max_d {
+        for (b, len) in lens.iter().enumerate() {
+            if i < *len {
+                blocks[b].push(*codewords.get(at).ok_or(NotRead::Damaged)?);
+                at += 1;
+            }
+        }
+    }
+    for _ in 0..ec_n {
+        for block in blocks.iter_mut() {
+            block.push(*codewords.get(at).ok_or(NotRead::Damaged)?);
+            at += 1;
+        }
+    }
+    let mut data_bytes = Vec::new();
+    for (block, len) in blocks.iter().zip(&lens) {
+        // The codeword polynomial vanishes at the generator's roots α^0 .. α^(ec_n - 1).
+        for i in 0..ec_n as usize {
+            let s = block.iter().fold(0u8, |acc, &x| gf_mul(acc, exp[i], &log, &exp) ^ x);
+            if s != 0 {
+                return Err(NotRead::Damaged);
+            }
+        }
+        data_bytes.extend_from_slice(&block[..*len]);
+    }
+    // One byte-mode segment: mode, count, bytes.
+    let bit = |i: usize| data_bytes.get(i / 8).map(|b| (b >> (7 - i % 8)) & 1 == 1);
+    let take = |from: usize, n: usize| -> Option<usize> { (from..from + n).try_fold(0usize, |acc, i| Some((acc << 1) | bit(i)? as usize)) };
+    if take(0, 4) != Some(0b0100) {
+        return Err(NotRead::Data);
+    }
+    let count_bits = if v <= 9 { 8 } else { 16 };
+    let n = take(4, count_bits).ok_or(NotRead::Data)?;
+    let from = 4 + count_bits;
+    (0..n).map(|j| take(from + 8 * j, 8).map(|x| x as u8)).collect::<Option<Vec<u8>>>().ok_or(NotRead::Data)
 }
 
 /// Render as SVG (one square per module, four-module quiet zone).
@@ -399,4 +628,114 @@ pub fn svg(code: &Code) -> String {
     }
     s.push_str("\"/></svg>\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every version's first and last length reads back (the count field widens at version 10; version
+    /// information starts at 7); past version 40 there is no code.
+    #[test]
+    fn every_version_reads_back_at_both_its_ends() {
+        for v in 1..=40 {
+            let lo = if v == 1 { 0 } else { capacity(v - 1) + 1 };
+            for n in [lo, capacity(v)] {
+                let bytes: Vec<u8> = (0..n).map(|i| (i * 7 + v) as u8).collect();
+                let code = make(&bytes).unwrap_or_else(|e| panic!("v{v} n{n}: {e:?}"));
+                assert_eq!((code.version, code.size), (v, 17 + 4 * v), "n{n}");
+                assert_eq!(decode(&code), Ok(bytes), "v{v} n{n}");
+            }
+        }
+        assert_eq!(make(&vec![b'q'; capacity(40) + 1]), Err(NotMade::TooLong));
+    }
+
+    /// Each of the eight masks reads back, and the one taken scores lowest (the lower number on a tie).
+    #[test]
+    fn the_mask_taken_scores_lowest_and_every_mask_reads_back() {
+        for payload in [b"zikaron-grant:A".to_vec(), vec![0u8; 200], (0..=255u8).collect::<Vec<u8>>()] {
+            let chosen = make(&payload).expect("made");
+            let scores: Vec<u32> = (0..8).map(|k| penalty(&make_with_mask(&payload, k).expect("reads back").modules)).collect();
+            let best = (0..8u8).min_by_key(|k| (scores[*k as usize], *k)).expect("eight");
+            assert_eq!(chosen.mask, best, "{scores:?}");
+            for k in 0..8u8 {
+                assert_eq!(decode(&make_with_mask(&payload, k).expect("made")), Ok(payload.clone()), "mask {k}");
+            }
+        }
+    }
+
+    /// The penalty's four rules on symbols whose score is counted by hand (21 × 21). All light: N1 798 (each
+    /// of 42 lines one run of 21, 3 + 16), N2 1200 (400 blocks), N4 90 (no dark: nine steps from half). A
+    /// checkerboard: nothing (no run, no block, no pattern, 221 dark of 441 within five per cent of half).
+    /// All light but `1011101` at columns 4 to 10 of row 10: N1 772, N2 1152, N3 40 (light on both sides
+    /// counts the place once), N4 90.
+    #[test]
+    fn the_penalty_is_the_standards_four_rules() {
+        let light = vec![vec![false; 21]; 21];
+        assert_eq!(penalty(&light), 798 + 1200 + 90);
+        let board: Vec<Vec<bool>> = (0..21).map(|r| (0..21).map(|c| (r + c) % 2 == 0).collect()).collect();
+        assert_eq!(penalty(&board), 0);
+        let mut one = light.clone();
+        for (c, on) in [true, false, true, true, true, false, true].into_iter().enumerate() {
+            one[10][c + 4] = on;
+        }
+        assert_eq!(penalty(&one), 772 + 1152 + 40 + 90);
+    }
+
+    /// What does not read, by name: a damaged data module, a format information beyond three wrong bits in
+    /// both copies or of another level, a version information beyond three wrong bits, a side of no version.
+    /// Within three wrong bits each still reads.
+    #[test]
+    fn what_does_not_read_is_named() {
+        let bytes = vec![b'z'; 160];
+        let good = make(&bytes).expect("made");
+        assert!(good.version >= 7, "version information in play");
+        // A data module flipped.
+        let (_, f) = base(good.version);
+        let (r, c) = data_order(&f)[3];
+        let mut d = good.clone();
+        d.modules[r][c] = !d.modules[r][c];
+        assert_eq!(decode(&d), Err(NotRead::Damaged));
+        // Format: three bits in the first copy still read; four in both do not.
+        let first = [(8usize, 0usize), (8, 1), (8, 2), (8, 3)];
+        let size = good.size;
+        let second = [(size - 1, 8usize), (size - 2, 8), (size - 3, 8), (size - 4, 8)];
+        let mut three = good.clone();
+        for &(r, c) in &first[..3] {
+            three.modules[r][c] = !three.modules[r][c];
+        }
+        assert_eq!(decode(&three), Ok(bytes.clone()));
+        let mut four = good.clone();
+        for &(r, c) in first.iter().chain(second.iter()) {
+            four.modules[r][c] = !four.modules[r][c];
+        }
+        assert_eq!(decode(&four), Err(NotRead::Format));
+        // Another level (M): its format words in both places.
+        let mut level_m = good.clone();
+        let word = ((0b00u32 << 3 | good.mask as u32) << 10 | bch(0b00 << 3 | good.mask as u32, 5, 0x537, 11)) ^ 0x5412;
+        let fb = format_bits(good.mask as u32);
+        let positions: Vec<(usize, usize)> = (0..6).map(|i| (8, i)).chain([(8, 7), (8, 8), (7, 8)]).chain((0..6).rev().map(|i| (i, 8))).collect();
+        let positions2: Vec<(usize, usize)> = (0..7).map(|i| (size - 1 - i, 8)).chain((0..8).map(|i| (8, size - 8 + i))).collect();
+        for places in [&positions, &positions2] {
+            for (j, &(r, c)) in places.iter().enumerate() {
+                level_m.modules[r][c] = (word >> (14 - j)) & 1 == 1;
+            }
+        }
+        assert_ne!(word, fb);
+        assert_eq!(decode(&level_m), Err(NotRead::Format));
+        // Version information: four wrong bits in both copies.
+        let mut ver = good.clone();
+        for i in 0..4 {
+            let (a, b) = (i / 3, size - 11 + i % 3);
+            ver.modules[a][b] = !ver.modules[a][b];
+            ver.modules[b][a] = !ver.modules[b][a];
+        }
+        assert_eq!(decode(&ver), Err(NotRead::Version));
+        // A side of no version, and a ragged row.
+        let small = Code { version: 1, size: 20, mask: 0, modules: vec![vec![false; 20]; 20] };
+        assert_eq!(decode(&small), Err(NotRead::Size));
+        let mut ragged = good.clone();
+        ragged.modules[5].pop();
+        assert_eq!(decode(&ragged), Err(NotRead::Size));
+    }
 }

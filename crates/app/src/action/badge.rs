@@ -1,7 +1,7 @@
 use super::*;
 
-/// Export a badge. Runs on a background thread. Cascading, encoding, self-verification, drawing and writing
-/// are all in `badgex`.
+/// Exports a badge on a background thread. The grant chain, encoding, self-verification, drawing and writing
+/// all live in `badgex`.
 pub(super) fn export_badge(shell: &mut Shell, grant: &str, out: &str) -> Result<Spawned, crate::fault::Fault> {
     let g = grant.trim().to_string();
     if !zikaron::hexfmt::is_hex32(&g) {
@@ -13,10 +13,9 @@ pub(super) fn export_badge(shell: &mut Shell, grant: &str, out: &str) -> Result<
         .map(|h| h.root().to_path_buf())
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
     let out = crate::home::landing(out)?;
-    // Each hop of the chain check uses the audit input left by this vault's latest re-check; without any
-    // re-check every hop has no input, and the kit crate reads them as undecided. The window check's "now" is
-    // asked of the chain now (the input may be from the last pass; now may not); the face states which pass's
-    // chain time the inputs came from.
+    // Each hop of the chain check uses the audit inputs from this vault's latest re-check; with no re-check,
+    // every hop is undecided. The validity window's "now" is read from the chain at export time (falling back
+    // to the re-check time), and the result records which re-check the inputs came from.
     let (cards, reviewed_at) = shell.cards.clone().unwrap_or_default();
     let eps = shell.endpoints.clone();
     let chain_id = shell.settings.chain_id;

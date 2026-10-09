@@ -166,7 +166,8 @@ fn paint_pill(ui: &egui::Ui, rect: egui::Rect, s: &str, tone: Tone, live: bool, 
     p.galley(pos2(x, r.center().y - g.size().y / 2.0), g, ink);
 }
 
-/// A status word in a pill: 24 high, 13 text, fully round. Pops in when its words change.
+/// A status word in a pill: 24 high, 13 text, fully round. Pops in when its words change. Never wider than the
+/// room it is given: words longer than that end in "…" (whole on hover).
 pub fn pill(ui: &mut egui::Ui, s: &str, tone: Tone) -> egui::Response {
     pill_ex(ui, s, tone, false, false, 0.0)
 }
@@ -182,11 +183,21 @@ pub fn pill_pop(ui: &mut egui::Ui, s: &str, tone: Tone, delay: f32) -> egui::Res
 }
 
 fn pill_ex(ui: &mut egui::Ui, s: &str, tone: Tone, live: bool, force: bool, delay: f32) -> egui::Response {
-    let size = pill_size(ui, s, live);
+    let natural = pill_size(ui, s, live);
+    // Narrower room than its words (a table cell, a crowded row): the pill takes the room and its words end in
+    // "…", measured; the whole words show on hover. It never runs past the room it was given.
+    // A room within a point of the words' width is room enough (rows lay out on whole points, words do not).
+    let room = ui.available_width();
+    let (size, shown) = if room.is_finite() && room >= 0.0 && natural.x > room + 1.0 {
+        let spin = if live { 10.0 + 5.0 } else { 0.0 };
+        (vec2(room, natural.y), crate::width::elide_to(ui, s, Type::Small.font(), (room - 20.0 - spin).max(0.0)))
+    } else {
+        (natural, s.to_string())
+    };
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
     let pop = popped(ui.ctx(), resp.id.with("pop"), motion::key_of(&(s, tone as u8)), force, delay);
-    paint_pill(ui, rect, s, tone, live, pop);
-    resp
+    paint_pill(ui, rect, &shown, tone, live, pop);
+    if shown != s { crate::layer::tip(resp, s) } else { resp }
 }
 
 /// The width a pill takes.

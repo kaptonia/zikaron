@@ -1,8 +1,9 @@
 //! Toasts: one pill centered at the top of the main area (the whole window when there is no rail). It drops
-//! in from 10 above and fades in over 260 ms, and leaves the same way backwards (260 ms, back up 10). An ordinary sentence has a green
-//! check and leaves after 3.2 s; an error has a red cross, two lines (what happened, what to do next), and
-//! "details" and "close"; it stays 6 s, and stays while its details are open. An alert (what the watch raised)
-//! has the alerts page's mark on the warning colour and "close", and stays as long as an error.
+//! in from 10 above and fades in over 260 ms, and leaves the same way backwards (260 ms, back up 10). An
+//! ordinary sentence has a green check and leaves after 3.2 s; an error has a red cross, two lines (what
+//! happened, what to do next), and "details" and "close"; it stays 6 s, and stays while its details are open.
+//! An alert (raised by the watch) has the alerts page's mark on the warning colour and "close", and stays as
+//! long as an error.
 //!
 //! One at a time: a new sentence replaces the one on screen in place (the old one fades out); the same
 //! sentence as the one on screen gives it a small bump and starts its time again. Nothing is compared with
@@ -164,7 +165,7 @@ impl Toasts {
         if !self.leaving.is_empty() {
             ctx.request_repaint();
         }
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let center_x = (left + screen.right()) / 2.0;
         let labels = self.labels.clone();
         let mut close = false;
@@ -244,16 +245,19 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
         keys.push((labels[2].clone(), 201));
     }
     let key_font = crate::button::key_font();
-    let keys_w: f32 = ctx.fonts(|f| keys.iter().map(|(l, _)| f.layout_no_wrap(l.clone(), key_font.clone(), egui::Color32::BLACK).size().x).sum::<f32>())
+    let keys_w: f32 = ctx.fonts_mut(|f| keys.iter().map(|(l, _)| f.layout_no_wrap(l.clone(), key_font.clone(), egui::Color32::BLACK).size().x).sum::<f32>())
         + 14.0 * (keys.len().saturating_sub(1)) as f32
         + if keys.is_empty() { 0.0 } else { 10.0 };
     let (pad_l, pad_r, pad_y) = if two { (12.0, 18.0, 10.0) } else { (10.0, 18.0, 8.0) };
     let icon = 22.0;
     let text_max = (max_w - pad_l - pad_r - icon - 10.0 - keys_w).max(80.0);
     let wrap = |t: &str, font: egui::FontId, colour: egui::Color32, w: f32| {
-        ctx.fonts(|f| {
+        ctx.fonts_mut(|f| {
             let mut job = egui::text::LayoutJob::single_section(t.to_string(), egui::TextFormat { font_id: font, color: colour, line_height: Some(20.0), ..Default::default() });
-            job.wrap = egui::text::TextWrapping { max_width: w, break_anywhere: true, ..Default::default() };
+            // Break where the words allow (`break_anywhere: false`): at a space between English words, between
+            // any two Chinese characters, then at a dash or punctuation; only a single word longer than the line is
+            // cut inside itself. Never "try ag / ain".
+            job.wrap = egui::text::TextWrapping { max_width: w, break_anywhere: false, ..Default::default() };
             f.layout_job(job)
         })
     };
@@ -270,7 +274,9 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
     let c0 = rect.center();
     ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: (c0.to_vec2() * (1.0 - scale)) + off });
     let mut act = None;
-    egui::Area::new(layer.id).order(egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(live).show(ctx, |ui| {
+    // Placed on nothing: a press beside the toast reaches the page.
+    crate::layer::place(ctx, layer, None);
+    crate::layer::area(layer.id, egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(live).show(ctx, |ui| {
         ui.multiply_opacity(alpha);
         let (r, _) = ui.allocate_exact_size(rect.size(), egui::Sense::hover());
         let p = ui.painter();
@@ -300,7 +306,7 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
         // The keys, right of the words, centered on the pill.
         let mut kx = r.right() - pad_r - keys_w + if keys.is_empty() { 0.0 } else { 10.0 };
         for (label, which) in &keys {
-            let kw = ui.fonts(|f| f.layout_no_wrap(label.clone(), crate::button::key_font(), egui::Color32::BLACK).size().x);
+            let kw = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), crate::button::key_font(), egui::Color32::BLACK).size().x);
             let kr = Rect::from_min_size(pos2(kx, r.center().y - 10.0), vec2(kw, 20.0));
             let resp = ui.interact(kr, egui::Id::new(("zikaron-toast-key", s.id, *which)), egui::Sense::click());
             let colour = if *which == 201 { c(C::Ink2) } else { c(C::AccentInk) };

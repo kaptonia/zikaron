@@ -12,7 +12,7 @@ impl Win {
         let today = (self.shell.clock)();
         stagger(ui, 0, |ui| search_row(ui, "grants", &mut query, t(Key::SearchGrants), &mut range, today));
         let lamps: Vec<(String, crate::ledgerx::Lamp)> = self.shell.rows.as_ref().map(|(rs, _)| rs.iter().map(|r| (r.id.clone(), r.lamp)).collect()).unwrap_or_default();
-        // A grant's anchor time is its entry's row in this ledger (a grant is an entry here).
+        // A grant's anchor time is that of its entry row in this ledger (a grant is an entry).
         let anchored: Vec<(String, Option<u64>)> = self.shell.rows.as_ref().map(|(rs, _)| rs.iter().map(|r| (r.id.clone(), r.anchored_at)).collect()).unwrap_or_default();
         let anchored_at = |id: &str| anchored.iter().find(|(x, _)| x.eq_ignore_ascii_case(id)).and_then(|(_, at)| *at);
         let shown: Vec<crate::grantx::Row> = all
@@ -72,7 +72,7 @@ impl Win {
         }
     }
 
-    /// A grant's detail page (the same page for a grant opened from the ledger).
+    /// A grant's detail page (also used when the grant is opened from the ledger).
     pub(super) fn grant_detail(&mut self, ui: &mut egui::Ui, row: &crate::ledgerx::Row, now: f64) {
         self.ensure_grants(now);
         let g = self.shell.grants.as_ref().and_then(|g| g.iter().find(|x| x.id == row.id).cloned());
@@ -113,7 +113,7 @@ impl Win {
                 self.typed.gf_out = home.dir(crate::home::Slot::Kits).display().to_string();
             }
         }
-        let inq = self.shell.queue.items.iter().filter(|q| !matches!(q.step, crate::queue::Step::Submitted { .. })).position(|q| q.id == row.id);
+        let inq = self.shell.queue.items.iter().filter(|q| !q.step.in_flight()).position(|q| q.id == row.id);
         stagger(ui, 2, |ui| {
             card::card(ui, |ui| {
                 let ready = opened.is_some();
@@ -176,8 +176,8 @@ impl Win {
                 }
             });
         }
-        // The whole code (every hop to the root), the same encoding as the badge and the grant file; a refusal
-        // is said by the action layer.
+        // Copy the whole code (every hop to the root) in the same encoding as the badge and the grant file; the
+        // action layer reports any refusal.
         if copy {
             if let Applied::GrantCode { text } = self.act(Action::CopyGrantCode { grant: row.id.clone() }, now) {
                 ui.ctx().copy_text(text);
@@ -199,7 +199,7 @@ impl Win {
         }
     }
 
-    /// A fresh grant form (a new grant from the list's key).
+    /// Clear the grant form for a new grant.
     pub(super) fn grant_form_fresh(&mut self) {
         self.typed.g_grantee.clear();
         self.typed.g_work.clear();
@@ -219,9 +219,7 @@ impl Win {
     }
 
     /// The grant form, shared by a new grant and a relicense (`upstream` names the upstream grant's record).
-    /// Left: grantee, record, terms file, validity with its overlap check, exclusivity and scope, the
-    /// advanced fingerprint field, and the key that leads to the confirmation sheet. Right: the checks before
-    /// issuing.
+    /// Left: the form fields and the key to the confirmation sheet. Right: the checks before issuing.
     pub(super) fn grant_form(&mut self, ui: &mut egui::Ui, upstream: Option<String>, now: f64) {
         self.ensure_rows(now);
         self.ensure_grants(now);
@@ -229,8 +227,8 @@ impl Win {
             self.ux.u3.grant_days = 30;
             self.ux.u3.grant_days_set = true;
         }
-        // The double-sale gate is checked in the background as the person types: run only when the record,
-        // the window, the register or the exclusive list change.
+        // The double-sale check runs in the background as the user types, and only reruns when the record, the
+        // validity, the register or the exclusive list changes.
         let key = format!("{}|{}|{}|{}|{}", self.typed.g_work.trim(), self.typed.g_from.trim(), self.typed.g_to.trim(), self.shell.grants_gen, self.shell.settings.exclusive.join(","));
         let whole = self.typed.g_from.trim().is_empty() == self.typed.g_to.trim().is_empty();
         if key != self.clash_key && self.shell.grants.is_some() {
@@ -258,7 +256,7 @@ impl Win {
                 }
             }
         }
-        // Checksum addresses copied from wallets mix cases, which the law refuses by name: say so at once and
+        // Checksum (mixed-case) addresses copied from wallets are refused by the ledger law: say so at once and
         // keep the key disabled.
         let mixed_case = [&self.typed.g_grantee, &self.typed.g_terms, &self.typed.g_upstream].iter().any(|x| x.trim().strip_prefix("0x").map(|h| h.bytes().any(|b| b.is_ascii_uppercase())).unwrap_or(false));
         let ready = crate::grantx::draft_ready(&self.typed.g_grantee, &self.typed.g_work, &self.typed.g_terms, &self.typed.g_upstream, self.ux.u3.grant_days, chain_now);
@@ -269,7 +267,7 @@ impl Win {
                 stagger(ui, 0, |ui| {
                     card::card(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = tk::S4;
-                        // Grantee: the field and "recent addresses" beside it.
+                        // Grantee: the field with "recent addresses" beside it.
                         field(ui, t(Key::U3ToWhom), None, |ui| {
                             let recent = self.recent_addresses();
                             let heads: Vec<String> = recent.iter().map(|a| head_tail(a)).collect();
@@ -289,8 +287,8 @@ impl Win {
                                 states::note_box(ui, t(Key::U3AddrMixedCase));
                             }
                         });
-                        // Which record: fixed by the upstream grant for a relicense; chosen from anchored
-                        // records otherwise (the menu says why the others cannot be chosen).
+                        // The record: fixed by the upstream grant for a relicense; otherwise chosen from anchored
+                        // records (the menu says why the others cannot be chosen).
                         field(ui, t(Key::U3WhichWork), None, |ui| match &upstream {
                             Some(name) => {
                                 paint::text(ui, name, Type::Body, c(C::Ink));
@@ -347,8 +345,8 @@ impl Win {
                                 }
                             }
                         });
-                        // The terms file: dropped or chosen in the form; its fingerprint fills the advanced
-                        // field. A fingerprint typed by hand shows as its own row.
+                        // The terms file, dropped or chosen; its fingerprint fills the advanced field. A
+                        // fingerprint typed by hand shows as its own row.
                         field(ui, t(Key::U3TermsFile), None, |ui| {
                             if self.ux.u3.terms.as_ref().map(|x| x.hex != self.typed.g_terms.trim()).unwrap_or(false) {
                                 self.ux.u3.terms = None;
@@ -369,10 +367,8 @@ impl Win {
                                     hint(ui, t(Key::U3TermsNote));
                                 }
                             }
-                            if pick {
-                                if let Some(p) = crate::platform::choose_path(crate::platform::Pick::File) {
-                                    self.take_terms(&p, now);
-                                }
+                            if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-grant-terms"), pick, crate::platform::Pick::File) {
+                                self.take_terms(&p, now);
                             }
                         });
                         // Validity: presets or custom seconds; the dates; the overlap check.
@@ -398,7 +394,7 @@ impl Win {
                                 _ => t(Key::CountdownNoWindow).to_string(),
                             };
                             hint(ui, &span);
-                            // Unreadable custom cells mean the check did not run: "not checked yet", never zero.
+                            // Unreadable custom cells mean the check did not run: show "not checked yet", never zero.
                             let n = self.shell.clash.len();
                             let (fs, ts) = (self.typed.g_from.trim(), self.typed.g_to.trim());
                             let window_ok = (fs.is_empty() && ts.is_empty()) || (fs.parse::<u64>().is_ok() && ts.parse::<u64>().is_ok());
@@ -429,7 +425,7 @@ impl Win {
                                 paint::text(ui, t(Key::U3GrantHint), Type::Note, c(C::Ink2));
                             });
                         });
-                        // A relicense signed here goes into this seat's queue: the way on chain is here.
+                        // A relicense signed here joins this seat's queue, so the key to anchor it is offered here.
                         if upstream.is_some() && self.ux.u4.relicense_signed && self.shell.queue.len() > 0 {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = tk::S3;
@@ -452,8 +448,8 @@ impl Win {
         }
     }
 
-    /// Take a terms file: compute its fingerprint (unreadable gives a named toast), show it in the form, and
-    /// fill the fingerprint field.
+    /// Take a terms file: compute its fingerprint (an unreadable file gives a named toast), show the file in the
+    /// form and fill the fingerprint field.
     pub(super) fn take_terms(&mut self, path: &str, now: f64) {
         match crate::anchorx::of_file(std::path::Path::new(path)) {
             Ok(x) => {
@@ -465,7 +461,7 @@ impl Win {
         }
     }
 
-    /// "Checks before issuing": the first-grant checklist's two steps, done by hand, and the key's balance.
+    /// "Checks before issuing": the first-grant checklist's two manual steps and the key's balance.
     fn grant_checks(&mut self, ui: &mut egui::Ui, now: f64) {
         let w = self.shell.wizard.clone();
         let next = w.next();
@@ -485,9 +481,10 @@ impl Win {
                     (m, t(step_name(*s)).to_string(), None)
                 })
                 .collect();
-            rows.push(match &self.shell.chain {
-                Some(Done::Chain { gas_wei: Some(g), .. }) if *g > 0 => (Mark::Ok, fill1(Key::U3GasLeft, &eth_held(*g)), None),
-                Some(Done::Chain { gas_wei: Some(_), .. }) => (Mark::Bad, t(Key::GuideGas).to_string(), None),
+            rows.push(match self.chain_read() {
+                Err(f) => (Mark::Bad, fill1(Key::SetReadFailedNow, f.human()), None),
+                Ok(Some(Done::Chain { gas_wei: Some(g), .. })) if *g > 0 => (Mark::Ok, fill1(Key::U3GasLeft, &eth_held(*g)), None),
+                Ok(Some(Done::Chain { gas_wei: Some(_), .. })) => (Mark::Bad, t(Key::GuideGas).to_string(), None),
                 _ => (Mark::Todo, t(Key::U3GasUnread).to_string(), None),
             });
             states::checks(ui, &rows, false);
@@ -508,9 +505,8 @@ impl Win {
         });
     }
 
-    /// The text of the key that writes an entry, chosen in one place by the "auto put on chain" setting:
-    /// on means "put on chain now", off means "add to ledger". The record and grant forms and their
-    /// confirmation sheets all read it.
+    /// Label of the key that writes an entry, set by the "auto put on chain" setting: "put on chain now" when
+    /// on, "add to ledger" when off. Used by the record and grant forms and their confirmation sheets.
     pub(super) fn anchor_key(&self) -> Key {
         if self.shell.settings.auto_anchor {
             Key::AnchorNowKey

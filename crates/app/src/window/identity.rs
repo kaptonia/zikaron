@@ -5,8 +5,8 @@
 use super::*;
 
 impl Win {
-    /// The network an identity made on these sheets takes: the one chosen here, else the one selected first
-    /// (`machine::pick`). Inside the wizard the wizard's own network step decides, so its choice stands.
+    /// The network for an identity made on these sheets: the one chosen here, else the first selected
+    /// (`machine::pick`). Inside the wizard, the wizard's own network step decides.
     pub(super) fn id_network_now(&self) -> String {
         if self.ux.wizard.is_some() {
             return self.wiz_network_pick();
@@ -14,8 +14,8 @@ impl Win {
         self.ux.id_network.clone().unwrap_or_else(|| crate::machine::pick(&self.shell.machine))
     }
 
-    /// The "network" row under the note: every row of the known table, then "custom" (`deploy::choices`). Not
-    /// shown inside the wizard, whose network step comes next.
+    /// The "network" row under the note: every known network, then "custom" (`deploy::choices`). Not shown
+    /// inside the wizard, whose network step comes next.
     fn id_network_row(&mut self, ui: &mut egui::Ui, salt: &str) {
         if self.ux.wizard.is_some() {
             return;
@@ -42,7 +42,7 @@ impl Win {
                 states::err_box(ui, "id-trouble", f.human(), f.next(), t(Key::U3RawError), &f.raw());
             }
         };
-        // A passcode task runs in the background: the sheet says it is verifying and its keys wait.
+        // While a passcode task runs in the background, the sheet says it is verifying and its keys wait.
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
         let busy_note = |ui: &mut egui::Ui| {
             if busy {
@@ -50,7 +50,7 @@ impl Win {
             }
         };
         let len = crate::keybox::PIN_LEN;
-        // Whether the current identity is the primary one (its words or key file recover the passcode).
+        // Whether the current identity is the primary one (whose words or key file recover the passcode).
         let is_primary = match (&self.shell.primary, &current) {
             (Some((p, _)), Some((r, _))) => p.eq_ignore_ascii_case(&r.id),
             _ => false,
@@ -76,8 +76,8 @@ impl Win {
                             field(ui, t(Key::IdLabel), None, |ui| input::line(ui, &mut me.ux.id_new_label, t(Key::IdLabelHint)));
                             me.id_network_row(ui, "id-new-network");
                             paint::text(ui, t(Key::IdCopyWords), Type::Note, c(C::Ink2));
-                            // Masked by default: twelve words in plain view reach anyone behind, screen
-                            // recording and sharing. Click to show; hide again any time.
+                            // Masked by default: twelve words in plain view reach anyone behind the screen, and
+                            // screen recording and sharing. Click to show; hide again any time.
                             let words = fresh.as_ref().map(|(w, _)| w.clone());
                             let shown = if me.ux.id_words_open { words.as_deref() } else { None };
                             if pin::mask(ui, "id-new-words", shown, t(Key::IdShowNewWords), 3, 106.0).clicked() && !me.ux.id_words_open && words.is_some() {
@@ -125,8 +125,8 @@ impl Win {
             IdModal::Import => {
                 let tab = self.ux.id_tab;
                 let into_seat = self.ux.id_seat.unwrap_or(seat);
-                // No primary yet: this import makes it. A bare private key then lands its key file in the
-                // same pass (the action layer refuses it without one), so the cells are asked here.
+                // No primary yet, so this import makes it. A bare private key must then write its key file in the
+                // same pass (the action layer refuses it otherwise), so the key file cells are asked here.
                 let makes_primary = self.shell.primary.is_none();
                 let ready = match tab {
                     0 => self.ux.id_words.iter().all(|w| !w.expose().trim().is_empty()),
@@ -149,8 +149,8 @@ impl Win {
                         match tab {
                             0 => {
                                 field(ui, t(Key::IdTabWords), None, |ui| {
-                                    // Twelve numbered cells: a word not in the list turns red at once; whether
-                                    // the twelve form a phrase is said by name by the action layer.
+                                    // Twelve numbered cells; a word not in the list turns red at once. The action
+                                    // layer reports whether the twelve form a valid phrase.
                                     let bad = crate::cryptx::strangers(&me.ux.id_words);
                                     pin::words_grid_marked(ui, "id-import-words", &mut me.ux.id_words, &bad);
                                 });
@@ -176,7 +176,7 @@ impl Win {
                                     drop::Shape::Column,
                                     true,
                                 );
-                                if let Some(p) = me.drop_or_pick(&d, crate::platform::Pick::File, now) {
+                                if let Some(p) = me.drop_or_pick(ui.ctx(), "identity-key-file", &d, crate::platform::Pick::File, now) {
                                     me.ux.id_ks_path = p;
                                 }
                                 field(ui, t(Key::IdFilePassword), None, |ui| input::secret_line(ui, &mut me.ux.id_ks_pw, ""));
@@ -273,15 +273,15 @@ impl Win {
                     |ui, _me| {
                         sheet::title(ui, t(Key::IdSwitchTitle), "");
                         ui.spacing_mut().item_spacing.y = tk::S2;
-                        // Each identity is "kind · name"; clicking one opens it in place to show both seats'
-                        // addresses and "switch". Only that key switches.
+                        // Each identity is "kind · name"; clicking one expands it to show both seats' addresses and
+                        // "switch". Only that key switches.
                         for r in &reg.rows {
                             let is_cur = current.as_ref().map(|(c, _)| c.id == r.id).unwrap_or(false);
                             let is_open = open.as_deref() == Some(r.id.as_str());
                             let name = if r.label.trim().is_empty() { t(Key::Unnamed).to_string() } else { r.label.clone() };
                             let head = format!("{} \u{b7} {}", t(id_kind_key(r.kind())), name);
-                            // The whole card opens and closes it: the click is registered under the card's contents, so
-                            // the "switch" key inside still takes its own click.
+                            // The whole card toggles it: the click is registered under the card's contents, so the
+                            // "switch" key inside still takes its own click.
                             let whole = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| card::choice(ui, is_cur, |ui| {
                                 width::then(
                                     ui,
@@ -321,7 +321,7 @@ impl Win {
                 }
             }
             IdModal::Delete(id) if self.shell.primary.as_ref().map(|(p, _)| p.eq_ignore_ascii_case(&id)).unwrap_or(false) => {
-                // The primary identity is not deleted directly: another one is made primary first.
+                // The primary identity cannot be deleted directly: another one must be made primary first.
                 let others = reg.rows.iter().any(|r| !r.id.eq_ignore_ascii_case(&id));
                 let (mut to_primary, mut to_new) = (false, false);
                 let out = sheet::show(
@@ -412,7 +412,7 @@ impl Win {
             IdModal::Delete(id) => {
                 let row = reg.find(&id).cloned();
                 let author = seat == crate::roles::Role::Author;
-                // Both seats' ledgers and the backup file were read once when the sheet opened.
+                // Both seats' ledgers and the backup file were read once, when the sheet opened.
                 let ledgers: Vec<&'static str> = self.ux.id_delete_ledgers.iter().map(|s| t(id_seat_row_key(*s))).collect();
                 let seen = self.ux.id_delete_backup.clone();
                 let pin_full = self.ux.id_pin.chars() == len;
@@ -440,8 +440,8 @@ impl Win {
                         }
                         states::note_box(ui, t(if author { Key::IdDeleteAuthorNote } else { Key::IdDeleteGranteeNote }));
                         details(ui, "id-delete-details", &[(t(Key::IdAddress), Val::mono(addr.clone()))]);
-                        // The person is identified before keys go: the same passcode and failure count as at
-                        // launch.
+                        // The user is identified before keys are deleted, with the same passcode and failure count
+                        // as at launch.
                         field(ui, t(Key::IdPinGate), None, |ui| {
                             pin::pin_row(ui, "id-delete-pin", &mut me.ux.id_pin, len, me.ux.pin_shake, true, true);
                         });
@@ -468,7 +468,7 @@ impl Win {
                     self,
                     |ui, me| {
                         sheet::title(ui, t(Key::IdDoBackupGo), t(Key::IdBackupSay));
-                        // The local passcode first; then this key file's own password (each row says which).
+                        // The local passcode first, then this key file's own password (each row says which).
                         field(ui, t(Key::IdPinGate), None, |ui| {
                             pin::pin_row(ui, "id-backup-pin", &mut me.ux.id_pin, len, me.ux.pin_shake, true, true);
                         });
@@ -490,7 +490,7 @@ impl Win {
                 esc = out.esc;
             }
             IdModal::Name(id) => {
-                // Only a change enables the key; clearing the field clears the name, which is a change.
+                // Only a change enables the key; clearing the field clears the name, which counts as a change.
                 let had = reg.find(&id).map(|r| r.label.clone()).unwrap_or_default();
                 let changed = self.ux.id_label.trim() != had;
                 let out = sheet::show(
@@ -512,7 +512,7 @@ impl Win {
                 esc = out.esc;
             }
             IdModal::Pin => {
-                // The old passcode once, the new one twice; the row being typed in holds the focus.
+                // The old passcode once, the new one twice; the row being typed in holds focus.
                 let old_full = self.ux.pin_old.chars() == len;
                 let mut change: Option<Action> = None;
                 let out = sheet::show(
@@ -551,7 +551,7 @@ impl Win {
             self.take_first_pin(now, false);
         }
         if copied {
-            // Turning to the three cells: the words are masked again first.
+            // Moving on to the three check cells: mask the words again first.
             self.ux.id_confirming = true;
             self.ux.id_words_open = false;
         }
@@ -570,9 +570,8 @@ impl Win {
     }
 }
 
-/// A key file's cells: its password (with the strength reading, which warns and never blocks), the password
-/// again, and the folder it lands in. Exporting a key file and importing a key that becomes primary show
-/// these same cells.
+/// A key file's cells: its password (with a strength reading that warns but never blocks), the password
+/// again, and the destination folder. Shared by key file export and by importing a key that becomes primary.
 fn key_file_cells(ui: &mut egui::Ui, me: &mut Win) {
     field(ui, t(Key::IdKeyFilePassword), None, |ui| {
         input::secret_line(ui, &mut me.ux.id_pw, "");

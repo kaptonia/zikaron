@@ -22,17 +22,22 @@ NOTICE_TARGET="$TRIPLE"
 # Every date the packages record: the moment of the commit being built, unless SOURCE_DATE_EPOCH says another
 # (make_deb.py and mksquashfs read it).
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
+# The AppImage runtime is pinned by its bytes (`zikaron-pack appimage-runtime`: type2-runtime 8f39b89, the one
+# the shipped AppImages carry). The download below is the moving `continuous` build; when it is no longer
+# that build the check stops here, and the pinned file is given as APPIMAGE_RUNTIME.
 RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
 
-# Keep local paths (home directory, checkout, build directory) out of the shipped binaries.
-CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME_DIR=/cargo --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$TARGET_DIR=/target --remap-path-prefix=$ROOT=/zikaron --remap-path-prefix=$HOME=/home"
+# Keep local paths (home directory, checkout, build directory) out of the shipped binaries: the packaging tool
+# is built first and gives the flags, from the one table of path mappings (`zikaron-pack rustflags`).
+# The packaging pieces run here, on the building machine.
+cargo build --release --locked -p zikaron-pack
+CARGO_ENCODED_RUSTFLAGS="$("$PACK" rustflags --target-dir "$TARGET_DIR")"
+export CARGO_ENCODED_RUSTFLAGS
 rustup target add "$TRIPLE" >/dev/null
 cargo zigbuild --release --locked --target "$TRIPLE.2.31" -p app -p zikaron-cli
 BIN="$TARGET_DIR/$TRIPLE/release"
-# The packaging pieces run here, on the building machine.
-cargo build --release --locked -p zikaron-pack
+# The built binaries carry no path of this machine (`zikaron-pack no-paths`); no package is made if they do.
+"$PACK" no-paths "$BIN/app" "$BIN/zikaron"
 
 rm -rf "$WORK"
 mkdir -p "$WORK" "$DIST"
@@ -79,6 +84,7 @@ EOF
 chmod 755 "$APPDIR/AppRun"
 RUNTIME="${APPIMAGE_RUNTIME:-$WORK/runtime-x86_64}"
 [ -f "$RUNTIME" ] || curl -fsSL -o "$RUNTIME" "$RUNTIME_URL"
+"$PACK" appimage-runtime "$RUNTIME" --arch x86_64
 mksquashfs "$APPDIR" "$WORK/image.squashfs" -root-owned -noappend -comp zstd -quiet -no-xattrs
 APPIMAGE="$DIST/ZIKARON-$VERSION-x86_64.AppImage"
 cat "$RUNTIME" "$WORK/image.squashfs" > "$APPIMAGE"

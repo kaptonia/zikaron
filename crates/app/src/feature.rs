@@ -1,8 +1,7 @@
-//! Closed table of component codes for the diagnostic trace. A trace mark's content can only be one of these.
+//! Closed set of component codes for the diagnostic trace; a trace mark contains exactly one of them.
 //!
-//! The trace API is `mark(component code)`. The parameter is a closed type rather than a string so that
-//! "stuff free text into a mark" cannot be written: such a mark would become a second log, and sooner or
-//! later someone would start relying on that log.
+//! The trace API is `mark(component code)`. The parameter is a closed type rather than a string so free text
+//! cannot be put into a mark: such marks would become a second log that someone would eventually rely on.
 
 /// The registered component codes. Grows with the component list, not with call sites.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -39,7 +38,7 @@ pub enum Feature {
     W7,
     /// Grant register and double-sale gate.
     W8,
-    /// First-window checklist page.
+    /// Setup wizard checklist.
     W13,
     /// Revocation flow.
     W9,
@@ -49,11 +48,11 @@ pub enum Feature {
     W11,
     /// Others' ledger reader.
     W14,
-    /// Diligence desk (grantee seat).
+    /// Diligence desk (grantee role).
     D1,
-    /// Record verifier (grantee seat).
+    /// Record verifier (grantee role).
     D2,
-    /// Check received records (grantee seat).
+    /// Check received records (grantee role).
     D4,
     /// Grant vault.
     D6,

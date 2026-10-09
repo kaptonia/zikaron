@@ -19,11 +19,9 @@ pub(super) fn record_work(shell: &mut Shell, note_md: &str, target: Option<&crat
     if let Some(c) = shell.content.clone().filter(|c| c.source == crate::anchorx::Source::File) {
         index_record(shell, &c, &id);
     }
-    // When a git repository was anchored, record this commit: the passive indicator compares against it next
-    // time.
+    // For an anchored git repository, remember this commit; the passive indicator compares against it later.
     if let (Some(c), Some(rec)) = (shell.content.as_ref(), shell.settings.repo.clone()) {
-        // The stored path is absolute (`home::kept`); the path given when taking content is resolved the same
-        // way before comparing.
+        // The stored path is absolute (`home::kept`); resolve the content's path the same way before comparing.
         let same = crate::home::kept(&c.subject).map(|p| p.display().to_string() == rec.path).unwrap_or(false);
         if c.source == crate::anchorx::Source::Git && same {
             if let Ok(h) = crate::gitx::head_of(std::path::Path::new(&rec.path)) {
@@ -34,8 +32,8 @@ pub(super) fn record_work(shell: &mut Shell, note_md: &str, target: Option<&crat
     Ok((id, n))
 }
 
-/// The background half of recording files (`Kind::Record`): each file's fingerprint, in the order given,
-/// stopping at the first that cannot be read (nothing past it is computed, as nothing past it was recorded).
+/// The background half of recording files (`Kind::Record`): fingerprints each file in order, stopping at the
+/// first that cannot be read (nothing after it will be recorded).
 pub(super) fn hash_files(files: &[String]) -> Vec<(String, Result<crate::anchorx::Content, crate::fault::Fault>)> {
     let mut out = Vec::new();
     for p in files {
@@ -49,8 +47,8 @@ pub(super) fn hash_files(files: &[String]) -> Vec<(String, Result<crate::anchorx
     out
 }
 
-/// The frame half of recording files: one history entry per file whose fingerprint came back, in order; the
-/// first refusal stops the batch there (the files before it are recorded, it and those after are not).
+/// The UI-thread half of recording files: one history entry per fingerprinted file, in order. The first
+/// failure stops there: earlier files are recorded, it and later ones are not.
 pub(super) fn record_files(
     shell: &mut Shell,
     note_md: &str,
@@ -77,8 +75,8 @@ pub(super) fn record_files(
     (ids, None, n)
 }
 
-/// Record in the local index after signing one. Failure to record does not take the entry back (it is in the
-/// ledger); the trouble is still shown on the face.
+/// Adds a signed entry to the local index. A failure here does not undo the entry (it is already in the
+/// ledger), but it is still reported.
 pub(super) fn index_record(shell: &mut Shell, c: &crate::anchorx::Content, id: &str) {
     let row = (|| -> Result<crate::recordsx::Row, crate::fault::Fault> {
         let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
@@ -98,8 +96,8 @@ pub(super) fn index_record(shell: &mut Shell, c: &crate::anchorx::Content, id: &
             id: id.to_string(),
             seq,
             name: path.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default(),
-            // If the file is still there at signing, take its real path; if not (just moved), still make it
-            // absolute through `home::kept`, never storing a relative path.
+            // Use the real path if the file still exists; otherwise (just moved) make it absolute through
+            // `home::kept`. A relative path is never stored.
             path: match std::fs::canonicalize(path) {
                 Ok(p) => crate::home::plain_path(p),
                 Err(_) => crate::home::kept(&c.subject)?,
@@ -129,14 +127,11 @@ pub(super) fn drop_kit_copy(shell: &mut Shell, path: &str) -> Result<(crate::kit
     Ok(got)
 }
 
-/// Which entry a dropped path goes to. Recognized by reading the disk now: a directory containing `.git`
-/// takes the git path, other directories the directory path, regular files the file path; none of the three
-/// is refused by name.
+/// Classifies a dropped or picked path from its metadata: a directory containing `.git` is a git repository,
+/// other directories are folders, regular files are files, and anything else is refused by name. The
+/// fingerprint is computed later in the background (`Kind::Take`).
 ///
-/// This recognition lives in the action layer, not the frame: the window side reads no disk at all (checked
-/// by the self-check suite).
-/// The frame half of taking a dropped or picked path: which kind of content it is (a file, a folder, a
-/// repository), read from its metadata; the fingerprint is computed in the background (`Kind::Take`).
+/// This lives in the action layer because the window side never reads the disk.
 pub(super) fn dropped_source(path: &str) -> Result<(crate::anchorx::Source, std::path::PathBuf), crate::fault::Fault> {
     let p = std::path::Path::new(path.trim());
     let md = std::fs::symlink_metadata(p)
@@ -158,8 +153,8 @@ pub(super) fn dropped_source(path: &str) -> Result<(crate::anchorx::Source, std:
     Ok((source, p.to_path_buf()))
 }
 
-/// A content taken, its fingerprint computed: it is the shell's content now, and the previous three-step flow is
-/// void, since a half-green flow left on screen would be a silent failure.
+/// A taken content with its fingerprint becomes the shell's content. The previous three-step flow is reset,
+/// so a half-completed flow never stays on screen.
 pub(super) fn took_landed(shell: &mut Shell, source: crate::anchorx::Source, c: crate::anchorx::Content) -> super::Applied {
     let hex = c.hex();
     shell.content = Some(c);
@@ -168,11 +163,9 @@ pub(super) fn took_landed(shell: &mut Shell, source: crate::anchorx::Source, c: 
 }
 
 pub(super) fn register_repo(shell: &mut Shell, path: &str) -> Result<String, crate::fault::Fault> {
-    // Made absolute before saving (`home::kept`): starting from another directory next time still reads the
-    // registered place.
+    // Made absolute before saving (`home::kept`), so starting from another directory still finds it.
     let p = crate::home::kept(path)?.display().to_string();
-    // Open it once for real before registering: a path that cannot be opened, once registered, would only
-    // turn red the next time the page opens.
+    // Open it once before registering, so a bad path is refused now instead of failing on the next visit.
     let h = crate::gitx::head_of(std::path::Path::new(&p))?;
     let last = shell
         .settings
@@ -190,8 +183,8 @@ pub(super) fn check_repo(shell: &mut Shell) -> Result<(String, Option<usize>), c
     let rec = shell.settings.repo.clone().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::FileMissing, crate::lang::t(crate::lang::Key::Tail028).to_string())
     })?;
-    // The reading side does not drift with the current directory: a stored relative path (older files) is
-    // refused by name, never resolved against the current directory.
+    // A stored relative path (written by older versions) is refused by name, never resolved against the
+    // current directory.
     let s = crate::anchorx::since(&crate::home::landing(&rec.path)?, &rec.last_commit)?;
     shell.repo_since = Some((s.head.clone(), s.grew));
     Ok((s.head, s.grew))

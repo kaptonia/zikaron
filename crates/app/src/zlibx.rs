@@ -1,25 +1,20 @@
-//! DEFLATE (RFC 1951) and its zlib wrapper (RFC 1950). The only decompression in this crate.
+//! DEFLATE (RFC 1951) and its zlib wrapper (RFC 1950): the only decompression in this crate.
 //!
 //! ─── Why write it ourselves ───
 //!
-//! git compresses objects with zlib: without inflating them the bytes of a commit cannot be read, and "the
-//! content hash git anchors is recomputable byte for byte" needs exactly those bytes. The shipped build may
-//! not start child processes (checked by the self-check suite), so the `git cat-file` path has no place in
-//! the product; what remains is adding a third-party crate or writing this part.
+//! git stores objects zlib-compressed, and recomputing the content hash git anchors byte for byte needs the
+//! inflated bytes. The shipped build may not start child processes (checked by the self-check suite), so
+//! `git cat-file` is not an option. Rather than add a third-party crate outside the dependency boundary,
+//! this is a pure function of a public specification: bytes in, bytes out, no key, disk or network. It is
+//! easy to verify: hash the inflated bytes with the core's `cryptox::sha256` and compare with `git cat-file`.
 //!
-//! We write it: crates outside the boundary never enter the dependency graph, and this is a pure function of
-//! a public specification, bytes in and bytes out, with no key, disk or network. Its correctness check is at hand
-//! too: hash the inflated bytes with the core's `cryptox::sha256`, and a match with `git cat-file`'s reading
-//! means it is right.
+//! ─── Nothing is guessed ───
 //!
-//! ─── Nothing is guessed here ───
-//!
-//! Every point where reading cannot continue returns `None`: a truncated stream, a bad code length table, an
-//! out-of-range back reference all stop at once. The most common hole in decompressors is "a back reference
-//! reaching before the output"; that is in [`copy_back`], which checks the length before copying and returns
-//! `None` when it cannot.
+//! Wherever reading cannot continue it returns `None`: a truncated stream, a bad code length table or an
+//! out-of-range back reference stops at once. The most common decompressor hole, a back reference reaching
+//! before the start of the output, is guarded in [`copy_back`], which checks before copying.
 
-/// A bitwise read cursor. LSB first (RFC 1951 §3.1.1).
+/// A bitwise read cursor, LSB first (RFC 1951 §3.1.1).
 struct Bits<'a> {
     src: &'a [u8],
     /// The next byte to read.
@@ -56,7 +51,7 @@ impl<'a> Bits<'a> {
         Some(v)
     }
 
-    /// Drop the bits short of a byte and return to a byte boundary (stored blocks need it).
+    /// Drop the bits short of a byte to return to a byte boundary (needed by stored blocks).
     fn align(&mut self) {
         let drop = self.n % 8;
         self.acc >>= drop;
@@ -96,7 +91,7 @@ impl Huff {
             counts[l as usize] += 1;
         }
         counts[0] = 0;
-        // Codes may not outnumber what this level can hold (an oversubscribed table is a bad table).
+        // Reject an oversubscribed table (more codes than the lengths can hold).
         let mut left: i32 = 1;
         for l in 1..16 {
             left <<= 1;
@@ -158,7 +153,8 @@ const DIST_EXTRA: [u8; 30] = [
 /// The read order of the code length table's own table (RFC 1951 §3.2.7).
 const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
-/// Back reference. Reaching before the output stops at once: this is the most important check in this part.
+/// Copy a back reference. One reaching before the start of the output stops at once: this is the key safety
+/// check here.
 fn copy_back(out: &mut Vec<u8>, dist: usize, len: usize) -> Option<()> {
     if dist == 0 || dist > out.len() {
         return None;
@@ -185,8 +181,8 @@ fn fixed_tables() -> Option<(Huff, Huff)> {
     Some((Huff::new(&lit)?, Huff::new(&dist)?))
 }
 
-/// Inflate a raw DEFLATE stream. `cap` is the output limit: exceeding it stops (a compression bomb has
-/// nowhere to go).
+/// Inflate a raw DEFLATE stream. `cap` limits the output; exceeding it stops decoding (so a compression bomb
+/// goes nowhere).
 pub fn inflate(src: &[u8], cap: usize) -> Option<Vec<u8>> {
     let mut b = Bits::new(src);
     let mut out: Vec<u8> = Vec::new();
@@ -304,10 +300,9 @@ pub fn inflate(src: &[u8], cap: usize) -> Option<Vec<u8>> {
 
 /// The zlib wrapper (RFC 1950): a two-byte header followed by raw DEFLATE.
 ///
-/// The header's low four bits are the method, and only 8 (deflate) is accepted; streams with `FDICT` set are
-/// not accepted (git never writes them). The four Adler-32 bytes at the end are not checked here: a git
-/// object's integrity check is its hash, which the caller computes with `cryptox::sha256`, stronger than a
-/// checksum.
+/// Only method 8 (deflate) is accepted, and streams with `FDICT` set are refused (git never writes them).
+/// The trailing Adler-32 is not checked: a git object's integrity check is its hash, which the caller
+/// computes with `cryptox::sha256`.
 pub fn inflate_zlib(src: &[u8], cap: usize) -> Option<Vec<u8>> {
     let cmf = *src.first()?;
     let flg = *src.get(1)?;

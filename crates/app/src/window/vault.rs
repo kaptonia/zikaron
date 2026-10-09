@@ -1,6 +1,6 @@
-//! My grants (the grantee seat): the held grants as cards (the record's name, the issuer's name, validity,
-//! last on chain, the verdict), grouped by issuer on request; a grant's detail page (credential, sublicense,
-//! upstream, details); and the sublicense page pushed from it.
+//! My grants (the grantee seat): held grants as cards (record name, issuer name, validity, last on chain,
+//! verdict), optionally grouped by issuer; a grant's detail page (credential, sublicense, upstream,
+//! details); and the sublicense page opened from it.
 
 use super::*;
 
@@ -9,7 +9,7 @@ pub(super) fn card_verdict(c: &crate::vaultx::Card) -> (Key, PillTone, Mark) {
     verdict_face(&c.verdict, &crate::vaultx::states(&c.checks))
 }
 
-/// The verdict and the six checks read as a face (this pass's cards and the last pass's saved verdict alike).
+/// The verdict and the six checks as a face (from this pass's cards or the last pass's saved verdict).
 pub(super) fn verdict_face(verdict: &str, states: &[(String, String)]) -> (Key, PillTone, Mark) {
     use zikaron_kit::tokens::CheckVerdict as V;
     let revoked = states.iter().any(|(tok, st)| tok == zikaron_kit::tokens::Check::Revoked.as_str() && state_mark(st) == Mark::Bad);
@@ -42,7 +42,7 @@ pub(super) fn days_of(secs: u64) -> String {
 }
 
 impl Win {
-    /// List the vault once (started by the product, no toast).
+    /// List the vault once (started by the app itself, no toast).
     pub(super) fn ensure_held(&mut self, now: f64) {
         if self.shell.held.is_some() || self.shell.home.is_none() || self.shell.tasks.attempted(crate::task::Kind::Held) {
             return;
@@ -50,8 +50,8 @@ impl Win {
         self.auto(Action::ListHeld, now);
     }
 
-    /// A held grant's record name: the person's own name for it on this machine, else the issuer's ledger's;
-    /// "unnamed record" when neither says.
+    /// A held grant's record name: the user's own name for it on this machine, else the issuer ledger's, else
+    /// "unnamed record".
     pub(super) fn held_record_name(&self, grant: &str) -> String {
         let g = crate::lastread::grant_form(grant);
         if let Some((_, n)) = self.shell.settings.grant_notes.iter().find(|(x, n)| *x == g && !n.trim().is_empty()) {
@@ -70,8 +70,8 @@ impl Win {
         self.held_record_name(grant)
     }
 
-    /// A held grant's verdict face: this pass's card, else the last pass's saved verdict (grey when stale,
-    /// with when it was checked), else "not verified".
+    /// A held grant's verdict face: this pass's card, else the last pass's saved verdict (grey when stale, with
+    /// when it was checked), else "not verified".
     fn held_face(&self, id: &str) -> (String, PillTone, Mark) {
         let card = self.shell.cards.as_ref().and_then(|(cards, _)| cards.iter().find(|x| x.id.eq_ignore_ascii_case(id)).cloned());
         if let Some(k) = card {
@@ -132,9 +132,8 @@ impl Win {
                 (h.clone(), name, issuer, face)
             })
             .collect();
-        // The block time the grant was anchored at in its issuer's ledger, the one reading the date range
-        // filters by (this run's re-check, else the cached verdict), in the record rows' format; "not read"
-        // only while neither has it.
+        // The block time the grant was anchored at in its issuer's ledger, which the date range filters by (this
+        // run's re-check, else the cached verdict), in the record rows' format; "not read" only while neither has it.
         let shell = &self.shell;
         let anchored_say = |id: &str| shell.held_anchored_at(id).map(crate::when::when).unwrap_or_else(|| t(Key::U4AnchorAgeUnread).to_string());
         let shown = |f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark))| {
@@ -182,7 +181,7 @@ impl Win {
                     });
                 });
             }
-            // Grants never verified have no issuer reading: a group of their own.
+            // Grants never verified have no issuer reading, so they form a group of their own.
             let loose: Vec<&(crate::vaultx::Held, String, String, (String, PillTone, Mark))> =
                 faces.iter().filter(|f| !cards.iter().any(|k| k.id.eq_ignore_ascii_case(&f.0.id))).filter(|f| shown(f)).collect();
             if !loose.is_empty() {
@@ -216,8 +215,8 @@ impl Win {
         }
     }
 
-    /// A held grant: record, issuer and validity in the head with the verdict; what is wrong said under it;
-    /// the basic facts; the credential and the sublicense; the upstream and details folded.
+    /// A held grant: record, issuer, validity and verdict in the head, what is wrong under it, the basic facts,
+    /// the credential and sublicense, and the upstream and details folded.
     pub(super) fn held_detail(&mut self, ui: &mut egui::Ui, id: &str, now: f64) {
         self.ensure_held(now);
         let Some(h) = self.shell.held.clone().unwrap_or_default().into_iter().find(|x| x.id.eq_ignore_ascii_case(id)) else {
@@ -241,12 +240,16 @@ impl Win {
                 if key == Key::U4Revoked {
                     states::err_box(ui, "held-revoked", t(Key::U4RevokedWhat), t(Key::U4RevokedNext), t(Key::U3RawError), &k.said);
                 } else if m != Mark::Ok {
-                    // The sentence follows the gap: no issuer ledger from any source, or found and waiting to
-                    // be anchored.
+                    // The sentence depends on the gap: no issuer ledger from any source, or found and waiting to be
+                    // anchored.
                     states::note_box(ui, t(if k.from.is_none() { Key::NoteNoLedger } else { Key::NoteNotYetAnchored }));
                 }
                 if k.handed.is_some() {
                     states::note_box(ui, t(Key::AlarmHandedPlain));
+                }
+                // Name each network this re-check could not read, with why (in the check page's words).
+                for m in &k.missed {
+                    states::okline(ui, Mark::Warn, &format!("{} {}", m.name, t(m.reading.key())));
                 }
             });
         }
@@ -255,8 +258,8 @@ impl Win {
                 Some((_, v)) => format!("{} \u{b7} {}", countdown_say(&k.countdown), fill1(Key::LastChecked, &hhmm_of(v.at))),
                 None => countdown_say(&k.countdown),
             },
-            // Not verified this pass: the last pass's chain time with when it was checked; a stale one only
-            // says when (an old chain time would count down wrongly).
+            // Not verified this pass: show the last pass's chain time with when it was checked; a stale one only says
+            // when (an old chain time would count down wrongly).
             (None, Some(v)) if crate::lastread::stale(v.at, (self.shell.clock)()) => format!("{} \u{b7} {}", t(Key::U4NotChecked), fill1(Key::LastChecked, &hhmm_of(v.at))),
             (None, Some(v)) => format!("{} \u{b7} {}", countdown_say(&crate::vaultx::countdown(h.window, v.chain_now)), fill1(Key::LastChecked, &hhmm_of(v.at))),
             (None, None) => t(Key::U4NotChecked).to_string(),
@@ -304,7 +307,7 @@ impl Win {
                     paint::rule(ui, 0.0);
                     motion::swap(ui, egui::Id::new("held-badge"), motion::key_of(&b.txt), |ui| {
                         // What was made on the left; the credential's code on the right edge, under the "choose
-                        // folder" key. The code sits on a plate `QR_PAD` wider on each side.
+                        // folder" key, on a plate `QR_PAD` wider on each side.
                         const QR: f32 = 116.0;
                         let plate = QR + 2.0 * paint::QR_PAD;
                         let (top, right) = (ui.cursor().top(), ui.max_rect().right());
@@ -379,8 +382,8 @@ impl Win {
         }
     }
 
-    /// Sublicense (pushed from a held grant): the upstream's record, issuer and validity; then the grant form
-    /// with that record fixed. Without a key or a ledger, what to do first.
+    /// Sublicense (opened from a held grant): the upstream's record, issuer and validity, then the grant form
+    /// with that record fixed. Without a key or a ledger, says what to do first.
     pub(super) fn relicense_page(&mut self, ui: &mut egui::Ui, now: f64) {
         let upstream = self.typed.g_upstream.trim().to_string();
         let held = self.shell.held.clone().unwrap_or_default().into_iter().find(|h| h.id.eq_ignore_ascii_case(&upstream));

@@ -1,33 +1,26 @@
-//! Diligence desk. Type an author address, get four panels; a snapshot has zero evidentiary weight.
+//! Diligence page: enter an author address and get four panels. A saved snapshot has no evidentiary weight.
 //!
-//! ─── Each panel has its own owner; this layer decides nothing ───
+//! Each panel has its own owner; this module decides nothing itself:
 //!
-//! 1. Audit label: the anchoring crate scans anchors (endpoint rule), the core produces the report and label;
-//! it takes the reader's reading (`readerx::read_scanned`), and this layer writes no separate reading
-//! for "someone else's ledger".
-//! 2. Record quantities: the kit crate's `reading::depth`, taken through the depth page's
-//! `depthx::read`: the same implementation as the author's own proof, so both sides' readings match byte for
-//! byte.
-//! 3. Grant history and double-sale check: the history comes from the reader's table reading; the double-sale
-//! check is here: an exclusive window I want to buy that overlaps any live grant turns red. Live = not
-//! revoked by a revocation referencing it; overlap has one owner (`grantx::overlaps`, the grant ledger's rule), and
-//! this layer writes no range rule of its own. Unlike the grant ledger's double-sale gate, which asks about the author's local
-//! exclusive flag, that flag cannot be read on someone else's ledger, so this asks only "live" and
-//! "overlapping", not the flag.
-//! 4. Succession history: one row per succession in the pile, with whom it was handed to; the lineage is
-//! computed by `auditx::senders_of` (the same algorithm as self-audit and the reader).
+//! 1. Audit label: the anchor crate scans anchors (agreed across endpoints) and the core produces the report
+//!    and label, via the reader (`readerx::read_scanned`); there is no separate reading for someone else's
+//!    ledger.
+//! 2. Record quantities: the kit crate's `reading::depth` via `depthx::read`, the same code as the author's
+//!    own proof, so both sides' readings match byte for byte.
+//! 3. Grant history and double-sale check: the history comes from the reader's grant table. The double-sale
+//!    check lives here: an exclusive window the buyer wants that overlaps any live grant (not revoked) turns
+//!    red. Overlap is `grantx::overlaps`, the grant ledger's rule. Unlike the grant ledger's own double-sale
+//!    gate, the author's local exclusive flag cannot be read on someone else's ledger, so only "live" and
+//!    "overlapping" are checked.
+//! 4. Succession history: one row per succession in the ledger, with the new holder; the lineage comes from
+//!    `auditx::senders_of`, the same algorithm as self-audit and the reader.
 //!
-//! ─── No indexer ───
+//! No indexer: addresses are never discovered or enumerated. The address book (`settings.book`) is purely
+//! local and never becomes a directory.
 //!
-//! This layer neither discovers nor enumerates addresses; the address book (`settings.book`) is purely local
-//! and never becomes a directory.
-//!
-//! ─── A snapshot has zero evidentiary weight ───
-//!
-//! The whole page can be saved as a snapshot, a note for oneself. The real evidence is the chain itself,
-//! recomputable at any time: the first cell of the snapshot file says `evidenceWeight: none`, and it is
-//! written through the glue crate's landing path (`landing::land_bytes`), refused when something is already
-//! at the path, never overwriting.
+//! The page can be saved as a snapshot, a note for oneself; the real evidence is the chain, recomputable at
+//! any time. The snapshot records `evidenceWeight: none` and is written via the glue crate's
+//! `landing::land_bytes`, which refuses to overwrite anything already at the path.
 
 use crate::fault::{Fault, Known};
 use zikaron::json::Value;
@@ -65,8 +58,8 @@ fn int(v: &Value, k: &str) -> Option<u64> {
     }
 }
 
-/// Succession history. One row per succession in the pile, in ascending seq (ties by id). Whether an entry is
-/// accepted is judged by the core's thirteen steps; this layer only lays out those that passed as rows.
+/// Succession history: one row per succession, ascending by seq (ties by id). Only entries that pass the
+/// core's entry check are listed.
 pub fn successions(bytes: &[Vec<u8>]) -> Vec<Succession> {
     let mut out: Vec<Succession> = Vec::new();
     for b in bytes {
@@ -87,12 +80,11 @@ pub fn successions(bytes: &[Vec<u8>]) -> Vec<Succession> {
     out
 }
 
-/// Double-sale check. An exclusive window I want to buy that overlaps any live grant (same record, not
-/// revoked) turns red.
+/// Double-sale check: the live grants (same record, not revoked) whose window overlaps the exclusive window
+/// the buyer wants.
 ///
-/// Without a window there is no reading (an empty table; the face says "no window, not checked"), never
-/// colliding with "forever": that would paint every historical grant red, and red must be able to say which
-/// window collided.
+/// With no window there is no reading (empty result; the page says "no window, not checked"). It is never
+/// treated as "forever", which would flag every past grant and could not say which window collided.
 pub fn double_sale(
     rows: &[crate::grantx::Row],
     work: &str,
@@ -111,8 +103,8 @@ pub fn double_sale(
         .collect()
 }
 
-/// One diligence pass's reading: four panels. Every cell is what the background pass brought back; the frame
-/// recomputes nothing.
+/// One diligence pass's result: the four panels as brought back by the background pass; the UI recomputes
+/// nothing.
 #[derive(Clone, Debug)]
 pub struct Read {
     /// The typed address (lowercase).
@@ -129,7 +121,7 @@ pub struct Read {
     pub work: String,
     /// The kit crate's depth reading, unchanged (`depthx::three` lays it out).
     pub depth: Option<Value>,
-    /// The window I want to buy.
+    /// The window the buyer wants.
     pub window: Option<(u64, u64)>,
     /// What the double-sale check collided with.
     pub clash: Vec<crate::grantx::Row>,
@@ -141,10 +133,10 @@ pub struct Read {
     pub now: Option<u64>,
     /// Block time of the latest anchor (`readerx::Book::latest`, same scan).
     pub latest: Option<u64>,
-    /// Which level the ledger bytes came from (`supplyx::find_book`'s four levels, the same as the reader and
-    /// the check page), and where; `None` when no level has them.
+    /// Which level supplied the ledger bytes (`supplyx::find_book`'s four levels, as for the reader and the
+    /// check page) and where; `None` when no level has them.
     pub from: Option<(crate::supplyx::Level, String)>,
-    /// How many items the publish address level fetched per the manifest.
+    /// How many items the publish-address level fetched via the manifest.
     pub files: Option<usize>,
     /// Which levels failed on the way, each named.
     pub misses: Vec<(crate::supplyx::Level, crate::fault::Fault)>,
@@ -157,17 +149,16 @@ impl Read {
         self.entries == 0
     }
 
-    /// Whether the double-sale check is red. No window is not green: `window` is then empty, and the face has
-    /// a separate sentence.
+    /// Whether the double-sale check is red. With no window, `clash` is empty and the page shows a separate
+    /// sentence, so no window does not mean green.
     pub fn double_sold(&self) -> bool {
         !self.clash.is_empty()
     }
 }
 
-/// Assemble the four panels. A read ledger (panel one and the first half of three), this pass's scan
-/// fragment, the stack of bytes, the target record and the window I want to buy go in; the quantities go to
-/// the kit crate (through the depth page), succession history and lineage are read now, and the double-sale comparison is
-/// made now.
+/// Assembles the four panels from a read ledger (panel one and the grant table), this pass's scan fragment,
+/// the ledger bytes, the target record and the wanted window. Quantities come from the kit crate (via
+/// `depthx`); succession history, lineage and the double-sale check are computed here.
 pub fn assemble(
     book: crate::readerx::Book,
     fragment: &Value,
@@ -175,15 +166,13 @@ pub fn assemble(
     work: &str,
     window: Option<(u64, u64)>,
 ) -> Result<Read, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::D1);
     let work = work.trim().to_string();
     if !work.is_empty() && !zikaron::hexfmt::is_hex32(&work) {
         return Err(Fault::known(Known::ContentShape, work));
     }
-    // Quantities: a reading only with bytes and a record given; produced by the kit crate, and this layer
-    // computes not one number.
+    // Quantities only with ledger bytes and a target record; computed by the kit crate, not here.
     let depth = if bytes.is_empty() || work.is_empty() {
         None
     } else {
@@ -213,13 +202,13 @@ pub fn assemble(
     })
 }
 
-/// The snapshot file's first cell's member name. One name, one home.
+/// Member name in the snapshot that states its evidentiary weight.
 pub const EVIDENCE_WEIGHT: &str = "evidenceWeight";
 
-/// The literal of the snapshot file's first cell: zero evidentiary weight.
+/// The value of that member: no evidentiary weight.
 pub const EVIDENCE_WEIGHT_NONE: &str = "none";
 
-/// Write the four panels as a snapshot (canonical JSON).
+/// The four panels as a snapshot value (canonical JSON).
 pub fn snapshot_value(r: &Read) -> Value {
     let s = |x: &str| Value::Str(x.to_string());
     let grants = r
@@ -281,11 +270,10 @@ pub fn snapshot_value(r: &Read) -> Value {
     ])
 }
 
-/// Save a snapshot. Written through the glue crate's landing path: refused when something is already at the
-/// path, never overwriting. Returns the byte count written.
+/// Saves a snapshot via the glue crate's landing path, which refuses when something is already at the path
+/// (never overwrites). Returns the number of bytes written.
 pub fn snapshot(r: &Read, to: &std::path::Path) -> Result<usize, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::D1);
     if to.as_os_str().is_empty() {
         return Err(Fault::known(Known::FieldMissing, crate::lang::t(crate::lang::Key::Tail108).to_string()));

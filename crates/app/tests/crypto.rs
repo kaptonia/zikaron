@@ -1,9 +1,8 @@
 //! The two keystore cryptography pieces at the `cryptx` boundary (scrypt and AES-128-CTR), against standard
 //! test vectors.
 //!
-//! These vectors are numbers printed in SP 800-38A and RFC 7914, not expectations we computed ourselves. A
-//! mismatch turns red the same day. The BIP-39 and BIP-32 vectors live in unit tests inside `cryptx`
-//! (derivation does not leave that module).
+//! These vectors are published numbers from SP 800-38A and RFC 7914, not values we computed ourselves. The
+//! BIP-39 and BIP-32 vectors live in unit tests inside `cryptx` (derivation does not leave that module).
 
 use zikaron::hexfmt;
 
@@ -158,4 +157,97 @@ fn a_keystore_whose_shape_is_off_is_refused_by_the_named_column() {
     let e = must_refuse(app::keystore::decrypt(broken.as_bytes(), "密码"));
     assert!(e.said().starts_with("KEYSTORE_SHAPE"), "现读:{}", e.said());
     assert!(e.tail().contains("version"), "要说出是哪一栏,现读:{}", e.tail());
+}
+
+/// A key file derived by `pbkdf2` (HMAC-SHA256) opens, as one by `scrypt` does. The published V3 test vector
+/// (Web3 Secret Storage, password `testpassword`, c 262144) opens to its published key; a wrong password is
+/// reported as one; the app still writes `scrypt` only.
+#[test]
+fn a_pbkdf2_key_file_opens_to_its_key() {
+    let vector = br#"{"crypto":{"cipher":"aes-128-ctr","cipherparams":{"iv":"6087dab2f9fdbbfaddc31a909735c1e6"},"ciphertext":"5318b4d5bcd28de64ee5559e671353e16f075ecae9f99c7a79a38af5f869aa46","kdf":"pbkdf2","kdfparams":{"c":262144,"dklen":32,"prf":"hmac-sha256","salt":"ae3cd4e7013836a3df6bd7241b12db061dbe2c6785853cce422d148a624ce0bd"},"mac":"517ead924a9d0dc3124507e3393d175ce3ff7c1e96529c6c555ce9e51205e9b2"},"id":"3198bc9c-6672-5ab3-d995-4942343ae5b6","version":3}"#;
+    let s = app::keystore::shape(vector).expect("reads");
+    assert!(s.compliant().is_empty(), "{:?}", s.compliant());
+    let secret = app::keystore::decrypt(vector, "testpassword").expect("opens");
+    let published: [u8; 32] = zikaron::hexfmt::decode("0x7a28b5ba57c53603b0b07b56bba752f7784bf506fa95edc395f5cf6c7514fe9d").expect("hex").try_into().expect("32");
+    assert_eq!(secret.address(), app::key::Secret::take(published).expect("in range").address(), "the published key");
+    let wrong = app::keystore::decrypt(vector, "wrongpassword").err().expect("refused");
+    assert_eq!(wrong.which(), Some(app::fault::Known::BadPassword));
+    // What this file writes stays scrypt.
+    let made = app::keystore::encrypt(&app::key::Secret::take([7u8; 32]).expect("in range"), "a password", app::keystore::Params::light(), 0).expect("writes");
+    assert_eq!(app::keystore::shape(&made.json).expect("reads").kdf, "scrypt");
+}
+
+/// The closed table of a key file's derivation: the name (`scrypt`, `pbkdf2`, each only as written);
+/// `pbkdf2`'s function (`hmac-sha256` only) and round count (absent, not whole, zero, one, the ceiling 2^24,
+/// one past it, the reader's own ceiling); `scrypt`'s members not required of a `pbkdf2` file and vice versa.
+/// Form refusals are `KEYSTORE_SHAPE`, bound refusals `KEYSTORE_PARAMS`, both before any derivation work.
+#[test]
+fn a_key_files_derivation_is_one_of_two_within_its_bounds() {
+    use app::fault::Known;
+    let file = |kdf: &str, params: &str| {
+        format!(
+            r#"{{"crypto":{{"cipher":"aes-128-ctr","cipherparams":{{"iv":"6087dab2f9fdbbfaddc31a909735c1e6"}},"ciphertext":"5318b4d5bcd28de64ee5559e671353e16f075ecae9f99c7a79a38af5f869aa46","kdf":"{kdf}","kdfparams":{{{params}"dklen":32,"salt":"ae3cd4e7013836a3df6bd7241b12db061dbe2c6785853cce422d148a624ce0bd"}},"mac":"517ead924a9d0dc3124507e3393d175ce3ff7c1e96529c6c555ce9e51205e9b2"}},"version":3}}"#
+        )
+        .into_bytes()
+    };
+    let refused = |bytes: &[u8]| app::keystore::decrypt(bytes, "testpassword").err().map(|f| (f.which(), f.tail().to_string()));
+    for (form, bytes, want, names) in [
+        ("kdf in capitals", file("PBKDF2", r#""c":262144,"prf":"hmac-sha256","#), Known::KeystoreShape, "kdf"),
+        ("kdf unknown", file("argon2id", r#""c":262144,"prf":"hmac-sha256","#), Known::KeystoreShape, "kdf"),
+        ("kdf empty", file("", r#""c":262144,"prf":"hmac-sha256","#), Known::KeystoreShape, "kdf"),
+        ("prf sha512", file("pbkdf2", r#""c":262144,"prf":"hmac-sha512","#), Known::KeystoreShape, "prf"),
+        ("prf in capitals", file("pbkdf2", r#""c":262144,"prf":"HMAC-SHA256","#), Known::KeystoreShape, "prf"),
+        ("prf absent", file("pbkdf2", r#""c":262144,"#), Known::KeystoreShape, "prf"),
+        ("c absent", file("pbkdf2", r#""prf":"hmac-sha256","#), Known::KeystoreShape, "c"),
+        ("c not whole", file("pbkdf2", r#""c":"262144","prf":"hmac-sha256","#), Known::KeystoreShape, "c"),
+        ("c zero", file("pbkdf2", r#""c":0,"prf":"hmac-sha256","#), Known::KeystoreParams, "c=0"),
+        ("c one past the ceiling", file("pbkdf2", r#""c":16777217,"prf":"hmac-sha256","#), Known::KeystoreParams, "c=16777217"),
+        ("c at the reader's ceiling", file("pbkdf2", r#""c":9007199254740991,"prf":"hmac-sha256","#), Known::KeystoreParams, "c=9007199254740991"),
+        ("scrypt without its members", file("scrypt", r#""c":262144,"prf":"hmac-sha256","#), Known::KeystoreShape, "r p"),
+    ] {
+        let got = refused(&bytes).unwrap_or_else(|| panic!("{form}: refused"));
+        assert_eq!(got.0, Some(want), "{form}: {}", got.1);
+        assert!(got.1.contains(names), "{form}: names {names}: {}", got.1);
+    }
+    // Within the bounds the work is done and the password checked: c of one and the ceiling are accepted (the
+    // vector's mac belongs to c 262144, so these report a wrong password, which only the work can tell).
+    for (form, params) in [("c one", r#""c":1,"prf":"hmac-sha256","#), ("pbkdf2 with scrypt's members too", r#""c":2,"n":3,"r":0,"prf":"hmac-sha256","#)] {
+        let got = refused(&file("pbkdf2", params)).expect("judged");
+        assert_eq!(got.0, Some(Known::BadPassword), "{form}: {}", got.1);
+    }
+    let s = app::keystore::shape(&file("pbkdf2", r#""c":16777216,"prf":"hmac-sha256","#)).expect("reads");
+    assert!(s.compliant().is_empty(), "the ceiling itself is within: {:?}", s.compliant());
+}
+
+/// A key file whose form or bounds are wrong is refused before any derivation work (the process's derivation
+/// count does not move), one line per form: a `ciphertext` one byte short and twice as long (a 32-byte key
+/// encrypts to exactly 32 bytes; any other length could never open and is never reported as a wrong password),
+/// a member written as text, a round count past the ceiling, a missing member. A well-formed file does the work.
+#[test]
+fn a_key_file_of_the_wrong_form_is_refused_before_the_work() {
+    use app::fault::Known;
+    let file = |ciphertext: &str, params: &str| {
+        format!(
+            r#"{{"crypto":{{"cipher":"aes-128-ctr","cipherparams":{{"iv":"6087dab2f9fdbbfaddc31a909735c1e6"}},"ciphertext":"{ciphertext}","kdf":"pbkdf2","kdfparams":{{{params}"dklen":32,"salt":"ae3cd4e7013836a3df6bd7241b12db061dbe2c6785853cce422d148a624ce0bd"}},"mac":"517ead924a9d0dc3124507e3393d175ce3ff7c1e96529c6c555ce9e51205e9b2"}},"version":3}}"#
+        )
+        .into_bytes()
+    };
+    let whole = "5318b4d5bcd28de64ee5559e671353e16f075ecae9f99c7a79a38af5f869aa46";
+    let good = r#""c":2,"prf":"hmac-sha256","#;
+    for (form, bytes, want) in [
+        ("ciphertextShort", file(&"ab".repeat(31), good), Known::KeystoreShape),
+        ("ciphertextLong", file(&"ab".repeat(64), good), Known::KeystoreShape),
+        ("cAsText", file(whole, r#""c":"2","prf":"hmac-sha256","#), Known::KeystoreShape),
+        ("cPastCeiling", file(whole, r#""c":16777217,"prf":"hmac-sha256","#), Known::KeystoreParams),
+        ("prfAbsent", file(whole, r#""c":2,"#), Known::KeystoreShape),
+    ] {
+        let before = app::cryptx::derivations();
+        let got = app::keystore::decrypt(&bytes, "testpassword").err().unwrap_or_else(|| panic!("{form}: refused"));
+        assert_eq!(got.which(), Some(want), "{form}: {}", got.tail());
+        assert_eq!(app::cryptx::derivations(), before, "{form}: refused before the work");
+    }
+    let before = app::cryptx::derivations();
+    let wrong = app::keystore::decrypt(&file(whole, good), "testpassword").err().expect("this vector's mac is another c's");
+    assert_eq!(wrong.which(), Some(Known::BadPassword));
+    assert!(app::cryptx::derivations() > before, "a file of the right form does the work");
 }

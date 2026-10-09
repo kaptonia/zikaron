@@ -1,10 +1,10 @@
-//! The whole-machine backup sheets: export a backup, restore from one (three entries: first run, settings,
-//! the locked card), and export the ledger mirror (an export of the recorder's ledger that restores nothing).
-//! Every key hands its work to the action layer; the frame reads no disk.
+//! The whole-machine backup sheets: export a backup, restore from one (three entry points: first run,
+//! settings, the lock screen card), and export the ledger mirror (a ledger export that restores nothing).
+//! Every button hands its work to the action layer; the frame reads no disk.
 
 use super::*;
 
-/// Which backup sheet is open. Closed.
+/// Which backup sheet is open.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Bk {
     /// Export a whole-machine backup.
@@ -15,7 +15,7 @@ pub(super) enum Bk {
     Mirror,
 }
 
-/// Where a restore starts. Closed: the three entries.
+/// Where a restore starts: the three entry points.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RestoreFrom {
     FirstRun,
@@ -23,8 +23,8 @@ pub(super) enum RestoreFrom {
     Locked,
 }
 
-/// The locked card's restore walks three steps: choose the file and its password, confirm the replacement,
-/// set a new passcode.
+/// The lock screen card's restore has three steps: choose the file and its password, confirm the
+/// replacement, set a new passcode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(super) enum BkStep {
     #[default]
@@ -47,7 +47,7 @@ impl Win {
         self.ux.bk = Some(b);
     }
 
-    /// The backup sheets. The locked card's restore draws above the passcode gate; the others only when the
+    /// The backup sheets. The lock screen's restore draws above the passcode gate; the others only when the
     /// gate is down.
     pub(super) fn bk_sheets(&mut self, ctx: &egui::Context, now: f64) {
         let Some(which) = self.ux.bk else { return };
@@ -84,7 +84,7 @@ impl Win {
                         });
                         field(ui, t(Key::BackupPassword), None, |ui| {
                             input::secret_line(ui, &mut me.ux.bk_pw, "");
-                            // The strength bar only reminds (12 or more with a symbol reads strong).
+                            // The strength bar is only a hint (12 or more characters with a symbol reads as strong).
                             if !me.ux.bk_pw.is_empty() {
                                 let (lit, m, k) = match crate::keystore::strength(me.ux.bk_pw.expose()) {
                                     crate::keystore::Strength::Weak => (1, Mark::Bad, Key::StrengthWeak),
@@ -151,8 +151,8 @@ impl Win {
                     },
                     |ui, me| {
                         let ready = !me.ux.bk_path.trim().is_empty() && !me.ux.bk_pw.is_empty() && (!settings || pin_full) && !busy;
-                        // On the locked card this key only opens the backup to look (a confirm and a new passcode
-                        // follow), so it is the guide key; from settings and at first run it is the final step.
+                        // On the lock screen card this button only opens the backup to inspect it (a confirmation and a new
+                        // passcode follow), so it is the guide button; from settings and at first run it is the final step.
                         let pressed = if from == RestoreFrom::Locked {
                             page::Guide::key(ui, t(Key::PinRecoverTitle), ready).clicked()
                         } else {
@@ -162,7 +162,7 @@ impl Win {
                             let path = me.ux.bk_path.trim().to_string();
                             let password = me.ux.bk_pw.clone();
                             go = Some(match from {
-                                // The locked card opens the backup first and asks before replacing anything.
+                                // The lock screen card opens the backup first and asks before replacing anything.
                                 RestoreFrom::Locked => Action::PeekBackup { path, password },
                                 RestoreFrom::FirstRun => Action::RestoreBackup { path, password, how: crate::action::RestoreHow::FirstRun },
                                 RestoreFrom::Settings => Action::RestoreBackup { path, password, how: crate::action::RestoreHow::Settings { pin: std::mem::take(&mut me.ux.bk_pin) } },
@@ -172,7 +172,7 @@ impl Win {
                     },
                 );
                 esc = out.esc && !busy;
-                // The locked card: once the backup opened with its password, confirm before replacing.
+                // The lock screen card: once the backup has opened with its password, confirm before replacing.
                 if from == RestoreFrom::Locked && self.shell.backup_peek.is_some() {
                     self.ux.bk_step = BkStep::Confirm;
                 }

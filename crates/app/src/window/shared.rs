@@ -1,27 +1,27 @@
 use super::*;
 
-/// Wei read as ETH for an upper bound (a fee cap, what a send needs): the last digit shown rounds up, so a cap
-/// is never said smaller than it is. Display only, never for a decision.
+/// Wei as ETH for an upper bound (a fee cap, what a send needs): the last digit shown rounds up, so a cap is
+/// never shown smaller than it is. Display only, never for a decision.
 pub(super) fn eth_cap(wei: u128) -> String {
     eth_digits(wei, true)
 }
 
-/// Wei read as ETH for what is held (a balance, what there is): the last digit shown rounds down, so a balance
-/// is never said larger than it is. Display only, never for a decision.
+/// Wei as ETH for an amount held (a balance): the last digit shown rounds down, so a balance is never shown
+/// larger than it is. Display only, never for a decision.
 pub(super) fn eth_held(wei: u128) -> String {
     eth_digits(wei, false)
 }
 
-/// The one rule for both: as many decimals as the larger of four and what reaching the third significant digit
-/// takes (never past wei, 18), the dropped rest rounding up or down as asked, then trailing zeros trimmed while
-/// more than four remain. Exactly zero is "0": a non-zero amount never reads as all zeros, however small.
+/// The shared rule: as many decimals as the larger of four and what reaching the third significant digit
+/// takes (at most 18, i.e. wei), the dropped rest rounded up or down as asked, then trailing zeros trimmed
+/// while more than four remain. Exactly zero is "0"; a non-zero amount never reads as all zeros.
 fn eth_digits(wei: u128, up: bool) -> String {
     const WEI_DECIMALS: u32 = 18;
     if wei == 0 {
         return "0".to_string();
     }
     let digits = wei.ilog10() + 1;
-    // Position after the point of the first significant digit (it is in the whole part when `digits > 18`).
+    // Position after the point of the first significant digit (in the whole part when `digits > 18`).
     let first = (WEI_DECIMALS + 1).saturating_sub(digits);
     let places = 4.max(first + 2).min(WEI_DECIMALS);
     let step = 10u128.pow(WEI_DECIMALS - places);
@@ -37,8 +37,7 @@ fn eth_digits(wei: u128, up: bool) -> String {
     format!("{}.{}", scaled / scale, frac)
 }
 
-/// Hours and minutes of a wall-clock second in the chosen zone (the rail's "last synced" line; never used
-/// for a decision).
+/// Hours and minutes of a wall-clock second in the chosen zone (the rail's "last synced" line; display only).
 pub(super) fn hm_zone(secs: u64) -> String {
     crate::when::when(secs).chars().skip(11).take(5).collect()
 }
@@ -48,13 +47,13 @@ pub(super) fn wall_secs() -> u64 {
 }
 
 impl Win {
-    /// This seat's wizard reading now (gathered by `nav::Progress::of`, not here).
+    /// This seat's wizard progress (gathered by `nav::Progress::of`).
     pub(super) fn progress(&self) -> crate::nav::Progress {
         crate::nav::Progress::of(&self.shell)
     }
 
-    /// An action the product starts itself (such as reading a table when a page opens): the same `apply`,
-    /// without a toast. Troubles still go to the trouble list, readings land on the page.
+    /// Apply an action the app starts by itself (such as reading a table when a page opens): the same `apply`,
+    /// without a toast. Troubles still go to the trouble list, and readings land on the page.
     pub(super) fn auto(&mut self, a: Action, now: f64) {
         let _ = now;
         let want = match &a {
@@ -69,7 +68,7 @@ impl Win {
         }
     }
 
-    /// Only one file per drop. With more than one, say so at once and take none.
+    /// Accept only one file per drop; with more, say so at once and take none.
     pub(super) fn one_drop(&mut self, d: &drop::Drop, now: f64) -> Option<String> {
         match d.dropped.as_slice() {
             [] => None,
@@ -81,18 +80,18 @@ impl Win {
         }
     }
 
-    /// The path a drop zone received this frame. One dropped file is it (several give a toast and nothing is
-    /// taken); clicking the zone opens the system file dialog, allowing files or directories by `kind`, and
-    /// the chosen one is it, `None` on cancel.
-    pub(super) fn drop_or_pick(&mut self, d: &drop::Drop, kind: crate::platform::Pick, now: f64) -> Option<String> {
+    /// The path a drop zone received this frame: the single dropped file (several give a toast and none is
+    /// taken), or, when the zone is clicked, the file or directory chosen in the system dialog (by `kind`) on
+    /// the frame it lands (`None` meanwhile and on cancel).
+    pub(super) fn drop_or_pick(&mut self, ctx: &egui::Context, site: &str, d: &drop::Drop, kind: crate::platform::Pick, now: f64) -> Option<String> {
         match self.one_drop(d, now) {
             Some(p) => Some(p),
-            None if d.clicked => crate::platform::choose_path(kind),
-            None => None,
+            // The dialog does not block the frame: its answer comes back here on a later frame.
+            None => path_answer(ctx, egui::Id::new(("zikaron-path-drop", site)), d.clicked, kind),
         }
     }
 
-    /// Take that entry's bytes; if unreadable, it goes by name to the trouble list (never swallowed as "no
+    /// Read that entry's bytes; if unreadable, report it by name to the trouble list (never swallowed as "no
     /// details").
     pub(super) fn read_detail(&mut self, want: Option<&str>) {
         let got = match (want, self.shell.home.as_ref()) {
@@ -100,7 +99,7 @@ impl Win {
             _ => None,
         };
         match got {
-            // Once read, clear the "tried" mark: only an entry that could not be read stops retrying by itself.
+            // Once read, clear the "tried" mark: only an entry that could not be read stops retrying.
             Some(Ok(d)) => {
                 self.opened = Some(d);
                 self.ux.u3.opened_tried = None;
@@ -119,10 +118,10 @@ impl Win {
         self.issuer_name(&issuer)
     }
 
-    /// An issuer named by its ledger's statement (the genesis note of that ledger, read with the grant), or
-    /// "unnamed issuer".
+    /// An issuer named by its ledger's statement (that ledger's genesis note, read with the grant), or "unnamed
+    /// issuer".
     pub(super) fn issuer_name(&self, author: &str) -> String {
-        // The person's own name for this issuer on this machine comes first.
+        // The user's own name for this issuer on this machine comes first.
         let a = crate::lastread::issuer_form(author);
         if let Some((_, n)) = self.shell.settings.issuer_notes.iter().find(|(x, n)| *x == a && !n.trim().is_empty()) {
             return n.clone();
@@ -173,7 +172,7 @@ mod amounts {
         assert_eq!(eth_held(94_500_000_000_000), "0.0000945");
         assert_eq!(eth_cap(420_000_000_000_000), "0.00042");
         assert_eq!(eth_held(420_000_000_000_000), "0.00042");
-        // A cap like 200,000 gas at a low fee: past the third digit, up for the cap, down for a balance.
+        // A cap like 200,000 gas at a low fee: rounded past the third digit, up for a cap, down for a balance.
         assert_eq!(eth_cap(94_512_345_678_901), "0.0000946");
         assert_eq!(eth_held(94_512_345_678_901), "0.0000945");
     }
@@ -196,7 +195,7 @@ mod amounts {
 
     #[test]
     fn rounding_up_carries_across_places() {
-        // 0.00009995: up carries through every nine to 0.0001000, trimmed to four places; down keeps it.
+        // 0.00009995: rounding up carries through every nine to 0.0001000, trimmed to four places; down keeps it.
         assert_eq!(eth_cap(99_950_000_000_000), "0.0001");
         assert_eq!(eth_held(99_950_000_000_000), "0.0000999");
         assert_eq!(eth_cap(999_999_999_999_999_999), "1.0000");

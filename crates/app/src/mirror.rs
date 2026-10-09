@@ -1,18 +1,18 @@
-//! Mirror and restore: export a bundle; on import re-verify every entry through the core; only a COMPLETE
-//! anchor reconciliation releases the pen.
+//! Mirror backups: export a bundle, and on import re-verify every entry through the core.
 //!
-//! A bundle is a directory with a manifest (`mirror.json`) and an `entries/` room. The manifest records each
-//! entry's name, digest and size; the name is the entry id (`entry_id`, law §2.1), computed, never copied.
+//! A bundle is a directory with a manifest (`mirror.json`) and an `entries/` directory. The manifest records
+//! each entry's name, digest and size; the name is the computed entry id (`entry_id`, law §2.1),
+//! never copied.
 //!
 //! A bundle comes from elsewhere. A matching digest only shows it was not altered in transit, not that it is
 //! a valid entry, and restore poisoning is the attack to defend against. So every entry goes through the
-//! core's `entry::check` (thirteen steps) and its `entry_id` is computed and compared with the file name; if
-//! any of digest, law or identity fails, the whole bundle is refused. Taking the good entries and skipping
-//! the bad ones would produce a ledger nobody can vouch for.
+//! core's `entry::check` and its computed `entry_id` must equal the file name; if the digest, validity or id
+//! check fails for any entry, the whole bundle is refused. Keeping the good entries and skipping the bad ones
+//! would produce a ledger nobody can vouch for.
 //!
-//! After a restore the home holds the pen: writing is allowed again only after an anchor reconciliation
-//! (scan, assemble, core report) returns `COMPLETE`. Any other label (UNAVAILABLE / GAPS / BROKEN_CHAIN)
-//! keeps the pen held and is shown unchanged, never leaning toward green.
+//! After a restore, writing stays disabled until an anchor reconciliation (scan, assemble, core report)
+//! returns `COMPLETE`. Any other label (UNAVAILABLE / GAPS / BROKEN_CHAIN) keeps writing disabled and is shown
+//! as is, never rounded up to success.
 
 use crate::fault::{classify, Fault, Known};
 use crate::home::Home;
@@ -21,27 +21,26 @@ use zikaron::hexfmt;
 use zikaron::json::{self, Value};
 use zikaron_store::EntryName;
 
-/// The bundle's layout (manifest name, entries room, kind and version) is named once in the glue crate, where
-/// the command line reads mirrors by the same names.
+/// Bundle layout constants (manifest name, entries directory, kind and version), shared with the command line
+/// through the glue crate.
 pub use zikaron_glue::mirror::{ENTRIES, KIND, MANIFEST, VERSION};
-/// The name of the bundle inside a folder, defined once: first run, settings and the test hooks all call
-/// [`bundle_in`].
+/// The bundle directory name inside the chosen folder (see [`bundle_in`]).
 pub const STEM: &str = "ZIKARON-backup";
-/// Where the vault room goes inside a bundle (the mirror also covers `grants-held/`).
+/// Where the vault (`grants-held/`) goes inside a bundle.
 pub const HELD: &str = "held";
 
-/// Reading after writing a bundle.
+/// The result of writing a bundle.
 pub struct Made {
     pub root: std::path::PathBuf,
     pub entries: usize,
     pub bytes: u64,
-    /// How many entries this pass added (a new bundle equals `entries`).
+    /// How many entries this export added (equal to `entries` for a new bundle).
     pub added: usize,
-    /// Whether this pass topped up an old bundle or wrote a new one.
+    /// Whether this export topped up an existing bundle rather than writing a new one.
     pub topped_up: bool,
 }
 
-/// One entry's reading in a bundle.
+/// One manifest row.
 pub struct Row {
     pub name: String,
     pub sha256: String,
@@ -52,15 +51,14 @@ pub struct Row {
 pub struct Sheet {
     pub kind: String,
     pub version: u64,
-    /// Which ledger this bundle belongs to (the genesis author; law §4.2: one ledger, one root). Empty in
-    /// older bundles without this field.
+    /// Which ledger this bundle belongs to (the genesis author; one ledger, one root, law §4.2). Empty
+    /// in bundles from older versions.
     pub root: String,
     pub rows: Vec<Row>,
-    /// Vault room files (relative path, digest, size); empty in older bundles.
+    /// Vault files (relative path, digest, size); empty in bundles from older versions.
     pub held: Vec<Row>,
-    /// Whose bundle this is when it has no ledger side (the current identity's id). Bundles with a ledger are
-    /// recognized by root, and this stays empty; older bundles without it are empty too and are still
-    /// recognized (bundles written earlier are never read as someone else's).
+    /// The owning identity's id, for bundles without a ledger. Bundles with a ledger are recognized by root and
+    /// leave this empty; bundles from older versions also lack it and are still treated as the user's own.
     pub owner: String,
 }
 
@@ -69,10 +67,9 @@ fn sha_hex(b: &[u8]) -> String {
 }
 
 
-/// Where one holder's seat bundle lands inside a folder: `<chosen>/ZIKARON-backup/<address>/<seat>`. The only
-/// place this name is built (first run, settings and the test hooks take it from here). A second address or seat
-/// backed up into the same folder gets its own bundle. Empty or relative is refused at once
-/// (`PATH_RELATIVE`), instead of writing into the current directory and reporting success.
+/// Where a holder's bundle for one role goes inside a chosen folder: `<chosen>/ZIKARON-backup/<address>/<seat>`,
+/// so different addresses or roles backed up to one folder get separate bundles. An empty or relative folder
+/// is refused at once (`PATH_RELATIVE`) instead of writing into the current directory.
 pub fn bundle_in(folder: &std::path::Path, holder: &str, seat: crate::roles::Role) -> Result<std::path::PathBuf, Fault> {
     crate::home::landing(&folder.to_string_lossy())?;
     let who = holder.trim().trim_start_matches("0x").to_ascii_lowercase();
@@ -82,9 +79,8 @@ pub fn bundle_in(folder: &std::path::Path, holder: &str, seat: crate::roles::Rol
     Ok(folder.join(STEM).join(who).join(seat.as_str()))
 }
 
-/// Which chosen folder a bundle belongs to: three levels up in the new layout (`<seat>`, `<address>`,
-/// `ZIKARON-backup`), one level up in the old. The settings backup path shows the chosen folder by it (backup
-/// and restore read the path the same way).
+/// The chosen folder a bundle is in: three levels up in the current layout (`<seat>`, `<address>`,
+/// `ZIKARON-backup`), one level up in the old one. Used to show the backup folder in settings.
 pub fn folder_of(bundle: &std::path::Path) -> std::path::PathBuf {
     let up = |p: &std::path::Path| p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
     let stem_at = up(&up(bundle));
@@ -96,7 +92,7 @@ pub fn folder_of(bundle: &std::path::Path) -> std::path::PathBuf {
 }
 
 
-/// What is at that place. The rule for "occupied" lives here.
+/// What is at a bundle path; this defines "occupied".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Belongs {
     /// Nothing there, or empty: write a new bundle.
@@ -109,11 +105,11 @@ pub enum Belongs {
     Junk { why: String },
 }
 
-/// A bundle's root: from the manifest when written there (new bundles always write it); older bundles compute
-/// it entry by entry (the same source as the ledger, `auditx::root_of`).
+/// A bundle's root: from the manifest when present (current bundles always write it), otherwise computed from
+/// the entries as for the ledger (`auditx::root_of`).
 ///
-/// A bundle with no entries has no root (empty string): the grantee side often has no ledger, and its vault
-/// files still need backing up.
+/// A bundle with no entries has no root (empty string): grantees often have no ledger but still need their
+/// vault backed up.
 fn bundle_root(bundle: &std::path::Path, sheet: &Sheet) -> Result<String, Fault> {
     if !sheet.root.is_empty() {
         return Ok(sheet.root.clone());
@@ -125,9 +121,9 @@ fn bundle_root(bundle: &std::path::Path, sheet: &Sheet) -> Result<String, Fault>
     crate::auditx::root_of(&items)
 }
 
-/// What is at this place: nothing or empty is an empty place; a readable manifest with this ledger's root is
-/// an earlier bundle of this ledger; another root is another ledger's bundle; anything else (content with an
-/// unreadable or malformed manifest) is junk. Each form is named, so the screen can say which.
+/// Classify what is at `bundle`: missing or empty is `Empty`; a valid manifest with this ledger's root is
+/// `Ours`; another root is `Other`; anything else (unreadable or malformed manifest) is `Junk`, so the UI can
+/// say which.
 pub fn belongs(bundle: &std::path::Path, our_root: &str) -> Belongs {
     if !bundle.exists() {
         return Belongs::Empty;
@@ -144,17 +140,14 @@ pub fn belongs(bundle: &std::path::Path, our_root: &str) -> Belongs {
         return Belongs::Junk { why };
     }
     match bundle_root(bundle, &sheet) {
-        // Neither side has a root (no ledger yet), so ask whose it is: the grantee side backs up only the
-        // vault, the bundle holds no ledger, and two people's bundles in one folder look identical. Treating
-        // it as ours would rewrite the manifest from this machine's vault on top-up, and the other person's
-        // files would stay on disk while disappearing from the manifest (unrecoverable at restore), silently.
+        // Neither side has a root (no ledger), so compare owners: vault-only bundles of two people in one
+        // folder look identical. Treating another's as ours would rewrite its manifest from this vault on
+        // top-up, silently dropping the other person's files from the manifest (unrecoverable at restore).
         Ok(root) if root.is_empty() && our_root.is_empty() => match (sheet.owner.as_str(), our_owner()) {
-            // Older bundles lack this field: recognized as ours as before (the new field does not turn
-            // earlier bundles into someone else's).
+            // Bundles from older versions lack `owner` and are still treated as ours.
             ("", _) => Belongs::Ours { entries: sheet.rows.len() },
             (had, Some(now)) if had.eq_ignore_ascii_case(&now) => Belongs::Ours { entries: sheet.rows.len() },
-            // This recognizes whose bundle, not which ledger; the tail says so, so the screen does not read
-            // an identity as a ledger root.
+            // This is an identity, not a ledger root; the prefix makes that clear in the UI.
             (had, _) => Belongs::Other { root: format!("身份 {had}") },
         },
         Ok(root) if root.eq_ignore_ascii_case(our_root) => Belongs::Ours { entries: sheet.rows.len() },
@@ -163,15 +156,13 @@ pub fn belongs(bundle: &std::path::Path, our_root: &str) -> Belongs {
     }
 }
 
-/// The id of the identity on this machine now (`None` when unreadable: then only roots are compared, as
-/// before).
+/// The current identity's id (`None` when unreadable; then only roots are compared).
 fn our_owner() -> Option<String> {
     crate::register::now_row_listed().ok().flatten().map(|(row, _)| row.id)
 }
 
-/// This ledger's root (the genesis author). Empty with no root yet: the grantee side often has no ledger but
-/// its vault still needs backing up; an empty root matches only bundles that also have none (see
-/// [`belongs`]).
+/// This ledger's root (the genesis author), or empty when there is no ledger yet (common for grantees, whose
+/// vault still needs backing up). An empty root matches only bundles that also have none (see [`belongs`]).
 fn our_root(home: &Home) -> Result<String, Fault> {
     let survey = home
         .ledger()?
@@ -182,20 +173,19 @@ fn our_root(home: &Home) -> Result<String, Fault> {
     crate::auditx::root_of(&survey.items)
 }
 
-/// Write a bundle, or top up an old one.
+/// Write a bundle, or top up an existing one.
 ///
-/// The location must be a full path: empty or relative is refused at once. An empty place gets a new bundle;
-/// an earlier bundle of this ledger is compared entry by entry by digest, new entries are added and a new
-/// manifest written; another ledger's bundle or junk is refused, saying which.
-/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+/// `out` must be an absolute path. An empty location gets a new bundle; an earlier bundle of this ledger is
+/// compared file by file by digest, missing entries are added and a new manifest is written; another ledger's
+/// bundle or junk is refused with the reason. `_pass` ([`crate::exitgate::Pass`]) ensures this is only
+/// reachable through the exit gate.
 pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path, _now: u64) -> Result<Made, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::H4);
     crate::home::landing(&out.to_string_lossy())?;
     let root = our_root(home)?;
-    // Top-up or new bundle depends on whether the place has a recognized manifest, not on how many entries it
-    // lists (a vault-only backup always has zero entries, and that is still a top-up).
+    // Top-up vs. new depends on a recognized manifest, not on the entry count (a vault-only backup always has
+    // zero entries and is still a top-up).
     let onto_old = match belongs(out, &root) {
         Belongs::Empty => false,
         Belongs::Ours { .. } => true,
@@ -210,16 +200,14 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
     let mut rows: Vec<Value> = Vec::new();
     let mut total = 0u64;
     let mut added = 0usize;
-    // Storage returns entry bytes, not names; names are computed as the law §2.1 id.
+    // The store returns entry bytes, not names; names are the computed entry ids.
     for bytes in &survey.items {
         let name = hexfmt::encode(&k1::entry_id(bytes));
         let name = name.trim_start_matches("0x").to_string();
         total += bytes.len() as u64;
-        // Compare against the file on disk, not the old manifest row (as for the vault room). The manifest is
-        // only a claim: a deleted file, a copy that missed files or a previous pass cut off before the
-        // manifest was replaced all leave it unchanged. Skipping by it would produce a bundle with missing
-        // files (found only at restore); and a file on disk that the manifest lacks would, with a direct
-        // write, hit "already there" and be refused every time.
+        // Compare against the file on disk, not the old manifest, which may be stale (a deleted file, an
+        // incomplete copy, an interrupted export). Trusting it could leave files missing (found only at
+        // restore), and a file the manifest lacks would make every write fail with "already there".
         let sha = sha_hex(bytes);
         let at = dir.join(&name);
         let have = std::fs::read(&at).map(|b| sha_hex(&b) == sha).unwrap_or(false);
@@ -237,10 +225,9 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
             ("sha256".into(), Value::Str(sha)),
         ]));
     }
-    // The vault room travels too (bytes are credentials; losing the vault is losing the contracts). Each file
-    // lands under `held/` by relative path with its digest in the manifest; a home without that room gives an
-    // empty table and older bundles read as before. Vault files change (new grants, replaced files), so each
-    // is compared by digest: matching files are not rewritten, differing ones are replaced.
+    // The vault is included too (its files are credentials; losing it loses the grants). Each file goes under
+    // `held/` by relative path, with its digest in the manifest; a home without a vault gives an empty table.
+    // Vault files change (new grants, replaced files), so matching files are kept and differing ones replaced.
     let mut held_rows: Vec<Value> = Vec::new();
     for (rel, bytes) in crate::vaultx::held_rows(home)? {
         let at = out.join(HELD).join(&rel);
@@ -263,8 +250,8 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
             ("sha256".into(), Value::Str(sha)),
         ]));
     }
-    // Bundles with a root are recognized by it and `owner` stays empty; without a root this identity is
-    // recorded so two people's bundles in one place do not overwrite each other.
+    // Bundles with a root are recognized by it and leave `owner` empty; without a root, record this identity
+    // so two people's bundles in one folder never overwrite each other.
     let owner = if root.is_empty() { our_owner().unwrap_or_default() } else { String::new() };
     let mut sheet_fields = vec![
         ("entries".into(), Value::Arr(rows)),
@@ -278,8 +265,7 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
         sheet_fields.sort_by(|a: &(String, Value), b: &(String, Value)| a.0.cmp(&b.0));
     }
     let sheet = Value::Obj(sheet_fields);
-    // Replace the manifest: the old one is overwritten (the manifest defines the bundle, and after a top-up
-    // it describes the topped-up bundle).
+    // Replace the manifest so it describes the bundle as it now is.
     let manifest = out.join(MANIFEST);
     if manifest.exists() {
         std::fs::remove_file(&manifest).map_err(|e| classify(&e, &manifest.display().to_string()))?;
@@ -295,11 +281,11 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
     })
 }
 
-/// Read a bundle's manifest; unreadable is refused by name.
+/// Read a bundle's manifest; an unreadable manifest is an error.
 pub fn inspect(bundle: &std::path::Path) -> Result<Sheet, Fault> {
     let p = bundle.join(MANIFEST);
     let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
-    // The manifest is read by the one reading the command line shares (`zikaron_glue::mirror::sheet`).
+    // Parsed by the same function the command line uses (`zikaron_glue::mirror::sheet`).
     let s = zikaron_glue::mirror::sheet(&bytes)
         .map_err(|t| Fault::known(Known::MirrorShape, crate::lang::filln(crate::lang::Key::Tail185, &[&(MANIFEST).to_string(), &format!("{:?}", t)])))?;
     let row = |r: zikaron_glue::mirror::Row| Row { name: r.name, sha256: r.sha256, bytes: r.bytes };
@@ -314,7 +300,7 @@ pub fn inspect(bundle: &std::path::Path) -> Result<Sheet, Fault> {
 }
 
 impl Sheet {
-    /// Whether the manifest's shape is right, named row by row.
+    /// The first shape problem in the manifest, if any, naming the offending row.
     pub fn shape_trouble(&self) -> Option<String> {
         if self.kind != KIND {
             return Some(crate::lang::filln(crate::lang::Key::Tail186, &[&format!("{:?}", self.kind), &(KIND).to_string()]));
@@ -331,8 +317,8 @@ impl Sheet {
             }
         }
         for r in &self.held {
-            // Relative paths that stay inside the room (`..`, absolute paths and empty segments are
-            // malformed).
+            // Must be a relative path that stays inside the vault directory (no `..`, `.`, empty segments
+            // or absolute paths).
             if r.name.is_empty()
                 || r.name.starts_with('/')
                 || r.name.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
@@ -347,9 +333,9 @@ impl Sheet {
     }
 }
 
-/// Re-verify a bundle entry by entry. An entry counts only when digest, law (the core's thirteen steps) and
-/// identity (computed `entry_id` equals the file name) all hold. Any failure refuses the whole bundle, naming
-/// the entry and what failed.
+/// Re-verify a bundle entry by entry: size and digest match the manifest, the core's `entry::check` passes,
+/// and the computed `entry_id` equals the file name. Any failure refuses the whole bundle, naming the entry
+/// and the check that failed.
 pub fn verify(bundle: &std::path::Path) -> Result<Vec<(EntryName, Vec<u8>)>, Fault> {
     let sheet = inspect(bundle)?;
     if let Some(why) = sheet.shape_trouble() {
@@ -370,8 +356,7 @@ pub fn verify(bundle: &std::path::Path) -> Result<Vec<(EntryName, Vec<u8>)>, Fau
         if got != r.sha256 {
             return Err(Fault::known(Known::MirrorEntry, crate::lang::filln(crate::lang::Key::Tail192, &[&(r.name).to_string()])));
         }
-        // Through the core: the core runs the thirteen steps, and the refusal is the law's token, not a
-        // sentence made up here.
+        // The core's check; its error token is reported as is.
         if let Err(token) = k1::check(&bytes) {
             return Err(Fault::mirror_entry(&r.name, token));
         }
@@ -390,15 +375,15 @@ pub fn verify(bundle: &std::path::Path) -> Result<Vec<(EntryName, Vec<u8>)>, Fau
     Ok(out)
 }
 
-/// The state of the last bundle written now. Four states.
+/// The current state of the last bundle written.
 ///
-/// Where a mirror goes is the person's choice, so this answers from the last action's reading: whether one
-/// was written, whether it is still there, whether it still verifies.
+/// The user chooses where mirrors go, so this checks the last recorded one: whether one was written, whether
+/// it is still there, and whether it still verifies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mirrored {
     /// Never written.
     Never,
-    /// Written, and nothing is at that place now.
+    /// Written, but nothing is at that path now.
     Gone { path: String },
     /// Written, still there, and it fails verification.
     Bad { path: String, why: String },
@@ -406,8 +391,8 @@ pub enum Mirrored {
     At { path: String, at: u64, entries: usize },
 }
 
-/// Ask about the last bundle written. This reads the disk (verifying the whole bundle), so it runs in the
-/// background, never in the frame.
+/// Check the last bundle written. This verifies the whole bundle on disk, so it runs in the background, never
+/// on the UI thread.
 pub fn status(rec: Option<&crate::settings::MirrorRecord>) -> Mirrored {
     let Some(r) = rec else {
         return Mirrored::Never;

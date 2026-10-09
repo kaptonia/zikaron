@@ -1,10 +1,9 @@
-//! Trace channel: when a public entry point of this component is crossed, append its component code to the
-//! trace file as a trace mark.
+//! Trace channel: each public entry point this crate crosses appends its component code to the trace file.
 //!
 //! Same channel as the core's: with `ZIKARON_TRACE` pointing at a file, each crossing appends `<id>\n`;
-//! without it nothing happens. Trace marks are diagnostic only and never enter a decision.
+//! without it nothing happens. Trace marks are diagnostic only and never affect a decision.
 //!
-//! This crate carries its own copy of the emitter because it has no dependency on the core, and a dependency
+//! This crate carries its own copy of the emitter because it does not depend on the core, and a dependency
 //! added only for tracing would show up as a real edge in the dependency graph.
 
 use std::io::Write;
@@ -14,7 +13,7 @@ use std::sync::OnceLock;
 /// The component code this crate writes as its trace mark.
 pub const A1: &str = "A1";
 
-/// Channel name, in one place.
+/// Environment variable naming the trace file.
 pub const TRACE_ENV: &str = "ZIKARON_TRACE";
 
 static SINK: OnceLock<Option<PathBuf>> = OnceLock::new();

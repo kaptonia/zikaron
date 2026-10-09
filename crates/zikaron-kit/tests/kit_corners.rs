@@ -1,5 +1,5 @@
-//! Unit tests of the corners of kit law §3 to §10. Samples are built and signed inside the tests; nothing is
-//! copied from `base/`.
+//! Edge-case tests for kit law §3 to §10. Samples are built and signed inside the tests; nothing is copied
+//! from `base/`.
 
 use zikaron::cryptox;
 use zikaron::entry;
@@ -297,9 +297,9 @@ fn grant_entry(key: &[u8; 32], seq: u64, prev: Option<&str>, work: &str, upstrea
 
 #[test]
 fn an_empty_badge_is_refused_on_both_sides() {
-    // §6.1 is defined for one or more segments; with zero, the encoder's bytes are the prefix alone (none of
-    // its three tokens covers it) and §6.2 refuses it at segment 0 with E_BADGE_B64. The harness always
-    // passes at least one path, so this case is held here.
+    // §6.1 is defined for one or more segments; with zero the encoder outputs the prefix alone (none of its
+    // three tokens covers it) and §6.2 refuses it at segment 0 with E_BADGE_B64. The harness always passes at
+    // least one path, so this case is covered here.
     let payload = badge::encode(&[]).unwrap();
     assert_eq!(payload, "zikaron-grant:");
     let e = badge::decode(payload.as_bytes()).unwrap_err();

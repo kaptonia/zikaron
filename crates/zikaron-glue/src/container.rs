@@ -1,9 +1,9 @@
 //! Single-file kits: a disclosure kit's enumeration (kit law §7.1) packed into one file.
 //!
-//! A grant file is this shape: the grant code is the smallest verifiable unit, and the grant file bundles
-//! what makes checking convenient (entry bytes, terms documents, the grant code text, a publication address
-//! pointer, optionally the issuer's ledger). The container signs nothing and judges nothing: unpacked, it is
-//! an enumeration handed to the kit core's `verify_enumeration`, the same check as a directory kit.
+//! Grant files use this format: the grant code is the smallest verifiable unit, and the grant file bundles what
+//! makes checking convenient (entry bytes, terms documents, the grant code text, a publication address pointer,
+//! optionally the issuer's ledger). The container signs and judges nothing: once unpacked, the enumeration goes
+//! to the kit core's `verify_enumeration`, the same check as a directory kit.
 //!
 //! Shape:
 //!
@@ -14,16 +14,16 @@
 //!
 //! - `manifest.json` comes first, the rest in kit-path byte order, so a reader can check each item as it
 //! arrives. The same enumeration always packs to the same bytes.
-//! - The reader checks as it reads: magic, each path against kit law §7.2, strictly increasing order, caps on
-//! item count and total bytes. Out of bounds, truncated, out of order or malformed stops by name; no partial
-//! enumeration is returned.
-//! - No third-party dependency: this page is the whole format.
+//! - The reader checks as it reads: magic, each path against kit law §7.2, strictly increasing order,
+//! caps on item count and total bytes. Oversize, truncated, out-of-order or malformed input stops with a named
+//! error; no partial enumeration is returned.
+//! - No third-party dependency: this module is the whole format.
 
 use std::io::Read;
 
-/// File header, defined once.
+/// File header.
 pub const MAGIC: &str = "zikaron-kit-file/1\n";
-/// Grant file extension (without the dot), defined once.
+/// Grant file extension (without the dot).
 pub const EXT: &str = "zkgrant";
 /// Total byte cap (item headers included).
 pub const MAX_TOTAL: u64 = 64 << 20;
@@ -183,7 +183,17 @@ pub fn decode_from(r: &mut impl Read) -> Result<Vec<(String, Vec<u8>)>, Bad> {
             return Err(Bad::Oversize(MAX_ITEMS as u64));
         }
         let size = c.line(false, &path)?.unwrap_or_default();
-        let n: u64 = size.parse().map_err(|_| Bad::Truncated(path.clone()))?;
+        // A length header has one spelling, the encoder's: decimal digits, no sign, no leading zero (zero is
+        // `0`). Anything else is a broken header, so two files differing only in header spelling never open as
+        // the same bundle. Digits that overflow 64 bits are over every cap (oversize, not truncated).
+        let canonical = !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) && (size == "0" || !size.starts_with('0'));
+        if !canonical {
+            return Err(Bad::Truncated(path.clone()));
+        }
+        let n: u64 = match size.parse() {
+            Ok(n) => n,
+            Err(_) => return Err(Bad::Oversize(MAX_TOTAL)),
+        };
         if n > MAX_TOTAL {
             return Err(Bad::Oversize(MAX_TOTAL));
         }
@@ -211,7 +221,7 @@ mod tests {
             note: "n".into(),
             ..Default::default()
         };
-        // The verdict literal comes from the core's constant.
+        // The verdict literal comes from the kit core's constant.
         crate::pack::enumerate(b).ok().expect(zikaron_kit::tokens::KIT_OK).0
     }
 
@@ -241,6 +251,27 @@ mod tests {
         let mut big = MAGIC.as_bytes().to_vec();
         big.extend_from_slice(format!("manifest.json\n{}\n", MAX_TOTAL + 1).as_bytes());
         assert_eq!(decode(&big), Err(Bad::Oversize(MAX_TOTAL)));
+        // A length header of digits beyond 64 bits is oversize (like one past the total cap); a non-number or
+        // empty header is broken.
+        let with_header = |h: &str| {
+            let mut v = MAGIC.as_bytes().to_vec();
+            v.extend_from_slice(format!("manifest.json\n{h}\n").as_bytes());
+            v
+        };
+        assert_eq!(decode(&with_header("99999999999999999999")), Err(Bad::Oversize(MAX_TOTAL)));
+        assert_eq!(decode(&with_header("18446744073709551616")), Err(Bad::Oversize(MAX_TOTAL)));
+        assert_eq!(decode(&with_header("18446744073709551615")), Err(Bad::Oversize(MAX_TOTAL)));
+        for broken in ["-1", "x", "", "1.5", " 2"] {
+            assert!(matches!(decode(&with_header(broken)), Err(Bad::Truncated(_))), "{broken:?}");
+        }
+        // Only the encoder's spelling reads: a sign, outer whitespace or a leading zero (even with the same
+        // value) is a broken header; `0` and canonical digits read.
+        for broken in ["+2", "+0", "2 ", "\t2", "02", "00", "0002", "099999999999999999999"] {
+            assert!(matches!(decode(&with_header(broken)), Err(Bad::Truncated(_))), "{broken:?}");
+        }
+        let mut zero = MAGIC.as_bytes().to_vec();
+        zero.extend_from_slice(b"manifest.json\n0\n\n");
+        assert!(!matches!(decode(&zero), Err(Bad::Truncated(_))), "zero reads as zero bytes");
         let mut bad = MAGIC.as_bytes().to_vec();
         bad.extend_from_slice(b"manifest.json\n2\n{}\n../x\n1\nx\n");
         assert!(matches!(decode(&bad), Err(Bad::Path(_))));

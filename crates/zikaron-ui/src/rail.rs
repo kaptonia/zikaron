@@ -265,7 +265,7 @@ pub fn status(ui: &mut egui::Ui, words: &str, voice: Voice, progress: Option<Opt
     }
     if live {
         out.sync_clicked = kr.clicked();
-        let _ = kr.on_hover_text(sync_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let _ = crate::layer::tip(kr, sync_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     let _ = resp;
     out

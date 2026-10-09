@@ -1,16 +1,16 @@
-//! The sheets of both seats' pages: new record (two steps), send (the gas estimate first), delete record,
-//! grant and revoke confirmations, the exclusive-grant clash, import existing records, key change or
-//! handover (two steps), annotate, attest for someone, add a held grant, and the sublicense confirmation.
+//! The sheets of both seats' pages: new record (two steps), send (gas estimate first), delete record, grant
+//! and revoke confirmations, the exclusive-grant clash, import existing records, key change or handover (two
+//! steps), annotate, attest for someone, add a held grant, and the sublicense confirmation.
 //!
-//! One sheet at a time: opening one closes the others. The first-run wizard stays open under a sheet (sheets
-//! lie above it); while the passcode gate is up no sheet is drawn.
+//! One sheet at a time: opening one closes the others. Sheets lie above the first-run wizard, which stays
+//! open under them; while the passcode gate is up no sheet is drawn.
 
 use super::*;
 
 impl Win {
     // ─── Which sheet is open ───
 
-    /// Whether any sheet is open (the keyboard and the whole-window drop stand aside).
+    /// Whether any sheet is open (keyboard shortcuts and the whole-window drop stand aside).
     pub(super) fn any_sheet(&self) -> bool {
         let u3 = &self.ux.u3;
         u3.new_anchor.is_some()
@@ -30,6 +30,7 @@ impl Win {
         self.ux.u3.confirm = None;
         self.ux.u3.send_after_estimate = None;
         self.ux.u3.sending = None;
+        self.ux.u3.bump_press = None;
         self.ux.u3.form = None;
         self.ux.u3.succeed_confirm = false;
         self.ux.u3.kit_pick = None;
@@ -45,7 +46,7 @@ impl Win {
         self.ux.bk_clear();
     }
 
-    /// Whether any sheet is up now (Esc belongs to it, not to the layer under it).
+    /// Whether any sheet is up (Esc belongs to it, not to the layer under it).
     pub(super) fn any_sheet_open(&self) -> bool {
         self.ux.id_modal.is_some()
             || self.ux.bk.is_some()
@@ -76,8 +77,7 @@ impl Win {
         self.ux.u4.confirm = Some(cf);
     }
 
-    /// Open an identity sheet. Importing a key from the wizard is the wizard's own sheet and does not come
-    /// here.
+    /// Open an identity sheet. Importing a key from the wizard uses the wizard's own sheet, not this.
     pub(super) fn id_layer_open(&mut self, m: IdModal) {
         self.sheets_clear();
         // The delete sheet's two disk readings are taken once, when it opens (the frame reads no disk).
@@ -93,26 +93,26 @@ impl Win {
 
     pub(super) fn wizard_open(&mut self, step: crate::nav::Step) {
         self.layers_clear();
-        // Where the wizard was opened from: its way out returns to that seat and that page.
+        // Remember where the wizard was opened from: its way out returns to that seat and page.
         if self.ux.wizard.is_none() {
-            self.ux.wiz_from = Some((self.shell.settings.role, self.ux.stack, self.ux.place));
-            // The product's judgment (`firstrun::fresh_machine`), recorded once as the wizard opens: a true first
-            // run stays one for the whole run (setting the passcode in step 1 does not make a way out appear half
-            // way through). Keys, Esc and the ask-first card for unchecked words are this layer's flow only.
+            self.ux.wiz_from = Some((self.shell.settings.role, self.ux.stack, self.ux.place, self.ux.hist.get(&self.ux.stack).cloned()));
+            // Whether this is a true first run (`firstrun::fresh_machine`) is recorded once as the wizard opens and
+            // holds for the whole run (setting the passcode in step 1 must not make a way out appear halfway
+            // through).
             self.ux.wiz_fresh = crate::firstrun::fresh_machine(&self.shell);
         }
         self.ux.wizard = Some(step);
     }
 
-    /// Whether the wizard offers its way out: every time except a wizard opened on the true first run (no
-    /// passcode and no identity when it opened), where there is nothing to go back to, for the whole run.
+    /// Whether the wizard offers a way out: always, except when it was opened on a true first run (no passcode
+    /// and no identity), where there is nothing to go back to.
     pub(super) fn wizard_exit_shown(&self) -> bool {
         !self.ux.wiz_fresh
     }
 
-    /// Leave the wizard: back to the seat and page it was opened from. Finished steps stay finished; what was
-    /// not done stays not done, and the wizard opens again by its usual rules. New words shown and not yet
-    /// checked are dropped (the person was told first).
+    /// Leave the wizard, back to the seat and page it was opened from. Finished steps stay finished, and the
+    /// wizard opens again by its usual rules. New words shown but not yet checked are dropped (the user was
+    /// warned first).
     pub(super) fn wizard_exit(&mut self, now: f64) {
         if self.shell.new_words.is_some() {
             self.act(Action::DropFresh, now);
@@ -120,13 +120,17 @@ impl Win {
         self.ux.wiz_exit_ask = false;
         self.ux.wizard = None;
         self.ux.confirm_genesis = false;
-        if let Some((role, stack, place)) = self.ux.wiz_from.take() {
+        if let Some((role, stack, place, hist)) = self.ux.wiz_from.take() {
             if self.shell.settings.role != role && !self.shell.seat_unseated() {
                 self.act(Action::SwitchRole, now);
             }
             self.ux.stack = stack;
             if let Some(p) = place {
                 self.go(p, now);
+            }
+            // Back to the exact page it was opened on (a settings section, a detail page), with its history.
+            if let Some(h) = hist {
+                self.ux.hist.insert(stack, h);
             }
         }
     }
@@ -142,24 +146,24 @@ impl Win {
     }
 
     /// Open a confirmation. The send sheet opens at once with the gas cap still loading; the node is asked
-    /// once the sheet has come up (`estimate_due`).
+    /// once the sheet is up (`estimate_due`).
     pub(super) fn u3_open_confirm(&mut self, cf: U3Confirm) {
         self.sheets_clear();
         if let U3Confirm::Send { count } = cf {
-            // An estimate and its fees are a reading of this batch, this chain and this moment: opening the card
-            // always asks again (one already out for this batch is waited for, not asked twice: `estimate_due`).
+            // An estimate and its fees describe this batch, chain and moment, so opening the card always asks again
+            // (an estimate already out for this batch is awaited, not repeated: `estimate_due`).
             self.ux.u3.send_after_estimate = Some(count);
             self.ux.u3.estimate_from = self.ux.now;
         }
         self.ux.u3.confirm = Some(cf);
     }
 
-    /// A record is written: the form is done. Opening "new record" again is a new form; old content is never
-    /// written again as the next entry.
+    /// Clear the new-record form after a record is written, so old content is never written again as the next
+    /// entry.
     pub(super) fn anchor_form_clear(&mut self) {
         self.typed.work_note.clear();
         self.typed.batch_files.clear();
-        // The four "recorded for" fields go with the form: kept, they would be written into the next entry.
+        // Clear the four "recorded for" fields too, or they would be written into the next entry.
         self.typed.for_fields = Default::default();
         self.shell.content = None;
     }
@@ -178,8 +182,8 @@ impl Win {
         }
     }
 
-    /// Take what was dropped or chosen for a new record: one path is read as a file, folder or git
-    /// repository (its name fills an empty record name); several make a batch, one entry per file.
+    /// Take what was dropped or chosen for a new record: one path is read as a file, folder or git repository
+    /// (its name fills an empty record name); several paths make a batch, one entry per file.
     pub(super) fn take_for_record(&mut self, paths: Vec<String>, now: f64) {
         if paths.len() > 1 {
             self.typed.batch_files = paths;
@@ -188,18 +192,18 @@ impl Win {
         }
         let Some(p) = paths.into_iter().next() else { return };
         self.typed.batch_files.clear();
-        // The fingerprint is computed in the background (`Kind::Take`): the record's name is filled where it
-        // lands (`took_named`).
+        // The fingerprint is computed in the background (`Kind::Take`); the record name is filled when it lands
+        // (`took_named`).
         self.act(Action::TakeDropped { path: p }, now);
     }
 
-    /// A content taken: an empty record name takes the content's name (a file without its extension, a folder or
-    /// repository whole).
+    /// After content is taken, an empty record name takes the content's name (a file without its extension, a
+    /// folder or repository whole).
     pub(super) fn took_named(&mut self) {
         if self.typed.work_note.trim().is_empty() {
             if let Some(c) = self.shell.content.as_ref() {
                 let name = width::file_name(&c.subject);
-                // A file's name without its extension; a folder or repository keeps its whole name.
+                // A file's name loses its extension; a folder or repository keeps its whole name.
                 let stem = match (c.size, name.rsplit_once('.')) {
                     (Some(_), Some((s, _))) if !s.is_empty() => s.to_string(),
                     _ => name,
@@ -211,10 +215,9 @@ impl Win {
 
     // ─── Drawing ───
 
-    /// Fetching found this home at odds with the fetched ledger: the confirmation sheet. Its title, one
-    /// sentence, the entries that would stay in the old data, "cancel" and "fetch and replace" (the final step:
-    /// this home is kept as old data and a fresh one receives the fetched ledger, with the password the fetch
-    /// was given).
+    /// The confirmation sheet shown when a fetch finds this home at odds with the fetched ledger: the entries
+    /// that would remain only in the old data, "cancel", and "fetch and replace" (this home is kept as old data
+    /// and a fresh one receives the fetched ledger, using the password the fetch was given).
     fn conflict_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let Some(c) = self.shell.fetch_conflict.clone() else { return };
         let ready = !self.typed.fetch_from.trim().is_empty() && !self.ux.fetch_held.is_empty() && !self.shell.tasks.in_flight(crate::task::Kind::Fetch);
@@ -244,9 +247,9 @@ impl Win {
         }
     }
 
-    /// Every sheet that is open, above the page, the wizard and the gate's place.
+    /// Draw every open sheet, above the page, the wizard and the gate.
     pub(super) fn sheets(&mut self, ctx: &egui::Context, now: f64) {
-        // The locked card's restore from a backup lies above the gate; the other backup sheets below it.
+        // Restoring from a backup on the locked card lies above the gate; the other backup sheets lie below it.
         self.bk_sheets(ctx, now);
         if self.shell.vault.gate_up() {
             return;
@@ -256,6 +259,7 @@ impl Win {
         self.conflict_sheet(ctx, now);
         match self.ux.u3.confirm.clone() {
             Some(U3Confirm::Send { count }) => self.send_sheet(ctx, count, None, now),
+            Some(U3Confirm::Bump { tx }) => self.bump_sheet(ctx, &tx, now),
             Some(U3Confirm::NoEstimate { count, why, next, raw }) => self.send_sheet(ctx, count, Some((why, next, raw)), now),
             Some(U3Confirm::Retract { subject }) => self.delete_record_sheet(ctx, &subject, now),
             Some(U3Confirm::Grant) => self.grant_confirm_sheet(ctx, now),
@@ -277,8 +281,8 @@ impl Win {
         self.genesis_sheet(ctx, now);
     }
 
-    /// The send sheet's gas estimate: asked once the sheet has come up. A failed estimate is said on the
-    /// sheet only (its step changes to "cannot estimate"), so the troubles this call records are marked told.
+    /// Start the send sheet's gas estimate once the sheet is up. A failed estimate is reported on the sheet
+    /// only (it turns to "cannot estimate"), so the troubles this call records are marked as reported.
     fn estimate_due(&mut self, ctx: &egui::Context) {
         let Some(count) = self.ux.u3.send_after_estimate else { return };
         if !matches!(self.ux.u3.confirm, Some(U3Confirm::Send { .. })) {
@@ -291,9 +295,9 @@ impl Win {
             return;
         }
         self.ux.u3.send_after_estimate = None;
-        // The estimate runs as a task: the frame asks nothing. Until it lands the sheet's cap cell loads and its
-        // send key stays off (`shell.gas` is cleared when the task starts); one already out for this batch is
-        // waited for, not asked again.
+        // The estimate runs as a task; the frame does no I/O. Until it lands, the cap cell shows loading and the
+        // send key stays disabled (`shell.gas` is cleared when the task starts). An estimate already out for this
+        // batch is awaited, not repeated.
         let before = self.shell.faults.len();
         match apply(&mut self.shell, Action::EstimateGas { count }) {
             Applied::Started(_) | Applied::Refused(_) => self.ux.u3.estimating = Some(count),
@@ -308,9 +312,8 @@ impl Win {
     }
 
     /// A gas estimate landed. On the send sheet of the batch it was asked for, a refusal turns the sheet to
-    /// "cannot estimate gas" and is said there only (marked told); an answer needs nothing more, the sheet reads
-    /// `shell.gas`. A sheet closed while it was out, or now on another batch, takes nothing: a refusal is then
-    /// told as any other.
+    /// "cannot estimate gas" and is reported there only; a success needs nothing more (the sheet reads
+    /// `shell.gas`). If the sheet closed or moved to another batch meanwhile, a refusal is reported normally.
     pub(super) fn gas_back(&mut self, a: Applied) {
         let asked = self.ux.u3.estimating.take();
         let Applied::Trouble(f) = a else { return };
@@ -326,7 +329,7 @@ impl Win {
         self.ux.u3.confirm = Some(U3Confirm::NoEstimate { count, why: f.human().to_string(), next: f.next().to_string(), raw: f.raw() });
     }
 
-    /// New record: choose the thing, name it, optionally say for whom; then the confirmation step (file, for
+    /// New record: choose the content, name it, optionally say for whom; then the confirmation step (file, for
     /// whom, cost; the fingerprint and the ledger's place under details).
     fn new_anchor_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let Some(step) = self.ux.u3.new_anchor else { return };
@@ -381,8 +384,8 @@ impl Win {
                     );
                     if !d.dropped.is_empty() {
                         picked = Some(d.dropped.clone());
-                    } else if d.clicked {
-                        picked = crate::platform::choose_path(crate::platform::Pick::FileOrFolder).map(|p| vec![p]);
+                    } else if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-new-record"), d.clicked, crate::platform::Pick::FileOrFolder) {
+                        picked = Some(vec![p]);
                     }
                     if !batch.is_empty() {
                         for p in &batch {
@@ -423,15 +426,15 @@ impl Win {
             },
             |ui, _me| {
                 if step == 0 {
-                    // While the fingerprint is computed (`Kind::Take`) the key says so with a turning ring and
-                    // takes no press; "back" stays.
+                    // While the fingerprint is computed (`Kind::Take`) the key shows a spinner and ignores presses;
+                    // "back" stays.
                     let hashing = if hashing_now { Phase::Busy { frac: None } } else { Phase::Idle };
                     next = key::show(ui, key::Key::new(go, Role::Guide).enabled(ready).phase(hashing).busy_text(t(Key::U3Hashing))).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                     sheet::foot_note(ui, note);
                 } else {
-                    // While the files' fingerprints are computed and the entries written (`Kind::Record`) the key
-                    // says so with a turning ring and takes no press; "back" stays.
+                    // While fingerprints are computed and entries written (`Kind::Record`) the key shows a spinner
+                    // and ignores presses; "back" stays.
                     let recording = if recording_now { Phase::Busy { frac: None } } else { Phase::Idle };
                     commit = page::Pen::new().press_saying(ui, go_commit, t(Key::U3Recording), ready, recording).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
@@ -469,7 +472,7 @@ impl Win {
     }
 
     /// Write the record (one entry, or one per file of a batch). The four "recorded for" fields go through
-    /// `anchorx::For` first: a missing field or a malformed identity is refused by name and nothing is written.
+    /// `anchorx::For` first: a missing field or malformed identity is refused by name and nothing is written.
     fn record_now(&mut self, now: f64) {
         let f = &self.typed.for_fields;
         let for_ = match crate::anchorx::For::from_fields(&f[0], &f[1], &f[2], &f[3]) {
@@ -483,8 +486,8 @@ impl Win {
         let files = self.typed.batch_files.clone();
         let a = Action::RecordWork { note_md: self.typed.work_note.clone(), files: files.clone(), for_ };
         let r = self.act(a, now);
-        // Files are recorded in the background (`Kind::Record`): the sheet stays with its key busy, and closes
-        // where it lands (`record_back`). One entry from the content taken is written at once.
+        // Files are recorded in the background (`Kind::Record`): the sheet stays with its key busy and closes when
+        // that lands (`record_back`). A single entry from content already taken is written at once.
         if let Applied::Started(_) = r {
             self.ux.u3.recording = Some(files);
             return;
@@ -493,8 +496,8 @@ impl Win {
         self.recorded(r, &files);
     }
 
-    /// The form after recording: a whole write clears it; a batch stopped at item i keeps that one and the rest
-    /// (the signed ones leave the form).
+    /// The form after recording: a complete write clears it; a batch stopped at item i keeps that item and the
+    /// rest (the signed ones leave the form).
     fn recorded(&mut self, r: Applied, files: &[String]) {
         match r {
             Applied::Recorded { .. } | Applied::RecordedBatch { stopped: None, .. } => self.anchor_form_clear(),
@@ -503,9 +506,8 @@ impl Win {
         }
     }
 
-    /// The answers of the actions whose slow half ran in the background (`Shell::said`), taken where the window
-    /// reads its landings: each goes back to the place that started it, and is told as it was when it ran in the
-    /// frame.
+    /// Answers of actions whose slow half ran in the background (`Shell::said`), taken where the window reads
+    /// its landings: each goes back to the place that started it and is reported as if it had run in the frame.
     pub(super) fn said_back(&mut self, k: crate::task::Kind, a: Applied, now: f64) {
         use crate::task::Kind;
         match k {
@@ -530,15 +532,15 @@ impl Win {
         }
     }
 
-    /// Put on chain: the first n entries and the gas cap (loading until estimated); the gas figure under
-    /// details. Pressing runs "sign, broadcast" in the key and the sheet closes once the broadcast lands. A
-    /// failed estimate turns the sheet to "cannot estimate gas" with a retry.
+    /// Put on chain: the first n entries and the gas cap (loading until estimated), with the gas figure under
+    /// details. Pressing runs "sign, broadcast" in the key; the sheet closes once the broadcast lands. A failed
+    /// estimate turns the sheet to "cannot estimate gas" with a retry.
     fn send_sheet(&mut self, ctx: &egui::Context, count: usize, failed: Option<(String, String, String)>, now: f64) {
-        // Pressed and landed: close (the broadcast clears the estimate; a failure is recorded on the key).
+        // Pressed and landed: close (the broadcast clears the estimate; a failure is shown on the key).
         if let Some(stamp) = self.ux.u3.sending {
             let gone = self.shell.gas.map(|(n, _)| n != count).unwrap_or(true);
-            // Landed, well or not: the anchoring task has landed since the press and none of it is in flight
-            // (judged by the landing itself, not by the clock).
+            // Landed, successfully or not: the anchoring task has landed since the press (judged by the landing
+            // itself, not by the clock).
             let landed = self.shell.tasks.answered_since(crate::task::Kind::Anchor, stamp);
             if gone || landed {
                 self.ux.u3.sending = None;
@@ -548,21 +550,23 @@ impl Win {
         }
         let sending = self.ux.u3.sending.is_some();
         let out = self.shell.tasks.in_flight(crate::task::Kind::Gas);
-        // No reading for this batch, none out, none about to be asked and no refusal: what was out landed
-        // nothing for this card (it was of nodes or a chain changed since it started, or of another batch), so it
-        // is asked again; the card never waits on a reading that will not come.
+        // No reading for this batch, none out, none about to be asked and no refusal: whatever was out landed
+        // nothing for this card (for other nodes or chain, or another batch), so ask again; the card never waits
+        // on a reading that will not come.
         let held = self.shell.gas.map(|(n, _)| n == count).unwrap_or(false);
         if !sending && !out && !held && failed.is_none() && self.ux.u3.send_after_estimate.is_none() {
             self.ux.u3.estimating = None;
             self.ux.u3.send_after_estimate = Some(count);
             self.ux.u3.estimate_from = self.ux.now;
         }
-        // Until this opening's estimate is asked and lands, a reading left from before is neither shown nor sent.
+        // Until this opening's estimate is asked and lands, an older reading is neither shown nor sent.
         let asking = self.ux.u3.send_after_estimate == Some(count);
         let gas = self.shell.gas.filter(|(n, _)| *n == count && !asking).map(|(_, g)| g);
         let cap = eth_cap(self.shell.fees.unwrap_or_else(zikaron_anchor::send::Fees::fallback).cap_wei());
-        // Sending shows the anchoring task's phase; until the estimate lands the key says it is estimating, with a
-        // turning ring, and takes no press.
+        let fees_now = self.shell.fees;
+        let fees_left = self.shell.fees_left.clone();
+        // While sending, show the anchoring task's phase; until the estimate lands, the key says it is estimating,
+        // shows a spinner and ignores presses.
         let phase = if sending {
             self.phase_of(crate::task::Kind::Anchor)
         } else if out || asking {
@@ -583,6 +587,14 @@ impl Win {
                     sheet::title(ui, t(Key::U3SendTitle), "");
                     let cap_val = if gas.is_some() { Val::mono(fill1(Key::SetGasSay, &cap)) } else { Val::Loading(110.0) };
                     kv::kv(ui, &[(t(Key::LedgerEntries), Val::text(first.clone())), (t(Key::U3FeeCap), cap_val)]);
+                    // Where the cap came from: one line when it is the fallback pair, once the figures are in.
+                    if let (Some(_), Some(k)) = (gas, crate::chainx::fee_source_line(fees_now.as_ref())) {
+                        states::okline(ui, Mark::Warn, t(k));
+                    }
+                    // Name each node the fees were not read from (it serves another chain).
+                    if gas.is_some() && !fees_left.is_empty() {
+                        states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &fees_left.join(" · ")));
+                    }
                     if let Some(g) = gas {
                         details(ui, "send-details", &[(t(Key::U3GasEstimate), Val::mono(g.to_string()))]);
                     }
@@ -599,7 +611,8 @@ impl Win {
             },
             |ui, me| {
                 if failed.is_none() {
-                    // The key says what is going on while it is busy: estimating before the figure lands, sending after the press.
+                    // While busy the key says what is happening: estimating before the figure lands, sending after
+                    // the press.
                     let busy = t(if sending { Key::U3Sending } else { Key::U3Estimating });
                     go = page::Pen::new().press_long_saying(ui, t(Key::U3SendGo), busy, gas.is_some() && !sending, phase).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, !sending).clicked();
@@ -623,14 +636,91 @@ impl Win {
         if go {
             match self.act(Action::SendBatch { count }, now) {
                 Applied::Started(_) => self.ux.u3.sending = Some(self.shell.tasks.landings(crate::task::Kind::Anchor)),
-                // Refused at once (the refusal is told as a toast): the sheet closes.
+                // Refused at once (reported as a toast): close the sheet.
                 _ => self.ux.u3.confirm = None,
             }
         }
     }
 
-    /// Delete a record (the retraction convention): which record; the fingerprint and the ledger's place
-    /// under details.
+    /// Resend a stuck batch with higher fees: entry count, the cap it went out with, the current price at the
+    /// same gas, and the resend's cap (from the last receipt wait, `Shell::stuck`). A press while a receipt
+    /// check is out is held until that check ends (the key spins and says so; closing the card drops it). The
+    /// sheet closes when the resend is taken or refused (refusals reported as usual), or when the offer is
+    /// gone (included, or no longer a resend).
+    fn bump_sheet(&mut self, ctx: &egui::Context, tx: &str, now: f64) {
+        let offer = self.shell.stuck.clone().filter(|s| s.txs.last().map(String::as_str) == Some(tx));
+        let Some(stuck) = offer else {
+            self.ux.u3.confirm = None;
+            self.ux.u3.bump_press = None;
+            return;
+        };
+        // A resend replacing a transaction a node holds (higher fees), or the batch sent again when no node holds
+        // it (at the current price; there is no original cap to show).
+        let (fees, base_now, unheld) = match stuck.offer {
+            crate::task::Offer::Resend { fees, base_now } => (fees, base_now, false),
+            crate::task::Offer::Unheld { fees, base_now } => (fees, base_now, true),
+            _ => {
+                self.ux.u3.confirm = None;
+                self.ux.u3.bump_press = None;
+                return;
+            }
+        };
+        let entries = self.shell.queue.items.iter().filter(|q| q.step.awaited().is_some_and(|(t, _)| t == stuck.txs)).count();
+        // While this card is open, any anchoring task out is a receipt check (a taken resend closes the card), so
+        // a press is held and sent when that check ends.
+        let waiting = self.ux.u3.bump_press.is_some();
+        let (mut go, mut close) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("bump", tk::SHEET_W),
+            self,
+            |ui, _me| {
+                sheet::title(ui, t(if unheld { Key::U3ResendKey } else { Key::U3BumpTitle }), "");
+                let at_gas = |per_gas: u64| Val::mono(fill1(Key::SetGasSay, &eth_cap(u128::from(per_gas) * u128::from(stuck.sent.gas_limit))));
+                let mut rows = vec![(t(Key::LedgerEntries), Val::text(entries.to_string()))];
+                if !unheld {
+                    rows.push((t(Key::U3BumpOldCap), at_gas(stuck.sent.max_fee)));
+                }
+                rows.push((t(Key::U3BumpPriceNow), at_gas(base_now)));
+                rows.push((t(Key::U3BumpNewCap), Val::mono(fill1(Key::SetGasSay, &eth_cap(fees.cap_wei())))));
+                kv::kv(ui, &rows);
+                // Name each node the current price was not read from (it serves another chain).
+                if !stuck.left.is_empty() {
+                    states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &stuck.left.join(" · ")));
+                }
+                states::note_box(ui, &fill1(if unheld { Key::U3UnheldNote } else { Key::U3BumpNote }, &crate::queue::RESENDS_MAX.to_string()));
+                details(ui, "bump-details", &[(t(Key::U3GasEstimate), Val::mono(stuck.sent.gas_limit.to_string())), (t(Key::CfWhere), Val::mono(stuck.txs.join(" ")))]);
+            },
+            |ui, _me| {
+                let phase = if waiting { Phase::Busy { frac: None } } else { Phase::Idle };
+                go = page::Pen::new().press_long_saying(ui, t(if unheld { Key::U3ResendKey } else { Key::U3BumpKey }), t(Key::U3BumpWaiting), !waiting, phase).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+            },
+        );
+        if close || out.esc {
+            self.ux.u3.confirm = None;
+            self.ux.u3.bump_press = None;
+            return;
+        }
+        if go {
+            // A receipt check is out: send once it ends (the key spins while it waits).
+            if self.shell.tasks.in_flight(crate::task::Kind::Anchor) {
+                self.ux.u3.bump_press = Some((tx.to_string(), fees.max_fee));
+            } else {
+                self.bump_go(tx.to_string(), fees.max_fee, now);
+            }
+        }
+    }
+
+    /// Send the resend the user pressed, once. Taken: the sheet closes and the new wait starts. Refused: the
+    /// refusal is reported and the sheet closes (a changed offer shows its new figures on the next press).
+    pub(super) fn bump_go(&mut self, tx: String, cap: u64, now: f64) {
+        let _ = self.act(Action::BumpFee { tx, cap }, now);
+        self.ux.u3.confirm = None;
+    }
+
+    /// Delete a record (retraction convention): which record, with the fingerprint and the ledger's place under
+    /// details.
     fn delete_record_sheet(&mut self, ctx: &egui::Context, subject: &str, now: f64) {
         let row = self.shell.rows.as_ref().and_then(|(r, _)| r.iter().find(|x| x.id == subject).cloned());
         let root = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
@@ -658,8 +748,8 @@ impl Win {
         }
     }
 
-    /// Sign a grant (a sublicense when it has an upstream): record, validity, terms file, cost in front;
-    /// upstream, grantee and the fingerprints under details.
+    /// Sign a grant (a sublicense when it has an upstream): record, validity, terms file and cost up front;
+    /// upstream, grantee and fingerprints under details.
     fn grant_confirm_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let upstream = self.typed.g_upstream.trim().to_string();
         let record = if upstream.is_empty() { self.work_label(self.typed.g_work.trim()) } else { self.held_record_name(&upstream) };
@@ -697,15 +787,15 @@ impl Win {
             self.ux.u3.confirm = None;
         } else if go {
             self.ux.u3.confirm = None;
-            // The terms document goes along only when the fingerprint is exactly the chosen file's.
+            // The terms document is included only when the fingerprint matches the chosen file exactly.
             let terms_file = self.ux.u3.terms.as_ref().filter(|x| x.hex == self.typed.g_terms.trim()).map(|x| x.path.clone());
             let a = Action::DraftGrant { draft: Box::new(self.draft()), exclusive: self.typed.g_exclusive, terms_file };
             self.act(a, now);
         }
     }
 
-    /// Revoke a grant: record and its original validity; the grantee and the optional ruling fingerprint
-    /// under details.
+    /// Revoke a grant: the record and its original validity, with the grantee and the optional ruling file
+    /// fingerprint under details.
     fn revoke_sheet(&mut self, ctx: &egui::Context, grant: &str, now: f64) {
         let g = self.shell.grants.as_ref().and_then(|x| x.iter().find(|r| r.id == grant).cloned());
         let record = g.as_ref().map(|x| self.work_label(&x.work)).unwrap_or_default();
@@ -769,8 +859,8 @@ impl Win {
         }
     }
 
-    /// Import existing records (640 wide): the anchors this key sent earlier, or another key's anchors with
-    /// that key holder's signature; a switch per anchor, "import n" writes one adoption entry.
+    /// Import existing records: anchors this key sent earlier, or another key's anchors with that key holder's
+    /// signature; one switch per anchor, and "import n" writes one adoption entry.
     fn adopt_sheet(&mut self, ctx: &egui::Context, now: f64) {
         use crate::adoptx::RowState;
         let want = self.typed.ad_key.trim().to_ascii_lowercase();
@@ -798,7 +888,7 @@ impl Win {
             .filter(|k| k.state() == Some(RowState::Passed) && !self.ux.u3.adopt_off.contains(&key_of(k)))
             .map(|k| k.row.clone())
             .collect();
-        // Rows typed by hand join only once checked, every one passing, against the text as it stands.
+        // Rows typed by hand join only once all of them pass the check against the current text.
         let hand = self.typed.ad_rows.trim().to_string();
         let hand_ok = !hand.is_empty()
             && self.ux.u3.adopt_checked.as_deref() == Some(hand.as_str())
@@ -807,8 +897,8 @@ impl Win {
         let hand_rows: Vec<crate::adoptx::AnchorRow> = if hand_ok { crate::adoptx::rows_of(&hand).unwrap_or_default() } else { Vec::new() };
         let mut all_rows = chosen.clone();
         all_rows.extend(hand_rows);
-        // The other key holder's signature: the text follows the selection and the ledger head; a pasted
-        // signature is checked at once (`adoptx::cosigned`).
+        // The other key holder's signature: the text follows the selection and the ledger head; a pasted signature
+        // is checked at once (`adoptx::cosigned`).
         let head = self.shell.rows.as_ref().and_then(|(r, _)| r.iter().max_by_key(|x| x.seq).map(|x| x.id.clone()));
         let me_key = self.shell.anchor;
         let text = match (other, me_key, head.as_ref()) {
@@ -891,7 +981,7 @@ impl Win {
                 }
                 (None, None) => {
                     paint::text(ui, title, Type::Note, c(C::Ink2));
-                    // An address still being typed is not asked about: say what it should look like, not "verifying".
+                    // Do not query an address still being typed: say what it should look like instead of "verifying".
                     let say = if !formed {
                         Key::FaultNextAddressShape
                     } else if can_list {
@@ -1015,7 +1105,7 @@ impl Win {
             self.ux.u3.form = None;
         } else if go {
             let rows: Vec<String> = all_rows.iter().map(crate::adoptx::line_of).collect();
-            // The co-signature goes along only when it checked; without it the entries are still valid, only
+            // The co-signature is included only when it checked; without it the entries are still valid, just
             // unproven.
             let (attestor, attestation) = if sig_ok == Some(true) { (want.clone(), sig.clone()) } else { (String::new(), String::new()) };
             self.ux.u3.form = None;
@@ -1023,9 +1113,9 @@ impl Win {
         }
     }
 
-    /// Change key or hand over. First step: the new key's address (scanned once well formed: a key that has
-    /// sent anchors cannot be chosen), the kind, a statement. Second step: what will be written, the address
-    /// under details, "back", and the commit.
+    /// Change key or hand over. Step one: the new key's address (scanned once well formed; a key that has sent
+    /// anchors cannot be chosen), the kind and a statement. Step two: what will be written, the address under
+    /// details, "back", and the commit.
     fn succeed_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let to = self.typed.sc_to.trim().to_string();
         let formed = crate::key::Address::parse(&to).is_some();
@@ -1108,7 +1198,7 @@ impl Win {
         } else if commit {
             self.ux.u3.form = None;
             self.ux.u3.succeed_confirm = false;
-            // The effective time goes down empty: the action layer fills in now; an empty statement gets the
+            // The effective time is left empty for the action layer to fill with now; an empty statement gets the
             // kind's plain words.
             let a = Action::Succeed { to, kind: self.typed.sc_kind.trim().to_string(), effective: String::new(), statement_md: self.typed.sc_statement.clone() };
             self.act(a, now);
@@ -1136,7 +1226,7 @@ impl Win {
                         hint(ui, t(Key::U3AnnotateNoRows));
                         return;
                     }
-                    // A picker over this ledger, newest first: number, type and summary, first anchor time.
+                    // A picker over this ledger, newest first: number, type, summary and first anchor time.
                     let faces: Vec<(String, String, String)> = rows
                         .iter()
                         .map(|row| {
@@ -1192,15 +1282,15 @@ impl Win {
                     self.ux.sheet_shake = None;
                     self.typed.annotate_note.clear();
                 }
-                // Refused: the sheet stays, shakes, and the refusal is told.
+                // Refused: the sheet stays, shakes, and the refusal is reported.
                 _ => self.ux.sheet_shake = Some(now),
             }
         }
     }
 
-    /// Sign a claim for someone (the other key holder's side): paste the text they sent; the sheet says how
-    /// many anchors (the claimant, the anchors and their ledger head under details); sign with this Mac's
-    /// passcode; copy the signature to send back.
+    /// Sign a claim for someone (the other key holder's side): paste the text they sent; the sheet shows how
+    /// many anchors (claimant, anchors and ledger head under details); sign with this machine's passcode; copy
+    /// the signature to send back.
     fn attest_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let text = self.typed.at_text.trim().to_string();
         if !text.is_empty() && self.ux.u3.at_read.as_deref() != Some(text.as_str()) && !self.shell.tasks.in_flight(crate::task::Kind::Adopt) {
@@ -1288,8 +1378,8 @@ impl Win {
         }
     }
 
-    /// Add a held grant: paste the grant code or drop a grant file (read and checked at once); stored only
-    /// after verification, otherwise the two sentences with the raw error folded.
+    /// Add a held grant: paste the grant code or drop a grant file (read and checked at once). It is stored
+    /// only after verification; otherwise the two sentences are shown with the raw error folded.
     fn add_grant_sheet(&mut self, ctx: &egui::Context, now: f64) {
         if !self.ux.u4.import_open {
             return;
@@ -1316,19 +1406,18 @@ impl Win {
                 let d = drop::zone(ui, "add-grant-drop", None, &[t(Key::U3CheckDrop), t(Key::DropClickFile)], None, 64.0, drop::Shape::Column, true);
                 dropped = match d.dropped.first() {
                     Some(p) => Some(p.clone()),
-                    None if d.clicked => crate::platform::choose_path(crate::platform::Pick::File),
-                    None => None,
+                    None => path_answer(ui.ctx(), egui::Id::new("zikaron-path-add-grant"), d.clicked, crate::platform::Pick::File),
                 };
                 match &seen {
                     Some(Ok(said)) => states::okline(ui, Mark::Ok, said),
                     Some(Err(f)) => states::okline(ui, Mark::Bad, f.human()),
                     None => {}
                 }
-                // A pasted grant code (not a grant file) brings no issuer ledger: say so before adding.
+                // A pasted grant code (unlike a grant file) carries no issuer ledger: say so before adding.
                 if me.typed.vt_typed.trim().to_ascii_lowercase().starts_with(zikaron_kit::tokens::BADGE_PREFIX) {
                     states::okline(ui, Mark::Warn, t(Key::V2CodeCarriesNoLedger));
                 }
-                // The person's own names for this grant and its issuer, kept on this machine only.
+                // The user's own names for this grant and its issuer, kept on this machine only.
                 field(ui, t(Key::V2GrantNote), None, |ui| input::line(ui, &mut me.typed.vt_note, t(Key::V2GrantNoteHint)));
                 field(ui, t(Key::V2IssuerNote), None, |ui| input::line(ui, &mut me.typed.vt_issuer_note, t(Key::V2IssuerNoteHint)));
                 if let Some((what, next, raw)) = err.as_ref() {
@@ -1355,8 +1444,8 @@ impl Win {
                     self.ux.u4.import_err = None;
                     self.ux.sheet_shake = None;
                     self.typed.vt_typed.clear();
-                    // The notes are for the grant added (the chain's last hop), not for its upstreams: an
-                    // upstream's issuer is someone else.
+                    // The notes belong to the added grant (the chain's last hop), not its upstreams, whose issuers
+                    // are others.
                     let (note, issuer_note) = (std::mem::take(&mut self.typed.vt_note), std::mem::take(&mut self.typed.vt_issuer_note));
                     if !grant.is_empty() && (!note.trim().is_empty() || !issuer_note.trim().is_empty()) {
                         self.act(Action::NoteHeld { grant, note, issuer_note }, now);
@@ -1374,8 +1463,8 @@ impl Win {
         }
     }
 
-    /// Sublicense: which record, whose, the upstream validity; the ids under details. "Draft…" fills the
-    /// upstream and the record into the form and pushes the sublicense page.
+    /// Sublicense: which record, whose, and the upstream validity, with ids under details. "Draft…" fills the
+    /// upstream and record into the form and opens the sublicense page.
     fn relicense_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let Some(U4Confirm::Relicense { grant }) = self.ux.u4.confirm.clone() else { return };
         let h = self.shell.held.clone().unwrap_or_default().into_iter().find(|x| x.id.eq_ignore_ascii_case(&grant));

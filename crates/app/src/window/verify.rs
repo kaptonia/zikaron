@@ -1,4 +1,4 @@
-//! The verify view: its tabs (verify a grant, verify records, others' ledgers), and the grantee's record
+//! The verify view: its tabs (verify a grant, verify records, others' ledgers) and the grantee's record
 //! verification.
 
 use super::*;
@@ -13,14 +13,14 @@ impl Win {
         }
     }
 
-    /// Verify records: drop a record kit or record file; the content place and the record hash under
-    /// advanced options; the result names each record.
+    /// Verify records: drop a record kit or record file (the content place and record hash are under advanced
+    /// options); the result names each record.
     fn kit_verify(&mut self, ui: &mut egui::Ui, now: f64) {
         let v = self.shell.verified.clone();
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Verify);
         let mut go = false;
         let mut add_network: Option<crate::kitsindex::AnchoredOn> = None;
-        // A file changed while a pass ran is verified once that pass ends.
+        // A file changed while a pass ran is verified again once that pass ends.
         if !busy && std::mem::take(&mut self.ux.u4.verify_again) {
             go = true;
         }
@@ -42,7 +42,7 @@ impl Win {
                 true,
             )
         });
-        if let Some(p) = self.drop_or_pick(&d, crate::platform::Pick::FileOrFolder, now) {
+        if let Some(p) = self.drop_or_pick(ui.ctx(), "verify-record", &d, crate::platform::Pick::FileOrFolder, now) {
             self.typed.vf_path = p;
             go = true;
         }
@@ -51,7 +51,7 @@ impl Win {
                 ui.spacing_mut().item_spacing.y = tk::S4;
                 fold::fold(ui, "verify-more", t(Key::U3MoreOptions), |ui| {
                     ui.spacing_mut().item_spacing.y = tk::S3;
-                    // The form that cannot be dropped (a publish address) is typed here.
+                    // A publish address cannot be dropped, so it is typed here.
                     field(ui, t(Key::U3BytesWhere), None, |ui| input::mono(ui, &mut self.typed.vf_path, t(Key::BytesWhereHint)));
                     if crate::fetchx::is_address(&self.typed.vf_path) {
                         if let Err(f) = crate::fetchx::base_of(&self.typed.vf_path) {
@@ -74,7 +74,7 @@ impl Win {
                 card::card(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = tk::S3;
                     card_title(ui, t(Key::U4VerifyResult));
-                    // Fetched from a publish address: the source is named, with "fetch again".
+                    // Fetched from a publish address: name the source, with "fetch again".
                     if let crate::verifyx::Source::Remote(b) = &x.source {
                         let n = x.kit.as_ref().map(|k| k.entries + k.files + k.proofs + 1).unwrap_or(0);
                         let (_, again) = width::then(ui, |ui| key::link(ui, t(Key::CheckRefetch)).clicked(), |ui, room| paint::line(ui, &fill2(Key::CheckFromAddress, b.as_str(), &n.to_string()), Type::Small, c(C::Ink2), room));
@@ -96,14 +96,14 @@ impl Win {
                         Err(_) => (Mark::Todo, t(Key::U4AnchorsUnread).to_string()),
                     };
                     let label = match &x.review {
-                        // A kit carries only the chosen entries and the ledger's spine: gaps in seq are
-                        // normal for a kit ("part of the ledger"), not a warning.
+                        // A kit carries only the chosen entries and the ledger's spine, so gaps in seq are normal
+                        // ("part of the ledger"), not a warning.
                         Ok(a) if x.kit.is_some() && a.label == zikaron::tokens::Label::Gaps.as_str() => (Mark::Ok, t(Key::U4IssuerPartial).to_string()),
                         Ok(a) => (if a.label == zikaron::tokens::Label::Complete.as_str() { Mark::Ok } else { Mark::Warn }, fill1(Key::U4IssuerAudit, &label_human(&a.label))),
                         Err(_) => (Mark::Todo, t(Key::U4IssuerAuditUnread).to_string()),
                     };
                     states::checks(ui, &[(kit.0, kit.1, None), (review.0, review.1, None), (label.0, label.1, None)], false);
-                    // The kit names a network that is not added: no chain was read; one key adds it.
+                    // The kit names a network not yet added: no chain was read; one key adds it.
                     if let Some(at) = &x.not_added {
                         let said = format!("{} · {} · {}", self.chain_label(at.chain_id), t(Key::VerifyAuthorSays), t(Key::VerifyAddNetwork));
                         if states::banner(ui, states::Banner::Warn, &said, |ui| key::key(ui, t(Key::ReadNetAdd), Role::Secondary, true).clicked()) {
@@ -119,8 +119,8 @@ impl Win {
                     }
                     if let Some(three) = x.depth.clone().map(crate::depthx::three) {
                         // A chain not read this pass (none read, or a network left out): a measure that reads
-                        // "none" or falls short may have its anchor on the chain not read, so it says the chain
-                        // was not read. Values read on the chains that were read show as they are.
+                        // "none" or falls short may have its anchor on the unread chain, so it says the chain was
+                        // not read. Values from chains that were read show as they are.
                         use crate::depthx::Said;
                         let (first, deepest, span) = crate::depthx::said(&three, x.review.is_err() || !x.missed.is_empty());
                         let first = match first {
@@ -194,7 +194,7 @@ impl Win {
                             rows.push((t(Key::KitId), Val::mono(k.kit_id.clone())));
                             rows.push((t(Key::U3Verdict), Val::mono(k.verdict.clone())));
                         }
-                        // Where each record's first anchor is: chain, registry, block and transaction in full.
+                        // Where each record's first anchor is: chain, registry, block and full transaction.
                         let firsts: Vec<(String, &crate::auditx::FirstAnchor)> = x
                             .records
                             .iter()
@@ -244,7 +244,7 @@ impl Win {
 }
 
 impl Win {
-    /// A chain's name on the face: the name table's, else the one typed for that chain among the read-only
+    /// A chain's display name: from the name table, else the name typed for that chain among the read-only
     /// networks, else "chain <id>".
     pub(super) fn chain_label(&self, chain: u64) -> String {
         let typed = self.shell.read_nets.as_ref().and_then(|ns| ns.iter().find(|n| n.chain_id == chain).and_then(|n| n.name.clone()));

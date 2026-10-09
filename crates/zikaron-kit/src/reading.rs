@@ -84,8 +84,8 @@ pub fn reachable(ledger: &[Entry], from: &Entry, target_id: &str) -> bool {
 
 /// Kit law §8.2: the bound of every ledger entry in one pass. From the entry each counted anchor points to,
 /// walk back along prev keeping the smaller blockTimestamp; stop where the bound is already no greater than
-/// this anchor's time, because its ancestors were covered by the same value in an earlier walk. A walk per
-/// entry per anchor would cost anchors times entries times chain length.
+/// this anchor's time, since an earlier walk covered those ancestors. (A walk per entry per anchor would cost
+/// anchors × entries × chain length.)
 pub fn bounds(o: &Outcome, lines: &Lines) -> Vec<Option<u64>> {
     let n = o.ledger.len();
     let mut best: Vec<Option<u64>> = vec![None; n];
@@ -180,9 +180,9 @@ pub fn is_anchored(o: &Outcome, e: &Entry) -> bool {
     bound_of(o, e).is_some()
 }
 
-/// Check 4 of kit law §10.2: reading §8.2 counted as UNPROVEN, whether some retained UNPROVEN record's hash
-/// is the entry_id of a ledger entry F from which e is reachable. Same direction as `bounds`: from the entry
-/// the record points to (F, later) back along prev to e (earlier); e being F itself is the `E = F` case.
+/// Check 4 of kit law §10.2 (§8.2 with `counted` read as UNPROVEN): whether some retained UNPROVEN record's
+/// hash is the entry_id of a ledger entry F from which e is reachable. Same direction as `bounds`: from F
+/// (later) back along prev to e (earlier); e being F itself is the `E = F` case.
 pub fn unproven_reaches(o: &Outcome, e: &Entry) -> bool {
     let lines = Lines::of(&o.ledger);
     let target = match lines.position(&e.id_hex()) {
@@ -195,8 +195,8 @@ pub fn unproven_reaches(o: &Outcome, e: &Entry) -> bool {
         .any(|from| reachable_at(&o.ledger, &lines, from, target))
 }
 
-/// Reading objects are built here only: keys come from [`Key`] (the six §9.2 members and the two of
-/// continuity are closed-table members).
+/// Builds every reading object; keys come from [`Key`] (the six §9.2 members and the two continuity members
+/// are in the closed table).
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }

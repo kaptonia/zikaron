@@ -346,7 +346,7 @@ pub fn icon_key(ui: &mut egui::Ui, g: Glyph, size: f32, enabled: bool, tip: &str
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), sense);
     paint_icon_key(ui, rect, &resp, g, enabled);
-    let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
+    let resp = if tip.is_empty() { resp } else { crate::layer::tip(resp, tip) };
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {

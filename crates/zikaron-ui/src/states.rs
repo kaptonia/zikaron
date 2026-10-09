@@ -139,7 +139,8 @@ pub enum Banner {
     Note,
 }
 
-/// A banner: one line in bold with its mark; `key` draws a key at its right end.
+/// A banner: its sentence in bold with its mark, wrapped to as many lines as it takes (never cut short); `key`
+/// draws a key at its right end.
 pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let (fill, line, ink) = match kind {
         Banner::Ok => (egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT, c(C::OkInk)),
@@ -173,9 +174,11 @@ pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut
                         Banner::Note => {}
                     }
                     let font = if kind == Banner::Note { Type::Body.font() } else { egui::FontId::new(15.0, crate::fonts::strong()) };
-                    let room = ui.available_width();
-                    let fit = crate::width::elide_to(ui, s, font.clone(), room);
-                    ui.label(egui::RichText::new(fit).font(font).color(ink));
+                    // The whole sentence, wrapped to the room beside the key: a long one takes more lines and is
+                    // never cut short (a bar's sentence is what to do; half of it is not said).
+                    let room = ui.available_width().max(1.0);
+                    let laid = ui.painter().layout(s.to_string(), font, ink, room);
+                    ui.add(egui::Label::new(laid));
                 });
                 r
             })

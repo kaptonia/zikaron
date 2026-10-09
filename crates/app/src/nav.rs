@@ -1,21 +1,19 @@
-//! Navigation: one side rail per seat, the views after merging pages, the settings home and its sections, a
-//! history of pages per view, and an alias layer that lands old page names on their new places.
+//! Navigation: one side rail per role, the views pages are merged into, the settings home and its sections, a
+//! page history per view, and an alias layer mapping old page names to their new places.
 //!
-//! This layer knows where to go, not egui. The window draws the rail and lands old pages by it; the test
-//! driver's `show` recognizes both old and new names by it. So how many rail items, how they group and what
-//! they are called, and where an old page name lands, each have one source that the window and the test
-//! driver both read.
+//! This module has no egui dependency. The window draws the rail from it and the test driver's `show`
+//! resolves old and new names through it, so rail items, grouping, names and old-page mappings have a single
+//! source.
 //!
-//! Pages (`shell::Page`) are neither added nor removed: the test driver's step lists, the manual and the audit book
-//! count pages by that closed table. Above pages are views (`View`, the rail items): several pages merge into a view,
-//! each taking a tab or a section.
+//! The set of pages (`shell::Page`) is fixed, since test scripts and documentation refer to it. Views
+//! (`View`, the rail items) sit above pages: several pages merge into a view, each as a tab or section.
 
 use crate::lang::Key;
 use crate::roles::Role;
 use crate::shell::Page;
 use zikaron_ui::icons::Glyph;
 
-/// Settings sections. Closed; the order is top to bottom on the settings home.
+/// Settings sections, in top-to-bottom order on the settings home.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Section {
     Language,
@@ -52,7 +50,7 @@ impl Section {
         }
     }
 
-    /// The one line under the section's title on the settings home.
+    /// The one-line note under the section's title on the settings home.
     pub fn note(self, role: Role) -> Key {
         match self {
             Section::Language => Key::SetNoteLang,
@@ -82,13 +80,13 @@ impl Section {
     }
 }
 
-/// Which settings sections this role has: both seats have every section (local data holds the backup for both;
-/// only its ledger-mirror group is the recorder's).
+/// Which settings sections this role has: both roles have every section (local data holds the backup for
+/// both; only its ledger-mirror group is author-only).
 pub fn sections(_role: Role) -> Vec<Section> {
     Section::ALL.to_vec()
 }
 
-/// Views on the rail. Closed.
+/// Views on the rail.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
 pub enum View {
     /// Work records (anchoring and the queue merged in; kits and depth are destinations from record details).
@@ -119,8 +117,8 @@ impl View {
         }
     }
 
-    /// The new name the test driver recognizes (`show Works` and so on). Does not collide with old page names
-    /// (those are matched first).
+    /// The name the test driver recognizes (`show Works` and so on). Distinct from old page names, which are
+    /// matched first.
     pub fn as_str(self) -> &'static str {
         match self {
             View::Works => "Works",
@@ -133,8 +131,7 @@ impl View {
     }
 }
 
-/// Tab (or section) numbers of each view, defined once: the window, the alias layer and old page landings use
-/// these names.
+/// Tab (or section) numbers of each view, shared by the window and the alias layer.
 pub mod tab {
     /// Work records: all.
     pub const WORKS_ALL: u8 = 0;
@@ -158,7 +155,7 @@ pub mod tab {
     pub const HELD_RELICENSE: u8 = 1;
 }
 
-/// A place.
+/// A navigation destination.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Place {
     /// Home.
@@ -169,7 +166,7 @@ pub enum Place {
     SettingsHome,
     /// One settings section's page.
     Settings(Section),
-    /// An old page (entry form: translated to a view by [`settle`] before landing).
+    /// An old page (translated to a view by [`settle`] before navigating).
     Page(Page),
 }
 
@@ -181,7 +178,7 @@ pub struct Item {
     pub glyph: Glyph,
 }
 
-/// One rail group: its title (`None` for none) and items.
+/// One rail group: its optional title and its items.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Group {
     pub title: Option<Key>,
@@ -221,7 +218,7 @@ pub const GRANTEE: [Group; 3] = [
     Group { title: Some(Key::NavLook), items: &[VERIFY, ALERTS] },
 ];
 
-/// This role's rail. Switching role switches the whole rail, because the rail comes only from here.
+/// This role's rail.
 pub fn rail(role: Role) -> &'static [Group] {
     match role {
         Role::Author => &AUTHOR,
@@ -234,8 +231,8 @@ pub fn count(role: Role) -> usize {
     rail(role).iter().map(|g| g.items.len()).sum()
 }
 
-/// The closed tab table of a view (left to right on the page). Both seats verify grants, verify records and
-/// read others' ledgers: checking a record kit asks nothing of the seat.
+/// A view's tabs, left to right. Both roles can verify grants, verify records and read others' ledgers:
+/// checking a record kit does not depend on the role.
 pub fn tabs(view: View, _role: Role) -> &'static [u8] {
     match view {
         View::Verify => &[tab::VERIFY_CHECK, tab::VERIFY_WORK, tab::VERIFY_OTHERS],
@@ -243,8 +240,8 @@ pub fn tabs(view: View, _role: Role) -> &'static [u8] {
     }
 }
 
-/// The alias layer: where an old page lands now. Pages merged into a view land on that view's tab; the
-/// machine family (first run, identity, archive, mirror, skeleton, about) lands on the matching settings
+/// The alias layer: where an old page maps to now. Pages merged into a view map to that view's tab; the
+/// machine-level pages (first run, identity, archive, mirror, skeleton, about) map to the matching settings
 /// section.
 pub fn home_of(page: Page, _role: Role) -> Place {
     match page {
@@ -269,15 +266,15 @@ pub fn home_of(page: Page, _role: Role) -> Place {
     }
 }
 
-/// How a place settles. Old page entries translate to views; a tab this role lacks lands on the view's first
-/// tab; a view not on this role's rail lands on home (except relicensing and the pending tab: the grantee
-/// signs and anchors relicenses through these two).
+/// Resolve a place for a role. Old pages translate to views; a tab this role lacks falls back to the view's
+/// first tab; a view not on this role's rail falls back to home (except relicensing and the pending tab,
+/// which the grantee uses to sign and anchor relicenses).
 pub fn settle(place: Place, role: Role) -> Place {
     let place = match place {
         Place::Page(p) => home_of(p, role),
         other => other,
     };
-    // Relicensing lives under my grants now; the older tab under grants lands there.
+    // Relicensing lives under my grants; the older tab under grants maps there.
     let place = match place {
         Place::View(View::Grants, tab::GRANTS_RELICENSE) => Place::View(View::MyGrants, tab::HELD_RELICENSE),
         other => other,
@@ -286,8 +283,8 @@ pub fn settle(place: Place, role: Role) -> Place {
         Place::View(v, t) => {
             let on_rail = rail(role).iter().flat_map(|g| g.items.iter()).any(|i| matches!(i.place, Place::View(x, _) if x == v));
             let relicense = v == View::Grants && t == tab::GRANTS_RELICENSE;
-            // After signing a relicense the grantee needs to anchor it: the pending tab opens anyway (the
-            // grantee rail has no work records; the entry is on home and the relicense page).
+            // After signing a relicense the grantee must anchor it, so the pending tab opens even though the
+            // grantee rail has no work records (it is reached from home and the relicense page).
             let pending = v == View::Works && t == tab::WORKS_PENDING;
             if !on_rail && !relicense && !pending {
                 return Place::Home;
@@ -303,8 +300,8 @@ pub fn settle(place: Place, role: Role) -> Place {
     }
 }
 
-/// Which rail item is lit. A view lights its item (whatever the tab); home lights home; every settings
-/// section lights the bottom "settings" (`None`).
+/// Which rail item is highlighted. A view highlights its item (whatever the tab); home highlights home;
+/// settings pages highlight the bottom "settings" button (`None`).
 pub fn lit(place: Place, role: Role) -> Option<Place> {
     match settle(place, role) {
         Place::Settings(_) | Place::SettingsHome | Place::Page(_) => None,
@@ -317,12 +314,12 @@ pub fn lit(place: Place, role: Role) -> Option<Place> {
     }
 }
 
-/// The new name the test driver recognizes (old page names are recognized by `Page`).
+/// Names the test driver recognizes (old page names are recognized through `Page`).
 pub const HOME_NAME: &str = "Home";
 pub const SETTINGS_NAME: &str = "Settings";
 pub const WIZARD_NAME: &str = "Wizard";
 
-/// Older settings section names still recognized, landing on their current sections.
+/// Older settings section names still recognized, mapped to their current sections.
 const OLD_SECTIONS: [(&str, Section); 5] = [
     ("seat", Section::Data),
     ("chain", Section::Network),
@@ -354,7 +351,7 @@ pub fn place_named(name: &str) -> Option<(Place, bool)> {
     OLD_SECTIONS.iter().find(|(o, _)| *o == rest).map(|(_, s)| (Place::Settings(*s), false))
 }
 
-/// The new names listed when a name is refused (after old page names).
+/// The current names listed when an unknown name is given (after old page names).
 pub fn alias_names() -> Vec<String> {
     let mut v = vec![HOME_NAME.to_string(), WIZARD_NAME.to_string(), SETTINGS_NAME.to_string()];
     v.extend(View::ALL.iter().map(|x| x.as_str().to_string()));
@@ -362,10 +359,10 @@ pub fn alias_names() -> Vec<String> {
     v
 }
 
-/// The six steps of the first-run wizard. Closed.
+/// The six steps of the first-run wizard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// Set an eight-character passcode: the key vault opens with it, so it comes before holding any key.
+    /// Set an eight-character passcode: it opens the key vault, so it comes before holding any key.
     Pin,
     /// Create an identity (generate twelve words and confirm the copy, or import an existing key).
     Key,
@@ -395,14 +392,13 @@ impl Step {
     }
 
     /// Whether this step can be done later. Passcode, identity and genesis are required; only gas and backup
-    /// location can wait. Closed: the "later" key and the skip key when incomplete both ask this. A grantee
-    /// does not necessarily need a ledger (only the first relicense does), so genesis can wait for the
-    /// grantee.
+    /// can wait. Both the "later" and "skip" buttons use this. A grantee does not necessarily need a ledger
+    /// (only the first relicense does), so genesis can wait for grantees.
     pub fn deferrable(self, role: Role) -> bool {
         match self {
             Step::Pin => false,
             Step::Key => false,
-            // The default row is preselected: this step only needs pressing next, so there is no "later".
+            // The default is preselected, so this step only needs "next"; no "later".
             Step::Network => false,
             Step::Gas => true,
             Step::Genesis => role == Role::Grantee,
@@ -411,8 +407,7 @@ impl Step {
     }
 }
 
-/// The wizard's reading: whether each step is complete now. Read from real state, not from "next was
-/// pressed".
+/// Whether each wizard step is complete, read from real state rather than from which buttons were pressed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Progress {
     pub key: bool,
@@ -427,16 +422,15 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// This seat's wizard reading now, from the shell's real state: the anchor key from the last key store
-    /// reading, the passcode from the vault cell, the network and the last whole-machine backup from the
-    /// machine settings, gas from the last chain query, genesis from the root read when the home opened. The
-    /// one place these facts are gathered (the window and the tests both read it).
+    /// The current progress for this role, from the shell's state: the anchor key from the last key store read,
+    /// the passcode from the vault, the network and last whole-machine backup from machine settings, gas from
+    /// the last chain query, genesis from the root read when the home opened. Used by the window and tests.
     pub fn of(shell: &crate::shell::Shell) -> Progress {
         Progress {
             key: shell.anchor.is_some(),
             pin: !shell.vault.absent(),
             network: shell.machine.network.is_some(),
-            gas: matches!(&shell.chain, Some(crate::task::Done::Chain { gas_wei: Some(w), .. }) if *w > 0),
+            gas: matches!(shell.chain_reading(), Ok(Some(crate::task::Done::Chain { gas_wei: Some(w), .. })) if *w > 0),
             genesis: shell.rooted,
             backup: shell.machine.backup.is_some(),
         }
@@ -453,18 +447,16 @@ impl Progress {
         }
     }
 
-    /// Which step the wizard can stand on. Two preconditions, in order:
+    /// Which step the wizard may show when `want` is requested. Two preconditions, in order:
     ///
-    /// 1. Passcode. Every seal in the vault is made with the master key the passcode opens; without a
-    /// passcode there is no vault and nowhere to keep a key. So setting it is the first step, and any step
-    /// falls back to it until it is done.
+    /// 1. Passcode. Everything in the vault is sealed with the master key the passcode opens; without it there
+    /// is nowhere to keep a key. Every step falls back to this one until it is done.
     ///
-    /// 2. Identity. Without an identity built through verification (the three words passed the action layer's
-    /// check) or imported, the later steps (gas, genesis, mirror) fall back to creating one.
+    /// 2. Identity. Until an identity is created (with the recovery-word check passed) or imported, later steps
+    /// (gas, genesis, backup) fall back to creating one.
     ///
-    /// Creating an identity uses a key (`Action::needs_key`), which needs an open vault; with identity first,
-    /// a new machine would stand on that step, the action layer would answer "the vault is locked", and the
-    /// step that opens the vault would come after it. The order itself fixes this: vault first, then keys.
+    /// Creating an identity needs an unlocked vault (`Action::needs_key`), which is why the passcode comes
+    /// first.
     pub fn gate(&self, want: Step) -> Step {
         if want != Step::Pin && !self.pin {
             Step::Pin
@@ -480,14 +472,14 @@ impl Progress {
         Step::ALL.iter().copied().find(|s| !self.done(*s))
     }
 
-    /// Whether the wizard should open by itself at start: no anchor key, or this seat's evidence ledger not started.
-    /// Other missing steps only light lamps in about.
+    /// Whether the wizard should open automatically at startup: no anchor key, no passcode, or (for authors)
+    /// no genesis yet. Other missing steps only show indicators on the about page.
     pub fn wants_wizard(&self, role: Role) -> bool {
         !self.key || !self.pin || (role == Role::Author && !self.genesis)
     }
 }
 
-/// Each view keeps its own history of pages; home and settings keep theirs.
+/// Which page history: each view has its own, as do home and settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, Hash, Default)]
 pub enum Stack {
     #[default]
@@ -619,7 +611,7 @@ pub fn stack_of(place: Place) -> Stack {
     }
 }
 
-/// The history a place lands as: a view's own page, or its own page with one page pushed (the kit, a new
+/// The history to show for a place: the view's own page, or that page with one page pushed (the kit, a new
 /// grant, relicensing, a settings section).
 pub fn history_of(place: Place, role: Role) -> (Stack, History) {
     let place = settle(place, role);

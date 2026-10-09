@@ -20,17 +20,14 @@ pub(super) fn succeed(
     effective: &str,
     statement_md: &str,
 ) -> Result<(String, Enqueued), crate::fault::Fault> {
-    // The effective time is filled by this desk with now: law §6.7 requires this cell, while §7.6 has no
-    // clock and no rule compares against it; the seat moves by §7.3's lineage when the succession entry
-    // is recorded. The clock comes from the shell (`Shell::clock`, injectable). What the person gave is used
-    // as given. The note may be empty: empty writes the method's plain words (tokens beyond the two have none
-    // and are still refused by name for the missing cell). Both cells are filled in one place,
-    // `succeedx::fill`.
+    // If left empty, the effective time is filled with now from `Shell::clock` (injectable): the format
+    // requires the field, but no rule compares against it, since the key changes when the succession entry is
+    // recorded. Values the person gave are used as given. An empty note becomes the method's plain wording
+    // (methods without one are refused by name for the missing field). Both are filled in `succeedx::fill`.
     let (effective, statement_md) = crate::succeedx::fill(kind, effective, statement_md, (shell.clock)());
     let body = crate::succeedx::succession_body(to, kind, &effective, &statement_md)?;
-    // Do not sign when the new key is seen to have sent anchors. One key, one ledger (law §7.5); the scan is
-    // run by the person first, and when it has not run this says so by name, never treating "no reading" as
-    // "clean".
+    // Refuse to sign if the new key has already sent anchors: one key, one ledger. The person runs the scan
+    // first; if it has not run, say so by name rather than treating "no reading" as "clean".
     match shell.sighting.as_ref() {
         Some((who, anchors, _)) if who.eq_ignore_ascii_case(to.trim()) => {
             if *anchors > 0 {
@@ -66,10 +63,9 @@ pub(super) fn succeed(
     };
     let id = land_sealed(shell, sealed)?;
     let n = queue_it(shell, &id);
-    // Hand over as soon as it is recorded. `handed` is computed by the table read, so clearing only the table
-    // would leave `handed` at `None` in the shell until the person revisited the ledger page, and the old key
-    // could keep appending on other pages (law §7.3: from then on the new key writes this ledger). This
-    // closes the "still writable between signing and rereading" form.
+    // Mark the ledger handed over as soon as the entry is recorded. `handed` is otherwise computed when the
+    // table is read, so clearing only the table would leave it `None` until the ledger page was revisited,
+    // and the old key could keep appending from other pages. From this entry on, only the new key writes.
     shell.handed = Some(to.trim().to_string());
     shell.stale_rows();
     Ok((id, n))

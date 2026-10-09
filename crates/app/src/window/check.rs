@@ -28,10 +28,8 @@ impl Win {
                             |ui| pick = key::key(ui, t(Key::PickFile), Role::Secondary, true).clicked(),
                             |ui, room| input::field(ui, &mut self.typed.ck_typed, t(Key::U3CheckPaste), room, input::Look { mono: true, ..Default::default() }),
                         );
-                        if pick {
-                            if let Some(p) = crate::platform::choose_path(crate::platform::Pick::File) {
-                                self.typed.ck_typed = p;
-                            }
+                        if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-check-typed"), pick, crate::platform::Pick::File) {
+                            self.typed.ck_typed = p;
                         }
                     });
                     for (which, drop_key) in [(OneStop::File, Key::OsFileDrop), (OneStop::Terms, Key::OsTermsDrop)] {
@@ -39,7 +37,7 @@ impl Win {
                             let path = self.ck_side(which).clone();
                             if path.trim().is_empty() {
                                 let d = drop::zone(ui, which.salt(), None, &[t(drop_key)], None, 56.0, drop::Shape::Line, true);
-                                if let Some(p) = self.drop_or_pick(&d, crate::platform::Pick::File, now) {
+                                if let Some(p) = self.drop_or_pick(ui.ctx(), which.salt(), &d, crate::platform::Pick::File, now) {
                                     *self.ck_side(which) = p;
                                 }
                             } else {
@@ -61,19 +59,17 @@ impl Win {
                             let mut changed = false;
                             for (i, hop) in hops.iter_mut().enumerate() {
                                 ui.push_id(("check-hop", i), |ui| {
-                                    if path_row(ui, &fill1(Key::CheckHop, &(i + 1).to_string()), hop, t(Key::PickFolder), t(Key::PickNone)) {
-                                        if let Some(p) = crate::platform::choose_path(crate::platform::Pick::Folder) {
-                                            *hop = p;
-                                            changed = true;
-                                        }
+                                    let asked = path_row(ui, &fill1(Key::CheckHop, &(i + 1).to_string()), hop, t(Key::PickFolder), t(Key::PickNone));
+                                    if let Some(p) = path_answer(ui.ctx(), egui::Id::new(("zikaron-path-check-hop", i)), asked, crate::platform::Pick::Folder) {
+                                        *hop = p;
+                                        changed = true;
                                     }
                                 });
                             }
-                            if key::key(ui, t(Key::CheckAddHop), Role::Secondary, true).clicked() {
-                                if let Some(p) = crate::platform::choose_path(crate::platform::Pick::Folder) {
-                                    hops.push(p);
-                                    changed = true;
-                                }
+                            let add = key::key(ui, t(Key::CheckAddHop), Role::Secondary, true).clicked();
+                            if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-check-add-hop"), add, crate::platform::Pick::Folder) {
+                                hops.push(p);
+                                changed = true;
                             }
                             if changed {
                                 while hops.last().map(|h| h.is_empty()).unwrap_or(false) {
@@ -110,8 +106,8 @@ impl Win {
         }
     }
 
-    /// Start a check from whatever page asks (this page, or home's quick box): a refusal on the spot is this
-    /// press's own result and replaces the last one; a started task records its landing by kind.
+    /// Start a check from whichever page asks (this page, or the home page's quick box): a refusal on the spot is
+    /// this press's own result and replaces the last one; a started task records its landing by kind.
     pub(super) fn start_check(&mut self, now: f64) {
         let a = self.check_action();
         self.ux.u3.check_refused = match self.act(a, now) {
@@ -238,7 +234,7 @@ impl Win {
             }
             for side in [&x.file, &x.terms] {
                 if let crate::checkx::Side::Refused(f) = side {
-                    hint(ui, f.said());
+                    hint(ui, f.human());
                 }
             }
             fold::fold(ui, "check-evidence", t(Key::SetEvidence), |ui| {
@@ -249,6 +245,15 @@ impl Win {
                     rows.push((t(Key::OsWork).to_string(), Val::mono(h.work.clone())));
                 }
                 rows.push((t(Key::U3Verdict).to_string(), Val::mono(x.judged.verdict.clone())));
+                // The evidence behind the summary text: each refused file's reason, for each side.
+                for r in &x.refused {
+                    rows.push((width::file_name(&r.file), Val::mono(r.why.clone())));
+                }
+                for (side, name) in [(&x.file, Key::U3File), (&x.terms, Key::OsTerms)] {
+                    if let crate::checkx::Side::Refused(f) = side {
+                        rows.push((t(name).to_string(), Val::mono(f.raw())));
+                    }
+                }
                 rows.push((t(Key::EquivalentVerb).to_string(), Val::mono(x.verb().to_string())));
                 for h in &x.judged.hops {
                     for (tok, state) in &h.lights {
@@ -330,11 +335,9 @@ impl Win {
                     (check_hit, pick_hit)
                 });
                 changed |= resp.changed();
-                if pick_hit {
-                    if let Some(p) = crate::platform::choose_path(crate::platform::Pick::FileOrFolder) {
-                        lines[hop] = p;
-                        changed = true;
-                    }
+                if let Some(p) = path_answer(ui.ctx(), egui::Id::new(("zikaron-path-issuer-ledger", hop)), pick_hit, crate::platform::Pick::FileOrFolder) {
+                    lines[hop] = p;
+                    changed = true;
                 }
                 if check_hit {
                     *go = true;

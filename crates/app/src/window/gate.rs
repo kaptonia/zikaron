@@ -1,22 +1,21 @@
-//! The passcode gate: a full-window cover with the app's name, "enter passcode" and eight cells; the error
-//! sentence opens under the cells only when there is one (no toast on the gate); "forgot passcode" leads to
-//! recovery by the primary identity's kind (its twelve words, or its key file and the file's password; then
-//! the new passcode twice), and a third way under both: restore from a whole-machine backup.
+//! The passcode gate: a full-window cover with eight passcode cells and an error line that opens under them
+//! only when there is an error (no toasts on the gate). "Forgot passcode" recovers by the primary identity's
+//! kind (its twelve words, or its key file and that file's password, then a new passcode twice); restoring a
+//! whole-machine backup is a third way.
 //!
-//! The gate only opens the vault; actions that need a key are refused by the action layer's table whether
-//! the gate is up or not.
+//! The gate only opens the vault; actions that need a key are refused by the action layer either way.
 
 use super::*;
 
 impl Win {
     pub(super) fn gate(&mut self, ctx: &egui::Context, now: f64) {
         let state = self.shell.vault.clone();
-        // The same closed table decides whether the gate or the shell draws (`Vault::gate_up`).
+        // `Vault::gate_up` decides whether the gate or the shell draws.
         if !state.gate_up() {
             return;
         }
-        // The store's file is there and cannot be read: the gate says so, with the store's own refusal, and
-        // offers nothing that would build a new store over the keys it holds (no wizard, no passcode cells).
+        // The store file exists but cannot be read: show the store's refusal and offer nothing that would build a
+        // new store over the keys it holds (no wizard, no passcode cells).
         if let crate::shell::Vault::Damaged(f) = &state {
             full::cover(ctx, "gate", |ui, drop| {
                 let rect = ui.max_rect();
@@ -36,13 +35,13 @@ impl Win {
         if locked_out {
             self.ux.gate_recover = true;
         }
-        // An empty vault locked out (a passcode set, no identity built): neither recovery can open it and
-        // nothing can be lost, so the only way on is to reset it and start the wizard again.
+        // An empty vault that is locked out (passcode set, no identity) cannot be recovered and holds nothing to
+        // lose, so the only way on is to reset it and run the wizard again.
         let empty_out = locked_out && !self.shell.vault_recoverable;
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
         let recover = self.ux.gate_recover;
-        // Which way recovers: the primary identity's kind, read from the vault header before unlocking. A vault
-        // from before the primary was recorded offers both ways, as it always did.
+        // The recovery way follows the primary identity's kind, read from the vault header before unlocking.
+        // Vaults written before the primary was recorded offer both ways.
         let (by_words, by_file) = match self.shell.primary.as_ref().map(|(_, k)| *k) {
             Some(crate::keybox::PrimaryKind::Words) => (true, false),
             Some(crate::keybox::PrimaryKind::KeyFile) => (false, true),
@@ -71,8 +70,8 @@ impl Win {
                     ui.vertical_centered(|ui| {
                         ui.add_space(28.0);
                         let row = pin::pin_row(ui, "gate-pin", &mut self.ux.pin, len, self.ux.pin_shake, !busy, false);
-                        // Typing again closes the last refusal (the reseal path's sentence stays: it says what the
-                        // next passcode will do).
+                        // Typing again clears the last refusal, except on the reseal path, whose sentence says what
+                        // the next passcode will do.
                         if row.changed && !self.ux.gate_reseal {
                             self.ux.gate_trouble = None;
                         }
@@ -111,14 +110,13 @@ impl Win {
                 }
                 ui.spacing_mut().item_spacing.y = tk::S3;
                 if by_words {
-                    // Twelve cells, a whole phrase pastes into any; always masked; a word not in the list turns
-                    // red without showing it.
+                    // Twelve always-masked cells; a pasted phrase fills them all; an unknown word turns red without
+                    // being shown.
                     let bad = crate::cryptx::strangers(&self.ux.pin_words);
                     pin::words_grid_marked(ui, "gate-words", &mut self.ux.pin_words, &bad);
                     hint(ui, t(Key::PinWordsHint));
                     let ready = self.ux.pin_words.iter().all(|w| !w.expose().trim().is_empty());
-                    // All twelve filled: let go of the word cells, or the next eight characters would land in them
-                    // while the passcode row looked like it took them.
+                    // Once all twelve are filled, release focus so the next eight characters go to the passcode row.
                     if ready && !self.ux.gate_words_ready {
                         if let Some(id) = ui.memory(|m| m.focused()) {
                             ui.memory_mut(|m| m.surrender_focus(id));
@@ -141,15 +139,15 @@ impl Win {
                 if by_words {
                     gate_message(ui, busy, self.ux.gate_trouble.as_deref(), 4.0);
                 }
-                // An imported-key primary identity recovers with the key file it exported and the file's
-                // password (shown open; folded under the words only for a vault from before the primary).
+                // An imported-key primary recovers with the key file it exported and that file's password (shown
+                // open; folded under the words only for vaults written before the primary was recorded).
                 let file_way = |me: &mut Self, ui: &mut egui::Ui, first_pin: &mut bool, act: &mut Option<Action>| {
                     ui.spacing_mut().item_spacing.y = tk::S3;
                     paint::text(ui, t(Key::GateDropKeyFile), Type::Note, c(C::Ink2));
                     pick_path(ui, &mut me.ux.pin_ks_path, crate::platform::Pick::File);
                     field(ui, t(Key::GateFilePassword), None, |ui| input::secret_line(ui, &mut me.ux.pin_ks_pw, ""));
-                    // This row stands only once the file and password are both there (one row takes focus at a
-                    // time, or the two entries would split between rows and never match).
+                    // The passcode row is enabled only once file and password are both filled: only one row may
+                    // hold focus, or the two entries would split between rows and never match.
                     let file_ready = !me.ux.pin_ks_path.trim().is_empty() && !me.ux.pin_ks_pw.is_empty();
                     if file_ready && !me.ux.gate_file_ready {
                         if let Some(id) = ui.memory(|m| m.focused()) {
@@ -181,8 +179,7 @@ impl Win {
                         paint::text(ui, t(Key::PinByFileSay), Type::Note, c(C::Ink2));
                         pick_path(ui, &mut self.ux.pin_ks_path, crate::platform::Pick::File);
                         field(ui, t(Key::IdPassword), None, |ui| input::secret_line(ui, &mut self.ux.pin_ks_pw, ""));
-                        // This row stands only once the file and password are both there (one row takes focus at a
-                        // time, or the two entries would split between rows and never match).
+                        // Same focus rule as in `file_way` above.
                         let file_ready = !self.ux.pin_ks_path.trim().is_empty() && !self.ux.pin_ks_pw.is_empty();
                         if file_ready && !self.ux.gate_file_ready {
                             if let Some(id) = ui.memory(|m| m.focused()) {
@@ -205,7 +202,7 @@ impl Win {
                         });
                     });
                 }
-                // The third way: restore from a whole-machine backup (a new passcode; everything resealed).
+                // The third way: restore from a whole-machine backup (new passcode, everything resealed).
                 ui.vertical_centered(|ui| {
                     from_backup = key::key(ui, t(Key::DoRestoreBackup), Role::Plain, !busy).clicked();
                 });
@@ -232,8 +229,8 @@ impl Win {
     }
 }
 
-/// The line under the gate's cells: nothing (it takes no room), "verifying…", or the refusal in a grey box.
-/// It opens and closes by height.
+/// The line under the gate's cells: nothing (no height), "verifying…", or the refusal in a grey box.
+/// It opens and closes by animating its height.
 fn gate_message(ui: &mut egui::Ui, busy: bool, trouble: Option<&str>, gap: f32) {
     let id = ui.id().with("gate-message");
     let on = busy || trouble.is_some();
@@ -260,7 +257,7 @@ fn gate_message(ui: &mut egui::Ui, busy: bool, trouble: Option<&str>, gap: f32) 
     let got = r.response.rect.height();
     if on && (got - full_h).abs() > 0.5 {
         ui.ctx().data_mut(|d| d.insert_temp(h_id, got));
-        // Laid out again at once with the new size, so no frame is shown placed by the old one.
+        // Lay out again at once with the new size so no frame is drawn with the old one.
         ui.ctx().request_discard("gate message height changed");
     }
 }

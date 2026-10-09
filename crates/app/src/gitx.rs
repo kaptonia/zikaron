@@ -1,24 +1,18 @@
-//! Read a git repository (the anchoring desk's third input kind). No child process is started.
+//! Reads a git repository (the anchoring desk's third input kind) without starting any child process.
 //!
-//! ─── Why not call `git` ───
+//! The shipped build may not start child processes (enforced by the self-check
+//! `the_shipped_app_starts_no_child_process_at_all`), and `git cat-file` would be one. So this module reads
+//! the object store itself: loose objects in `objects/xx/yyyy…`, packed ones in `objects/pack/*.idx` and
+//! `*.pack`, with decompression through [`crate::zlibx`].
 //!
-//! The shipped build may not start any child process (checked by the self-check suite:
-//! `the_shipped_app_starts_no_child_process_at_all`), and `git cat-file` is one. So this layer reads the
-//! object store on disk itself: loose objects in `objects/xx/yyyy…`, packed ones in `objects/pack/*.idx` and
-//! `*.pack`, with the compression layer through [`crate::zlibx`].
+//! "The bytes of the HEAD commit object" has an exact definition: the bytes `git cat-file commit <id>`
+//! prints, i.e. the object without its `commit <len>\0` header. The anchored content is their sha256
+//! (computed by the core's `cryptox::sha256`), so anyone can recompute it with
+//! `git cat-file commit HEAD | shasum -a 256`.
 //!
-//! ─── Recomputable byte for byte ───
-//!
-//! "The bytes of the HEAD commit object" has a byte-exact definition here: the bytes `git cat-file commit
-//! <id>` prints, that is, the object without its `commit <len>\0` header. The anchored content is their
-//! sha256 (computed by the core's `cryptox::sha256`; this layer invents no digest). So anyone can
-//! independently recompute the same string with `git cat-file commit HEAD | shasum -a 256`.
-//!
-//! ─── Unreadable says unreadable ───
-//!
-//! Every point where reading cannot continue returns a named [`Fault`]: not a repository, HEAD unresolved,
-//! object missing, decompression failed, each with its own name. Nothing is guessed: a guessed hash would be
-//! anchored on chain, and what is on chain cannot be changed back.
+//! Every point where reading cannot continue returns a named [`Fault`] (not a repository, HEAD unresolved,
+//! object missing, decompression failed). Nothing is guessed: a guessed hash would be anchored on chain, and
+//! what is on chain cannot be undone.
 
 use crate::fault::{classify, Fault, Known};
 use std::collections::HashMap;
@@ -28,11 +22,12 @@ use std::path::{Path, PathBuf};
 /// compression bombs.
 pub const OBJECT_MAX: usize = 64 * 1024 * 1024;
 
-/// The most ancestors counted. When the count cannot finish it says so by name, instead of giving a truncated
-/// number as the reading.
+/// The most ancestors counted. A count that cannot finish is refused by name rather than reported as a
+/// truncated number.
 pub const ANCESTOR_MAX: usize = 500_000;
 
-/// The deepest delta chain. Carried all the way (see `Repo::object_at`); no path can reset it to zero.
+/// The deepest delta chain. The depth is carried through every path (see `Repo::object_at`), so nothing can
+/// reset it to zero.
 pub const DELTA_MAX: usize = 64;
 
 /// git's four object kinds. Closed.
@@ -78,8 +73,8 @@ impl Kind {
 /// An object name (sha1, twenty bytes).
 pub type Oid = [u8; 20];
 
-/// An object name as forty bare hex digits (git's spelling: no `0x`). The spelling still comes from the
-/// core's `hexfmt`; this only drops the two characters of law §1.
+/// An object name as forty bare hex digits (git's spelling, no `0x`). Spelled by the core's `hexfmt`, with
+/// the law §1 `0x` prefix dropped.
 fn oid_hex(o: &Oid) -> String {
     let s = zikaron::hexfmt::encode(o);
     s.strip_prefix("0x").unwrap_or(&s).to_string()
@@ -91,8 +86,8 @@ fn oid_of_hex(s: &str) -> Option<Oid> {
     if bare.len() != 40 || !bare.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    // The core's `decode` takes the law §1 form (with `0x`); git's ref files hold the bare forty digits, so
-    // the prefix is added here before handing it over, and hex spelling still has one owner.
+    // The core's `decode` takes the law §1 form (with `0x`); git's ref files hold bare digits, so the prefix
+    // is added here and hex parsing stays in the core.
     let b = zikaron::hexfmt::decode(&format!("0x{}", bare.to_ascii_lowercase()))?;
     let mut o = [0u8; 20];
     o.copy_from_slice(&b);
@@ -111,10 +106,8 @@ struct Pack {
     pack: PathBuf,
     /// Object name → offset in the pack file.
     at: HashMap<Oid, u64>,
-    /// The pack file's bytes are read once and kept. Rereading the whole file for every object would, when
-    /// counting ancestors (tens of thousands of objects), read a pack of hundreds of megabytes tens of
-    /// thousands of times; that work runs on a background thread, and the person would see a cell forever in
-    /// transit.
+    /// The pack file's bytes, read once and kept. Counting ancestors touches tens of thousands of objects;
+    /// rereading a pack of hundreds of megabytes per object would make the count effectively never finish.
     bytes: std::cell::RefCell<Option<std::rc::Rc<Vec<u8>>>>,
 }
 
@@ -149,10 +142,9 @@ impl Pack {
         }
         let n = be32(&b, 8 + 255 * 4).ok_or_else(|| bad(crate::lang::t(crate::lang::Key::Tail117)))? as usize;
         let names: usize = 8 + 256 * 4;
-        // Check the count against the file length before using it to allocate. The number is written in the
-        // file, and a corrupt index can say four billion: `with_capacity` would ask for tens of GB at once,
-        // the system would kill the process, and the kill leaves no sentence at this layer. This closes the
-        // "foreign number used directly as a capacity" form.
+        // Check the count against the file length before allocating with it: a corrupt index can claim four
+        // billion objects, and `with_capacity` would then ask for tens of GB and the process would be killed
+        // without a message.
         let sized = |a: usize, w: usize| -> Result<usize, Fault> {
             n.checked_mul(w)
                 .and_then(|x| a.checked_add(x))
@@ -403,12 +395,11 @@ impl Repo {
         self.object_at(id, 0)
     }
 
-    /// As above, with the delta depth carried all the way.
+    /// As above, with the delta depth carried through.
     ///
-    /// If offset deltas (type 6) carried the depth while ref deltas (type 7) went back through `object` and
-    /// restarted at zero, a pack where A refers to B by name and B to A would recurse forever and overflow
-    /// the stack, killing the whole process without even a named refusal. This closes the "some path resets
-    /// the depth counter" form.
+    /// Offset deltas (type 6) and ref deltas (type 7) both carry the depth. If ref deltas restarted at zero, a
+    /// pack where A refers to B by name and B to A would recurse until the stack overflowed, killing the
+    /// process without a named refusal.
     fn object_at(&self, id: &Oid, depth: usize) -> Result<(Kind, Vec<u8>), Fault> {
         if depth > DELTA_MAX {
             return Err(bad(crate::lang::t(crate::lang::Key::Tail129)));

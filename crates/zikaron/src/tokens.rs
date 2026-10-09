@@ -218,7 +218,7 @@ impl FindingName {
     ];
 }
 
-/// The four labels of law §8.7 item 11, plus `NoLabel`: the outcome when the input is not a §9.4 audit input.
+/// The four labels of law §8.7 item 15, plus `NoLabel`: the outcome when the input is not a §9.4 audit input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Label {
     BrokenChain,

@@ -3,10 +3,12 @@
 #
 # Usage: packaging/linux/build.sh
 #
-# Needs: the build dependencies listed in README.md, dpkg-deb, and for the AppImage either `appimagetool`
-# on PATH or network access to fetch it (set APPIMAGETOOL to a local copy to skip the download).
+# Needs: the build dependencies listed in README.md, dpkg-deb, mksquashfs, and for the AppImage the pinned
+# AppImage runtime: network access to fetch it, or the file given as APPIMAGE_RUNTIME.
 #
-# Output goes to dist/: zikaron-desk_<version>_<arch>.deb and ZIKARON-<version>-<arch>.AppImage.
+# Output goes to dist/: zikaron-desk_<version>_<arch>.deb and ZIKARON-<version>-<arch>.AppImage, with
+# SHA256SUMS-linux-<arch>.txt naming each package as it is made (a build that stops at the AppImage leaves the
+# .deb with its sum, and exits non-zero).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -26,12 +28,22 @@ NOTICE_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
 # Every date the packages record: the moment of the commit being built, unless SOURCE_DATE_EPOCH says another
 # (dpkg-deb reads it for the archive's dates).
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
+# The AppImage is the AppImage runtime followed by a squashfs image of the AppDir, made here as in
+# cross-build.sh: no other tool goes into it. The runtime is pinned by its bytes for each architecture
+# (`zikaron-pack appimage-runtime --arch`: x86_64 is type2-runtime 8f39b89, the one the shipped AppImages
+# carry; an architecture with no pin is refused by name, after the .deb is built). The download below is the
+# moving `continuous` build; when it is no longer that build the check stops here, and the pinned file is
+# given as APPIMAGE_RUNTIME.
+RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$ARCH"
 
-# Keep local paths (home directory, checkout, build directory) out of the shipped binaries.
-CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME_DIR=/cargo --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$TARGET_DIR=/target --remap-path-prefix=$ROOT=/zikaron --remap-path-prefix=$HOME=/home"
-cargo build --release --locked -p app -p zikaron-cli -p zikaron-pack
+# Keep local paths (home directory, checkout, build directory) out of the shipped binaries: the packaging tool
+# is built first and gives the flags, from the one table of path mappings (`zikaron-pack rustflags`).
+cargo build --release --locked -p zikaron-pack
+CARGO_ENCODED_RUSTFLAGS="$("$PACK" rustflags --target-dir "$TARGET_DIR")"
+export CARGO_ENCODED_RUSTFLAGS
+cargo build --release --locked -p app -p zikaron-cli
+# The built binaries carry no path of this machine (`zikaron-pack no-paths`); no package is made if they do.
+"$PACK" no-paths "$TARGET_DIR/release/app" "$TARGET_DIR/release/zikaron"
 
 rm -rf "$WORK"
 mkdir -p "$WORK" "$DIST"
@@ -64,6 +76,7 @@ SIZE="$(du -sk "$DEB_ROOT/usr" | cut -f1)"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@ARCH@/$DEB_ARCH/" -e "s/@SIZE@/$SIZE/" packaging/linux/control > "$DEB_ROOT/DEBIAN/control"
 DEB="$DIST/zikaron-desk_${VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group --build "$DEB_ROOT" "$DEB"
+( cd "$DIST" && sha256sum "$(basename "$DEB")" > "SHA256SUMS-linux-$ARCH.txt" )
 
 # AppImage
 APPDIR="$WORK/ZIKARON.AppDir"
@@ -76,14 +89,14 @@ HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/usr/bin/zikaron-desk" "$@"
 EOF
 chmod 755 "$APPDIR/AppRun"
-TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
-if [ -z "$TOOL" ]; then
-  TOOL="$WORK/appimagetool"
-  curl -fsSL -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
-  chmod 755 "$TOOL"
-fi
+ln -s zikaron-desk.png "$APPDIR/.DirIcon"
+RUNTIME="${APPIMAGE_RUNTIME:-$WORK/runtime-$ARCH}"
+[ -f "$RUNTIME" ] || curl -fsSL -o "$RUNTIME" "$RUNTIME_URL"
+"$PACK" appimage-runtime "$RUNTIME" --arch "$ARCH"
+mksquashfs "$APPDIR" "$WORK/image.squashfs" -root-owned -noappend -comp zstd -quiet -no-xattrs
 APPIMAGE="$DIST/ZIKARON-$VERSION-$ARCH.AppImage"
-ARCH="$ARCH" "$TOOL" --appimage-extract-and-run "$APPDIR" "$APPIMAGE" 2>/dev/null || ARCH="$ARCH" "$TOOL" "$APPDIR" "$APPIMAGE"
+cat "$RUNTIME" "$WORK/image.squashfs" > "$APPIMAGE"
+chmod 755 "$APPIMAGE"
 
 rm -rf "$WORK"
 ( cd "$DIST" && sha256sum "$(basename "$DEB")" "$(basename "$APPIMAGE")" > "SHA256SUMS-linux-$ARCH.txt" )

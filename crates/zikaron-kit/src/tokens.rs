@@ -1,16 +1,16 @@
 //! Closed tables of kit law §11 (document tokens in four types, and the result vocabularies), with the keys
 //! of §9.2, §10.3, §10.5 and the command outputs.
 //!
-//! As in the parent `zikaron::tokens`, each table is a closed type with one byte outlet (`as_str`). Document
-//! tokens get one type per path of the law (documents, payload encoding, payload decoding, kit verdicts);
-//! each producer returns only its own type. Parent-law §3 and §5 tokens pass through `DocToken::Canon` and
+//! As in `zikaron::tokens`, each table is a closed type with a single string conversion (`as_str`). Document
+//! tokens get one type per area of the spec (documents, payload encoding, payload decoding, kit verdicts);
+//! each producer returns only its own type. law §3 and §5 tokens pass through `DocToken::Canon` and
 //! `DocToken::Sig`.
 
 pub use zikaron::tokens::{CanonToken, SigToken, Token};
 
-/// Document tokens of kit law §11 (decision order of §4.2, §5.2): the eight parent §3 tokens via `Canon`, the
-/// six parent §5 tokens via `Sig`, and this law's own seventeen. 31 members, equal to the docs vocabulary
-/// (plus `ok`); `check_fpm` and `check_ack` return only this type.
+/// Document tokens of kit law §11 (decision order of §4.2, §5.2): the eight law §3 tokens via
+/// `Canon`, the six law §5 tokens via `Sig`, and the kit spec's own seventeen. 31 members, equal to the
+/// docs vocabulary (plus `ok`); `check_fpm` and `check_ack` return only this type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DocToken {
     Canon(CanonToken),
@@ -233,7 +233,7 @@ impl Check {
     ];
 }
 
-/// Kit law §10.3: the reason when check 1 fails, a parent §10 token or `NOT_A_GRANT`.
+/// Kit law §10.3: the reason when check 1 fails, a law §10 token or `NOT_A_GRANT`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reason {
     NotAGrant,
@@ -335,8 +335,8 @@ impl Rule {
     }
 }
 
-/// Keys of this law's result objects and command outputs (the six §9.2 members, §10.3, §10.5, §7.4, §6, §4,
-/// §5).
+/// Keys of the kit spec's result objects and command outputs (the six §9.2 members, §10.3, §10.5, §7.4, §6,
+/// §4, §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     // General.
@@ -382,7 +382,7 @@ pub enum Key {
     Links,
     Failing,
     Kind,
-    // Signing output (same shape as the parent `zk1 sign`).
+    // Signing output (same shape as `zk1 sign` in the `zikaron/1` harness).
     Digest,
     Presig,
     Sig,
@@ -452,7 +452,7 @@ impl Domain {
         }
     }
 
-    /// The only domain literals accepted on the command line (HARNESS-KIT: `<domain>` is exactly …).
+    /// The only domain literals accepted on the command line (`HARNESS-KIT.md`: `<domain>` is exactly …).
     pub fn parse(x: &str) -> Option<Domain> {
         [Domain::Fpm, Domain::Ack].into_iter().find(|d| d.as_str() == x)
     }

@@ -1,6 +1,8 @@
 //! Tables: a list card of single-line rows. Head 40, rows 56; the sequence column 36 right-aligned, the type
-//! column 84, 12 between cells. Rows darken on hover; a row that opens a detail shows a chevron on hover that
-//! slides 2 to the right. Rules between rows hide around the hovered row.
+//! column as wide as this table's widest tag (at least 84, at most 148; a tag wider still is elided and shows
+//! whole on hover), 12 between cells. Narrow, the body column keeps its floor while the fixed columns give way
+//! first. Rows darken on hover; a row that opens a detail shows a chevron on hover that slides 2 to the right.
+//! Rules between rows hide around the hovered row.
 
 use crate::icons::{self, Glyph};
 use crate::mark::{self, Mark};
@@ -10,11 +12,19 @@ use crate::palette::{c, Lift, Tone, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// A column width: fixed, or a share of what the fixed columns leave.
+/// A column width: fixed, a share of what the fixed columns leave, or as wide as the widest tag in it (between
+/// `min` and `max`; measured each frame, then fixed like `Px`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Col {
     Px(f32),
     Fr(f32),
+    Fit { min: f32, max: f32 },
+}
+
+/// The width of a column fitted to its widest tag's words: the words and the tag's padding, between `min` and
+/// `max`.
+pub fn fit_width(widest_words: f32, min: f32, max: f32) -> f32 {
+    (widest_words + tokens::TAG_PAD).clamp(min, max.max(min))
 }
 
 /// A column: its head words, width, and whether its cells align right.
@@ -33,9 +43,9 @@ pub const fn col_r(head: &str, width: Col) -> Column<'_> {
     Column { head, width, right: true }
 }
 
-/// The standard columns: sequence (36), type tag (84), a status mark (20), the chevron (16).
+/// The standard columns: sequence (36), type tag (fitted, 84 to 148), a status mark (20), the chevron (16).
 pub const SEQ: Column<'static> = Column { head: "", width: Col::Px(tokens::SEQ_W), right: true };
-pub const TYPE: Column<'static> = Column { head: "", width: Col::Px(tokens::TYPE_W), right: false };
+pub const TYPE: Column<'static> = Column { head: "", width: Col::Fit { min: tokens::TYPE_W, max: tokens::TYPE_MAX_W }, right: false };
 pub const MARK: Column<'static> = Column { head: "", width: Col::Px(20.0), right: false };
 pub const CHEV: Column<'static> = Column { head: "", width: Col::Px(16.0), right: true };
 
@@ -81,17 +91,36 @@ pub struct Hit {
     pub clicked: Option<usize>,
 }
 
-fn widths(cols: &[Column], inner: f32) -> Vec<f32> {
+/// The columns' widths in `inner` (fitted columns already resolved to `Px`; an unresolved one counts as its
+/// `min`). The fixed columns keep their widths while the share columns keep [`tokens::BODY_MIN_W`] between them;
+/// narrower, the fixed columns give way first, together (their words elide), down to half; narrower still the
+/// share columns go below their floor; and when even half the fixed columns do not fit, they all narrow
+/// together to the edge.
+pub fn widths(cols: &[Column], inner: f32) -> Vec<f32> {
     let gaps = tokens::CELL_GAP * (cols.len().saturating_sub(1)) as f32;
-    let fixed: f32 = cols.iter().map(|c| if let Col::Px(w) = c.width { w } else { 0.0 }).sum();
+    let px = |c: &Column| match c.width {
+        Col::Px(w) => w,
+        Col::Fit { min, .. } => min,
+        Col::Fr(_) => 0.0,
+    };
+    let fixed: f32 = cols.iter().map(px).sum();
     let frs: f32 = cols.iter().map(|c| if let Col::Fr(f) = c.width { f } else { 0.0 }).sum();
-    let rest = (inner - fixed - gaps).max(0.0);
-    // Narrower than the fixed columns: they narrow together (their words elide) rather than pass the edge.
-    let squeeze = if fixed > 0.0 && fixed + gaps > inner { ((inner - gaps).max(0.0) / fixed).min(1.0) } else { 1.0 };
+    let floor = if frs > 0.0 { tokens::BODY_MIN_W } else { 0.0 };
+    let room = (inner - gaps).max(0.0);
+    let squeeze = if fixed <= 0.0 || fixed + floor <= room {
+        1.0
+    } else if fixed * 0.5 + floor <= room {
+        (room - floor) / fixed
+    } else if fixed * 0.5 <= room {
+        0.5
+    } else {
+        room / fixed
+    };
+    let rest = (room - fixed * squeeze).max(0.0);
     cols.iter()
         .map(|c| match c.width {
-            Col::Px(w) => w * squeeze,
             Col::Fr(f) => if frs > 0.0 { rest * f / frs } else { 0.0 },
+            _ => px(c) * squeeze,
         })
         .collect()
 }
@@ -106,6 +135,22 @@ pub fn table(ui: &mut egui::Ui, id_salt: &str, cols: &[Column], head: bool, rows
     let inner_x = top.x + tokens::LIST_PAD_X;
     let inner_w = w - tokens::LIST_PAD_X * 2.0;
     let cell_room = inner_w - tokens::ROW_INSET * 2.0;
+    // A fitted column takes this table's widest tag in it.
+    let fitted: Vec<Column> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, col)| match col.width {
+            Col::Fit { min, max } => {
+                let widest = rows.iter().filter_map(|r| match r.cells.get(i) {
+                    Some(Cell::Tag(s)) => Some(paint::galley(ui, s, Type::Small, c(C::Ink2)).size().x),
+                    _ => None,
+                });
+                Column { width: Col::Px(fit_width(widest.fold(0.0, f32::max), min, max)), ..*col }
+            }
+            _ => *col,
+        })
+        .collect();
+    let cols = &fitted[..];
     let ws = widths(cols, cell_room);
     let mut y = top.y + tokens::LIST_PAD_Y;
     let p = ui.painter().clone();
@@ -187,10 +232,16 @@ fn paint_cell(ui: &mut egui::Ui, p: &egui::Painter, id: egui::Id, cell: &Cell, a
             p.text(pos2(x + w, cy), egui::Align2::RIGHT_CENTER, format!("#{n}"), Type::MonoSmall.font(), c(C::Ink3));
         }
         Cell::Tag(s) => {
-            let g = paint::galley(ui, s, Type::Small, c(C::Ink2));
-            // A tag fills the type column, so the tags down a list line up; longer words widen it.
-            let tw = (g.size().x + 16.0).max(tokens::TAG_MIN_W).max(w.min(tokens::TYPE_W)).min(w);
-            mark::paint_tag(p, Rect::from_min_size(pos2(x, cy - tokens::TAG_H / 2.0), vec2(tw, tokens::TAG_H)), g);
+            // A tag fills the type column, so the tags down a list line up; words wider than the column are
+            // elided and show whole on hover.
+            let fit = crate::width::elide_to(ui, s, Type::Small.font(), (w - tokens::TAG_PAD).max(0.0));
+            let g = paint::galley(ui, &fit, Type::Small, c(C::Ink2));
+            let tw = (g.size().x + tokens::TAG_PAD).max(tokens::TAG_MIN_W).max(w.min(tokens::TYPE_MAX_W)).min(w);
+            let rect = Rect::from_min_size(pos2(x, cy - tokens::TAG_H / 2.0), vec2(tw, tokens::TAG_H));
+            mark::paint_tag(p, rect, g);
+            if fit != *s {
+                let _ = crate::layer::tip(ui.interact(rect, id.with(("tag-whole", s.as_str())), egui::Sense::hover()), s.as_str());
+            }
         }
         Cell::Text(s) => {
             let colour = if gone { c(C::Ink3) } else { c(C::Ink) };
@@ -249,5 +300,53 @@ pub fn pick_row(ui: &mut egui::Ui, id: egui::Id, on: bool, enabled: bool, h: f32
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
         resp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The type column takes its widest tag's words and padding, at least 84, at most 148.
+    #[test]
+    fn the_type_column_fits_its_widest_tag_between_its_bounds() {
+        assert_eq!(fit_width(30.0, tokens::TYPE_W, tokens::TYPE_MAX_W), tokens::TYPE_W, "short words: the floor");
+        assert_eq!(fit_width(100.0, tokens::TYPE_W, tokens::TYPE_MAX_W), 116.0, "longer words widen it");
+        assert_eq!(fit_width(400.0, tokens::TYPE_W, tokens::TYPE_MAX_W), tokens::TYPE_MAX_W, "the ceiling; the words elide");
+        assert_eq!(fit_width(0.0, 84.0, 10.0), 84.0, "a ceiling under the floor is the floor");
+    }
+
+    fn list() -> Vec<Column<'static>> {
+        vec![SEQ, col("", Col::Px(84.0)), col("", Col::Fr(1.0)), col("", Col::Px(180.0)), MARK, CHEV]
+    }
+
+    /// Wide, every fixed column keeps its width and the body takes the rest; narrower, the body keeps its floor
+    /// while the fixed columns give way (down to half); narrower still the body goes under its floor; past half
+    /// the fixed columns, everything narrows to the edge. Never past the edge.
+    #[test]
+    fn narrow_the_fixed_columns_give_way_before_the_body() {
+        let cols = list();
+        let gaps = tokens::CELL_GAP * 5.0;
+        let fixed = 36.0 + 84.0 + 180.0 + 20.0 + 16.0;
+        let sum = |w: &[f32]| w.iter().sum::<f32>() + gaps;
+        let wide = widths(&cols, 900.0);
+        assert_eq!((wide[0], wide[1], wide[3]), (36.0, 84.0, 180.0));
+        assert!((wide[2] - (900.0 - gaps - fixed)).abs() < 0.01);
+        let at_floor = fixed + tokens::BODY_MIN_W + gaps;
+        let just_under = widths(&cols, at_floor - 40.0);
+        assert!((just_under[2] - tokens::BODY_MIN_W).abs() < 0.01, "the body keeps its floor: {just_under:?}");
+        assert!(just_under[3] < 180.0 && just_under[1] < 84.0, "the fixed columns gave way");
+        assert!((sum(&just_under) - (at_floor - 40.0)).abs() < 0.01);
+        let half = fixed * 0.5 + gaps;
+        let under_half_floor = widths(&cols, half + 60.0);
+        assert!((under_half_floor[3] - 90.0).abs() < 0.01, "fixed at half: {under_half_floor:?}");
+        assert!((under_half_floor[2] - 60.0).abs() < 0.01, "the body below its floor only now");
+        let tiny = widths(&cols, gaps + 50.0);
+        assert!(tiny[2] == 0.0 && (sum(&tiny) - (gaps + 50.0)).abs() < 0.01, "to the edge: {tiny:?}");
+        // No share column: the fixed columns narrow together to the edge.
+        let only_fixed = widths(&[SEQ, col("", Col::Px(200.0))], 100.0 + tokens::CELL_GAP);
+        assert!((only_fixed.iter().sum::<f32>() - 100.0).abs() < 0.01);
+        // A fitted column not yet measured counts as its floor.
+        assert_eq!(widths(&[TYPE, col("", Col::Fr(1.0))], 1000.0)[0], tokens::TYPE_W);
     }
 }

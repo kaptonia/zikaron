@@ -1,7 +1,7 @@
 use super::*;
 
 impl Win {
-    /// Records in this ledger, newest first, each with its deletion read by the convention.
+    /// Records in this ledger, newest first, each with its deletion as read by the retraction convention.
     pub(super) fn work_lines(&self) -> Vec<WorkLine> {
         let Some((rows, _)) = self.shell.rows.as_ref() else { return Vec::new() };
         let reading = crate::retractx::read(rows);
@@ -19,7 +19,7 @@ impl Win {
     }
 
     /// Ledger state ("normal / problems"): normal when the audit has a reading, the chain is not broken and
-    /// there is no real fault. Entries awaiting anchoring are not faults; this desk's deletions count as
+    /// there is no real fault. Entries awaiting anchoring are not faults; this desk's own deletions count as
     /// recognized, not as unknown types.
     pub(super) fn ledger_state(&self) -> Option<bool> {
         use zikaron::tokens::Key as T;
@@ -47,7 +47,7 @@ impl Win {
         let today = (self.shell.clock)();
         stagger(ui, 0, |ui| {
             let d = drop::zone(ui, "works-new", Some(Glyph::Inbox), &[t(Key::V2NewAnchor), t(Key::DropClickAny)], None, 84.0, drop::Shape::Row, true);
-            new_record = self.drop_or_pick(&d, crate::platform::Pick::FileOrFolder, now);
+            new_record = self.drop_or_pick(ui.ctx(), "works-new", &d, crate::platform::Pick::FileOrFolder, now);
         });
         stagger(ui, 1, |ui| search_row(ui, "works", &mut query, t(Key::SearchWorks), &mut range, today));
         let at = self.shell.remembered.as_ref().map(|r| r.at);
@@ -160,7 +160,7 @@ impl Win {
                 open = shown.get(i).map(|(q, _)| q.id.clone());
             }
         });
-        // Failing to resume is said plainly: a submitted batch waits for its receipt and this chain has no
+        // Say plainly when resuming fails: a submitted batch is waiting for its receipt and this chain has no
         // node now.
         if let Some(chain) = self.shell.resume_blocked {
             states::okline(ui, Mark::Warn, &fill1(Key::QueueResumeNoNode, &chain.to_string()));
@@ -169,7 +169,7 @@ impl Win {
         if !items.is_empty() || sent.is_some() {
             stagger(ui, 2, |ui| {
                 card::card(ui, |ui| {
-                    // This line counts the same batch the key beside it sends (the sendable ones).
+                    // This line counts the same batch the key beside it sends (the sendable entries).
                     let can = self.shell.queue.sendable();
                     let est = match self.shell.gas {
                         Some((n, g)) if n == can && n > 0 => fill2(Key::U3BatchEstimate, &n.to_string(), &g.to_string()),
@@ -213,11 +213,11 @@ impl Win {
             states::empty(ui, Glyph::File, t(if self.shell.rows.is_some() { Key::DetailGone } else { Key::WbNotRead }));
             return;
         };
-        // Its place among the sendable entries (a submitted one is not among them).
+        // Its position among the sendable entries (a submitted one is not among them).
         let queued_at = if w.lamp == crate::ledgerx::Lamp::Submitted {
             None
         } else {
-            self.shell.queue.items.iter().filter(|q| !matches!(q.step, crate::queue::Step::Submitted { .. })).position(|q| q.id == w.id)
+            self.shell.queue.items.iter().filter(|q| !q.step.in_flight()).position(|q| q.id == w.id)
         };
         let at = self.shell.remembered.as_ref().map(|r| r.at);
         let mut confirm: Option<U3Confirm> = None;
@@ -266,8 +266,8 @@ impl Win {
                         grant = key::key(ui, t(Key::V2GrantToOthers), Role::Secondary, anchored).clicked();
                         kit = key::key(ui, t(Key::U3UseForKit), Role::Secondary, true).clicked();
                         if !anchored {
-                            // Verified last pass but not yet this pass: "waiting for this check", never telling
-                            // the person to anchor again.
+                            // Verified last pass but not yet this pass: "waiting for this check", never telling the
+                            // user to anchor again.
                             let remembered = matches!(w.lamp, crate::ledgerx::Lamp::Remembered | crate::ledgerx::Lamp::RememberedStale);
                             paint::text(ui, t(if remembered { Key::V2AwaitThisCheck } else { Key::V2AnchorFirstHint }), Type::Small, c(C::Ink3));
                         }
@@ -323,7 +323,7 @@ impl Win {
         let rows_all: Vec<crate::ledgerx::Row> = self.shell.rows.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
         let reading = crate::retractx::read(&rows_all);
         let row = rows_all.iter().find(|x| x.id == q.id).cloned();
-        let pos = items.iter().filter(|x| !matches!(x.step, crate::queue::Step::Submitted { .. })).position(|x| x.id == q.id);
+        let pos = items.iter().filter(|x| !x.step.in_flight()).position(|x| x.id == q.id);
         let (tag, summary) = row.as_ref().map(|x| {
             let f = row_face(&rows_all, &reading, x);
             (f.0.to_string(), f.1)

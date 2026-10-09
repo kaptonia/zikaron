@@ -1,10 +1,10 @@
 use super::*;
 
-/// This desk's basis now, without asking the local ledger. Diligence reads someone else's ledger, with
-/// senders from that ledger's own lineage (see `readerx::basis_for`); whether the local ledger has a genesis
-/// is irrelevant, so only the three cells need to be configured. `toBlock` is set to the lower bound first,
-/// and the upper bound is asked of the chain by the background pass (`to_head`): a fixed number would set the
-/// same height for every chain, and a scan ending at the start block would find nothing.
+/// The configured basis (chain, registry, start block), without consulting the local ledger. Diligence reads
+/// someone else's ledger with senders from that ledger's own lineage (`readerx::basis_for`), so the local
+/// ledger need not have a genesis. `to_block` starts at the lower bound and the background pass raises it to
+/// the chain head (`to_head`): a fixed height would be wrong for some chains, and a scan that ends at the
+/// start block finds nothing.
 pub(super) fn ground_bare(shell: &Shell) -> Result<crate::auditx::Ground, crate::fault::Fault> {
     let chain = shell.settings.chain_id.ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoChainId, String::new())
@@ -21,7 +21,7 @@ pub(super) fn ground_bare(shell: &Shell) -> Result<crate::auditx::Ground, crate:
     })
 }
 
-/// Move the basis's upper bound to the chain's latest block now (the smallest across endpoints).
+/// Moves the basis's upper bound to the chain's latest block (the lowest across endpoints).
 pub(super) fn to_head(
     eps: &[crate::chainx::Endpoint],
     mut g: crate::auditx::Ground,
@@ -31,7 +31,7 @@ pub(super) fn to_head(
     Ok(g)
 }
 
-/// Run one diligence pass. Runs on a background thread.
+/// Runs one diligence pass on a background thread.
 pub(super) fn diligence(
     shell: &mut Shell,
     address: &str,
@@ -41,6 +41,7 @@ pub(super) fn diligence(
     to: &str,
 ) -> Result<Spawned, crate::fault::Fault> {
     let who = crate::readerx::who(address)?;
+    let dir = one_place(dir)?;
     let work = work.trim().to_string();
     if !work.is_empty() {
         crate::depthx::work_of(&work)?;
@@ -54,17 +55,17 @@ pub(super) fn diligence(
             crate::lang::t(crate::lang::Key::Tail055).to_string(),
         ));
     }
-    // Bytes go through the four levels (the same `supplyx::find_book` as the reader and check page): this
-    // machine, vault, record bundle, publish address; the "record content" cell is the person's place for the
-    // last two, and even when empty the first two are tried. None at all means "not obtained", with each
-    // failing level named.
-    let shelf = shelf_of(shell, dir.trim());
+    // Ledger bytes are looked up at four levels (`supplyx::find_book`, as on the reader and check pages): this
+    // machine, the vault, a record bundle, a publish address. The "record content" field gives the place for
+    // the last two; the first two are tried even when it is empty. If none supplies bytes the result is "not
+    // obtained", naming each level that failed.
+    let shelf = shelf_of(shell, dir);
     let nets = read_nets_now()?;
     shell.diligence = None;
     Ok(shell.tasks.spawn(Kind::Diligence, move || {
         let found = crate::supplyx::find_book(&shelf, &who.hex());
         let bytes = found.supply.as_ref().map(|s| s.items.clone()).unwrap_or_default();
-        // The fragment is scanned once: label, anchor count and quantities all speak of the same pass.
+        // Scan the fragment once, so the label, anchor count and quantities all describe the same pass.
         crate::task::stage_at(Kind::Diligence, 0);
         let (g, scanned, missed) = if nets.is_empty() {
             let g = crate::readerx::basis_for(&to_head(&eps, g)?, &who, &bytes);
@@ -72,7 +73,7 @@ pub(super) fn diligence(
             let scanned = crate::auditx::scan_once(&eps, &g)?;
             (g, scanned, Vec::new())
         } else {
-            // Across networks: each chain's head is asked with its window.
+            // Across networks: each chain's head is fetched along with its window.
             crate::task::stage_at(Kind::Diligence, 1);
             let (scanned, missed) = crate::readerx::scan_wide(&eps, &g, &who, &bytes, &nets)?;
             (g, scanned, missed)
@@ -85,8 +86,8 @@ pub(super) fn diligence(
         r.files = found.supply.as_ref().and_then(|s| s.files);
         r.misses = found.misses;
         r.missed = missed;
-        // The chain's current time (the latest among this chain's endpoints): grant badges need it; without
-        // it they still show "no reading".
+        // The chain's current time (the latest across its endpoints), used by grant badges; without it they
+        // show "no reading".
         r.now = crate::chainx::head_time(&eps, g.chain).ok().map(|(t, _, _)| t);
         Ok(Done::Diligence(Box::new(r)))
     }))

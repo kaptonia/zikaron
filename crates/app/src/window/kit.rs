@@ -1,7 +1,7 @@
 use super::*;
 
 impl Win {
-    /// Export a record kit: which entries, the chosen records' originals, attachments, a note, where to save;
+    /// Export a record kit: entries, the chosen records' originals, attachments, a note and destination;
     /// "check and export" runs in the background. Beside it: how the recipient checks, the depth reading, and
     /// the kits exported on this machine.
     pub(super) fn kit_page(&mut self, ui: &mut egui::Ui, now: f64) {
@@ -12,8 +12,8 @@ impl Win {
             }
         }
         let rows: Vec<crate::ledgerx::Row> = self.shell.rows.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        // The list and the export are the same selection (`kitx::preview`); a change of the pick, the table or
-        // the home selects again.
+        // The list and the export share one selection (`kitx::preview`), recomputed when the pick, the table or the
+        // home changes.
         let home_key = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
         let key = format!("{}|{}|{}|{}|{}|{}", home_key, self.shell.rows_gen, self.typed.pick_from.trim(), self.typed.pick_to.trim(), self.typed.pick_ids.trim(), rows.len());
         if self.ux.u3.kit_preview.as_ref().map(|(k, _)| k != &key).unwrap_or(true) {
@@ -53,8 +53,8 @@ impl Win {
                 stagger(ui, 0, |ui| {
                     card::card(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = tk::S4;
-                        // Which entries: a summary and "choose…", which opens the whole ledger with a switch
-                        // per entry.
+                        // Which entries: a summary and "choose…", which opens the whole ledger with a switch per
+                        // entry.
                         let range = match (self.typed.pick_ids.trim(), self.typed.pick_from.trim(), self.typed.pick_to.trim()) {
                             ("", "", "") => fill1(Key::KitEntriesAll, &in_pick.len().to_string()),
                             ("", a, b) => fill3(Key::KitEntriesRange, a, b, &in_pick.len().to_string()),
@@ -76,8 +76,8 @@ impl Win {
                         } else if in_pick.is_empty() {
                             hint(ui, t(Key::U3KitNothingPicked));
                         }
-                        // Chosen entries not yet on chain: said in red, with "put on chain now"; what the kit holds
-                        // follows right under it, then a rule 4 below.
+                        // Chosen entries not yet on chain are shown in red with "put on chain now"; what the kit
+                        // holds follows under it.
                         let (unanchored, sendable) = crate::kitx::unanchored(&in_pick.iter().collect::<Vec<_>>());
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
@@ -98,8 +98,8 @@ impl Win {
                             ui.add_space(4.0);
                             paint::rule(ui, 0.0);
                         });
-                        // The chosen records' originals, from the local index: one row each with "remove"; a
-                        // file no longer at its signing place, or changed since, says so in red and stays out.
+                        // The chosen records' originals, from the local index, one row each with "remove". A file
+                        // no longer at its signing place, or changed since, is flagged in red and left out.
                         field(ui, t(Key::KitOriginalsLabel), None, |ui| match self.ux.u3.kit_orig.as_ref().map(|(_, r)| r.clone()) {
                             Some(Ok(list)) if !list.is_empty() => {
                                 let mut removed = 0usize;
@@ -122,7 +122,7 @@ impl Win {
                                     }
                                 }
                                 if removed > 0 {
-                                    // Words, then a key: the row is a key tall so the words sit centered beside it.
+                                    // The row is one key tall so the words sit centered beside the key.
                                     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                         ui.spacing_mut().item_spacing.x = tk::S3;
                                         paint::text(ui, &fill1(Key::KitOriginalsRemoved, &removed.to_string()), Type::Small, c(C::Ink3));
@@ -135,7 +135,7 @@ impl Win {
                             Some(Err(e)) => hint(ui, &e),
                             _ => hint(ui, t(Key::KitOriginalsNone)),
                         });
-                        // Attachments: as many as dropped; each is read and digested in the background.
+                        // Attachments: any number; each is read and digested in the background.
                         field(ui, t(Key::U3AttachLabel), None, |ui| {
                             let lines_in: Vec<String> = self.typed.kit_attach.lines().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
                             let listed: Vec<String> = match self.ux.u3.kit_orig.as_ref().map(|(_, r)| r) {
@@ -194,11 +194,9 @@ impl Win {
                             }
                             let d = drop::zone(ui, "kit-attach", None, &[t(Key::U3AttachDrop), t(Key::DropClickAny)], None, 72.0, drop::Shape::Column, true);
                             let mut got = d.dropped.clone();
-                            if got.is_empty() && d.clicked {
-                                got.extend(crate::platform::choose_path(crate::platform::Pick::FileOrFolder));
-                            }
+                            got.extend(path_answer(ui.ctx(), egui::Id::new("zikaron-path-kit-attach"), got.is_empty() && d.clicked, crate::platform::Pick::FileOrFolder));
                             for p in got {
-                                // Dropping the same path again checks it again (the file may have changed).
+                                // Dropping the same path again re-checks it (the file may have changed).
                                 self.shell.vetted.remove(p.trim());
                                 if !self.typed.kit_attach.is_empty() && !self.typed.kit_attach.ends_with('\n') {
                                     self.typed.kit_attach.push('\n');
@@ -218,7 +216,7 @@ impl Win {
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = tk::S2;
                             let enabled = !in_pick.is_empty() && !blocked && Self::landing_ok(&self.typed.kit_out);
-                            // The one blue key of this page.
+                            // The page's only primary key.
                             let phase = self.phase_of(crate::task::Kind::Kit);
                             let _page = page::Page::new();
                             if key::show(ui, key::Key::new(t(Key::U3KitKey), Role::Primary).enabled(enabled).phase(phase)).clicked() {
@@ -247,7 +245,7 @@ impl Win {
                         hint(ui, t(Key::U3KitWhatTheyCanDoSay));
                     });
                 });
-                // The reading beside its baseline (kit law §9): shown only here; export carries none of it.
+                // The reading against its baseline (kit law §9): shown only here; the export carries none of it.
                 if let Some((work, seq, name)) = reading_work.clone() {
                     stagger(ui, 2, |ui| {
                         card::flat(ui, |ui| {
@@ -281,7 +279,7 @@ impl Win {
             self.act(Action::ReadDepth { work }, now);
         }
         if !anchor_now.is_empty() {
-            // Entries not yet queued are queued first, then the confirmation for the last of them.
+            // Queue the entries not yet queued, then open the confirmation for the last of them.
             for (id, fresh) in &anchor_now {
                 if *fresh {
                     self.act(Action::QueueEntry { id: id.clone() }, now);
@@ -292,7 +290,7 @@ impl Win {
                 .queue
                 .items
                 .iter()
-                .filter(|q| !matches!(q.step, crate::queue::Step::Submitted { .. }))
+                .filter(|q| !q.step.in_flight())
                 .enumerate()
                 .filter(|(_, q)| anchor_now.iter().any(|(id, _)| *id == q.id))
                 .map(|(i, _)| i + 1)
@@ -302,18 +300,18 @@ impl Win {
             }
         }
         if open_picker {
-            // The picker opens with the entries chosen now (including one preselected from a record).
+            // The picker opens with the current choice (including one preselected from a record).
             self.ux.u3.kit_pick = Some(KitPick { ids: picked.iter().map(|x| x.to_ascii_lowercase()).collect() });
         }
         if export {
-            // Exporting into a folder picks a new name under it; the kit is a whole new folder named after the
-            // first chosen record's digest.
+            // Exporting into a folder creates a new kit folder under it, named after the first chosen record's
+            // digest.
             let pick = crate::kitx::Pick::parse_ids(&self.typed.pick_from, &self.typed.pick_to, &self.typed.pick_ids).unwrap_or_default();
             let stem = crate::kitx::landing_stem(&rows, &pick);
             let chosen = crate::home::choose(&crate::home::Kind::Bundle { stem: stem.clone() }, std::path::Path::new(self.typed.kit_out.trim()));
             self.remember_landing(Out::Kit, &chosen);
             let out = chosen.at.display().to_string();
-            // Originals that go (on disk, not removed) come before dropped items, one per line.
+            // Originals still on disk and not removed come first, then dropped items, one per line.
             let mut attach: Vec<String> = match self.ux.u3.kit_orig.as_ref().map(|(_, r)| r) {
                 Some(Ok(list)) => list.iter().filter(|o| o.present && !self.ux.u3.kit_orig_off.contains(&o.path)).map(|o| o.path.clone()).collect(),
                 _ => Vec::new(),
@@ -335,8 +333,8 @@ impl Win {
         }
     }
 
-    /// The kits exported on this machine from this ledger: date and entry count; place, id and fetch address
-    /// in details; delete the local copy with a second press (the ledger is untouched).
+    /// The kits exported on this machine from this ledger: date and entry count, with place, id and fetch
+    /// address in details. "Delete" removes the local copy on a second press; the ledger is untouched.
     fn kits_index(&mut self, ui: &mut egui::Ui, now: f64) {
         let rows = self.shell.kits_index.clone();
         let mut act: Option<Action> = None;
@@ -346,7 +344,7 @@ impl Win {
                 hint(ui, t(Key::WbNotRead));
                 return;
             };
-            // The index covers the whole machine; only this ledger's kits are listed here.
+            // The index covers the whole machine; only this ledger's kits are listed.
             let mine: Vec<&crate::kitsindex::Row> = rows.iter().filter(|r| self.shell.kits_root.as_deref().map(|x| r.root.eq_ignore_ascii_case(x)).unwrap_or(false)).collect();
             if self.shell.kits_root.is_none() {
                 hint(ui, t(Key::WbNotRead));
@@ -395,7 +393,7 @@ impl Win {
             }
         });
         if let Some(a) = act {
-            // The draft link is dropped only once saved; a refused save keeps it for the person to fix.
+            // The draft link is dropped only once saved; a refused save keeps it for the user to fix.
             let path = if let Action::SetKitLink { path, .. } = &a { Some(path.clone()) } else { None };
             if let (Applied::KitLinked { .. }, Some(p)) = (self.act(a, now), path) {
                 self.ux.u3.link_typed.retain(|(k, _, _)| *k != p);
@@ -403,7 +401,7 @@ impl Win {
         }
     }
 
-    /// The entry picker (a sheet): the whole ledger, a switch per entry, any subset; "all", "clear", cancel,
+    /// The entry picker sheet: the whole ledger with a switch per entry, any subset; "all", "clear", cancel and
     /// done. Only "done" writes back.
     pub(super) fn kit_pick_sheet(&mut self, ctx: &egui::Context) {
         if self.ux.u3.kit_pick.is_none() {
@@ -413,11 +411,10 @@ impl Win {
         let reading = crate::retractx::read(&rows);
         let mut done = false;
         let mut close = false;
-        // What is typed and the date range: the list draws by them and "all" picks by them (two closures read
-        // them, one writes).
+        // The search text and date range filter the list and drive "all" (two closures read them, one writes).
         let typed = std::cell::RefCell::new((self.ux.search.get("kit-pick").cloned().unwrap_or_default(), self.ux.range.get("kit-pick").cloned().unwrap_or_default()));
         let today = (self.shell.clock)();
-        // The rows the search and the date range keep (a subset is still picked by its switches).
+        // The rows the search and date range keep (within them, the switches pick a subset).
         let keep = |row: &crate::ledgerx::Row, query: &str, range: &(String, String)| {
             let (tag, summary, _) = row_face(&rows, &reading, row);
             matches(query, &[&format!("#{}", row.seq), tag, &summary, &row.id]) && crate::when::within(row.anchored_at, &range.0, &range.1)
@@ -462,7 +459,8 @@ impl Win {
                         }
                     }
                 });
-                // Revocations of chosen grants go too (the selector closes over them); said first.
+                // Revocations of chosen grants are included too (the selector closes over them); this note comes
+                // first.
                 hint(ui, t(Key::KitPickRevocationNote));
             },
             |ui, me| {
@@ -473,7 +471,7 @@ impl Win {
                     close = true;
                 }
                 let n = me.ux.u3.kit_pick.as_ref().map(|s| s.ids.len()).unwrap_or(0);
-                // "All" is every row the search and the date range keep.
+                // "All" is every row the search and date range keep.
                 if key::key(ui, t(Key::U3FilterAll), Role::Secondary, true).clicked() {
                     let (query, range) = typed.borrow().clone();
                     me.ux.u3.kit_pick = Some(KitPick { ids: rows.iter().filter(|r| keep(r, &query, &range)).map(|r| r.id.to_ascii_lowercase()).collect() });
@@ -491,7 +489,7 @@ impl Win {
             close = true;
         }
         if done {
-            // The named entries are written back; the range cells are cleared (the two ways are not stacked).
+            // Write back the named entries and clear the range cells (the two ways do not stack).
             if let Some(st) = self.ux.u3.kit_pick.take() {
                 self.typed.pick_ids = st.ids.join(",");
                 self.typed.pick_from.clear();
@@ -503,7 +501,7 @@ impl Win {
     }
 }
 
-/// Frameless stat cells in a row: a quiet title and a figure (the depth reading).
+/// Frameless stat cells in a row, each a quiet title over a figure (the depth reading).
 pub(super) fn stat_cells(ui: &mut egui::Ui, cells: &[(&str, &str)]) {
     let w = ui.available_width();
     let gap = 10.0;

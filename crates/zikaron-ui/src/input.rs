@@ -99,6 +99,9 @@ fn field_id(ui: &egui::Ui, kind: &str, hint: &str) -> egui::Id {
     base.with(n)
 }
 
+/// What the text edit keeps inside its own width beyond the hint's words (its cursor's margin).
+const HINT_SLACK: f32 = 4.0;
+
 /// The one single-line field.
 pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Look) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
@@ -110,6 +113,9 @@ pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Loo
         inner.min.x += 14.0 + tokens::S2;
     }
     let t = if look.mono { Type::Mono } else { Type::Body };
+    // The hint fits the room the field gives it, measured: longer words end in "…" instead of running under
+    // the frame's edge.
+    let hint = crate::width::elide_to(ui, hint, t.font(), (inner.width() - HINT_SLACK).max(0.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let resp = child.add(
         egui::TextEdit::singleline(text)

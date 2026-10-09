@@ -1,19 +1,17 @@
-//! The one way the shell writes files to a caller's path.
+//! The single way files are written to a caller-named path.
 //!
-//! A file or a tree lands on the path the caller names only here: write a temporary sibling in full, fsync,
-//! move into place, clear the temporary. If something is already at that path, the write is refused by name
-//! and nothing is overwritten.
+//! A file or tree is written as a temporary sibling in full, fsynced, moved into place, and the temporary is
+//! cleared. If something already exists at the path, the write is refused by name and nothing is overwritten.
 //!
-//! `fs::write` on a caller's path would silently replace what is there, and a write cut off (disk full,
-//! killed, power loss) would leave a truncated file that looks like a good one. Documents and kits go to
-//! another party; a truncated acknowledgement is worse than none.
+//! `fs::write` on a caller's path would silently replace what is there, and an interrupted write (disk full,
+//! killed, power loss) would leave a truncated file that looks valid. Documents and kits go to another party;
+//! a truncated acknowledgement is worse than none.
 //!
-//! Not overwriting is enforced by the kernel: a single file lands by `hard_link`, which fails when the target
-//! exists. Checking `exists()` and then renaming leaves a window in which another process can create the
-//! name. A tree has no such call (directories move only by `rename`), so that path still checks first.
+//! No-overwrite is enforced by the kernel: a single file is placed with `hard_link`, which fails if the target
+//! exists, whereas `exists()` then rename leaves a race window. Directories can only move by `rename`, so tree
+//! landings still check first.
 //!
-//! In this crate and in `zikaron-cli`, `std::fs::write` appears only in this file; the test suites of both
-//! scan for it.
+//! In this crate and in `zikaron-cli`, `std::fs::write` appears only in this file; both test suites scan for it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,21 +21,29 @@ use std::path::{Path, PathBuf};
 pub enum Trouble {
     /// Something is already at that path.
     Occupied(String),
-    /// A disk operation failed; the subject is named.
-    Io(String),
+    /// A disk operation failed: the subject, and the system's message (operation, path, OS text).
+    Io(String, String),
 }
 
 impl Trouble {
     pub fn code(&self) -> &'static str {
         match self {
             Trouble::Occupied(_) => "E_OCCUPIED",
-            Trouble::Io(_) => "E_IO",
+            Trouble::Io(..) => "E_IO",
         }
     }
 
     pub fn subject(&self) -> &str {
         match self {
-            Trouble::Occupied(p) | Trouble::Io(p) => p.as_str(),
+            Trouble::Occupied(p) | Trouble::Io(p, _) => p.as_str(),
+        }
+    }
+
+    /// The system's message for a failed disk operation (`None` for an occupied path).
+    pub fn said(&self) -> Option<&str> {
+        match self {
+            Trouble::Io(_, w) => Some(w.as_str()),
+            Trouble::Occupied(_) => None,
         }
     }
 }
@@ -46,15 +52,16 @@ fn say(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// The temporary sibling shares the target's parent: a move is atomic only on one file system.
-///
-/// The name carries the process id and a random part read from the OS, so two processes landing on one path
-/// in the same second do not collide.
-/// The tags a temporary sibling carries: a byte landing and a tree's staging.
+/// A failed disk operation on `subject`: `what` was done on `at` and failed with `e`.
+fn failed(subject: &Path, what: &str, at: &Path, e: &std::io::Error) -> Trouble {
+    Trouble::Io(say(subject), format!("{what} {}: {e}", at.display()))
+}
+
+/// Temporary sibling tags: a single-file landing and a tree's staging area.
 const TAGS: [&str; 2] = ["landing", "staging"];
 
-/// Whether a name is one of this crate's temporary siblings (`.{base}.{tag}-{pid}-{sixteen hex}`), by the name
-/// alone: the reading of the shape [`beside`] writes, kept beside it.
+/// Whether a name is one of this crate's temporary siblings (`.{base}.{tag}-{pid}-{sixteen hex}`), judged by
+/// the name alone; the inverse of [`beside`].
 pub fn is_beside_name(name: &str) -> bool {
     let Some(rest) = name.strip_prefix('.') else { return false };
     let Some((base, tail)) = rest.rsplit_once('.') else { return false };
@@ -72,50 +79,52 @@ pub fn is_beside_name(name: &str) -> bool {
     }
 }
 
+/// A temporary sibling path in the target's parent (a move is atomic only within one file system). The name
+/// carries the process id and a random part, so two processes landing on one path do not collide.
 fn beside(out: &Path, tag: &str) -> Result<PathBuf, Trouble> {
     let parent = out.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let base = out
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_else(|| String::from("landing"));
-    Ok(parent.join(format!(".{base}.{tag}-{}-{}", std::process::id(), nonce().map_err(|_| Trouble::Io(say(Path::new(zikaron_os::ENTROPY_SOURCE))))?)))
+    Ok(parent.join(format!(".{base}.{tag}-{}-{}", std::process::id(), nonce().map_err(|e| failed(Path::new(zikaron_os::ENTROPY_SOURCE), "read", Path::new(zikaron_os::ENTROPY_SOURCE), &e))?)))
 }
 
-/// Sixteen random hex digits from the system's entropy source. When it cannot be read, that is said (the
-/// landing stops with the source named): no weaker name stands in for it.
+/// Sixteen random hex digits from the system entropy source. If it cannot be read the landing fails, naming
+/// the source; no weaker name is substituted.
 fn nonce() -> std::io::Result<String> {
     let mut b = [0u8; 8];
     zikaron_os::fill_random(&mut b)?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
-/// A temporary place beside the target (tree landings lay themselves out, so they need the name).
+/// A temporary staging path beside the target (tree landings lay themselves out, so they need the name).
 pub fn staging_beside(out: &Path) -> Result<PathBuf, Trouble> {
     beside(out, TAGS[1])
 }
 
-/// Land one file. An existing name is refused (the atomicity of `hard_link`); a failed write leaves no
-/// truncated file.
+/// Write one file. An existing path is refused atomically (`hard_link`); a failed write leaves no truncated
+/// file.
 pub fn land_bytes(out: &Path, bytes: &[u8]) -> Result<(), Trouble> {
     land_bytes_for(Readers::Anyone, out, bytes)
 }
 
-/// Who may read what lands. Closed set.
+/// Who may read the written file. Closed set.
 ///
-/// Without this, every file's permissions follow the process umask (commonly 0644). Documents for another
-/// party are meant to be read, but a key file is not: other accounts on the same machine could copy its
-/// ciphertext and brute-force the password offline. So each caller names who may read the file.
+/// Otherwise permissions follow the process umask (commonly 0644). Documents for another party are meant to be
+/// read, but a key file is not: other local accounts could copy its ciphertext and brute-force the password
+/// offline. So each caller states who may read the file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Readers {
-    /// What goes to another party (grant documents, manifests and acknowledgements, badges, kits, mirrors):
-    /// the environment's default.
+    /// Files for another party (grant documents, manifests and acknowledgements, badges, kits, mirrors): the
+    /// environment's default.
     Anyone,
-    /// Owner only (the key file): 0600 from the moment the temporary file is created, so there is no window
-    /// where it is 0644 first (the move is `hard_link`, and permissions belong to the same inode).
+    /// Owner only (the key file): 0600 from the moment the temporary file is created, so it is never briefly
+    /// 0644 (the move is `hard_link`, and permissions belong to the inode).
     Owner,
 }
 
-/// The same landing, with who may read the file.
+/// [`land_bytes`] with explicit readers.
 pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), Trouble> {
     if out.exists() {
         return Err(Trouble::Occupied(say(out)));
@@ -128,17 +137,19 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
         f.write_all(bytes)?;
         f.sync_all()
     })();
-    if wrote.is_err() {
+    if let Err(e) = wrote {
         let _ = std::fs::remove_file(&tmp);
-        return Err(Trouble::Io(say(out)));
+        return Err(failed(out, "write", &tmp, &e));
     }
-    // Move into place: fails if the target exists, so nothing is overwritten.
-    let linked = std::fs::hard_link(&tmp, out);
+    // Move into place without ever replacing (`zikaron_os::land_new`: a hard link, else a non-replacing rename,
+    // else an exclusive claim of the name then a rename over it). Any existing file is refused, even an empty
+    // one: a landing interrupted between claim and rename may not be ours to remove.
+    let linked = zikaron_os::land_new(&tmp, out);
     let _ = std::fs::remove_file(&tmp);
     match linked {
-        Ok(()) => sync_parent(out),
+        Ok(_) => sync_parent(out),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Trouble::Occupied(say(out))),
-        Err(_) => Err(Trouble::Io(say(out))),
+        Err(e) => Err(failed(out, "land", out, &e)),
     }
 }
 
@@ -152,39 +163,36 @@ fn create_for(readers: Readers, tmp: &Path) -> std::io::Result<std::fs::File> {
     o.open(tmp)
 }
 
-/// Move an already laid-out temporary tree into place. An existing target is refused; on failure the caller
-/// clears the temporary tree.
+/// Move a laid-out temporary tree into place. An existing target is refused; on failure the caller clears the
+/// temporary tree.
 pub fn land_tree(out: &Path, staged: &Path) -> Result<(), Trouble> {
     if out.exists() {
         return Err(Trouble::Occupied(say(out)));
     }
     match std::fs::rename(staged, out) {
         Ok(()) => sync_parent(out),
-        Err(_) => Err(Trouble::Io(say(out))),
+        Err(e) => Err(failed(out, "rename", staged, &e)),
     }
 }
 
-/// Put something into a temporary place we just created.
-///
-/// Different from [`land_bytes`]: this lays out our own staging area, where nothing of anyone else can be
-/// overwritten and nobody can take anything yet.
+/// Write a file inside a staging area we just created. Unlike [`land_bytes`], nothing of anyone else's can be
+/// overwritten there and nobody reads it yet.
 pub fn put(path: &Path, bytes: &[u8]) -> Result<(), Trouble> {
-    std::fs::write(path, bytes).map_err(|_| Trouble::Io(say(path)))
+    std::fs::write(path, bytes).map_err(|e| failed(path, "write", path, &e))
 }
 
 /// Create a directory of our own.
 pub fn mkdir(path: &Path) -> Result<(), Trouble> {
-    std::fs::create_dir_all(path).map_err(|_| Trouble::Io(say(path)))
+    std::fs::create_dir_all(path).map_err(|e| failed(path, "create directory", path, &e))
 }
 
-/// Sync the parent after the move so the name is on disk too. Failing to is said (`E_IO` naming the parent):
-/// a name that may not survive a power cut is not reported as landed quietly. The bytes are in place by then;
-/// the caller is told the landing is not durable.
+/// Sync the parent after the move so the name is durable too. Failure is reported (`E_IO` naming the parent)
+/// rather than silently claiming success: the bytes are in place, but may not survive a power cut.
 fn sync_parent(out: &Path) -> Result<(), Trouble> {
-    // A bare name lands in the working directory: its parent is `.`.
+    // A bare file name has the working directory `.` as its parent.
     let parent = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    zikaron_os::sync_dir(parent, out).map_err(|_| Trouble::Io(say(parent)))
+    zikaron_os::sync_dir(parent, out).map_err(|e| failed(parent, "directory sync", parent, &e))
 }

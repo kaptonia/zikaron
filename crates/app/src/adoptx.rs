@@ -1,35 +1,25 @@
-//! Adoption desk. Each row is verified against basis evidence, and co-signature verification cannot be
-//! bypassed.
+//! Adoption: recording anchors made outside this ledger. Each row is verified against the chain, and
+//! co-signature verification cannot be bypassed.
 //!
-//! ─── The chain answers three questions; this layer does not guess ───
+//! An anchor row must pass three checks: the transaction exists, it was sent by a declared sender, and its
+//! calldata carries the promised content. The first two are answered by the transaction on chain
+//! (`eth_getTransactionByHash`), the third by the anchoring crate's `calldata_carries`, which owns the offset
+//! rule. Each failed check has its own name rather than one "this row fails".
 //!
-//! An anchor row must pass three questions (law §9.5): does the transaction exist, who sent it, does the
-//! calldata carry the promised content. The first two are answered by the transaction on chain
-//! (`eth_getTransactionByHash`), the third by the anchoring crate's `calldata_carries` (§9.5's offset rule
-//! lives there; this layer writes no copy). Each question has its own name: one sentence "this row fails"
-//! covering three things is a silent failure.
+//! An external co-signature takes three steps: fix this entry's `prev`, produce the preimage binding adopter,
+//! anchors and `prev`, and paste the signature back. Only a signature that verifies locally (the core's
+//! `verify_signature`) may go into the entry; there is no "write first, check later" path. Because the
+//! preimage includes `prev`, any new head voids the previous signature.
 //!
-//! ─── Co-signature verification cannot be bypassed ───
-//!
-//! An external key co-signature takes three steps: fix this entry's `prev`, produce the message binding
-//! adopter, anchors and prev (law §6.6's three-member preimage), paste the signature back, and only when it
-//! verifies locally may the entry be assembled. Verification rests on the core's `verify_signature`; this
-//! layer does not weaken it and offers no "write first, check later" path.
-//!
-//! A new head requires a new signature: the preimage includes `prev`, so once the ledger grows the previous
-//! signature is void at once. That is not a check in this layer; the preimage itself changed.
-//!
-//! ─── A failed co-signature does not refuse the entry (law §6.6) ───
-//!
-//! When the co-signature fails, the entry is still a legal entry; those elements are only unproven. So this
-//! layer keeps co-signing and assembly apart: assembly does not ask about the co-signature, and the
-//! co-signature decides only whether the body carries the `attestor` / `attestation` cells.
+//! A failed co-signature does not refuse the entry: the entry is still valid and those anchors are only
+//! unproven. So co-signing and assembly are separate: assembly ignores the co-signature, which only decides
+//! whether the body carries the `attestor` / `attestation` fields.
 
 use crate::fault::{Fault, Known};
 use crate::key::Address;
 use zikaron::json::Value;
 
-/// One anchor row of the table (the four members of an `anchors` element, law §6.5).
+/// One anchor row (the four members of an `anchors` element).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorRow {
     pub chain_id: u64,
@@ -38,8 +28,8 @@ pub struct AnchorRow {
     pub content: String,
 }
 
-/// Row-by-row entry: four cells per line, separated by whitespace. Unrecognized is refused by name, never
-/// quietly skipping the line.
+/// Parses row-by-row input: four whitespace-separated fields per line. A malformed line is refused by name,
+/// never skipped.
 pub fn rows_of(text: &str) -> Result<Vec<AnchorRow>, Fault> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
@@ -70,8 +60,8 @@ pub fn rows_of(text: &str) -> Result<Vec<AnchorRow>, Fault> {
     Ok(out)
 }
 
-/// Lay out as law §6.5's `anchors` (a non-empty table, four members per element). Judging the format belongs
-/// to the core's thirteen steps.
+/// Lays rows out as the `anchors` table (non-empty, four members per element). Validating the format is the
+/// core's job.
 pub fn anchors_value(rows: &[AnchorRow]) -> Value {
     Value::Arr(
         rows.iter()
@@ -94,17 +84,16 @@ pub enum Proof {
     NoSuchTx,
     /// The transaction exists, but the sender is not one of those declared.
     WrongSender(String),
-    /// The transaction exists and the sender matches, but the calldata lacks the promised thirty-two bytes
-    /// (§9.5's offset rule).
+    /// The transaction exists and the sender matches, but the calldata lacks the promised 32 bytes (per the
+    /// anchoring crate's offset rule).
     NoContent(String),
-    /// All three questions pass.
+    /// All three checks pass.
     Proven(String),
-    /// This ledger declares no senders, so the sender question was never asked.
+    /// This ledger declares no senders, so the sender check was never made.
     ///
-    /// It is not "passed": with no open home, or no lineage readable from those bytes, `senders` is empty,
-    /// and skipping the question on an empty table would go straight to `Proven`, painting green any
-    /// transaction from anyone that happens to carry those thirty-two bytes in its calldata. Missing evidence
-    /// needs its own name and may not borrow green.
+    /// This is not "passed": with no open home, or no lineage readable from the bytes, `senders` is empty, and
+    /// skipping the check would mark as proven any transaction from anyone that carries those 32 bytes in its
+    /// calldata. Missing evidence gets its own name.
     NoSenders,
 }
 
@@ -134,11 +123,11 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
     }
 }
 
-/// Check one row. The chain answers about the transaction, the anchoring crate about the offset rule; this
-/// layer decides nothing.
+/// Checks one row. The chain answers about the transaction and the anchoring crate about the offset rule; this
+/// layer decides nothing itself.
 ///
-/// `senders` are the declared senders (this ledger's lineage); an empty table means the sender question is
-/// not asked, and the face then says plainly "no senders declared", not "passed".
+/// `senders` are the declared senders (this ledger's lineage); if empty, the sender check is skipped and the
+/// result says "no senders declared", not "passed".
 pub fn verify_row(
     eps: &[crate::chainx::Endpoint],
     row: &AnchorRow,
@@ -156,9 +145,9 @@ pub fn verify_row(
         ));
     }
     let params = Value::Arr(vec![Value::Str(row.tx.clone())]);
-    // Agreement over the transaction facts alone (`chainx::TX_FACTS`): endpoints answer the same transaction
-    // with members of their own, and a sender or calldata that differs still disagrees.
-    let r = crate::chainx::ask_facts(&mine, "eth_getTransactionByHash", &params, &crate::chainx::TX_FACTS)?;
+    // Agreement is required only over the transaction facts (`chainx::TX_FACTS`): endpoints may add members
+    // of their own, but a differing sender or calldata still counts as disagreement.
+    let r = crate::chainx::ask(&mine, "eth_getTransactionByHash", &params)?;
     if matches!(r.value, Value::Null) {
         return Ok(Proof::NoSuchTx);
     }
@@ -181,33 +170,30 @@ pub fn verify_row(
     }
     let mut word = [0u8; 32];
     word.copy_from_slice(&want);
-    // §9.5's offset rule lives in the anchoring crate; this layer writes no copy.
+    // The offset rule lives in the anchoring crate; no copy here.
     if !zikaron_anchor::scan::calldata_carries(&calldata, &word) {
         return Ok(Proof::NoContent(from));
     }
-    // The missing-evidence verdict comes last. Questions that can be answered are answered first: a
-    // transaction that carries no promised content should be red on the content question, not turn the whole
-    // row gray because this ledger declares no senders. Only here does an empty table become its own verdict:
-    // one of the three questions was never asked, so this row is not "passed".
+    // The missing-evidence verdict comes last, so answerable checks are answered first: a transaction without
+    // the promised content should fail the content check, not be reported as "no senders declared".
     if senders.is_empty() {
         return Ok(Proof::NoSenders);
     }
     Ok(Proof::Proven(from))
 }
 
-/// Steps one and two of co-signing: the preimage (law §6.6's three members), the part given to the
-/// counterpart to sign.
+/// Co-signing steps one and two: the preimage (adopter, anchors, `prev`) given to the counterpart to sign.
 ///
 /// The preimage includes `prev`, so once this entry's head changes the preimage changes: "a new head requires
-/// a new signature" is not a check but a different preimage.
+/// a new signature" follows from the bytes, not from a check.
 pub fn preimage(author: &Address, rows: &[AnchorRow], prev: &str) -> Vec<u8> {
     zikaron::entry::adoption_preimage(&author.hex(), &anchors_value(rows), prev)
 }
 
-/// Step three of co-signing: local verification. It passes only when the recovered address equals `attestor`
-/// (law §6.6).
+/// Co-signing step three: local verification. Passes only when the recovered address equals `attestor`.
 ///
-/// Judged by the core's `verify_signature` and that domain's digest; this layer computes not one byte itself.
+/// Judged by the core's `verify_signature` and the adoption domain's digest; this layer computes nothing
+/// itself.
 pub fn cosigned(
     author: &Address,
     rows: &[AnchorRow],
@@ -226,9 +212,8 @@ pub fn cosigned(
         .map_err(|t| Fault::known(Known::CosignRefused, format!("{t:?}")))
 }
 
-/// The body of `adoption` (law §6.5). `attestor` and `attestation` are both present or both absent; when the
-/// co-signature fails neither is carried, and the entry is still a legal entry (law §6.6: a failed
-/// co-signature does not refuse the entry).
+/// The body of `adoption`. `attestor` and `attestation` are both present or both absent; when the co-signature
+/// fails neither is carried, and the entry is still valid.
 pub fn adoption_body(rows: &[AnchorRow], cosign: Option<(&str, &str)>) -> Value {
     let mut body = vec![("anchors".to_string(), anchors_value(rows))];
     if let Some((attestor, attestation)) = cosign {
@@ -241,8 +226,7 @@ pub fn adoption_body(rows: &[AnchorRow], cosign: Option<(&str, &str)>) -> Value 
 
 // ───────────────────────── The import-existing-anchors table ─────────────────────────
 
-/// The head of the text the counterpart signs, followed by the preimage's hex (law §6.6's three members). One
-/// name, one home.
+/// The prefix of the text the counterpart signs, followed by the preimage's hex.
 pub const CLAIM_PREFIX: &str = "zikaron/1-adoption:";
 
 /// The text sent to the counterpart: `zikaron/1-adoption:` plus the preimage's hex. The preimage includes
@@ -251,8 +235,7 @@ pub fn claim_text(author: &Address, rows: &[AnchorRow], prev: &str) -> String {
     format!("{CLAIM_PREFIX}{}", zikaron::hexfmt::encode(&preimage(author, rows, prev)))
 }
 
-/// What the text pasted back by the counterpart reads as: who is claiming, which anchors, their ledger head;
-/// `preimage` is the bytes to sign.
+/// A parsed claim text: who is claiming, which anchors, their ledger head; `preimage` is the bytes to sign.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub adopter: String,
@@ -261,9 +244,8 @@ pub struct Claim {
     pub preimage: Vec<u8>,
 }
 
-/// Read a claim text. A wrong head, bad hex, unreadable JSON, a missing member, or a preimage recomputed from
-/// the three members that differs from the given bytes (not canonical form) are all refused by name as
-/// `CLAIM_SHAPE`, never guessed.
+/// Parses a claim text. A wrong prefix, bad hex, unreadable JSON, a missing member, or a preimage that differs
+/// when recomputed from its three members (not canonical form) are all refused as `CLAIM_SHAPE`, never guessed.
 pub fn claim_of(text: &str) -> Result<Claim, Fault> {
     let bad = |why: &str| Fault::known(Known::ClaimShape, why.to_string());
     let t = text.trim();
@@ -295,9 +277,9 @@ pub fn claim_of(text: &str) -> Result<Claim, Fault> {
     if rows.is_empty() {
         return Err(bad("anchors"));
     }
-    // Every member the claimer's adoption entry will carry is read in the law's own spelling (an address of
-    // twenty bytes, a head and each anchor's ids of thirty-two, lower case with `0x`): a signature over any
-    // other spelling never verifies on the claimer's side, so such a text is refused before anything is signed.
+    // Every member the claimer's adoption entry will carry must use the canonical spelling (a 20-byte address,
+    // 32-byte head and anchor ids, lowercase with `0x`): a signature over any other spelling never verifies on
+    // the claimer's side, so such a text is refused before anything is signed.
     if !zikaron::hexfmt::is_hex20(&adopter) {
         return Err(bad("adopter"));
     }
@@ -314,9 +296,9 @@ pub fn claim_of(text: &str) -> Result<Claim, Fault> {
     Ok(Claim { adopter, rows, prev, preimage: bytes })
 }
 
-/// A table row's state, a closed table of five. Decided only here: in the ledger means "already in the
-/// ledger" (the chain is not asked again); otherwise per the three questions (law §9.5). The no-senders form
-/// (`NoSenders`) reads as a sender mismatch: the sender question was not asked, so it does not pass.
+/// A table row's state (a closed set of five), decided only here. A row in the ledger is "already in the
+/// ledger" (the chain is not asked again); otherwise it follows the three checks. `NoSenders` reads as a
+/// sender mismatch: the sender check was not made, so it does not pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowState {
     Passed,
@@ -338,8 +320,8 @@ pub fn row_state(in_ledger: bool, proof: Option<&Proof>) -> Option<RowState> {
     })
 }
 
-/// One anchor a key sent on chain (the material of a table row). `proof` is the three-question answer per row
-/// (empty for rows already in the ledger, which are not asked).
+/// One anchor a key sent on chain (one table row). `proof` is the row's three-check result (empty for rows
+/// already in the ledger, which are not checked).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyAnchor {
     pub row: AnchorRow,
@@ -355,15 +337,15 @@ impl KeyAnchor {
     }
 }
 
-/// A table row as a line of entry text (the same shape as [`rows_of`]: chain id, transaction, payload form,
+/// A table row as a line of input text (the shape [`rows_of`] parses: chain id, transaction, payload kind,
 /// content).
 pub fn line_of(row: &AnchorRow) -> String {
     format!("{} {} {} {}", row.chain_id, row.tx, row.payload_kind, row.content)
 }
 
-/// Anchors a key sent, from a scan fragment (`fragment`'s `anchors`, in the anchoring crate's shape): those
-/// whose sender is `sender`, each marked whether it is in the ledger (`ledger_ids`). The payload form follows
-/// the registry contract's (`registry`).
+/// The anchors `sender` sent, from a scan fragment (`fragment`'s `anchors`, in the anchoring crate's shape),
+/// each marked whether it is in the ledger (`ledger_ids`). The payload kind is the registry contract's
+/// (`registry`).
 pub fn anchors_in(fragment: &Value, sender: &str, ledger_ids: &[String]) -> Vec<KeyAnchor> {
     let Some(Value::Arr(list)) = fragment.member("anchors") else { return Vec::new() };
     list.iter()
@@ -393,13 +375,13 @@ pub fn anchors_in(fragment: &Value, sender: &str, ledger_ids: &[String]) -> Vec<
         .collect()
 }
 
-/// Which block an anchor's transaction landed in (asks the chain; empty when unanswered, never zero).
+/// The block an anchor's transaction landed in (asks the chain; `None` when unanswered, never zero).
 pub fn block_of(eps: &[crate::chainx::Endpoint], row: &AnchorRow) -> Option<u64> {
     let mine: Vec<crate::chainx::Endpoint> = eps.iter().filter(|e| e.chain == row.chain_id).cloned().collect();
     if mine.is_empty() {
         return None;
     }
-    let r = crate::chainx::ask_facts(&mine, "eth_getTransactionByHash", &Value::Arr(vec![Value::Str(row.tx.clone())]), &crate::chainx::TX_FACTS).ok()?;
+    let r = crate::chainx::ask(&mine, "eth_getTransactionByHash", &Value::Arr(vec![Value::Str(row.tx.clone())])).ok()?;
     let b = member(&r.value, "blockNumber")?;
     u64::from_str_radix(b.trim_start_matches("0x"), 16).ok()
 }

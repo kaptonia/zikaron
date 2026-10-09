@@ -1,41 +1,35 @@
 //! Succession desk. The semantics of transferring rights are in the core; this layer only lays out
 //! parameters and raises alarms.
 //!
-//! ─── One key, one ledger (law §7.5) ───
+//! One key, one ledger (law §7.5): succession only goes to a new key, so `to` should never be a key that has
+//! opened its own ledger. This desk checks the part it can see: it scans that address on the declared basis,
+//! and any anchor it has sent turns red.
 //!
-//! Succession only goes to a new key: `to` should never be a key that has opened its own ledger. This desk
-//! checks as much of that as it can see: it scans that address on the declared basis, and any anchor it has
-//! sent turns red.
+//! Whether `to` has a genesis entry is invisible here: genesis is bytes, and the chain holds only anchor
+//! hashes. So this layer guards the half of the rule visible on chain and says so in the UI. Finding nothing
+//! does not prove the key is new; the UI then says "zero found", not "it is a new key".
 //!
-//! "Does it have a genesis entry" is invisible to this desk: genesis is bytes, and the chain holds only
-//! anchor hashes, no bytes. So this layer guards the half of that rule visible on chain, and says so plainly
-//! on the face; absence is not guilt (finding nothing does not mean it is clean; the face then says "zero
-//! found", not "it is a new key").
-//!
-//! ─── Read-only after anchoring ───
-//!
-//! Once the succession entry is anchored, this desk has handed over: [`handed_over`] reads the ledger now and
-//! answers "whose ledger is this from now on", and `Shell::writable` asks it. So "the old machine becomes
-//! read-only automatically" is not a scripted hookup but the other half of the same writer predicate.
+//! Once the succession entry is anchored, this desk has handed over: [`handed_over`] reads the ledger and
+//! answers whose ledger this is from now on, and `Shell::writable` asks it. So the old machine becoming
+//! read-only is not a separate hookup but part of the same writer predicate.
 
 use crate::fault::{Fault, Known};
 use crate::key::Address;
 use zikaron::json::Value;
 use zikaron::tokens::EntryType;
 
-/// The two preset kinds (law §6.7: every token is a legal value; these two are just ready words for the
-/// face).
+/// The two preset kinds (law §6.7: any token is a legal value; these two are ready-made choices for the UI).
 pub const KIND_HANDOVER: &str = "handover";
 pub const KIND_ROTATION: &str = "keyrotation";
 
-/// The two members offered on the face: the screen shows only plain words, and the entry holds the token. The
-/// order is the dropdown's order.
+/// The kinds offered in the UI: the screen shows plain words, and the entry holds the token. Ordered as in
+/// the dropdown.
 pub const KINDS: [&str; 2] = [KIND_ROTATION, KIND_HANDOVER];
 
-/// The two cells this desk fills for the person: an empty effective time means the moment of signing (`now`,
-/// from the shell's clock); an empty note means the method's plain words (tokens beyond the two have no plain
-/// words and stay empty, refused by name for the missing cell by [`succession_body`]). What the person gave
-/// is used as given. Returns (effective time, note).
+/// Fill the two fields this desk completes for the person: an empty effective time means the moment of
+/// signing (`now`, from the shell's clock); an empty note means the kind's plain words (other tokens have
+/// none, so the note stays empty and [`succession_body`] refuses the missing field). Values the person gave
+/// are used as given. Returns (effective time, note).
 pub fn fill(kind: &str, effective: &str, statement_md: &str, now: u64) -> (String, String) {
     let effective = if effective.trim().is_empty() { now.to_string() } else { effective.to_string() };
     let statement = if statement_md.trim().is_empty() { kind_words(kind).unwrap_or("").to_string() } else { statement_md.to_string() };
@@ -61,8 +55,8 @@ pub fn succession_body(
     effective: &str,
     statement_md: &str,
 ) -> Result<Value, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, the CLI) are traced
+    // too.
     crate::trace::mark(crate::feature::Feature::W11);
     let need = |s: &str, what: &str| -> Result<String, Fault> {
         let t = s.trim();
@@ -71,12 +65,7 @@ pub fn succession_body(
         }
         Ok(t.to_string())
     };
-    let eff: u64 = effective.trim().parse().map_err(|_| {
-        Fault::known(
-            Known::SettingsShape,
-            crate::lang::filln(crate::lang::Key::Tail217, &[&format!("{:?}", effective.trim())]),
-        )
-    })?;
+    let eff: u64 = crate::fault::whole_within_ceiling(effective, crate::lang::Key::Tail217)?;
     Ok(Value::Obj(vec![
         ("effective".to_string(), Value::Int(eff)),
         ("kind".to_string(), Value::Str(need(kind, "kind")?)),
@@ -88,15 +77,14 @@ pub fn succession_body(
 /// The reading of one scan for `to`.
 pub struct Sighting {
     pub to: Address,
-    /// How many anchors this address sent on the declared basis. Zero does not mean clean (absence is not
-    /// guilt).
+    /// How many anchors this address sent on the declared basis. Zero does not prove the key is new.
     pub anchors: usize,
     /// How many endpoints were asked.
     pub asked: usize,
 }
 
 impl Sighting {
-    /// Whether red: any anchor it has sent turns red.
+    /// Red when the address has sent any anchor.
     pub fn red(&self) -> bool {
         self.anchors > 0
     }
@@ -118,23 +106,22 @@ pub fn look_at(
     Ok(Sighting { to: *to, anchors: scanned.anchors, asked: scanned.asked })
 }
 
-/// Who writes this ledger from now on. Reads the ledger itself, with lineage computed by the core: this key
-/// wrote a succession effective by lineage, and the latest succession in the lineage hands to someone other
-/// than this key.
+/// Who writes this ledger from now on, read from the ledger itself with lineage computed by the core: this
+/// key wrote a succession in the lineage, and the latest succession in the lineage hands to a key other than
+/// this one.
 ///
-/// `Some(new key address)` means this desk has handed over; `None` means it is still in its own hands.
-/// Without a local key it answers `None`: "whose" cannot be asked yet, and writing has two other gates, the
-/// lock and the pen.
+/// `Some(new key address)` means this desk has handed over; `None` means the ledger is still its own. Without
+/// a local key it returns `None`: ownership cannot be asked yet, and writing has two other gates, the lock and
+/// the pen.
 ///
 /// Only successions in the lineage written by this key count. Anyone can copy entries into a ledger
 /// directory: taking the latest succession in the directory and asking only whether its `to` is me would let
-/// a succession signed by another key make an author without backup read as "handed over", the delete gate
-/// would let it through, and the key would be gone forever. So successions first pass the core's whole-set
-/// lineage (law §7.4: only successions from the root, signed by keys in the set, bring `to` into the set),
-/// and those outside the lineage are not in the ledger the core returns; then this key must have written one
-/// of them. Written by others, outside the lineage, or handed back to itself: none counts as a handover. The
-/// read window (the ledger page banner) and the write gates (`identity::delete`'s first check, the
-/// entry-writing gate) all ask here.
+/// a succession signed by another key make an author without a backup read as "handed over"; the delete check
+/// would then let the identity be deleted and the key would be lost forever. So successions first pass the
+/// core's lineage (law §7.4: only successions from the root, signed by keys in the set, bring `to` into the
+/// set), which drops those outside it, and then this key must have written one of them. Successions written by
+/// others, outside the lineage, or handing back to itself never count as a handover. The ledger page banner
+/// and the write gates (`identity::delete`'s first check, the entry-writing gate) all ask here.
 pub fn handed_over(items: &[Vec<u8>], mine: Option<Address>) -> Option<String> {
     let me = mine?.hex();
     // An unrecognizable root (no genesis, forked root) means the lineage cannot be computed, and this ledger
@@ -143,13 +130,12 @@ pub fn handed_over(items: &[Vec<u8>], mine: Option<Address>) -> Option<String> {
     // Pick the latest succession first, then ask whom it hands to.
     //
     // Skipping successions that hand back to me while picking would, after A hands to B and B hands back to
-    // A, still let the old "hand to B" win on A's machine, so the ledger would stay read-only forever while
-    // the ledger itself says it came back. Picking and judging are two things; merged, they give this answer.
+    // A, still let the old "hand to B" win on A's machine, leaving the ledger read-only forever although the
+    // ledger says it came back. Picking and judging must stay separate.
     //
-    // The two values compared must be in the same domain: `best` stores `(seq, id)` and compares `(seq, id)`.
-    // Storing `(seq, to)` while comparing `(seq, id)` would order sixty-six-character ids against
-    // forty-two-character addresses, and which of two same-seq successions wins would depend on directory
-    // read order, exactly what it claims to avoid.
+    // The compared values must be of the same kind: `best` stores and compares `(seq, id)`. Storing
+    // `(seq, to)` while comparing `(seq, id)` would order 66-character ids against 42-character addresses, and
+    // which of two same-seq successions wins would depend on directory read order.
     let mut best: Option<(u64, String, String)> = None;
     let mut wrote = false;
     for e in &lineage {
@@ -171,8 +157,8 @@ pub fn handed_over(items: &[Vec<u8>], mine: Option<Address>) -> Option<String> {
             best = Some((e.seq, id, to.clone()));
         }
     }
-    // This key wrote no succession in the lineage, so it never handed over; the latest hands back to itself,
-    // so the ledger is still in its own hands.
+    // If this key wrote no succession in the lineage, it never handed over; if the latest hands back to
+    // itself, the ledger is still its own.
     if !wrote {
         return None;
     }

@@ -143,6 +143,32 @@ pub fn age(ctx: &Context, id: Id, key: u64) -> f32 {
     })
 }
 
+/// Set an entrance's age now: the next [`age`] of `id` (with `key`) reads `age` (a layer that comes back while
+/// it is still leaving takes its entrance up where its leaving had reached).
+pub fn set_age(ctx: &Context, id: Id, key: u64, age: f32) {
+    let t = now(ctx);
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(id, Seen { key, t0: t - f64::from(age.max(0.0)), pass }));
+}
+
+impl Curve {
+    /// The time (0..=1) at which this curve reads `v`: the inverse of [`Curve::at`] for the curves that only
+    /// rise (all but [`Curve::Spring`], whose overshoot reads some values twice; it gives the first).
+    pub fn time_of(self, v: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+        for _ in 0..40 {
+            let mid = (lo + hi) / 2.0;
+            if self.at(mid) < v {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) / 2.0
+    }
+}
+
 /// Restart an entrance: the next [`age`] of `id` counts from now.
 pub fn restart(ctx: &Context, id: Id) {
     let t = now(ctx);

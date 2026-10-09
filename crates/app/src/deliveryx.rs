@@ -1,29 +1,24 @@
-//! Delivery verification. Drop in the delivered bytes; sha256 against the record hash in the terms,
-//! green or red; on red, the two hashes side by side.
+//! Delivery check: hash the delivered file with SHA-256 and compare it with the record hash in the terms.
+//! Green on a match; on a mismatch both hashes are shown side by side.
 //!
-//! ─── Two channels for the hash input ───
+//! The terms cell accepts either a 0x hash or arbitrary text: a hex32 value is taken as the hash, anything
+//! else is hashed as text. One cell serves experts and newcomers alike, and the page says which reading was
+//! used ([`Channel`]).
 //!
-//! The terms cell takes both a 0x hash and arbitrary text: hex32 is taken as a hash; anything else is text,
-//! and this desk computes its sha256. Experts and laypeople use the same cell, and the face says which
-//! channel was used (`Channel`).
+//! The delivered bytes must be one file. The terms state "the sha256 of the bytes", and a directory has no
+//! single byte string, so a directory is refused by name rather than picking a file or hashing a manifest.
 //!
-//! ─── Delivered bytes are one file ───
-//!
-//! The record hash in the terms is "the sha256 of the bytes"; a directory has no single "bytes", so dropping
-//! a directory is refused by name, never picking a file for the person or assembling a manifest hash (that is
-//! the author seat anchoring desk's reading, not what the terms say).
-//!
-//! The digest is the core's `cryptox::sha256`; this layer writes no second copy.
+//! The digest is the core's `cryptox::sha256`; there is no second implementation here.
 
 use crate::fault::{Fault, Known};
 use std::path::Path;
 
-/// The channel the terms cell took. Closed.
+/// How the terms cell was read. Closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     /// A 0x hash was entered.
     Hex,
-    /// Text was entered; this desk computes its sha256.
+    /// Text was entered; its sha256 is used.
     Text,
 }
 
@@ -36,10 +31,9 @@ impl Channel {
     }
 }
 
-/// The terms record hash. hex32 unchanged; anything else computed as text; empty is refused by name.
+/// The expected record hash: a hex32 value as is, anything else hashed as text; empty input is refused by name.
 pub fn expected(typed: &str) -> Result<([u8; 32], Channel), Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::D4);
     let t = typed.trim();
     if t.is_empty() {
@@ -71,16 +65,16 @@ pub fn take(path: &Path) -> Result<Vec<u8>, Fault> {
     std::fs::read(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))
 }
 
-/// One check's reading.
+/// The result of one delivery check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checked {
     pub path: String,
-    /// What the person entered in the terms cell, unchanged (half of the subject; the other half is `path`).
+    /// The terms cell as entered (trimmed); together with `path` it identifies what was checked.
     pub typed: String,
     pub bytes: usize,
     /// The sha256 of the received bytes.
     pub got: [u8; 32],
-    /// The one the terms state.
+    /// The hash the terms state.
     pub want: [u8; 32],
     pub channel: Channel,
 }
@@ -99,7 +93,7 @@ impl Checked {
     }
 }
 
-/// Check. Read the file, compute sha256, compare with the terms; both are returned, and on red the face shows
+/// Reads the file, hashes it and compares with the terms. Both hashes are returned so a mismatch can show
 /// them side by side.
 pub fn check(path: &Path, typed: &str) -> Result<Checked, Fault> {
     crate::trace::mark(crate::feature::Feature::D4);

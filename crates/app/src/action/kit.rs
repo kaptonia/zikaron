@@ -28,11 +28,10 @@ pub(super) fn export_kit(
         .as_ref()
         .map(|h| h.root().to_path_buf())
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
-    // An empty or relative landing place is refused before going to the background and exporting
-    // (`home::landing`).
+    // An empty or relative output path is refused before any background work (`home::landing`).
     let out = crate::home::landing(out)?.display().to_string();
     let pick = crate::kitx::Pick::parse_ids(from, to, ids)?;
-    // One attachment per line (blank lines ignored): the face's cell is multi-line.
+    // One attachment per line of the multi-line field; blank lines are ignored.
     let attachments: Vec<String> = attach
         .lines()
         .map(|x| x.trim().to_string())
@@ -44,12 +43,11 @@ pub(super) fn export_kit(
     Ok(shell.tasks.spawn(Kind::Kit, move || {
         crate::task::stage_at(Kind::Kit, 0);
         let home = crate::home::Home::open(&root)?;
-        // On the interface path, which items go into the kit is decided by digests read at export time: items
-        // whose digest is not an original of the selected records (including unreadable ones) are left out
-        // and reported one by one, and the rest go to `kitx::export`, whose entry gate judges each again. The
-        // interface line's sentence is an advance hint; filtering by it at export would track paths and miss
-        // changed files, silently dropping real originals. The command line (`kit-out`) does not take this
-        // path and still refuses strictly by name.
+        // In the UI, attachments are chosen by their digests at export time: files whose digest is not an
+        // original of the selected records (or that cannot be read) are left out and reported one by one, and
+        // the rest go to `kitx::export`, which checks each again. The UI's earlier hint is advisory only:
+        // filtering by it would track paths, miss changed files and silently drop real originals. The command
+        // line (`kit-out`) does not use this path and refuses strictly by name.
         let originals = crate::kitx::Originals::of(&crate::kitx::choose(&home, &pick)?);
         let (mut kept, mut left_out, mut unreadable) = (Vec::new(), Vec::new(), Vec::new());
         crate::task::stage_at(Kind::Kit, 1);

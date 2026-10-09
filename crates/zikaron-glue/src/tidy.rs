@@ -1,8 +1,7 @@
 //! Cleaning before output: platform junk is dropped and counted; anything else malformed is refused by name.
 //!
-//! A file whose name fails kit law §7.2 is not renamed: two different names could map to the same legal one,
-//! and the dropped one would vanish unnoticed (the manifest would show one row). Renaming trades a visible
-//! refusal for a silent loss. So there are two outcomes:
+//! A file whose name fails kit law §7.2 is not renamed: two names could map to the same valid one and
+//! one file would vanish unnoticed. So there are two outcomes:
 //!
 //! - Platform junk (a closed list, plus the AppleDouble `._` prefix): dropped, and the number dropped is
 //! reported. The file system made these, not the author.
@@ -10,7 +9,7 @@
 
 use zikaron_kit::kitdir;
 
-/// Platform junk, a closed list. An entry needs a reason, and the only one is that the file system made it.
+/// Platform junk, a closed list: files created by the OS or file system, not the author.
 pub const JUNK: [&str; 6] = [
     ".DS_Store",
     "Thumbs.db",

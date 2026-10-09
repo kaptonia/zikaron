@@ -1,10 +1,10 @@
 use super::*;
 
-/// Verify a record. Runs on a background thread.
+/// Verifies a record on a background thread.
 ///
-/// Kit verification and depth work offline; anchor review needs the chain, and when the chain is unreachable
-/// or the basis not configured that column records a named refusal while the other two still show: "chain
-/// unread" and "not anchored" are different, and the second is never faked by the first.
+/// Kit verification and depth work offline; anchor review needs the chain. When the chain is unreachable or
+/// the basis is not configured, that column carries a named refusal while the other two still show: "chain
+/// not read" is never presented as "not anchored".
 pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<Spawned, crate::fault::Fault> {
     let source = crate::verifyx::source_of(path)?;
     let work = work.trim().to_string();
@@ -20,10 +20,10 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
     shell.verified = None;
     Ok(shell.tasks.spawn(Kind::Verify, move || {
         crate::task::stage_at(Kind::Verify, 0);
-        // Kit verification: a directory kit goes to `verify_kit`; grant files and publish addresses are
-        // enumerations and go to `verify_enumeration` (the same verification). A publish address is fetched
-        // once: the fetched enumeration is material for both kit verification and bytes. The original each
-        // `contents` row points to in the kit (material for the per-record verification table).
+        // Kit verification: a directory kit goes to `verify_kit_at`; grant files and publish addresses are
+        // enumerations and get the same checks. A publish address is fetched once and the result serves both
+        // kit verification and the entry bytes. `originals` maps each `contents` row to its original in the
+        // kit, for the per-record table.
         let (kit, bytes, rejected, originals, manifest) = match &source {
             crate::verifyx::Source::Kit(d) => {
                 let (b, r) = crate::verifyx::bytes_at(&source)?;
@@ -48,13 +48,13 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 (Some(crate::verifyx::kit_facts_of(&got.pairs)), b, r, crate::verifyx::originals_in_pairs(&got.pairs), crate::verifyx::manifest_in(&got.pairs))
             }
         };
-        // Where the kit says it is anchored: when that network is not among the ones read (the main network
-        // and the read-only table), the kit is still verified and shown, and no chain is read.
+        // The network the kit says it is anchored on: if it is not among the networks read (the main one and
+        // the read-only table), the kit is still verified and shown, but no chain is read.
         let stated = manifest.as_deref().and_then(crate::verifyx::stated_on);
         let listed = crate::widex::listed(stated.as_ref(), ground.as_ref().ok(), &nets);
         let not_added = if listed { None } else { stated.clone() };
-        // Anchor review: the lineage is computed from these bytes themselves, scanned once, and the core
-        // produces the report.
+        // Anchor review: the lineage comes from these bytes, the chain is scanned once, and the core produces
+        // the report.
         let review: Result<(crate::verifyx::AnchorReview, zikaron::json::Value, zikaron_anchor::scan::Emitters, Vec<crate::widex::Missed>), String> = (|| {
             let review_of = |v: crate::auditx::Verdict, anchors: usize, asked: usize| {
                 let unanchored: Vec<String> = crate::auditx::rows_of(&v.report, zikaron::tokens::Key::Unanchored)
@@ -93,14 +93,14 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                     .map_err(|f| f.evidence())?;
                 return Ok((review_of(v, scanned.anchors, scanned.asked), scanned.fragment, emitters, Vec::new()));
             }
-            // Across networks: the main network (when configured) and every read-only one, each chain on its
-            // own; the senders are this ledger's lineage, as on the main network alone.
+            // Across networks: the main network (if configured) and every read-only one, each chain separately;
+            // the senders are this ledger's lineage, as for the main network alone.
             let root = crate::auditx::root_of(&bytes).map_err(|f| f.evidence())?;
             let who = crate::readerx::who(&root).map_err(|f| f.evidence())?;
             crate::task::stage_at(Kind::Verify, 1);
             let senders = crate::readerx::basis_for(&crate::widex::carrier(ground.as_ref().ok(), &nets), &who, &bytes).senders;
-            // The main network, when configured, is always one of the windows: with no node of its own it fails by
-            // name like any other chain, never dropped without a word.
+            // A configured main network is always scanned: with no node of its own it fails by name like any
+            // other chain, never silently dropped.
             let main = ground.as_ref().ok().map(|g| (&eps[..], g));
             let w = crate::widex::scan(main, &nets, &senders, crate::widex::Ask::First).map_err(|f| f.evidence())?;
             let v = crate::auditx::ask_from(&bytes, &w.fragment, Vec::new(), w.asked, true).map_err(|f| f.evidence())?;
@@ -110,8 +110,8 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
             Ok((r, f, e, m)) => (Ok(r), f, true, e, m),
             Err(said) => (Err(said), crate::auditx::empty_fragment(), false, Default::default(), Vec::new()),
         };
-        // Per record: whether the original matches, whether anchored, the first anchor's block time (same
-        // fragment, computed once); without a chain read the last two cells say "chain not read".
+        // Per record: whether the original matches, whether it is anchored, and the first anchor's block time
+        // (from the same fragment). Without a chain read the last two say "chain not read".
         crate::task::stage_at(Kind::Verify, 2);
         let mut records = if kit.is_some() { crate::verifyx::records(&bytes, &originals, read_chain.then_some(&fragment)) } else { Vec::new() };
         for r in records.iter_mut() {
@@ -119,19 +119,19 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 crate::auditx::name_registry(f, &emitters);
             }
         }
-        // A network left out this pass: what it alone could reach reads "chain not read", never "not anchored".
+        // For a network missed this pass, whatever only it could confirm reads "chain not read", not "not
+        // anchored".
         crate::verifyx::unread_where_missed(&missed, &mut review, &mut records);
-        // Depth: the same implementation as the author side (`depthx::read`, numbers from the kit
-        // crate), computed on the same fragment.
+        // Depth: the same implementation as the author side (`depthx::read`), on the same fragment.
         let depth = if work.is_empty() || bytes.is_empty() {
             None
         } else {
             Some(crate::verifyx::depth_of(&bytes, &fragment, &work)?)
         };
         let mismatches = crate::verifyx::mismatches(kit.as_ref(), &rejected, &review, depth.as_ref());
-        // The result file speaks only of chains read: a kit that holds is filed when this pass read a chain (so
-        // never when its stated network was not added, nor when no chain could be read); a kit that does not
-        // hold is filed as it is.
+        // The result file reflects only chains actually read: a passing kit is filed only when this pass read a
+        // chain (not when its stated network was not added or no chain could be read); a failing kit is always
+        // filed.
         let filed = match (&kit, &manifest) {
             (Some(k), Some(m)) if !k.ok || read_chain => Some(
                 machine

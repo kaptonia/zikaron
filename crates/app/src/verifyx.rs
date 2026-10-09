@@ -1,28 +1,25 @@
-//! Record verifier. Drop in a disclosure kit or raw bytes: kit verification, anchor review, depth
-//! reading; every mismatch listed one by one.
+//! Record verifier. Drop in a disclosure kit or raw bytes for kit verification, anchor review and a depth
+//! reading; every mismatch is listed individually.
 //!
-//! ─── Each of the three has its own owner ───
+//! Each of the three has its own owner:
 //!
-//! 1. Kit verification belongs to the kit crate's `kitdir::verify_kit` (kit law §7.4: the manifest must match
-//! the bytes one by one, or it is refused). This layer reads no manifest and compares no hash; it shows the
-//! kit crate's verdict and subject unchanged.
+//! 1. Kit verification belongs to the kit crate's `kitdir::verify_kit` (kit law §7.4: the manifest must
+//!    match the bytes one by one, or the kit is refused). This layer reads no manifest and compares no hash;
+//!    it shows the kit crate's verdict and subject unchanged.
 //! 2. Anchor review belongs to the anchoring crate (anchor scan, endpoint rule) and the core (thirteen steps
-//! to accept entries, audit to produce the report); it takes the same assembly path as self-audit
-//! (`auditx::ask_from`, one owner), and the lineage is computed from those bytes themselves.
-//! 3. The depth reading belongs to the kit crate's `reading::depth`, taken through the depth page's
-//! `depthx::read`: the same implementation as the author's own proof, so readings match byte for byte.
-//!
-//! ─── Every mismatch listed ───
+//!    to accept entries, audit to produce the report). It takes the same assembly path as the self-audit
+//!    (`auditx::ask_from`), and the lineage is computed from the bytes themselves.
+//! 3. The depth reading belongs to the kit crate's `reading::depth`, via the depth page's `depthx::read`:
+//!    the same implementation as the author's own proof, so readings match byte for byte.
 //!
 //! "Which file's hash does not match, which entry's signature fails" is one line each, with its subject; a
-//! failed kit verification carries the kit crate's verdict. The mismatch list is assembled in [`mismatches`]
-//! only, and every reader uses the same list.
+//! failed kit verification carries the kit crate's verdict. The mismatch list is built only in
+//! [`mismatches`], and every reader uses that list.
 //!
-//! ─── Raw bytes ───
-//!
-//! Entry files in a directory (names recognized by the store crate's `layout`) or a single entry file. Files
-//! that cannot be read as entries are named one by one (`Rejected`), never skipped silently: the others' ledger reader
-//! skipping them is its honest state ("bytes not seen"); the verifier's honest state is showing the refusals.
+//! Raw bytes are entry files in a directory (names recognized by the store crate's `layout`) or a single
+//! entry file. Files that cannot be read as entries are listed individually (`Rejected`), never skipped
+//! silently: the other-ledger reader skipping them is its honest state ("bytes not seen"); the verifier's
+//! honest state is showing the refusals.
 
 use crate::fault::{Fault, Known};
 use std::path::{Path, PathBuf};
@@ -42,7 +39,7 @@ pub enum Source {
 }
 
 impl Source {
-    /// Where this came from (path or address). The face's "from …" sentence reads it.
+    /// Where this came from (path or address), for the UI's "from …" line.
     pub fn said(&self) -> String {
         match self {
             Source::Kit(p) | Source::Bytes(p) | Source::File(p) => p.display().to_string(),
@@ -51,12 +48,12 @@ impl Source {
     }
 }
 
-/// Recognize a path. Unrecognized is refused by name, so a nonexistent path is never verified. An
-/// `http(s)://` address is the publish address form (https only, anything else refused by name); a file
-/// starting with the single-file bundle magic is a grant file.
+/// Recognize a path. Anything unrecognized is an error, so a nonexistent path is never verified. An
+/// `http(s)://` address is the publish-address form (https only, anything else refused); a file starting
+/// with the single-file bundle magic is a grant file.
 pub fn source_of(path: &str) -> Result<Source, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced
+    // too.
     crate::trace::mark(crate::feature::Feature::D2);
     let p = Path::new(path.trim());
     if path.trim().is_empty() {
@@ -81,9 +78,10 @@ pub fn source_of(path: &str) -> Result<Source, Fault> {
     }
 }
 
-/// A file that could not be read as an entry, with why (the core's token unchanged; the evidence tail reads
-/// it). The face's sentence comes from `say`: law refusals use the token-to-words table
-/// (`fault::entry_token_say`), no new table; unreadable files have no table and the face says `why`.
+/// A file that could not be read as an entry, with the reason (`why`: the core's token unchanged, kept as
+/// evidence for details and the log). The UI text comes from `say`, never from `why`: law refusals use the
+/// token-to-text table (`fault::entry_token_say`); a refusal that is a fault uses that fault's own text; one
+/// with neither says the file could not be read and that the reason is under details.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rejected {
     pub file: String,
@@ -97,23 +95,32 @@ impl Rejected {
         Rejected { file: file.into(), why: format!("{t:?}"), say: Some(crate::fault::entry_token_say(t)) }
     }
 
-    /// This file could not be read (or another named refusal, whose words are already plain).
+    /// This file could not be read (or another refusal whose text is already plain).
     pub fn plain(file: impl Into<String>, why: impl Into<String>) -> Rejected {
         Rejected { file: file.into(), why: why.into(), say: None }
     }
 
-    /// The face's sentence.
+    /// Refused by a fault: `why` is its evidence, the text is the fault's own.
+    pub fn of_fault(file: impl Into<String>, f: &Fault) -> Rejected {
+        Rejected { file: file.into(), why: format!("{} · {}", f.said(), f.tail()), say: f.what_key() }
+    }
+
+    /// The system could not read this file or folder: `why` is the error kind, the text the classified fault's.
+    pub fn io(file: impl Into<String>, e: &std::io::Error) -> Rejected {
+        let file = file.into();
+        let say = crate::fault::classify(e, &file).what_key();
+        Rejected { file, why: e.kind().to_string(), say }
+    }
+
+    /// The UI text: from the table, never the evidence.
     pub fn human(&self) -> String {
-        match self.say {
-            Some(k) => crate::lang::t(k).to_string(),
-            None => self.why.clone(),
-        }
+        crate::lang::t(self.say.unwrap_or(crate::lang::Key::CheckRejectedUnsaid)).to_string()
     }
 }
 
-/// Read raw bytes. A directory is walked (only names matching the store crate's entry names count); a file is
-/// that one file. Each goes through the core's thirteen steps: passes go to `entries`, failures to `rejected`
-/// (by name). Both empty is refused by name: nothing to verify.
+/// Read raw bytes. A directory is walked (only names matching the store crate's entry names count); a file
+/// is that one file. Each goes through the core's thirteen steps: passes go to `entries`, failures to
+/// `rejected`. Both empty is an error: nothing to verify.
 pub fn entries_of(p: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     let mut good: Vec<Vec<u8>> = Vec::new();
     let mut bad: Vec<Rejected> = Vec::new();
@@ -127,8 +134,8 @@ pub fn entries_of(p: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
             let listing = match std::fs::read_dir(&at) {
                 Ok(l) => l,
                 Err(e) => {
-                    // An unreadable level must be named: skipping a level means judging green on a subset.
-                    bad.push(Rejected::plain(at.display().to_string(), e.kind().to_string()));
+                    // An unreadable directory must be reported: skipping it would mean judging green on a subset.
+                    bad.push(Rejected::io(at.display().to_string(), &e));
                     continue;
                 }
             };
@@ -138,7 +145,7 @@ pub fn entries_of(p: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
                 let m = match std::fs::symlink_metadata(&q) {
                     Ok(m) => m,
                     Err(e) => {
-                        bad.push(Rejected::plain(q.display().to_string(), e.kind().to_string()));
+                        bad.push(Rejected::io(q.display().to_string(), &e));
                         continue;
                     }
                 };
@@ -159,13 +166,13 @@ pub fn entries_of(p: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     for f in files {
         let bytes = std::fs::read(&f).map_err(|e| crate::fault::classify(&e, &f.display().to_string()))?;
         // A sealed file is this machine's own local data: opened under the local data key (while unlocked)
-        // and judged as its plain bytes; one that does not open is named with why, never skipped.
+        // and judged by its plain bytes; one that does not open is reported with the reason, never skipped.
         let bytes = if crate::local::is_sealed(&bytes) {
             let name = f.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
-            match crate::keybox::local_key().and_then(|k| crate::local::open_with(&k, crate::local::Doc::Entry, &bytes, &name)) {
+            match crate::keybox::local_key().and_then(|k| crate::local::open_with(&k, &crate::local::expect_entry(f.parent().unwrap_or(&f))?, &bytes, &name)) {
                 Ok(plain) => plain,
                 Err(e) => {
-                    bad.push(Rejected::plain(f.display().to_string(), format!("{} · {}", e.said(), e.tail())));
+                    bad.push(Rejected::of_fault(f.display().to_string(), &e));
                     continue;
                 }
             }
@@ -183,11 +190,11 @@ pub fn entries_of(p: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     Ok((good, bad))
 }
 
-/// Entries in a disclosure kit. Follows the kit's own manifest (the `entries` table, one id per row), each at
-/// `entries/<id without 0x>.zk1` (kit law §7.3's file naming); manifest keys, directory names and suffixes
-/// come from the glue crate's `names` (the same names the kit writer uses, one name, one home), and no
-/// literal is spelled here. Each goes through the core's thirteen steps: passes go to `entries`, failures to
-/// `rejected` (by name); rows the manifest lists but the disk lacks go to the refusal list too.
+/// Entries in a disclosure kit, following the kit's own manifest (the `entries` table, one id per row), each
+/// at `entries/<id without 0x>.zk1` (kit law §7.3's file naming). Manifest keys, directory names and suffixes
+/// come from the glue crate's `names` (shared with the kit writer); no literal is spelled here. Each goes
+/// through the core's thirteen steps: passes go to `entries`, failures to `rejected`; rows the manifest lists
+/// but the disk lacks are rejected too.
 pub fn kit_entries(dir: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     use zikaron_glue::names::{Field, ENTRIES_DIR, ENTRY_SUFFIX, MANIFEST};
     let m = dir.join(MANIFEST);
@@ -217,7 +224,7 @@ pub fn kit_entries(dir: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
                 Ok(_) => good.push(bytes),
                 Err(t) => bad.push(Rejected::token(f.display().to_string(), t)),
             },
-            Err(e) => bad.push(Rejected::plain(f.display().to_string(), e.kind().to_string())),
+            Err(e) => bad.push(Rejected::io(f.display().to_string(), &e)),
         }
     }
     if good.is_empty() && bad.is_empty() {
@@ -226,8 +233,8 @@ pub fn kit_entries(dir: &Path) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     Ok((good, bad))
 }
 
-/// Entries in an enumeration that passed kit verification: each item under `entries/` goes through the core's
-/// thirteen steps; passes go to the byte pile, failures are named.
+/// Entries in a file list that passed kit verification: each item under `entries/` goes through the core's
+/// thirteen steps; passes are returned, failures listed.
 pub fn entries_of_pairs(pairs: &[(String, Vec<u8>)]) -> (Vec<Vec<u8>>, Vec<Rejected>) {
     let dir = format!("{}/", zikaron_glue::names::ENTRIES_DIR);
     let mut good: Vec<Vec<u8>> = Vec::new();
@@ -241,25 +248,24 @@ pub fn entries_of_pairs(pairs: &[(String, Vec<u8>)]) -> (Vec<Vec<u8>>, Vec<Rejec
     (good, bad)
 }
 
-/// Kit verification reading (the enumeration form: single-file bundles and fetched kits; the verdict is the
-/// same as [`verify_kit_at`]).
+/// Kit verification for a file list (single-file bundles and fetched kits); same verdict as
+/// [`verify_kit_at`].
 pub fn kit_facts_of(pairs: &[(String, Vec<u8>)]) -> KitFacts {
     facts(zikaron_kit::kitdir::verify_enumeration(pairs))
 }
 
-/// Bytes at a path, refused by name when unreadable. An empty string means "not given" (`Ok` with an empty
-/// pile); given but unreadable is that refusal, never silently an empty pile (`unwrap_or_default` would read
-/// "unreadable" as "no bytes").
+/// Bytes at a path. An empty string means "not given" (`Ok` with no entries); given but unreadable is an
+/// error, never silently empty (`unwrap_or_default` would read "unreadable" as "no bytes").
 pub fn bytes_or_none(typed: &str) -> Result<Vec<Vec<u8>>, Fault> {
     Ok(bytes_named(typed)?.0)
 }
 
-/// As above, with the files that could not be read as entries (each named).
+/// As [`bytes_or_none`], also returning the files that could not be read as entries.
 pub fn bytes_named(typed: &str) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault> {
     if typed.trim().is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    // Whatever stops the reading of a named place says that place as a value too.
+    // Any error reading a named place includes that place as a value.
     source_of(typed).and_then(|s| bytes_at(&s)).map_err(|f| f.at_place(typed.trim()))
 }
 
@@ -274,7 +280,7 @@ pub fn bytes_at(source: &Source) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault>
     }
 }
 
-/// Kit verification reading: the kit crate's verdict unchanged.
+/// Kit verification result: the kit crate's verdict unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KitFacts {
     pub ok: bool,
@@ -289,10 +295,10 @@ pub struct KitFacts {
     pub invalid: Vec<(String, String)>,
 }
 
-/// Kit verification. Handed to the kit crate; no hash is compared here.
+/// Kit verification, delegated to the kit crate; no hash is compared here.
 pub fn verify_kit_at(dir: &Path) -> KitFacts {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced
+    // too.
     crate::trace::mark(crate::feature::Feature::D2);
     facts(zikaron_kit::kitdir::verify_kit(dir))
 }
@@ -322,7 +328,7 @@ fn facts(v: zikaron_kit::kitdir::KitVerdict) -> KitFacts {
     }
 }
 
-/// The original file of a record in the kit. Closed.
+/// The original file of a record in the kit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Original {
     /// The manifest's `contents` row matches, and the sha256 of the kit's file equals this record's
@@ -334,7 +340,7 @@ pub enum Original {
     Missing,
 }
 
-/// Whether this record is anchored. Closed.
+/// Whether this record is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnChain {
     /// An anchor counted by this audit reaches it; `first_at` is the earliest block time among the anchors
@@ -359,16 +365,16 @@ pub struct RecordRow {
     pub name: Option<String>,
     pub original: Original,
     pub chain: OnChain,
-    /// The first anchor reaching it, whole (the same reading as `chain`'s time); none when not anchored or not
-    /// read.
+    /// The first anchor reaching it, in full (the same reading as `chain`'s time); `None` when not anchored or
+    /// not read.
     pub first: Option<crate::auditx::FirstAnchor>,
 }
 
-/// kit law §7.3's `contents` rows: (content, path), read from the manifest unchanged (empty when the manifest
-/// is unreadable).
+/// Kit law §7.3's `contents` rows: (content, path), read from the manifest unchanged (empty when the
+/// manifest is unreadable).
 pub fn contents_of(manifest: &[u8]) -> Vec<(String, String)> {
-    // Manifest member names come from the kit writer's name table (`zikaron_glue::names::Field`, one name,
-    // one home); no literal is written here.
+    // Manifest member names come from the kit writer's name table (`zikaron_glue::names::Field`); no literal
+    // is written here.
     use zikaron_glue::names::Field;
     let Ok(v) = zikaron::json::parse(manifest) else { return Vec::new() };
     let Some(Value::Arr(rows)) = v.member(Field::Contents.as_str()) else { return Vec::new() };
@@ -399,7 +405,7 @@ pub fn originals_in_dir(dir: &Path) -> Vec<(String, Option<Vec<u8>>)> {
         .collect()
 }
 
-/// As above, from an enumeration (a grant file, or one fetched from a publish address).
+/// As [`originals_in_dir`], from a file list (a grant file, or a kit fetched from a publish address).
 pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Vec<u8>>)> {
     let manifest = pairs.iter().find(|(p, _)| p == zikaron_glue::names::MANIFEST).map(|(_, b)| b.clone()).unwrap_or_default();
     let files_prefixed = |path: &str| format!("{}/{}", zikaron_glue::names::FILES_DIR, path);
@@ -414,10 +420,9 @@ pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Ve
 
 /// Verify a record bundle record by record: one row per record (`history`) in the bundle. Original: the
 /// `contents` row for this record's `content`, with the kit's file hashed with sha256 and compared. Anchored
-/// and first-anchor block time: on this audit's fragment (`fragment`, `None` when the chain was not read),
-/// the core produces the audit result and the kit crate computes each record's bounds (`reading::bounds`, the
-/// same reading as depth), computed once and taken per record. Kit shape, kit law and the audit report shape
-/// are unchanged.
+/// and first-anchor block time: on this audit's fragment (`None` when the chain was not read), the core
+/// produces the audit result and the kit crate computes each record's bounds (`reading::bounds`, as for
+/// depth), once for all records. Kit format, kit law and the audit report format are unchanged.
 pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], fragment: Option<&Value>) -> Vec<RecordRow> {
     crate::trace::mark(crate::feature::Feature::D2);
     let times = fragment.and_then(|f| crate::auditx::first_anchored(bytes, f));
@@ -451,7 +456,7 @@ pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], fragm
         .collect()
 }
 
-/// Anchor review reading.
+/// Anchor review result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorReview {
     pub label: String,
@@ -481,7 +486,7 @@ pub fn unread_where_missed(missed: &[crate::widex::Missed], review: &mut Result<
     }
 }
 
-/// One verification's reading. Every cell is what the background pass brought back.
+/// One verification's result. Every field comes from the background pass.
 #[derive(Clone, Debug)]
 pub struct Verified {
     pub path: String,
@@ -490,13 +495,12 @@ pub struct Verified {
     pub kit: Option<KitFacts>,
     pub entries: usize,
     pub rejected: Vec<Rejected>,
-    /// Anchor review: the reading when it succeeded, the named refusal when it did not (chain unreachable,
-    /// basis not configured).
+    /// Anchor review: the result on success, the error otherwise (chain unreachable, basis not configured).
     pub review: Result<AnchorReview, String>,
     pub work: String,
-    /// The kit crate's depth reading, unchanged; none when no record was given.
+    /// The kit crate's depth reading, unchanged; `None` when no record was given.
     pub depth: Option<Value>,
-    /// The mismatch list, each named.
+    /// The mismatch list.
     pub mismatches: Vec<String>,
     /// Per record: one row per record when a record bundle was dropped in (directory, grant file, publish
     /// address); empty otherwise.
@@ -508,8 +512,8 @@ pub struct Verified {
     pub missed: Vec<crate::widex::Missed>,
     /// The chains this pass read (its basis), by ascending chain id; empty when no chain was read.
     pub read: Vec<u64>,
-    /// The result file: where it landed, or why it did not (`None`: not written, the network not added or no
-    /// kit).
+    /// The result file: where it was written, or why not (`None`: not written because the network is not
+    /// added or there is no kit).
     pub filed: Option<Result<String, String>>,
 }
 
@@ -527,12 +531,12 @@ pub fn chains_of(fragment: &Value) -> Vec<u64> {
     out
 }
 
-/// The manifest bytes of a kit given as an enumeration.
+/// The manifest bytes of a kit given as a file list.
 pub fn manifest_in(pairs: &[(String, Vec<u8>)]) -> Option<Vec<u8>> {
     pairs.iter().find(|(p, _)| p == zikaron_glue::names::MANIFEST).map(|(_, b)| b.clone())
 }
 
-/// Where a kit's manifest says it is anchored: the fixed last line of its `note_md` (`kitsindex::split_note`).
+/// Where a kit's manifest says it is anchored: the fixed last non-empty line of its `note_md` (`kitsindex::split_note`).
 /// The author's statement, a pointer only: no verdict reads it.
 pub fn stated_on(manifest: &[u8]) -> Option<crate::kitsindex::AnchoredOn> {
     let v = zikaron::json::parse(manifest).ok()?;
@@ -543,26 +547,25 @@ pub fn stated_on(manifest: &[u8]) -> Option<crate::kitsindex::AnchoredOn> {
     crate::kitsindex::split_note(&note).1
 }
 
-/// Depth reading, taken through the depth page (the same implementation).
+/// Depth reading, via the depth page (the same implementation).
 pub fn depth_of(bytes: &[Vec<u8>], fragment: &Value, work: &str) -> Result<Value, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced
+    // too.
     crate::trace::mark(crate::feature::Feature::D2);
     Ok(crate::depthx::read(bytes, fragment, work)?.value)
 }
 
-/// Every mismatch listed. A failed kit verification (verdict and subject), manifest entries that fail the
-/// law, files whose signature fails, incomplete labels, unanchored entries, entries not reached on a pass that
-/// left a network out, records not found: one line each,
-/// with its subject. An empty list means zero mismatches.
+/// Every mismatch: a failed kit verification (verdict and subject), manifest entries that fail the law, files
+/// whose signature fails, incomplete labels, unanchored entries, entries not reached on a pass that left a
+/// network out, records not found. One line each, with its subject; an empty list means no mismatches.
 pub fn mismatches(
     kit: Option<&KitFacts>,
     rejected: &[Rejected],
     review: &Result<AnchorReview, String>,
     depth: Option<&Value>,
 ) -> Vec<String> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced
+    // too.
     crate::trace::mark(crate::feature::Feature::D2);
     let mut out: Vec<String> = Vec::new();
     if let Some(k) = kit {

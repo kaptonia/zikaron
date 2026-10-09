@@ -1,27 +1,24 @@
-//! The value half of the anchoring desk: three entries each compute their own content hash, plus the
-//! mode mark (always the family literal).
+//! Content computation for the anchoring desk: each of the three sources computes its own content hash, plus
+//! the mode mark (always the family literal).
 //!
-//! ─── No legal decision in this layer ───
+//! This layer makes no validity decisions. The `history` field format is checked by the core's
+//! `entry::check`; this layer only computes a digest from disk, builds the mode mark object, and assembles the
+//! body. When the shape is wrong, the core's refusal token is reported, not a message made up here.
 //!
-//! The field format of `history` is set by law §6.2 and judged by the core's `entry::check`. This layer does
-//! three parameter jobs: walk the disk to compute a digest, lay the mode mark out as an object, and lay the
-//! three out as §6.2's body. When the shape is wrong, what turns red is the law's refusal token, not a
-//! sentence made up here.
+//! The mode mark has no field for a person to fill: `mark` is always the family literal [`FAMILY`], and
+//! `toolchain` is always the sha256 of that literal's UTF-8 bytes. The format requires `mode`; only the choice
+//! is removed, not the field.
 //!
-//! The mode mark has no cell for a person to fill: `mark` is always the family literal [`FAMILY`], and
-//! `toolchain` is always the sha256 of that literal's UTF-8 bytes. Law §6.2 requires `mode`; what is removed
-//! is the choice, not the field.
-//!
-//! ─── Three entries ───
+//! The three sources:
 //!
 //! 1. File: the sha256 of the file's bytes;
-//! 2. Directory: relative paths and digests of each file arranged as a canonical manifest, and the sha256 of
-//! the manifest's bytes is the content;
+//! 2. Directory: each file's relative path and digest form a canonical manifest, and the sha256 of the
+//! manifest's bytes is the content;
 //! 3. git repository: the sha256 of the HEAD commit object's bytes (see [`crate::gitx`]), with the subject
 //! and ancestor count as notes.
 //!
-//! Digests always come from the core's `cryptox::sha256`, canonical bytes always from the core's
-//! `json::canon_bytes`: this layer invents nothing (reuse is mandatory).
+//! Digests always come from the core's `cryptox::sha256` and canonical bytes from `json::canon_bytes`;
+//! nothing is reimplemented here.
 
 use crate::fault::{classify, Fault, Known};
 use std::path::Path;
@@ -29,7 +26,7 @@ use zikaron::cryptox;
 use zikaron::hexfmt;
 use zikaron::json::Value;
 
-/// Three entries. Closed.
+/// The three content sources. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     File,
@@ -49,19 +46,19 @@ impl Source {
     }
 }
 
-/// One value reading. `detail` is a note: git's commit subject, a directory's file count, a file's byte
+/// One computed content. `detail` is a note: git's commit subject, a directory's file count, or a file's byte
 /// count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Content {
     pub source: Source,
-    /// The thirty-two bytes of content (law §6.2's hex32).
+    /// The 32-byte content digest.
     pub digest: [u8; 32],
-    /// The thing's name (the path unchanged).
+    /// The path as given.
     pub subject: String,
-    /// A note, stated plainly on the face.
+    /// A human-readable note shown in the UI.
     pub detail: String,
     /// A single file's byte count (the "size" on the terms file card); directories and git repositories have
-    /// no such cell.
+    /// none.
     pub size: Option<u64>,
 }
 
@@ -71,9 +68,8 @@ impl Content {
     }
 }
 
-/// A file's content: the sha256 of its bytes (`zikaron_glue::recording`, which the command line's
-/// `history --file` asks too). Signing and the record bundle attachment gate (`kitx::Originals`) read the same
-/// place.
+/// A file's content: the sha256 of its bytes (`zikaron_glue::recording`, also used by the command line's
+/// `history --file`). Signing and the record bundle attachment check (`kitx::Originals`) use the same function.
 pub fn file_digest(bytes: &[u8]) -> [u8; 32] {
     zikaron_glue::recording::content_of(bytes)
 }
@@ -85,8 +81,7 @@ pub fn file_size(p: &Path) -> Option<u64> {
 
 /// File: the sha256 of its bytes.
 pub fn of_file(p: &Path) -> Result<Content, Fault> {
-    // A folder is not a file: refused by name (when a batch signing contains a folder, stopping there must
-    // say why).
+    // A folder is not a file: refused by name, so a batch that reaches a folder says why it stopped.
     if p.is_dir() {
         return Err(Fault::known(Known::ContentShape, crate::lang::filln(crate::lang::Key::TailNotAFile, &[&p.display().to_string()])));
     }
@@ -102,10 +97,9 @@ pub fn of_file(p: &Path) -> Result<Content, Fault> {
 
 /// A directory manifest: one `{path, sha256}` row per file, sorted by path.
 ///
-/// Its shape is a canonical value (law §3.4), so the manifest's bytes are unique; computing it again
-/// elsewhere, the same tree gives the same string. Regular files are walked; other shapes (symbolic links,
-/// device files) are not in the manifest, and only their count is reported: skipping silently and saying so
-/// plainly are different things.
+/// Its shape is a canonical JSON value, so the manifest bytes are unique: the same tree gives the same bytes
+/// anywhere. Only regular files are included; other kinds (symbolic links, device files) are left out and
+/// counted, so skipping is reported rather than silent.
 pub fn manifest(dir: &Path) -> Result<(Value, usize, usize), Fault> {
     let mut rows: Vec<(String, String)> = Vec::new();
     let mut skipped = 0usize;
@@ -176,7 +170,7 @@ pub fn of_git(p: &Path) -> Result<Content, Fault> {
     })
 }
 
-/// Take one value by entry. The window and tests share this.
+/// Computes the content for a source. Shared by the window and tests.
 pub fn of(source: Source, path: &Path) -> Result<Content, Fault> {
     match source {
         Source::File => of_file(path),
@@ -185,30 +179,29 @@ pub fn of(source: Source, path: &Path) -> Result<Content, Fault> {
     }
 }
 
-/// The two cells of the mode mark (law §6.2: `mark` is a token, `toolchain` is hex32, both required).
+/// The two fields of the mode mark (`mark` is a token, `toolchain` is hex32; both required).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mode {
     pub mark: String,
     pub toolchain: [u8; 32],
 }
 
-/// The family literal this desk emits. The only member: all three entries compute the sha256 of bytes (the
-/// file's bytes, the manifest's bytes, the commit object's bytes), so one literal says how every `content` is
-/// computed. The literal lives in `zikaron_glue::recording`, which the command line reads too (one name, one
-/// home).
+/// The family literal this desk emits. It is the only one: all three sources hash bytes (the file's, the
+/// manifest's, the commit object's), so one literal describes how every `content` is computed. It is defined
+/// in `zikaron_glue::recording`, which the command line also uses.
 pub use zikaron_glue::recording::FAMILY;
 
-/// Lay out the mode mark. No input: `mark` is always [`FAMILY`], and `toolchain` is always its UTF-8 bytes
-/// through the core's `sha256` once (`zikaron_glue::recording::toolchain`). A person can neither choose nor
-/// fill it, so "not filled" has no form.
+/// Builds the mode mark. It takes no input: `mark` is always [`FAMILY`], and `toolchain` is always the sha256
+/// of its UTF-8 bytes (`zikaron_glue::recording::toolchain`). Nobody chooses or fills it, so it can never be
+/// missing.
 pub fn mode() -> Mode {
     Mode { mark: FAMILY.to_string(), toolchain: zikaron_glue::recording::toolchain() }
 }
 
-/// The body of `history` (law §6.2's three cells: `content` required, `mode` required, `note_md` optional).
+/// The body of `history` (`content` and `mode` required, `note_md` optional).
 ///
-/// Key names are JSON keys, not the law's words, so as in `entryx` this layer copies §6.2's table; a mistake
-/// is refused by the law at once (`E_BODY_FIELD`), never a false green.
+/// The key names are copied from the format's field table, as in `entryx`; a typo is refused by the core at
+/// once (`E_BODY_FIELD`), never silently accepted.
 pub fn history_body(content: &[u8; 32], m: &Mode, note_md: &str) -> Value {
     let mut body = vec![
         ("content".to_string(), Value::Str(hexfmt::encode(content))),
@@ -226,9 +219,9 @@ pub fn history_body(content: &[u8; 32], m: &Mode, note_md: &str) -> Value {
     Value::Obj(body)
 }
 
-/// "On whose behalf": the optional `for` member, an extra member under law §6.10 (just data). This desk
-/// writes it into the body unchanged and never reads it; a sibling app uses it to cross-reference with a
-/// record bundle's `root`.
+/// "On whose behalf": the optional `for` member, an extra body member that is plain data. This desk writes it
+/// into the body unchanged and never reads it; a sibling app uses it to cross-reference a record bundle's
+/// `root`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct For {
     pub app: String,
@@ -240,9 +233,9 @@ pub struct For {
 }
 
 impl For {
-    /// Take from four cells: all four empty means no `for`; any filled means `app`, `identity` and `ref` must
-    /// all be present, and `identity` must be hex20. A missing or malformed cell is refused by name. Literals
-    /// are kept (trimmed of surrounding whitespace), case unchanged.
+    /// Builds from four fields: all empty means no `for`; otherwise `app`, `identity` and `ref` must all be
+    /// present and `identity` must be hex20. A missing or malformed field is refused by name. Values are kept
+    /// as typed (trimmed, case unchanged).
     pub fn from_fields(app: &str, identity: &str, reference: &str, seat: &str) -> Result<Option<For>, Fault> {
         let (app, identity, reference, seat) = (app.trim(), identity.trim(), reference.trim(), seat.trim());
         if app.is_empty() && identity.is_empty() && reference.is_empty() && seat.is_empty() {
@@ -265,7 +258,7 @@ impl For {
         }))
     }
 
-    /// The value of the `for` cell in the body (canonical key order).
+    /// The value of the `for` member in the body (canonical key order).
     pub fn value(&self) -> Value {
         let mut m = vec![
             ("app".to_string(), Value::Str(self.app.clone())),
@@ -288,7 +281,7 @@ pub fn history_body_for(content: &[u8; 32], m: &Mode, note_md: &str, target: Opt
     body
 }
 
-/// The body of `annotation` (law §6.8: `subject` optional, `note_md` required).
+/// The body of `annotation` (`subject` optional, `note_md` required).
 pub fn annotation_body(subject: Option<&str>, note_md: &str) -> Value {
     let mut body = vec![(crate::entryx::NOTE_MD.to_string(), Value::Str(note_md.to_string()))];
     if let Some(s) = subject {
@@ -298,8 +291,7 @@ pub fn annotation_body(subject: Option<&str>, note_md: &str) -> Value {
     Value::Obj(body)
 }
 
-/// The color of each of the three pipeline steps. Closed: there is no "said nothing" branch (intermediate
-/// states are explicit).
+/// The state of each of the three pipeline steps. Closed, with every intermediate state explicit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
     /// Not reached yet.
@@ -320,7 +312,7 @@ impl Step {
     }
 }
 
-/// The three steps sign → record → queue. Each step has its own color; they never merge into one green.
+/// The three steps sign → record → queue. Each has its own state; they are never merged into one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Flow {
     pub sign: Step,
@@ -335,21 +327,21 @@ impl Default for Flow {
 }
 
 impl Flow {
-    /// Names and colors of the three steps, for the face to draw cell by cell.
+    /// The three steps' states, in order, for the UI to draw.
     pub fn steps(&self) -> [Step; 3] {
         [self.sign, self.land, self.queue]
     }
 }
 
 /// A passive indicator for a registered repository: the commit anchored last time, and how many commits have
-/// grown since.
+/// been added since.
 ///
-/// Computed once when the page opens, with no standing polling: the action calls this function, not the
-/// frame. When it cannot be computed it says so by name, never a guessed number.
+/// Computed once when the page opens, with no polling: the action calls this, not the UI. When it cannot be
+/// computed it says so by name, never a guessed number.
 pub struct Since {
     pub head: String,
     pub last: String,
-    /// Commits grown since the last anchoring. `None` when the last one is not on this lineage.
+    /// Commits added since the last anchoring. `None` when the last one is not on this lineage.
     pub grew: Option<usize>,
 }
 
@@ -360,15 +352,13 @@ pub fn since(dir: &Path, last_commit: &str) -> Result<Since, Fault> {
     let head_hex = zikaron::hexfmt::encode(&head);
     let head_hex = head_hex.strip_prefix("0x").unwrap_or(&head_hex).to_string();
     let last = last_commit.trim().to_ascii_lowercase();
-    // Ask about lineage first, then subtract. Subtracting two reachable counts cannot answer "is it on this
-    // lineage": when the last commit is on another branch, the difference is an invented number (often
-    // exactly zero), and the face would say "nothing grew since last anchoring". This closes the "subtraction
-    // posing as an ancestry decision" form: what comes back is the reachable set, and the `contains` question
-    // must be answered first by structure.
+    // Check ancestry first, then subtract. Subtracting two reachable counts cannot tell whether the last
+    // commit is on this lineage: if it is on another branch, the difference is meaningless (often exactly
+    // zero) and the UI would wrongly say nothing changed. So membership in the reachable set is checked first.
     let grew = match crate::gitx::Repo::oid(&last) {
         Some(o) if all.contains(&o) => repo.ancestor_set(&o).ok().map(|n| all.len() - n.len()),
-        // The last commit is not on HEAD's lineage (or not found in this repository at all): that is not
-        // "grew by zero"; there is nothing to compare.
+        // The last commit is not on HEAD's lineage (or not in this repository at all): that is not "zero
+        // added"; there is nothing to compare.
         _ => None,
     };
     Ok(Since { head: head_hex, last, grew })

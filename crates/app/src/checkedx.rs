@@ -1,43 +1,41 @@
-//! Chain facts already checked: for each log judged an anchor with a decided verdict, read alike by several
-//! endpoints of its chain, the block's time and the sender's verdict at that block, with the log as it was
-//! then (block number, sender, hash, emitting registry), under the log's chain, block hash, transaction and
-//! index (`zikaron_anchor::scan::Known`).
+//! Cache of chain facts already checked. For each anchor log with a decided verdict that several endpoints
+//! read alike, it keeps the block time and the sender's verdict at that block, plus the log as it was then
+//! (block number, sender, hash, emitting registry), keyed by chain, block hash, transaction and log index
+//! (`zikaron_anchor::scan::Known`).
 //!
-//! A scan still asks every window's logs whole, with the window's senders, every time, and judges every log it
-//! gets against its window; only the four questions about a log found here under the same key (its
-//! transaction, receipt, block time and the sender's code at that block) are not asked again, and only while
-//! the log says what it said then. A log whose block was replaced has another block hash and is asked about as
-//! new; a log that says something else under a key held here is asked about as new; an anchor this record
-//! lacks is asked about as always. So this record never stands in for the chain: it only spares asking twice what several
-//! endpoints already said alike.
+//! A scan still fetches every window's logs in full and judges each one. Only the four follow-up questions
+//! about a log (its transaction, receipt, block time, and the sender's code at that block) are skipped, and
+//! only while the log still matches what was recorded. A replaced block has a new hash, so its logs are asked
+//! about as new. The cache never stands in for the chain; it only avoids asking twice what several endpoints
+//! already agreed on.
 //!
-//! Only agreed, decided facts land (`auditx`, after the endpoint rule agreed and more than one place answered
-//! the chain): a reading from one endpoint, or an unproven verdict, never does. Sealed like every local file
-//! (`local`, kind [`crate::local::Doc::Checked`]), under a name that says nobody; carried by no mirror, backup
-//! or export. "Check everything again" ([`forget`]) drops it, and the next scan asks everything.
+//! Only agreed, decided facts are stored (by `auditx`, after the endpoints agreed and more than one answered
+//! for the chain); a single-endpoint reading or an unproven verdict never is. The file is sealed like every
+//! local file ([`crate::local::Doc::Checked`]) under a name that identifies nobody, and is never mirrored,
+//! backed up or exported. [`forget`] ("check everything again") drops it.
 
 use crate::fault::Fault;
 use zikaron::json::{self, Value};
 use zikaron_anchor::scan::{Fact, FactKey, Known};
 
-/// The record's room in the machine directory and its file there. One name, one home.
+/// Directory (under the machine directory) and file name of the record.
 pub const DIR: &str = "checked";
 pub const FILE: &str = "facts.json";
-/// The record's form literal.
+/// Format tag stored in the record.
 pub const FORM: &str = "zikaron.checked-facts/1";
 
 fn place() -> Result<std::path::PathBuf, Fault> {
     Ok(crate::home::machine_dir()?.join(DIR).join(FILE))
 }
 
-/// The facts on record. A record that cannot be read (the store locked, no record yet, a damaged file) is no
-/// facts: every log is asked about, which is what a scan did before this record existed.
+/// The facts on record. A record that cannot be read (store locked, missing, damaged) yields no facts, so
+/// every log is asked about.
 pub fn read() -> Known {
     place().ok().and_then(|p| crate::local::read(&p, crate::local::Doc::Checked).ok().flatten()).and_then(|b| parse(&b)).unwrap_or_default()
 }
 
-/// Adding (read, merge, write) and dropping take turns: a drop that landed between an add's read and its write
-/// would be written over with the facts it dropped, and "check everything again" would have done nothing.
+/// Serializes [`add`] (read, merge, write) with [`forget`], so a drop that lands between an add's read and
+/// write is not overwritten.
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Add agreed facts to the record; written once when it changed. Returns how many were new.
@@ -59,8 +57,8 @@ pub fn add(new: &[(FactKey, Fact)]) -> Result<usize, Fault> {
     Ok(added)
 }
 
-/// "Check everything again": the record is dropped; the next scan asks about every log. Returns whether there
-/// was one.
+/// "Check everything again": deletes the record so the next scan asks about every log. Returns whether a
+/// record existed.
 pub fn forget() -> Result<bool, Fault> {
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let p = place()?;
@@ -71,7 +69,7 @@ pub fn forget() -> Result<bool, Fault> {
     }
 }
 
-/// How many facts are on record (the settings face says it).
+/// Number of facts on record (shown in settings).
 pub fn count() -> usize {
     read().0.len()
 }
@@ -98,8 +96,8 @@ fn value_of(k: &Known) -> Value {
     Value::Obj(vec![("facts".into(), Value::Arr(facts)), ("form".into(), Value::Str(FORM.into()))])
 }
 
-/// The record read back; any part that does not read makes the whole record none (asked afresh), never a
-/// partial table.
+/// Parses the record. Any unreadable part rejects the whole record (everything is asked afresh); never
+/// returns a partial table.
 fn parse(b: &[u8]) -> Option<Known> {
     let v = json::parse(b).ok()?;
     if v.member("form").and_then(|f| f.as_str()) != Some(FORM) {
@@ -134,8 +132,8 @@ fn parse(b: &[u8]) -> Option<Known> {
     Some(out)
 }
 
-/// The facts several runs of one agreed scan read alike: a fact every run that read its chain read afresh with
-/// the same value, on a chain more than one place answered (`thin` lists the chains only one place did).
+/// The facts several runs of one agreed scan read alike: every run that read the fact's chain saw the same
+/// value, and more than one endpoint answered that chain (`thin` lists chains only one endpoint answered).
 pub fn agreed(runs: &[(Vec<u64>, Vec<(FactKey, Fact)>)], thin: &[u64]) -> Vec<(FactKey, Fact)> {
     let Some((_, first)) = runs.first() else { return Vec::new() };
     first
@@ -159,8 +157,7 @@ mod tests {
         Fact { block_number: 9, sender: [5; 20], hash: [6; 32], emitter: [7; 20], block_timestamp: n, verdict: Verdict::Counted }
     }
 
-    /// A fact lands only when every run that read its chain read it alike, and the chain had more than one
-    /// place answer.
+    /// A fact lands only if every run that read its chain agrees and more than one endpoint answered.
     #[test]
     fn only_facts_every_run_read_alike_land() {
         let k = |c: u64, i: u64| (c, [1u8; 32], [2u8; 32], i);

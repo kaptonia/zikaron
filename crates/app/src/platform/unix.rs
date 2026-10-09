@@ -1,6 +1,6 @@
 //! What macOS and Linux do the same way: the kernel lock, `$HOME`, and the zone from `TZ` or `/etc/localtime`.
 
-extern "C" {
+unsafe extern "C" {
     fn flock(fd: i32, op: i32) -> i32;
 }
 
@@ -17,23 +17,14 @@ pub(super) fn lock_wait(file: &std::fs::File) -> bool {
     unsafe { flock(file.as_raw_fd(), LOCK_EX) == 0 }
 }
 
-/// Under the home directory itself (the default machine directory is a dot-folder there).
-pub(super) fn app_data_dir(user_home: &std::path::Path) -> std::path::PathBuf {
-    user_home.to_path_buf()
-}
-
-/// A unix window program writes its reason to standard error, as it always did.
+/// On Unix the reason goes to standard error only.
 pub(super) fn say_without_window(line: &str, _sentence: &str) {
     eprintln!("{line}");
 }
 
-pub(super) fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(std::path::PathBuf::from)
-}
-
-/// `TZ` names a zone file, a path or a POSIX rule; unset means `/etc/localtime`. A file counts only when it is a
-/// zone file (TZif magic); a `TZ` that names no readable file is handed over as a rule for the rule parser to
-/// judge (the POSIX reading of `TZ`).
+/// `TZ` names a zone file, a path or a POSIX rule; unset means `/etc/localtime`. A file counts only if it has
+/// the TZif magic; a `TZ` naming no readable file is returned as a rule for the rule parser (the POSIX reading
+/// of `TZ`).
 pub(super) fn zone_rules() -> Option<super::Zone> {
     let tzif = |b: Vec<u8>| if b.starts_with(b"TZif") { Some(super::Zone::File(b)) } else { None };
     match std::env::var("TZ") {

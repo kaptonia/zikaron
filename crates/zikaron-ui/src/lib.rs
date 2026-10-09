@@ -5,8 +5,8 @@
 //! tables and the blend between them), `motion` (curves, tweens, entrances), `skin` (installing into egui),
 //! then one file per family of controls.
 //!
-//! egui enters only through this crate and the app's `window` module. No law decision is made here: this
-//! crate knows colors, shapes and rectangles, not entries, ledgers or kits.
+//! egui enters only through this crate and the app's `window` module. No protocol decision is made here:
+//! this crate knows colors, shapes and rectangles, not entries, ledgers or kits.
 
 pub mod button;
 pub mod card;

@@ -1,13 +1,13 @@
-//! Lay out, self-verify, land (kit law §7).
+//! Lay out, self-verify and write a disclosure kit (kit law §7).
 //!
-//! A kit is laid out in a temporary place beside the target, and moves into place only after the kit core's
-//! `verify_kit` returns KIT_OK. No half-laid or unverified kit ever appears on disk; on failure the temporary
-//! place is cleared and the caller's path is untouched. Writing first and checking after would let someone
-//! take the kit before the check.
+//! A kit is laid out in a temporary directory beside the target and moved into place only after the kit core's
+//! `verify_kit` returns KIT_OK. No partial or unverified kit ever appears on disk; on failure the temporary
+//! directory is cleared and the caller's path is untouched. Writing first and checking afterwards would let
+//! someone take the kit before the check.
 //!
-//! This layer does not judge kit validity: manifest members, path character sets and table order are all
-//! judged by `verify_kit`. It lays out, computes digests (through the kit core's `doc::doc_id`, kit law §1)
-//! and asks before landing.
+//! This module does not judge kit validity (manifest members, path character sets, table order): `verify_kit`
+//! does. It lays out, computes digests (through the kit core's `doc::doc_id`, kit law §1) and asks
+//! before writing.
 
 use crate::landing;
 use crate::names::{Field, Key, Slot, ENTRIES_DIR, ENTRY_SUFFIX, FILES_DIR, MANIFEST, PROOFS_DIR};
@@ -26,10 +26,10 @@ pub struct Bundle {
     pub entries: Vec<Vec<u8>>,
     /// (kit path, bytes).
     pub files: Vec<(String, Vec<u8>)>,
-    /// (kit path, tx, bytes). Proof kits are captured by the anchoring crate; this layer only pins their
+    /// (kit path, tx, bytes). Proof kits are captured by the anchoring crate; this module only pins their
     /// bytes (kit law §7.5).
     pub proofs: Vec<(String, String, Vec<u8>)>,
-    /// Which kit paths are also work contents (`contents` of kit law §7.3).
+    /// Which kit paths are also work contents (`contents`, kit law §7.3).
     pub contents: Vec<String>,
     pub root: Option<String>,
     pub note: String,
@@ -47,15 +47,15 @@ pub struct Landed {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trouble {
-    /// A disk operation failed; the subject is named.
-    Io(String),
-    /// Something is already at the target path; this layer does not overwrite it.
+    /// A disk operation failed: the subject, and the system's message (operation, path, OS text).
+    Io(String, String),
+    /// Something already exists at the target path; it is never overwritten.
     Occupied(String),
     /// A path fails kit law §7.2 and is not platform junk: refused, subject named.
     BadPath(String),
     /// Two things at the same kit path.
     Duplicate(String),
-    /// Self-verification failed: the kit law verdict and its subject.
+    /// Self-verification failed: the kit verdict and its subject.
     Refused(String, Option<String>),
 }
 
@@ -63,7 +63,7 @@ impl From<landing::Trouble> for Trouble {
     fn from(t: landing::Trouble) -> Trouble {
         match t {
             landing::Trouble::Occupied(p) => Trouble::Occupied(p),
-            landing::Trouble::Io(p) => Trouble::Io(p),
+            landing::Trouble::Io(p, w) => Trouble::Io(p, w),
         }
     }
 }
@@ -71,7 +71,7 @@ impl From<landing::Trouble> for Trouble {
 impl Trouble {
     pub fn code(&self) -> &'static str {
         match self {
-            Trouble::Io(_) => "E_IO",
+            Trouble::Io(..) => "E_IO",
             Trouble::Occupied(_) => "E_OCCUPIED",
             Trouble::BadPath(_) => "E_BAD_PATH",
             Trouble::Duplicate(_) => "E_DUPLICATE_PATH",
@@ -79,7 +79,15 @@ impl Trouble {
         }
     }
 
-    /// The kit law verdict; only a failed self-verification has one.
+    /// The system's message for a failed disk operation (`None` for every other refusal).
+    pub fn said(&self) -> Option<&str> {
+        match self {
+            Trouble::Io(_, w) => Some(w.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The kit verdict; only a failed self-verification has one.
     pub fn verdict(&self) -> Option<&str> {
         match self {
             Trouble::Refused(v, _) => Some(v.as_str()),
@@ -90,15 +98,15 @@ impl Trouble {
     /// The path involved; only disk failures have one.
     pub fn path(&self) -> Option<&str> {
         match self {
-            Trouble::Io(p) | Trouble::Occupied(p) | Trouble::BadPath(p) | Trouble::Duplicate(p) => Some(p.as_str()),
+            Trouble::Io(p, _) | Trouble::Occupied(p) | Trouble::BadPath(p) | Trouble::Duplicate(p) => Some(p.as_str()),
             Trouble::Refused(_, _) => None,
         }
     }
 
-    /// The subject of the refusal, in one place.
+    /// The subject of the refusal.
     pub fn subject(&self) -> String {
         match self {
-            Trouble::Io(p) | Trouble::Occupied(p) | Trouble::BadPath(p) | Trouble::Duplicate(p) => p.clone(),
+            Trouble::Io(p, _) | Trouble::Occupied(p) | Trouble::BadPath(p) | Trouble::Duplicate(p) => p.clone(),
             Trouble::Refused(verdict, subject) => match subject {
                 Some(x) => format!("{verdict}:{x}"),
                 None => verdict.clone(),
@@ -107,7 +115,7 @@ impl Trouble {
     }
 }
 
-/// Kit law §1: `doc_id(b) = sha256(b)`. Digests come only from the kit core.
+/// kit law §1: `doc_id(b) = sha256(b)`. Digests come only from the kit core.
 fn digest(b: &[u8]) -> String {
     hexfmt::encode(&doc::doc_id(b))
 }
@@ -121,9 +129,8 @@ fn row(members: Vec<(Field, Value)>) -> Value {
     )
 }
 
-/// Clear paths before output: junk is dropped and named, anything else malformed is refused.
-///
-/// This runs before layout: something that must not enter the kit must not touch the staging area either.
+/// Clean paths before output: platform junk is dropped and named, anything else malformed is refused. Runs
+/// before layout, so nothing that must not enter the kit touches the staging area either.
 pub fn tidy(b: &mut Bundle) -> Result<Vec<String>, Trouble> {
     crate::seam_v2();
     let mut dropped: Vec<String> = Vec::new();
@@ -238,8 +245,8 @@ pub fn manifest(b: &Bundle) -> Value {
     ])
 }
 
-/// The verification note that travels with every kit. It is itself a manifest row: a kit may hold nothing
-/// outside the manifest (`E_KIT_EXTRA`, kit law §7.4).
+/// The verification note included in every kit. It is itself a manifest row: a kit may hold nothing outside
+/// the manifest (`E_KIT_EXTRA`, kit law §7.4).
 pub fn verification_note(b: &Bundle) -> Vec<u8> {
     crate::seam_v2();
     let mut t = String::new();
@@ -258,21 +265,21 @@ pub fn verification_note(b: &Bundle) -> Vec<u8> {
     t.into_bytes()
 }
 
-/// Prepare before output: clear paths, add the verification note, check duplicate paths. Directory and
+/// Prepare before output: clean paths, add the verification note, check duplicate paths. Directory and
 /// single-file kits both go through here, so they carry the same content.
 fn prepare(b: &mut Bundle) -> Result<Vec<String>, Trouble> {
     let dropped = tidy(b)?;
     b.files.push((Slot::Verify.path().to_string(), verification_note(b)));
-    // Two things at one kit path are refused here by name. The manifest's `files` table must be strictly
-    // increasing, so a duplicate would otherwise come back as an opaque `E_KIT_MANIFEST:files`, and one kind
-    // of duplicate is a caller's own `verify.md` being replaced by the generated one.
+    // Refuse duplicate kit paths here by name. Otherwise a duplicate would surface as an opaque
+    // `E_KIT_MANIFEST:files` (the table must be strictly increasing), or a caller's own `verify.md` would be
+    // replaced by the generated one.
     duplicates(b)?;
     Ok(dropped)
 }
 
-/// A kit's enumeration (kit law §7.1): kit path to bytes. How kit paths are built lives here only: directory
-/// kits lay it out on disk ([`export`]), single-file kits pack it ([`crate::container`]), both from the same
-/// enumeration. Order is kit-path byte order (the §7.1 walk).
+/// A kit's enumeration (kit law §7.1): kit path to bytes. Kit paths are built only here; directory kits
+/// lay it out on disk ([`export`]) and single-file kits pack it ([`crate::container`]). Order is kit-path byte
+/// order (the §7.1 walk).
 pub fn enumeration(b: &Bundle) -> Vec<(String, Vec<u8>)> {
     crate::seam_v2();
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
@@ -306,7 +313,7 @@ pub fn enumerate(mut b: Bundle) -> Result<(Vec<(String, Vec<u8>)>, Landed), Trou
     }
 }
 
-/// Lay out, self-verify, land. Lands at `out` only on KIT_OK.
+/// Lay out, self-verify and write to `out`, only on KIT_OK.
 pub fn export(out: &Path, mut b: Bundle) -> Result<Landed, Trouble> {
     crate::seam_v2();
     if out.exists() {
@@ -316,7 +323,7 @@ pub fn export(out: &Path, mut b: Bundle) -> Result<Landed, Trouble> {
 
     let staging = landing::staging_beside(out)?;
     let _ = std::fs::remove_dir_all(&staging);
-    // Once the staging area exists, every failure path clears it: the section has a single exit.
+    // Once the staging area exists, every failure path clears it (single exit).
     let landed = lay_and_verify(&staging, &b);
     match landed {
         Ok((entries, files, proofs, kit_id)) => {
@@ -358,8 +365,8 @@ fn duplicates(b: &Bundle) -> Result<(), Trouble> {
     Ok(())
 }
 
-/// Lay out in the staging area and self-verify. Nothing touches the target here; landing happens in
-/// [`export`] only.
+/// Lay out in the staging area and self-verify. The target is not touched here; only [`export`] moves the
+/// kit into place.
 fn lay_and_verify(staging: &Path, b: &Bundle) -> Result<(usize, usize, usize, String), Trouble> {
     mkdir(staging)?;
     for (rel, bytes) in enumeration(b) {
@@ -377,7 +384,7 @@ fn lay_and_verify(staging: &Path, b: &Bundle) -> Result<(usize, usize, usize, St
     }
 }
 
-/// The answer of one kit output.
+/// The JSON answer for one kit output.
 pub fn answer(l: &Landed, out: &str) -> Value {
     Value::Obj(vec![
         (Key::Dropped.as_str().to_string(), Value::Arr(l.dropped.iter().map(|x| Value::Str(x.clone())).collect())),
@@ -403,21 +410,22 @@ fn mkdir(p: &Path) -> Result<(), Trouble> {
     landing::mkdir(p).map_err(Trouble::from)
 }
 
-/// Put an item into our own staging area (landing on the caller's path goes through `landing::land_tree`).
+/// Write an item into our own staging area (the move to the caller's path goes through `landing::land_tree`).
 fn write(p: &Path, bytes: &[u8]) -> Result<(), Trouble> {
     landing::put(p, bytes).map_err(Trouble::from)
 }
 
-/// Take a directory on disk into the kit (under `files/`), paths joined to the caller's prefix.
+/// Add a directory on disk to the kit (under `files/`), paths joined to the caller's prefix.
 ///
-/// The walk follows kit law §7.1: each directory in name byte order, stopping by name at a symlink. Symlinks
-/// are not followed: they could pull things from outside into the kit.
+/// The walk follows kit law §7.1: each directory in name byte order, stopping with an error at a
+/// symlink. Symlinks are not followed because they could pull outside content into the kit.
 pub fn gather(root: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), Trouble> {
     crate::seam_v2();
-    let listing = std::fs::read_dir(root).map_err(|_| Trouble::Io(root.to_string_lossy().into_owned()))?;
+    let read_dir = |e: std::io::Error| Trouble::Io(root.to_string_lossy().into_owned(), format!("read directory {}: {e}", root.display()));
+    let listing = std::fs::read_dir(root).map_err(read_dir)?;
     let mut names: Vec<std::ffi::OsString> = Vec::new();
     for item in listing {
-        let e = item.map_err(|_| Trouble::Io(root.to_string_lossy().into_owned()))?;
+        let e = item.map_err(read_dir)?;
         names.push(e.file_name());
     }
     names.sort_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
@@ -431,14 +439,14 @@ pub fn gather(root: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> Re
             format!("{prefix}/{name_str}")
         };
         let path = root.join(&name);
-        let meta = std::fs::symlink_metadata(&path).map_err(|_| Trouble::Io(rel.clone()))?;
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| Trouble::Io(rel.clone(), format!("read metadata {}: {e}", path.display())))?;
         if meta.file_type().is_symlink() {
             return Err(Trouble::BadPath(rel));
         }
         if meta.is_dir() {
             gather(&path, &rel, out)?;
         } else if meta.is_file() {
-            let bytes = std::fs::read(&path).map_err(|_| Trouble::Io(rel.clone()))?;
+            let bytes = std::fs::read(&path).map_err(|e| Trouble::Io(rel.clone(), format!("read {}: {e}", path.display())))?;
             out.push((rel, bytes));
         } else {
             return Err(Trouble::BadPath(rel));

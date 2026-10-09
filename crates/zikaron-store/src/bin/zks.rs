@@ -3,11 +3,12 @@
 //! Each verb is one real library call; every refusal, classification, cap and sweep decision is made in
 //! `zikaron_store`. This binary passes arguments in and prints results.
 //!
-//! `put` and `mkdir` are scaffolding: they place raw bytes or a directory into an archive directly (bypassing
-//! append) to build foreign layouts and oversized files for tests. They are not storage features.
+//! `put`, `place` and `mkdir` are test scaffolding, not storage features: they write raw bytes under an entry
+//! name, raw bytes under any plain name (e.g. an OS side file), or a directory straight into an archive
+//! (bypassing append) to build foreign layouts, in-flight temporaries and oversized files.
 //!
-//! `--stop-at open|tmp|link` exits the process between append stages (exit code 70, nothing printed), so a
-//! cut before, during and after a write is a real process death.
+//! `--stop-at open|tmp|link` exits the process between append stages (exit code 70, nothing printed), so tests
+//! can simulate a real process death before, during and after a write.
 
 use std::process::ExitCode;
 use zikaron_store::codes::Trouble;
@@ -66,7 +67,7 @@ fn say(line: String) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Print a refusal: the disclosure always goes with the code.
+/// Print a refusal; the details (names, size, cap) always accompany the code.
 fn refused(t: &Trouble) -> ExitCode {
     let mut s = String::from("{");
     if let Some(c) = t.cap {
@@ -287,6 +288,18 @@ fn main() -> ExitCode {
             std::fs::write(&path, &bytes).unwrap_or_else(|e| misuse(&format!("写不下 {file}:{e}")));
             say(String::from("{\"ok\":true,\"put\":true}"))
         }
+        "place" => {
+            let dir = word(&a, 0, "usage: zks place <dir> <file> (<path> | --zeros N)");
+            let file = word(&a, 1, "usage: zks place <dir> <file> (<path> | --zeros N)");
+            if file.is_empty() || file.contains('/') || file.contains('\\') || file == "." || file == ".." {
+                misuse("名要一段,不许有路径分隔");
+            }
+            let bytes = bytes_for(&a, 2);
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| misuse(&format!("建不出 {dir}:{e}")));
+            let path = std::path::Path::new(&dir).join(&file);
+            std::fs::write(&path, &bytes).unwrap_or_else(|e| misuse(&format!("写不下 {file}:{e}")));
+            say(String::from("{\"ok\":true,\"placed\":true}"))
+        }
         "mkdir" => {
             let dir = word(&a, 0, "usage: zks mkdir <dir> <name>");
             let name = word(&a, 1, "usage: zks mkdir <dir> <name>");
@@ -298,7 +311,7 @@ fn main() -> ExitCode {
             say(String::from("{\"made\":true,\"ok\":true}"))
         }
         _ => misuse(
-            "usage: zks <append|pile|survey|read|sweep|layout|put|mkdir> ... \
+            "usage: zks <append|pile|survey|read|sweep|layout|put|place|mkdir> ... \
              [--zeros N] [--stop-at open|tmp|link]",
         ),
     }

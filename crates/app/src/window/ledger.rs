@@ -1,11 +1,11 @@
 use super::*;
 
 impl Win {
-    /// Read the table once if it has not been read. The product builds its own preconditions: a person
-    /// opening a page should see the ledger, not a key to press themselves.
+    /// Read the table once if it has not been read, so opening a page shows the ledger without the user
+    /// pressing anything.
     ///
-    /// It starts a background pass (no disk in the frame), and a task of this kind starts itself only once:
-    /// the condition asks whether `Tasks` recorded it as attempted, success or failure, so a failed read does
+    /// It starts a background pass (no disk I/O in the frame). A task of this kind starts itself only once:
+    /// the condition checks whether `Tasks` recorded an attempt (success or failure), so a failed read does
     /// not start another pass every frame.
     pub(super) fn ensure_rows(&mut self, now: f64) {
         if self.shell.rows.is_some() || self.shell.home.is_none() || self.shell.tasks.attempted(crate::task::Kind::Ledger) {
@@ -14,13 +14,13 @@ impl Win {
         self.auto(Action::ReadLedger, now);
     }
 
-    /// The key scan's reading, handed out only when it speaks of the address now in the form.
+    /// The key scan's reading, returned only when it is about the address now in the form.
     pub(super) fn sighting_now(&self) -> Option<(String, usize, usize)> {
         let want = self.typed.sc_to.trim();
         self.shell.sighting.as_ref().filter(|(who, _, _)| !want.is_empty() && who.eq_ignore_ascii_case(want)).cloned()
     }
 
-    /// The register likewise (see [`Self::ensure_rows`]).
+    /// Read the register once, like [`Self::ensure_rows`].
     pub(super) fn ensure_grants(&mut self, now: f64) {
         if self.shell.grants.is_some() || self.shell.home.is_none() || self.shell.tasks.attempted(crate::task::Kind::Grants) {
             return;
@@ -49,7 +49,7 @@ impl Win {
         }
     }
 
-    /// The ledger page: the status strip (its check folds open under it), search, and every entry.
+    /// The ledger page: the status strip (with the ledger check folding open under it), search, and every entry.
     pub(super) fn ledger_page(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_rows(now);
         self.ensure_grants(now);
@@ -113,28 +113,39 @@ impl Win {
         }
     }
 
-    /// The status strip: "ledger status · (mark) normal · N entries", and "put all on chain" when there are
-    /// entries that can go; clicking the words folds the ledger check open under it.
+    /// The status strip: "ledger status · (mark) normal · N entries", plus "put all on chain" when entries can
+    /// be sent; clicking the words folds the ledger check open under it.
     fn audit_strip(&mut self, ui: &mut egui::Ui, now: f64) {
         let (m, state) = match self.ledger_state() {
             Some(true) => (Mark::Ok, t(Key::V2Normal)),
             Some(false) => (Mark::Bad, t(Key::V2Abnormal)),
-            // A clock that cannot start says why nothing was checked.
+            // With no network configured, say why nothing was checked.
             None if self.shell.settings.chain_id.is_none() || self.shell.settings.registry.is_none() || self.shell.endpoints.is_empty() => (Mark::Warn, t(Key::U3AuditChipNoNetwork)),
             None => (Mark::Todo, t(Key::U3AuditChipNever)),
         };
         let count = self.shell.rows.as_ref().map(|(r, _)| fill1(Key::U3EntriesTotal, &r.len().to_string()));
         let root_anchored = self.shell.rows.as_ref().and_then(|(r, _)| crate::ledgerx::root_anchored(r));
-        // "Put all on chain": only when there are entries that can go (read as the export page's "now").
+        // "Put all on chain" only when entries can be sent (the same reading as the export page's "now").
         let sendable: Vec<(String, bool)> = self.shell.rows.as_ref().map(|(r, _)| crate::kitx::unanchored(&r.iter().collect::<Vec<_>>()).1).unwrap_or_default();
         let open = self.ux.u3.audit_open;
         let mut flip = false;
         let mut send_all = false;
+        // A batch sent but not included by the end of its wait: offer a resend with higher fees when the current
+        // price is above its cap; after three resends, say so.
+        let stuck = self.shell.stuck.clone();
+        let bump = stuck.as_ref().filter(|s| matches!(s.offer, crate::task::Offer::Resend { .. } | crate::task::Offer::Unheld { .. })).and_then(|s| s.txs.last().cloned());
+        let spent = stuck.as_ref().is_some_and(|s| s.offer == crate::task::Offer::Spent);
+        // Held by no node and its nonce unused: say so, and the key resends it at the current price.
+        let unheld = stuck.as_ref().is_some_and(|s| matches!(s.offer, crate::task::Offer::Unheld { .. }));
+        let mut bump_open = false;
         card::card_pad(ui, egui::vec2(18.0, 12.0), |ui| {
             let w = ui.available_width();
             ui.allocate_ui_with_layout(egui::vec2(w, 32.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !sendable.is_empty() && key::key(ui, t(Key::U3SendAll), Role::Secondary, true).clicked() {
                     send_all = true;
+                }
+                if bump.is_some() && key::key(ui, t(if unheld { Key::U3ResendKey } else { Key::U3BumpKey }), Role::Secondary, true).clicked() {
+                    bump_open = true;
                 }
                 let resp = ui
                     .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -148,9 +159,15 @@ impl Win {
                         if let Some(n) = count.as_deref() {
                             paint::text(ui, &format!("\u{b7} {n}"), Type::Body, c(C::Ink2));
                         }
-                        // Root not confirmed on chain: read now from the genesis entry's state.
+                        // Root not confirmed on chain, read from the genesis entry's state.
                         if root_anchored == Some(false) {
                             paint::text(ui, &format!("\u{b7} {}", t(Key::U3RootUnanchored)), Type::Body, c(C::BadInk));
+                        }
+                        if spent {
+                            paint::text(ui, &format!("\u{b7} {}", fill1(Key::U3BumpSpent, &crate::queue::RESENDS_MAX.to_string())), Type::Body, c(C::Ink2));
+                        }
+                        if unheld {
+                            paint::text(ui, &format!("\u{b7} {}", t(Key::U3Unheld)), Type::Body, c(C::BadInk));
                         }
                         ui.allocate_space(egui::vec2(ui.available_width(), 1.0));
                     })
@@ -159,7 +176,7 @@ impl Win {
                     flip = true;
                 }
             });
-            // The fold's body grows open under the strip.
+            // The fold's body opens under the strip.
             let t_open = motion::flag(ui.ctx(), egui::Id::new("ledger-strip-open"), open, tk::MID);
             if t_open > 0.0 {
                 let h_id = egui::Id::new("ledger-strip-h");
@@ -176,17 +193,20 @@ impl Win {
                 let measured = child.min_rect().height();
                 if (measured - full).abs() > 0.5 {
                     ui.ctx().data_mut(|d| d.insert_temp(h_id, measured));
-                    // Laid out again at once with the new size, so no frame is shown placed by the old one.
+                    // Lay out again at once with the new size so no frame is drawn with the old one.
                     ui.ctx().request_discard("audit fold height changed");
                 }
                 ui.advance_cursor_after_rect(egui::Rect::from_min_size(top, egui::vec2(w, measured.min(full.max(1.0)) * t_open)));
             }
         });
-        if flip && !send_all {
+        if flip && !send_all && !bump_open {
             self.ux.u3.audit_open = !open;
         }
+        if let (true, Some(tx)) = (bump_open, bump) {
+            self.u3_open_confirm(U3Confirm::Bump { tx });
+        }
         if send_all {
-            // Entries not yet queued are queued first, then the confirmation counts the sendable ones.
+            // Queue the entries not yet queued, then the confirmation counts the sendable ones.
             for (id, fresh) in &sendable {
                 if *fresh {
                     self.act(Action::QueueEntry { id: id.clone() }, now);
@@ -199,7 +219,7 @@ impl Win {
         }
     }
 
-    /// The ledger check: the core's report item by item in plain words; the raw words in details.
+    /// The ledger check: the core's report item by item in plain words, with the raw terms in details.
     fn audit_body(&mut self, ui: &mut egui::Ui) {
         use zikaron::tokens::Key as T;
         let Some(a) = self.shell.audit.clone() else {
@@ -227,7 +247,7 @@ impl Win {
             .iter()
             .map(|(tok, k, good)| {
                 let n = items.iter().find(|i| i.key == tok.as_str()).and_then(|i| i.count);
-                // This desk's deletions are recognized by count, not a fault; only extra ones are unknown.
+                // This desk's own deletions are recognized by count and are not a fault; only extra ones are unknown.
                 if *tok == T::UnknownType && convention > 0 && n == Some(convention) {
                     return (Mark::Ok, fill1(Key::V2ConventionEntries, &convention.to_string()), None);
                 }
@@ -254,8 +274,8 @@ impl Win {
         details(ui, "audit-evidence", &raw);
     }
 
-    /// A ledger entry's detail page. A grant shows the grant page; a record, its readings and "export" and
-    /// "use for grant"; any entry not on chain, the way to it.
+    /// A ledger entry's detail page. A grant shows the grant page; a record shows its readings, "export" and
+    /// "use for grant"; any entry not on chain shows the way to anchor it.
     pub(super) fn entry_detail(&mut self, ui: &mut egui::Ui, id: &str, now: f64) {
         use zikaron::tokens::EntryType as E;
         self.ensure_rows(now);
@@ -295,7 +315,7 @@ impl Win {
             };
             kv_section(ui, t(Key::BasicInfo), &rows);
         });
-        // What can be done: a record exports and grants; an entry off chain goes on chain (or into the queue
+        // Available actions: a record exports and grants; an entry off chain goes on chain (or into the queue
         // first); an anchored entry of another kind takes a note.
         let offer = !matches!(
             row.lamp,
@@ -307,7 +327,7 @@ impl Win {
                 | crate::ledgerx::Lamp::Deleted
                 | crate::ledgerx::Lamp::LocalDeletion
         );
-        let pos = self.shell.queue.items.iter().filter(|q| !matches!(q.step, crate::queue::Step::Submitted { .. })).position(|q| q.id == row.id);
+        let pos = self.shell.queue.items.iter().filter(|q| !q.step.in_flight()).position(|q| q.id == row.id);
         let anchored = row.lamp == crate::ledgerx::Lamp::Anchored;
         stagger(ui, 2, |ui| {
             keys_row(ui, |ui| {
@@ -322,7 +342,7 @@ impl Win {
                                 confirm = Some(U3Confirm::Send { count: i + 1 });
                             }
                         }
-                        // The genesis entry, and entries whose queueing failed, have a way in too.
+                        // The genesis entry and entries whose queueing failed can be queued here too.
                         None => queue_it = key::key(ui, t(Key::U3QueueIt), Role::Secondary, true).clicked(),
                     }
                 } else if anchored && !matches!(row.kind, E::History) {
@@ -373,7 +393,7 @@ impl Win {
         }
     }
 
-    /// A window as two dates "from to"; says so when there is none.
+    /// A validity window as two dates "from to", or a note when there is none.
     pub(super) fn window_days(&self, w: Option<(u64, u64)>) -> String {
         window_long(w)
     }

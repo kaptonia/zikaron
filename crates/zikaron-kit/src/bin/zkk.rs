@@ -1,5 +1,4 @@
-//! `zkk`: the kit conformance command surface, the eleven commands of
-//! `base/zikaron-conformance/HARNESS-KIT.md`.
+//! `zkk`: the kit conformance CLI, implementing the commands of `base/zikaron-conformance/HARNESS-KIT.md`.
 //!
 //! One call writes one canonical JSON value to stdout with no trailing newline. Any answer (a refusal is an
 //! answer) exits 0; harness misuse exits 2; there is no other exit code.
@@ -35,7 +34,7 @@ fn emit(v: &Value) -> ! {
     exit(0)
 }
 
-/// Command output objects are built here only: keys come from [`Key`].
+/// Builds every command output object; keys come from [`Key`].
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }
@@ -63,7 +62,8 @@ fn parse_now(raw: &str) -> u64 {
     v
 }
 
-/// Paths go to the file system as the OS bytes (HARNESS), without UTF-8; an unreadable path is misuse.
+/// Paths are passed to the file system as raw OS bytes (per the harness), not via UTF-8; an unreadable path is
+/// misuse.
 fn read(path: &OsStr) -> Vec<u8> {
     match std::fs::read(path) {
         Ok(b) => b,
@@ -131,7 +131,7 @@ fn no_options(rest: &[OsString], usage: &str) {
 }
 
 /// Audit input file to audit outcome. An unreadable file is misuse (exit 2, as for other file arguments); a
-/// readable file the reader refuses or that fails the §9.4 shape is the law's invalid input and gives `None`.
+/// readable file the reader refuses or that fails the §9.4 shape is invalid input per the spec and gives `None`.
 fn outcome_of(path: &OsStr) -> Option<zikaron::audit::Outcome> {
     let b = read(path);
     let v = json::parse_tests_1_3(&b).ok()?;
@@ -218,9 +218,9 @@ fn main() {
                 Err(r) => emit(&doc_reject(&r)),
             }
         }
-        // Signing (kit law §3.1), taking the parent contract: the file is read in any RFC 8259 spelling,
-        // recanonicalized and signed as is with no member dropped; a value that is not an object or fails
-        // tests 1 to 5 is misuse.
+        // Signing (kit law §3.1), per the `zikaron/1` contract: the file is read in any RFC 8259 spelling,
+        // recanonicalized and signed as is with no member dropped; a non-object or a value failing tests 1 to 5
+        // is misuse.
         "sign" => {
             let usage = "usage: zkk sign <privkey-hex> <path> <domain>";
             let (pos, rest) = positional(&args, 3, usage);
@@ -317,10 +317,9 @@ fn main() {
                 Err(r) => emit(&decode_reject(&r)),
             }
         }
-        // Disclosure kits (kit law §7). `<dir>` is the directory handed to the reader, not an entry of the
-        // walk: through a symlink or not, if it resolves to a directory that is the directory. Missing, or
-        // resolving to something that is not a directory, is misuse; existing but unlistable is the first
-        // walk failure of §7.1.
+        // Disclosure kits (kit law §7). `<dir>` is the root handed to the reader, not an entry of the walk:
+        // symlink or not, if it resolves to a directory, that is the kit. Missing or not a directory is misuse;
+        // existing but unlistable is the first walk failure of §7.1.
         "kit-verify" => {
             let usage = "usage: zkk kit-verify <dir>";
             let (pos, rest) = positional(&args, 1, usage);
@@ -374,8 +373,7 @@ fn main() {
             let usage = "usage: zkk depth <audit-input.json> <work-hex32>";
             let (pos, rest) = positional(&args, 2, usage);
             no_options(rest, usage);
-            // The work digest is a law object (hex32, lowercase); any other spelling is misuse, not "not
-            // found".
+            // The work digest is a spec value (hex32, lowercase); any other spelling is misuse, not "not found".
             let work = text(&pos[1], usage);
             if !hexfmt::is_hex32(work) {
                 die("work digest is not hex32");

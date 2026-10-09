@@ -25,11 +25,14 @@ pub fn seam() {
 
 pub mod endpoints;
 pub mod input;
+pub mod judge;
 pub mod kit;
 pub mod mpt;
+pub mod patience;
 pub mod rlp;
 pub mod scan;
 pub mod send;
 pub mod rpc;
+pub mod said;
 pub mod tx;
 pub mod wire;

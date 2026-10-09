@@ -11,10 +11,10 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: package
         run: cargo run --release --locked -p zikaron-pack -- windows --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zikaron-windows-x86_64
           path: dist/

@@ -1,8 +1,8 @@
-//! The first-run wizard: a full-window cover, six steps on the left (done ones checked, those that can wait
-//! dashed), one card per step on the right that slides in by direction. A finished step shows the drawn
-//! check and "done" (with its value under details); the genesis confirmation sheet floats above. A way out
-//! stays at the foot of the steps (and Esc) except on the true first run: it returns to the seat and page the
-//! wizard was opened from; finished steps stay finished and the three required ones stay required.
+//! The first-run wizard: a full-window cover with six steps on the left (done ones checked, optional ones
+//! dashed) and one card per step on the right that slides in by direction. A finished step shows a check
+//! and "done" (its value under details); the genesis confirmation sheet floats above. A way out (and Esc)
+//! sits under the steps except on a true first run: it returns to the seat and page the wizard was opened
+//! from; finished steps stay finished and the three required ones stay required.
 
 use super::*;
 
@@ -12,13 +12,13 @@ impl Win {
         let Some(want) = self.ux.wizard else { return };
         let pr = self.progress();
         let role = self.shell.settings.role;
-        // Whatever turned the wizard to whatever step, the step first passes `Progress::gate`.
+        // However the wizard reached this step, the step first passes `Progress::gate`.
         let step = pr.gate(want);
         self.ux.wizard = Some(step);
         let at = Step::ALL.iter().position(|s| *s == step).unwrap_or(0);
         let last = at + 1 == Step::ALL.len();
         let done = pr.done(step);
-        // Which way the card slides: by where the last step was.
+        // The card slides in from the side of the previous step.
         let dir_id = egui::Id::new("zikaron-wizard-dir");
         let (was, dir) = ctx.data(|d| d.get_temp::<(usize, f32)>(dir_id)).unwrap_or((at, 0.0));
         let dir = if was == at { dir } else if at > was { 1.0 } else { -1.0 };
@@ -49,18 +49,18 @@ impl Win {
             if let Some(i) = full::steps(&mut left, &rows, at) {
                 move_to = Some(i);
             }
-            // The way out, under the steps (not on the true first run).
+            // The way out, under the steps (not on a true first run).
             if exit_shown {
                 left.add_space(24.0);
                 exit = key::key(&mut left, t(Key::WizExit), Role::Plain, true).clicked();
             }
-            // The right: this step's card.
+            // The right column: this step's card.
             let main = egui::Rect::from_min_max(egui::pos2(side.right(), screen.top()), screen.max).shrink(40.0);
-            // The gas step's card holds the key's address and a code side by side: its column is as wide as
-            // they need (never narrower than the other steps').
+            // The gas step's card holds the key's address and a code side by side, so its column is as wide as they
+            // need (never narrower than the other steps').
             let col = if step == Step::Gas { gas_card_w(ui.ctx()).max(520.0) } else { 520.0 };
-            // Side by side when the column the window leaves holds the gas card whole: decided here from the
-            // window alone, never from a width measured while drawing (which the layout itself could move).
+            // Side by side when the remaining column fits the whole gas card: decided from the window size alone,
+            // never from a width measured while drawing (which the layout itself could change).
             let gas_side = full::centered_w(main, col) + 0.5 >= gas_card_w(ui.ctx());
             full::centered(ui, "wizard-main", main, col, drop, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
@@ -79,11 +79,30 @@ impl Win {
                 // The bottom row: "back" and "later" on the left; the step's own keys on the right, replaced by
                 // "next" ("finish" on the last step) once it is done.
                 let w = ui.available_width();
-                ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let later = t(if last { Key::WizLaterDo } else { Key::WizLater });
+                let later_on = step.deferrable(role) && !done;
+                let lead: Vec<(&str, Role)> = [(at > 0).then_some((t(Key::WizPrev), Role::Secondary)), later_on.then_some((later, Role::Plain))].into_iter().flatten().collect();
+                let lead_keys = |ui: &mut egui::Ui, move_to: &mut Option<usize>, close: &mut bool| {
                     ui.spacing_mut().item_spacing.x = tk::S2;
+                    if at > 0 && key::key(ui, t(Key::WizPrev), Role::Secondary, true).clicked() {
+                        *move_to = Some(at - 1);
+                    }
+                    if later_on && key::key(ui, later, Role::Plain, true).clicked() {
+                        if last {
+                            *close = true;
+                        } else {
+                            *move_to = Some(at + 1);
+                        }
+                    }
+                };
+                let mut lead_below = false;
+                // The step's own keys from the right, wrapping onto the next row when they do not fit (never past the
+                // column's left edge onto the steps).
+                ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true), |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(tk::S2, tk::S2);
                     if done {
                         if page::Page::new().primary(ui, t(if last { Key::WizFinish } else { Key::WizardNext })).1.clicked() {
-                            // The network row was changed after choosing: next changes the choice.
+                            // The network row was changed after choosing: "next" changes the choice.
                             if step == Step::Network && self.wiz_network_chosen().as_deref() != Some(self.wiz_network_pick().as_str()) {
                                 act = Some(Action::ChooseNetwork { name: self.wiz_network_pick() });
                             }
@@ -120,7 +139,7 @@ impl Win {
                                     }
                                 }
                             },
-                            // The default row is selected already: next makes it this identity's network.
+                            // The default row is already selected: "next" makes it this identity's network.
                             Step::Network => {
                                 if page::Page::new().primary(ui, t(Key::WizardNext)).1.clicked() {
                                     act = Some(Action::ChooseNetwork { name: self.wiz_network_pick() });
@@ -139,32 +158,30 @@ impl Win {
                             Step::Backup => open_export = page::Page::new().primary_with(ui, t(Key::DoExportBackup), self.shell.unlocked()).1.clicked(),
                         }
                     }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = tk::S2;
-                        if at > 0 && key::key(ui, t(Key::WizPrev), Role::Secondary, true).clicked() {
-                            move_to = Some(at - 1);
-                        }
-                        if step.deferrable(role) && !done && key::key(ui, t(if last { Key::WizLaterDo } else { Key::WizLater }), Role::Plain, true).clicked() {
-                            if last {
-                                close = true;
-                            } else {
-                                move_to = Some(at + 1);
-                            }
-                        }
-                    });
+                    // "Back" and "later" share the row when the space left by the right keys fits them; otherwise
+                    // they get their own row below (never overlapping the right keys).
+                    let lead_w: f32 = lead.iter().map(|(text, role)| key::size_of(ui, &key::Key::new(text, *role)).x).sum::<f32>() + tk::S2 * lead.len().saturating_sub(1) as f32;
+                    lead_below = !lead.is_empty() && lead_w > ui.available_width() - tk::S2;
+                    if !lead_below {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close));
+                    }
                 });
+                if lead_below {
+                    ui.add_space(tk::S2);
+                    ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close));
+                }
             });
         });
         if confirm {
             self.ux.confirm_genesis = true;
         }
         if copied {
-            // Turning to the three cells: the words are masked again first.
+            // Moving on to the three check cells: mask the words again first.
             self.ux.id_confirming = true;
             self.ux.id_words_open = false;
         }
         if open_import {
-            // The wizard's own sheet: the wizard stays under it.
+            // The wizard's own sheet; the wizard stays under it.
             self.ux.id_open(IdModal::Import);
         }
         if open_restore {
@@ -173,9 +190,10 @@ impl Win {
         if open_export {
             self.bk_open(Bk::Export);
         }
-        // The way out (the key, or Esc with no sheet up): new words shown and not yet checked are said first.
-        let esc = exit_shown && ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !self.any_sheet_open();
-        // The Esc that asks is not also the Esc that closes the ask, in the same frame.
+        // The way out (the key, or Esc with nothing opened over the wizard): new words shown but not yet checked
+        // trigger a warning first. A menu, list or sheet opened over the wizard takes Esc first.
+        let esc = exit_shown && zikaron_ui::layer::esc(ctx, egui::Id::new("zikaron-wizard")) && !self.any_sheet_open();
+        // The Esc that opens the question must not also close it in the same frame.
         let mut asked_now = false;
         if (exit || esc) && !self.ux.wiz_exit_ask {
             if self.shell.new_words.is_some() {
@@ -208,8 +226,8 @@ impl Win {
                 return;
             }
         }
-        // The gas step after "I have sent it": once its reading of the chain has landed, a balance shows the
-        // step done for a second and then goes on; none keeps the step and says the chain does not show it yet.
+        // The gas step after "I have sent it": once its chain reading lands, a balance shows the step done for a
+        // second and then moves on; no balance keeps the step and says the chain does not show it yet.
         let answered = matches!(self.ux.wiz_gas_asked, Some(stamp) if self.shell.tasks.answered_since(crate::task::Kind::Chain, stamp));
         if step != Step::Gas {
             self.ux.wiz_gas_asked = None;
@@ -227,7 +245,7 @@ impl Win {
                 }
             } else {
                 self.ux.wiz_gas_asked = None;
-                self.ux.wiz_gas_not_seen = matches!(&self.shell.chain, Some(Done::Chain { gas_wei: Some(0), .. }));
+                self.ux.wiz_gas_not_seen = matches!(self.chain_read(), Ok(Some(Done::Chain { gas_wei: Some(0), .. })));
             }
         }
         if let Some(a) = act {
@@ -247,10 +265,10 @@ impl Win {
 
     /// One step's card.
     #[allow(clippy::too_many_arguments)]
-    fn wizard_body(&mut self, ui: &mut egui::Ui, step: crate::nav::Step, done: bool, fresh: Option<&(Vec<String>, [usize; 3])>, busy: bool, gas_side: bool, now: f64) {
+    fn wizard_body(&mut self, ui: &mut egui::Ui, step: crate::nav::Step, done: bool, fresh: Option<&(Vec<crate::secret::Secret>, [usize; 3])>, busy: bool, gas_side: bool, now: f64) {
         use crate::nav::Step;
         let len = crate::keybox::PIN_LEN;
-        // A finished step (other than the network and the balance, which stay readable) is the drawn check.
+        // A finished step (other than network and balance, which stay readable) is drawn as a check.
         if done && !matches!(step, Step::Network | Step::Gas) {
             states::done_state(ui, &format!("wizard-done-{}", step as u8), t(Key::Done), "");
             match step {
@@ -272,7 +290,7 @@ impl Win {
             Step::Pin => {
                 ui.vertical_centered(|ui| {
                     ui.add_space(4.0);
-                    // One row filled twice: the first fill's shape is judged at once, the second completes it.
+                    // One row filled twice: the first entry's shape is checked at once, the second completes it.
                     let full = pin::pin_row(ui, "wiz-pin", &mut self.ux.pin, len, self.ux.pin_shake, !busy, false).full;
                     if full && self.ux.pin_again.is_empty() {
                         self.take_first_pin(now, false);
@@ -299,7 +317,7 @@ impl Win {
             }
             Step::Key => match fresh {
                 None => {
-                    // The label (optional) is asked only here, before the words.
+                    // The optional label is asked only here, before the words.
                     field(ui, t(Key::IdLabel), None, |ui| input::line(ui, &mut self.ux.id_new_label, t(Key::IdLabelHint)));
                     ui.vertical_centered(|ui| {
                         ui.add_space(14.0);
@@ -322,8 +340,8 @@ impl Win {
             },
             Step::Network => {
                 let picked = self.wiz_network_pick();
-                // The wizard offers the default network and a custom one; another known network (the testnet)
-                // is reached through the custom row, and shows here only when this machine already uses it.
+                // The wizard offers the default network and a custom one; another known network (the testnet) is
+                // reached through the custom row, and shows here only when this machine already uses it.
                 let mut rows: Vec<(String, String, String, bool)> = crate::deploy::KNOWN
                     .iter()
                     .filter(|d| d.name == crate::deploy::DEFAULT || d.name == picked)
@@ -342,8 +360,9 @@ impl Win {
                 field(ui, t(Key::WizGenesisSay), None, |ui| input::line(ui, &mut self.ux.wiz_statement, t(Key::StatementHint)));
             }
             Step::Gas => {
-                let gas = match &self.shell.chain {
-                    Some(Done::Chain { gas_wei: Some(w), .. }) => fill1(Key::SetGasSay, &eth_held(*w)),
+                let gas = match self.chain_read() {
+                    Err(f) => fill1(Key::SetReadFailedNow, f.human()),
+                    Ok(Some(Done::Chain { gas_wei: Some(w), .. })) => fill1(Key::SetGasSay, &eth_held(*w)),
                     _ => t(Key::SetNotRead).to_string(),
                 };
                 let addr = self.shell.anchor.map(|a| a.hex());
@@ -359,8 +378,8 @@ impl Win {
         }
     }
 
-    /// Create the ledger: what it will say, that it costs nothing (written locally), that it cannot change;
-    /// its place under details. Floats above the wizard.
+    /// Create the ledger: what it will say, that it is free (written locally) and permanent, with its place
+    /// under details. Floats above the wizard.
     pub(super) fn genesis_sheet(&mut self, ctx: &egui::Context, now: f64) {
         if !self.ux.confirm_genesis {
             return;
@@ -392,7 +411,7 @@ impl Win {
     }
 }
 
-/// Entry kinds in plain words on lists: genesis says "create the ledger", history "record", succession
+/// Entry kinds in plain words on lists: genesis is "create the ledger", history "record", succession
 /// "change key or hand over"; others as on the ledger.
 pub(super) fn user_kind_key(k: zikaron::tokens::EntryType) -> Key {
     match k {
@@ -403,10 +422,10 @@ pub(super) fn user_kind_key(k: zikaron::tokens::EntryType) -> Key {
     }
 }
 
-/// The gas card: its padding on all four sides, the key column, the gaps (rows, key to value, words to code)
-/// and the address's characters per line (two lines, whatever the width).
+/// The gas card: padding on all four sides, the key column, the gaps (rows, key to value, words to code)
+/// and the address's characters per line (always two lines).
 const GAS_PAD: f32 = 28.0;
-/// How long the gas step stays, done, before going on by itself (seconds).
+/// How long the gas step stays shown as done before moving on by itself (seconds).
 const GAS_SEEN_SECS: f64 = 1.0;
 const GAS_KEY_W: f32 = 88.0;
 const GAS_COL_GAP: f32 = 20.0;
@@ -417,9 +436,9 @@ const GAS_ADDR_LINE: usize = 21;
 const QR_SIDE: f32 = 160.0;
 const QR_CAPTION_GAP: f32 = 10.0;
 
-/// The width of one address line (monospace: every line of it the same).
+/// The width of one address line (monospace, so every line is the same).
 fn gas_addr_w(ctx: &egui::Context) -> f32 {
-    ctx.fonts(|f| f.layout_no_wrap("0".repeat(GAS_ADDR_LINE), Type::Mono.font(), egui::Color32::BLACK).size().x).ceil()
+    ctx.fonts_mut(|f| f.layout_no_wrap("0".repeat(GAS_ADDR_LINE), Type::Mono.font(), egui::Color32::BLACK).size().x).ceil()
 }
 
 /// The words beside the code: the key column, its gap, the address.
@@ -440,34 +459,34 @@ pub(super) fn gas_card_w(ctx: &egui::Context) -> f32 {
 /// A text laid out on its own, and where its first baseline falls below its top.
 fn gas_text(ui: &egui::Ui, s: &str, t: Type, colour: egui::Color32, wrap: Option<f32>) -> (std::sync::Arc<egui::Galley>, f32) {
     let mut job = egui::text::LayoutJob::single_section(s.to_string(), egui::TextFormat { font_id: t.font(), color: colour, line_height: Some(Type::Body.line()), ..Default::default() });
-    // A wrapped value breaks by width, not by a line break in its text: what a person copies is the text itself.
+    // A wrapped value breaks by width, not by a newline in its text, so what the user copies is the text itself.
     if let Some(w) = wrap {
         job.wrap = egui::text::TextWrapping { max_width: w, break_anywhere: true, ..Default::default() };
     }
-    let g = ui.fonts(|f| f.layout_job(job));
+    let g = ui.fonts_mut(|f| f.layout_job(job));
     let base = g.rows.first().and_then(|r| r.glyphs.first()).map(|x| x.pos.y).unwrap_or(0.0);
     (g, base)
 }
 
-/// The key's address (two lines of equal length) and its balance on the left, the code a wallet scans to pay
-/// on the right with its caption under it; the two groups centered on one middle line, each key on its
-/// value's first baseline. Where the window leaves too narrow a column for the two side by side (`side`,
-/// decided by the caller from the window), the code goes under the words (nothing overlaps, nothing is cut).
+/// The key's address (two equal lines) and balance on the left; the code a wallet scans to pay on the right
+/// with its caption under it. Both groups are centered on one middle line, each key on its value's first
+/// baseline. When the column is too narrow for both side by side (`side`, decided by the caller from the
+/// window), the code goes under the words (nothing overlaps or is cut).
 fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
     let addr_said = match addr {
         Some(a) => a.to_string(),
         None => t(Key::SetNoKey).to_string(),
     };
     let value_type = if addr.is_some() { Type::Mono } else { Type::Body };
-    // The address wraps at the width of GAS_ADDR_LINE monospace characters: two equal lines on screen, one
-    // unbroken address when copied.
+    // The address wraps at GAS_ADDR_LINE monospace characters: two equal lines on screen, one unbroken address
+    // when copied.
     let addr_wrap = addr.map(|_| gas_addr_w(ui.ctx()) + 0.5);
     let rows = [(t(Key::IdAddress), addr_said, value_type, addr_wrap), (t(Key::IdGas), gas.to_string(), Type::Body, None)];
     let laid: Vec<_> = rows
         .iter()
         .map(|(k, v, vt, wrap)| (gas_text(ui, k, Type::Body, c(C::Ink2), None), gas_text(ui, v, *vt, c(C::Ink), *wrap)))
         .collect();
-    // Each row as tall as its taller side once both share the first baseline.
+    // Each row is as tall as its taller side once both share the first baseline.
     let heights: Vec<(f32, f32)> = laid
         .iter()
         .map(|((kg, kb), (vg, vb))| {
@@ -476,8 +495,14 @@ fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
         })
         .collect();
     let words_h = heights.iter().map(|(_, h)| *h).sum::<f32>() + GAS_ROW_GAP * (rows.len() as f32 - 1.0);
-    let caption = gas_text(ui, t(Key::WizGasScan), Type::Small, c(C::Ink3), None);
     let code_w = qr_plate_w();
+    // The caption wraps by words to the code's width, each line centered under it.
+    let caption = {
+        let mut job = egui::text::LayoutJob::single_section(t(Key::WizGasScan).to_string(), egui::TextFormat { font_id: Type::Small.font(), color: c(C::Ink3), line_height: Some(Type::Body.line()), ..Default::default() });
+        job.wrap.max_width = code_w;
+        job.halign = egui::Align::Center;
+        (ui.fonts_mut(|f| f.layout_job(job)), 0.0)
+    };
     let code_h = code_w + QR_CAPTION_GAP + caption.0.size().y;
     let room = ui.available_width();
     let (w, h) = if side { (room, words_h.max(code_h)) } else { (room, words_h + GAS_ROW_GAP + code_h) };
@@ -492,8 +517,8 @@ fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
         ui.painter().galley(egui::pos2(words_at.x, y + base - kb), kg, c(C::Ink2));
         let at = egui::pos2(words_at.x + GAS_KEY_W + GAS_COL_GAP, y + base - vb);
         if i == 0 && addr.is_some() {
-            // The address is text a person selects and copies (the same lines, where they were drawn).
-            // In a child of its own: placing it must not move this ui's cursor back up over what follows.
+            // The address is selectable, copyable text (the same lines, drawn where they were laid out), in a child
+            // ui so placing it does not move this ui's cursor back over what follows.
             let mut line = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(at, vg.size())));
             line.add(egui::Label::new(vg).selectable(true));
         } else {
@@ -510,12 +535,12 @@ fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
     }
     code_ui.add_space(QR_CAPTION_GAP);
     let (cg, _) = caption;
-    let cr = code_ui.allocate_exact_size(cg.size(), egui::Sense::hover()).0;
-    code_ui.painter().galley(cr.min, cg, c(C::Ink3));
+    let cr = code_ui.allocate_exact_size(egui::vec2(code_w, cg.size().y), egui::Sense::hover()).0;
+    code_ui.painter().galley(egui::pos2(cr.center().x, cr.top()), cg, c(C::Ink3));
 }
 
 /// A code a wallet scans, on its plate (the widget library's QR painter). The code is computed once per text
-/// and kept for the frames after.
+/// and cached.
 fn qr_plate(ui: &mut egui::Ui, text: &str) {
     let id = egui::Id::new(("zikaron-qr", text));
     let code = ui.ctx().data_mut(|d| d.get_temp::<Option<std::sync::Arc<crate::qr::Code>>>(id)).flatten().or_else(|| {
@@ -548,13 +573,13 @@ mod gas_address {
         })
     }
 
-    /// The address as drawn: two rows on screen, one galley whose text is the address unbroken; a person
-    /// dragging across it and copying gets exactly the address.
+    /// The address is drawn as two rows of one galley whose text is the unbroken address, so dragging across it
+    /// and copying yields exactly the address.
     #[test]
     fn selects_and_copies_the_address_unbroken() {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(1.0);
-        // Dressed as the window is (skin and fonts), so the address is laid out in the real faces.
+        // Styled like the window (skin and fonts) so the address is laid out in the real faces.
         zikaron_ui::skin::dress(&ctx);
         frame(&ctx, Vec::new());
         let out = frame(&ctx, Vec::new());

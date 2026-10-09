@@ -2,6 +2,85 @@
 
 [中文](CHANGELOG.md) | English
 
+## 0.1.2
+
+This release reworks how the app talks to nodes (proxies, rate limits, comparing several nodes), lets the command line write and put records on chain through the running desktop app, adds resending a stuck batch with higher fees, and moves local data to a new version of its encrypted format. The ledger law and the record kit format (zikaron/1) are unchanged: ledgers, record kits and data folders written by 0.1.1 read and write as before in 0.1.2. Encrypted local files written by 0.1.2 cannot be read by 0.1.1, so do not open the same data with 0.1.1 after upgrading.
+
+### Network and nodes
+
+- **Proxy**: Settings > Network has a new "Proxy" setting: System (the default), Off, or Custom proxy (`http://` or `socks5://`). Nodes on this machine are never reached through a proxy. The manual's "Network" section covers VPNs.
+- **Steadier connections**: when a node's address resolves to several IP addresses, each is tried; every request has one overall deadline; a chain read cut off mid-connection is asked once more (a transaction is never sent twice); a rate-limited node is asked again after waits from one table; one request goes to every node at the same time.
+- **Comparing nodes by what each request needs**: each kind of request compares only the facts its result depends on; the chain head is the lowest of the nodes', and a node too far behind is named; nodes serving another chain are left out.
+- **Keys in node addresses stay private**: an access key inside a node address never appears in any message, detail or log, whatever the address's form (IPv6, no port given, the key in the path).
+- **The main network's registry is checked when saved**: a registry you enter by hand whose code is not the build ZIKARON pins is not saved.
+- IPv6 node addresses can be written in brackets (for example `http://[::1]:8545`).
+- Every request's `User-Agent` names the product only.
+
+### Putting records on chain
+
+- **Resend with higher fees**: when a batch sits in the nodes' pools without being included, "Resend with higher fees" signs it again at the same nonce at the price now; the old and the new transaction are both watched and the first included counts. A batch is resent at most three times.
+- **When no node holds a batch**: if its nonce is still unused, "Send again at the price now" sends it again; if another transaction used its nonce, the batch lapses and its entries go back to the queue. 0.1.1 kept waiting for a receipt forever.
+- **The tip is read correctly**: 0.1.1 always read the tip as its 1 gwei cap; the tip the chain actually paid is read now.
+- **The balance check before sending** asks every node at the lowest block they have all reached and compares them; a node that gives no answer is never read as zero.
+- **The confirmation card says when fees fall back**: when the base fee cannot be read and the fallback is used, the card says so.
+- **The command line tells two refusals apart**: a node that refuses the gas estimate because the transaction would fail (`E_GAS_REFUSED`), and one that refuses for its own reasons such as a rate limit (`E_UNREACHABLE`).
+
+### Command line
+
+- **Writing and putting on chain through the desktop**: with `--home <data folder>`, eleven writing verbs (`adopt` among them) are done by the running desktop app, the entry shows in its window at once, and the command line holds no key. `anchor` through the desktop follows "Putting on chain from the command line" in Settings > Network: send automatically, or queue only and wait for you to send from the desktop.
+- **Enable command line**: a new switch in Settings > Local data makes `zikaron` available in any terminal (a link in `/usr/local/bin` on macOS and in `~/.local/bin` on Linux, this user's `PATH` on Windows).
+- **Adopting anchor proofs judges a co-signature whole**: a co-signature with only one of its two halves is refused, on the page and on the command line alike.
+- **A rerun never pays twice**: without `--home`, `anchor` records the hashes it signed; when the same command runs again it asks by hash first, answers an included transaction as included and signs no new nonce, and answers `E_TX_VOID` when what it sent lapsed.
+- **`zikaron contract`** prints the command line's own contract (verbs, flags, exit codes, refusal reasons), made from the same tables in the code.
+- A usage error no longer echoes the value you typed (for example a mistyped private key); it names only the flag and where it went wrong.
+- Messages on standard error follow the system language, Chinese or English.
+- New `--key-file` reads the private key from a file; key files derived with pbkdf2 are accepted too.
+- `anchor --form registry` without `--registry` is a usage error (exit 2) before any node is asked.
+
+### Local data
+
+- **A new version of the encrypted format**: the whole file header is authenticated, and file names and the part of each header that says which file it is are computed with this machine's key, so someone holding the disk cannot tell from entry or grant numbers what this machine keeps. Older files are read, only the new version is written, and nothing is migrated in bulk.
+- **Files that cannot be read are never overwritten**: a file written by a newer version or damaged is left as it is and named with one of six reasons; settings a newer version wrote are carried back as they are.
+- **One writer per data folder across machines**: when a data folder on a synced or removable drive is open on two machines, the later one is read-only and can take over with "Write from this machine"; a writer mark that cannot be read leaves the data read-only and the mark untouched.
+- **A data folder from elsewhere is refused before it opens**: one that belongs to another identity or another machine is refused without writing a byte.
+- **Entries land on FAT and exFAT volumes** (0.1.1 failed on every entry there).
+- **Whole-machine backups** carry the read-only network list; the backup lamp has four colours (up to date, entries added since, never backed up, last backup failed), and a failed backup is named under Alerts.
+- **A backup never replaces a file**: when the name chosen for a backup is already taken, the next free number is used.
+- **Saving on Windows waits out a busy file**: when another program (a virus scanner, for example) holds a file for a moment, the save tries again for up to a second instead of failing with "no permission".
+- **Programs the app starts never hold its lock**: on macOS and Linux, a program started from the app no longer keeps the data folder locked after the app quits.
+- A broken key file, or one with parameters out of bounds, is refused before any key derivation runs, so it cannot tie up the machine.
+- Recovery words that were shown are wiped from memory on hide, lock and quit; a passcode is wiped as soon as it has been handed on.
+
+### Interface
+
+- File dialogs no longer freeze the window.
+- Switching identity uses the identity menu again, with its title and the blue frame on the identity in use.
+- The first layer of the English interface no longer carries Chinese node messages; what each node said is in folds such as "What each said".
+- English in toasts and key-value tables wraps between words.
+- The "Third-party licences" list scrolls smoothly and fills its frame.
+- Long type labels are shortened with the full text on hover; the English for "存证" is now Record.
+- Wording across the settings pages is shorter.
+
+### Fixes
+
+- A batch that no node held stayed waiting for its receipt forever.
+- How far a backup is behind counts the entries added since the backup; 0.1.1 could show an old backup as current after a data folder was deleted and recording went on.
+- Importing an identity that is already here answers by name (already on this machine, or the name is taken).
+- A chain height a node returns in the wrong shape is refused by name, never read as 0.
+- A record place given on more than one line is refused by name instead of reading only the first line.
+- A grant code's shape is checked first, so a half-pasted code no longer says the root cannot be reached.
+- A strict ledger read names a zero-byte entry file instead of skipping it.
+- A grant file's length header is read in one spelling only.
+- Closing a panel or overlay no longer flashes its text in the placeholder colour while it fades.
+- Quitting no longer waits for network reads to finish: on every system an exchange in flight is cut within a quarter of a second.
+- After the app quits, the command line with `--home` is told at once that the app is not running; on Windows it could be left waiting on a channel the app had already closed.
+- A grant code pasted from a messenger or an email with line breaks, spaces or invisible marks (zero-width characters, a byte-order mark) is read as the code itself.
+
+### Known limitations
+
+- The Windows and Linux builds are built and tested automatically but have not yet been tried widely on real machines; please report problems on GitHub.
+- When a data folder's writer mark cannot be read, the pop-up messages use general wording; the bar at the top of the page says what actually happened.
+
 ## 0.1.1
 
 This version adds Windows and Linux clients; the preset networks grow to four and each identity uses its own network; the gas fee is worked out from the chain; reading other people's material can read several chains at once; slow operations in the window run in the background. The ledger law and the record kit format (zikaron/1) are unchanged: ledgers, record kits and data folders written by 0.1.0 are read and written by 0.1.1 as before.

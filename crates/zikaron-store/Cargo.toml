@@ -1,7 +1,7 @@
 [package]
 name = "zikaron-store"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 license = "MIT"
 
 # Outside the law: zero dependencies, standard library only. Entries are opaque bytes to this crate:

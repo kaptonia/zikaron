@@ -249,7 +249,7 @@ fn cols(ui: &mut egui::Ui, fixed_left: bool, fixed_w: f32, min_rest: f32, mut dr
     let side_w = if fixed_left { w - lw - gap } else { side_w };
     let top = ui.cursor().min;
     let l = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(top, vec2(lw, f32::INFINITY))), |ui| {
+        .scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(top, vec2(lw, f32::INFINITY))), |ui| {
             ui.set_width(lw);
             ui.spacing_mut().item_spacing.y = tokens::CARD_GAP;
             draw(ui, Side::Main);
@@ -257,7 +257,7 @@ fn cols(ui: &mut egui::Ui, fixed_left: bool, fixed_w: f32, min_rest: f32, mut dr
         .response
         .rect;
     let r = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(top.x + lw + gap, top.y), vec2(side_w, f32::INFINITY))), |ui| {
+        .scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(top.x + lw + gap, top.y), vec2(side_w, f32::INFINITY))), |ui| {
             ui.set_width(side_w);
             ui.spacing_mut().item_spacing.y = tokens::CARD_GAP;
             draw(ui, Side::Side);

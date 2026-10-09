@@ -1,4 +1,4 @@
-//! The read-only strip on top of every page, the self-audit and re-check clocks, and the alerts page with
+//! The read-only strip on top of every page, the self-audit and re-check timers, and the alerts page with
 //! the rail's count.
 
 use super::*;
@@ -17,7 +17,7 @@ struct AlertLine {
 
 impl Win {
     /// The strip at the top of every page: a broken chain (read only; go restore), a ledger handed over, or
-    /// not writable for another reason. Said, never silent.
+    /// not writable for another reason. Always shown, never silent.
     pub(super) fn banner(&mut self, ui: &mut egui::Ui, now: f64) {
         if let Some(v) = self.shell.old_view.clone() {
             let back = states::banner(ui, states::Banner::Bad, &fill1(Key::OldDataBar, &crate::when::day(v.at)), |ui| key::key(ui, t(Key::OldDataBack), Role::Secondary, true).clicked());
@@ -35,6 +35,13 @@ impl Win {
                     self.go(Place::Settings(Section::Data), now);
                 }
             }
+            which @ (crate::shell::Banner::OtherMachine | crate::shell::Banner::MarkUnread) => {
+                let say = if which == crate::shell::Banner::MarkUnread { Key::SetMarkUnread } else { Key::SetOtherMachine };
+                let take = states::banner(ui, states::Banner::Warn, t(say), |ui| key::key(ui, t(Key::SetTakeWriter), Role::Secondary, true).clicked());
+                if take {
+                    self.act(Action::TakeWriter, now);
+                }
+            }
             crate::shell::Banner::ReadOnly(who) => {
                 let why = if who.is_empty() { t(Key::HomeNoLock).to_string() } else { who };
                 states::note_box(ui, &fill1(Key::ReadOnlyBar, &why));
@@ -42,12 +49,12 @@ impl Win {
         }
     }
 
-    /// The self-audit and re-check clocks: when due, start a background task (the frame touches no disk and
-    /// no network). A period of zero never runs by itself; with the basis incomplete, no node, or one in
-    /// flight, nothing starts and nothing is said.
+    /// The self-audit and re-check timers: when due, start a background task (the frame touches no disk or
+    /// network). A period of zero never runs by itself; with the basis incomplete, no node, or a task already
+    /// in flight, nothing starts and nothing is said.
     pub(super) fn tick(&mut self, ctx: &egui::Context, now: f64) {
-        // egui draws only on events: a configured clock asks for a frame at the moment it falls due, or it
-        // never rings (and an idle window draws nothing in between).
+        // egui draws only on events, so a configured timer requests a frame for the moment it falls due, or it
+        // would never fire.
         if self.shell.home.is_some() && !self.shell.endpoints.is_empty() {
             let mut wake: Option<f64> = None;
             for (every, kind) in [(self.shell.settings.audit_every, crate::task::Kind::Audit), (self.shell.settings.review_every, crate::task::Kind::Review)] {
@@ -67,11 +74,11 @@ impl Win {
         if self.shell.review_due(now, self.last_tick) {
             apply(&mut self.shell, Action::ReviewVault);
         }
-        // A marked home whose tail can be checked now (nodes back, the ledger moved): checked once.
+        // A marked home whose tail can be checked now (nodes back, the ledger moved): check it once.
         if self.shell.take_tail_due() {
             apply(&mut self.shell, Action::CheckTail);
         }
-        // `audit_stale` covers "the report in hand is stale", `audit_due` the period: either audits now.
+        // `audit_stale` covers a stale report in hand, `audit_due` the period: either one audits now.
         if !self.shell.audit_stale() && !self.shell.audit_due(now, self.last_tick) {
             return;
         }
@@ -80,7 +87,7 @@ impl Win {
     }
 
     /// The lines the alerts page shows. When the queue row says the same as the unanchored row above it and
-    /// leads to the same place, the two are one line. Sentinel alarms follow, one line each.
+    /// leads to the same place, the two merge into one line. Sentinel alarms follow, one line each.
     fn alert_lines(&self) -> Vec<AlertLine> {
         let role = self.shell.settings.role;
         let mut out: Vec<AlertLine> = Vec::new();
@@ -116,8 +123,8 @@ impl Win {
         self.alert_lines().iter().filter(|l| matches!(l.mark, Mark::Warn | Mark::Bad)).count()
     }
 
-    /// Alerts: a mark, the item and how it stands; "go to …" on the right when something needs doing, and
-    /// the whole line leads there.
+    /// Alerts: a mark, the item and its state; "go to …" on the right when something needs doing, and the whole
+    /// line leads there.
     pub(super) fn alerts_page(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_rows(now);
         self.ensure_grants(now);
@@ -146,7 +153,7 @@ impl Win {
         }
     }
 
-    /// A place's name as the rail says it (links name where they land).
+    /// A place's name as the rail says it (links are named after where they land).
     pub(super) fn place_title(&self, place: Place) -> &'static str {
         use crate::nav::{tab, View};
         match crate::nav::settle(place, self.shell.settings.role) {

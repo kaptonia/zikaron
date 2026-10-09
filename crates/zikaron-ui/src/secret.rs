@@ -1,9 +1,8 @@
 //! Secret strings: passcodes, passwords, recovery words and private keys all use this type.
 //!
-//! As `String`s they leaked: `clear()` only sets the length to zero and leaves bytes on the heap; a growing
-//! `String` moves to a larger allocation and returns the old one unwiped; and a derived `Debug` prints them
-//! in plain text. The type answers "is this a secret", and wiping, staying in place and masked debug output
-//! live here.
+//! A plain `String` leaks: `clear()` only sets the length to zero and leaves the bytes on the heap; a growing
+//! `String` moves to a larger allocation and frees the old one unwiped; and a derived `Debug` prints it in
+//! plain text. This type marks a value as secret and owns wiping, staying in place and masked debug output.
 //!
 //! 1. Wiped when dropped: `Drop` writes zeros over the whole allocation (capacity included); deleting
 //! characters or clearing also zeros the freed part at once.
@@ -246,6 +245,10 @@ impl egui::TextBuffer for Secret {
     fn replace_with(&mut self, text: &str) {
         Secret::clear(self);
         self.push_str(text);
+    }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
     }
 }
 

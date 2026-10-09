@@ -131,10 +131,13 @@ impl Flags {
 /// `--endpoint <chain>=<url>`, several per chain allowed (the endpoint rule).
 fn endpoint_specs(f: &Flags) -> Vec<(u64, String)> {
     let mut out = Vec::new();
+    // The one reading of the spelling, the app's and the command line's too (`rpc::endpoint_spec`).
     for spec in f.many("endpoint") {
-        let (c, url) = spec.split_once('=').unwrap_or_else(|| misuse("--endpoint 的形是 <链号>=<url>"));
-        let id: u64 = c.parse().unwrap_or_else(|_| misuse("链号不是十进制整数"));
-        out.push((id, url.to_string()));
+        match zikaron_anchor::rpc::endpoint_spec(&spec) {
+            Ok(x) => out.push(x),
+            Err(zikaron_anchor::rpc::NotAnEndpoint::ChainNotInt) => misuse("链号不是十进制整数"),
+            Err(_) => misuse("--endpoint 的形是 <链号>=<url>"),
+        }
     }
     if out.is_empty() {
         misuse("至少要一个 --endpoint <链号>=<url>");
@@ -494,7 +497,8 @@ fn main() -> ExitCode {
                             fields.push(("reason".into(), Value::Str("E_TX_STATUS".into())));
                             fields.push(("status".into(), Value::Int(*status)));
                         }
-                        send::Confirm::NotYet => {
+                        // One endpoint is asked here, so a split never comes; were it to, it is "not yet".
+                        send::Confirm::NotYet | send::Confirm::Split { .. } => {
                             fields.push(("reason".into(), Value::Str("E_TX_NOT_YET".into())));
                             fields.push(("waitedSeconds".into(), Value::Int(wait.as_secs())));
                         }

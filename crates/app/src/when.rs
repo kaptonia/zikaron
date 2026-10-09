@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
-/// The time zone a moment is shown in. Closed set.
+/// The time zone a moment is shown in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Zone {
     Utc,

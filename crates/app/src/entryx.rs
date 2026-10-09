@@ -1,24 +1,23 @@
-//! Entry assembly (needed by the first-run genesis step). Not one byte of form or signature is invented here.
+//! Entry assembly (used by the first-run genesis step). No byte of form or signature is invented here.
 //!
-//! Canonical bytes ← the core's `json::canon_bytes`; preimage ← the core's `entry::b6_bytes` (the six members
-//! without `sig`, law §5.1); signature ← this crate's `sign::sign_entry` (the domain is fixed there, see the
-//! `sign` file header); verdict ← the core's `entry::check`: every entry passes the thirteen steps before
-//! landing, and a failure turns red with the law's token.
+//! Canonical bytes come from the core's `json::canon_bytes`; the signing preimage from the core's
+//! `entry::b6_bytes` (the six members without `sig`, law §5.1); the signature from this crate's
+//! `sign::sign_entry` (the domain is fixed there); the verdict from the core's `entry::check`. Every entry
+//! passes the core's thirteen-step entry check before it is written, and a failure is reported with the
+//! spec's rejection token.
 //!
-//! This layer does one thing: lay the parameters out as a six-member object. A mistake is refused by the law
-//! at once, so red here is the law's refusal token, not a sentence the shell made up.
+//! This module only lays the parameters out as a six-member object. A mistake is refused at once by the
+//! core, so an error here is the spec's rejection token, not a message made up by the shell.
 
 use crate::fault::{Fault, Known};
 use crate::key::Secret;
 use zikaron::entry as k1;
 use zikaron::json::{self, Value};
 
-/// Names of the seven envelope members (the closed set of law §4.3 step 3). Spelled as in the core, the
-/// camelCase one especially: the core's copy is a private constant and cannot be reached, so this is another
-/// transcription, like the CLI's `codes::Field`; a mistake does not give a false green but the law's
-/// immediate `E_ENVELOPE_MISSING` (writing `entry_type` in snake case is refused at once). These are JSON key
-/// names, not the law's words, so the rule that the law's literals live only in the base does not cover them
-/// (as in the CLI).
+/// Names of the seven envelope members (the closed set of law §4.3 step 3), spelled exactly as in the core
+/// (note the camelCase `entryType`). The core's copy is private, so this is a transcription, like the CLI's
+/// `codes::Field`. A misspelling cannot give a false pass: the core rejects it at once with
+/// `E_ENVELOPE_MISSING`. These are JSON key names, not spec tokens, so they may be defined outside the core.
 const SPEC: &str = "spec";
 const ENTRY_TYPE: &str = "entryType";
 const AUTHOR: &str = "author";
@@ -27,27 +26,24 @@ const PREV: &str = "prev";
 const BODY: &str = "body";
 const SIG: &str = "sig";
 
-/// Names of members in the body. The same rule as the seven above: JSON key names, not the law's words, so
-/// they are transcribed together here, and other modules call them instead of each writing its own (one name,
-/// one home).
+/// Name of a body member. Like the envelope names above, body member names are JSON keys, defined here once
+/// so other modules use them instead of spelling their own.
 ///
-/// A name collision is recorded plainly: the kit crate's `Rule::NoteMd` is a rule name in kit law §7,
-/// unrelated to this JSON key (the same form as `entries` in `mirror.rs`).
+/// Not to be confused with the kit crate's `Rule::NoteMd`, a rule name in kit law §7 unrelated to this key.
 pub const NOTE_MD: &str = "note_md";
 
-/// A grant's optional member "which history entry it points to" (law §6.3). It is a JSON key name, and
-/// happens to share its form with an entry kind in law §6; the collision is recorded plainly, as with
-/// `NOTE_MD`.
+/// A grant's optional member naming the history entry it points to (law §6.3). A JSON key name that happens
+/// to share its spelling with an entry kind (law §6).
 pub const HISTORY: &str = "history";
 
-/// An entry signed and passed through the thirteen steps.
+/// An entry signed and passed through the core's entry check.
 pub struct Sealed {
     pub bytes: Vec<u8>,
     pub id: String,
 }
 
-/// Build the envelope, sign, pass the thirteen steps. `prev` of `None` writes `null` (the genesis position of
-/// law §4.3 step 8).
+/// Builds the envelope, signs it and runs the core's entry check. A `prev` of `None` writes `null` (the
+/// genesis position, law §4.3 step 8).
 pub fn seal(
     secret: &Secret,
     entry_type: &str,
@@ -85,12 +81,11 @@ pub fn seal(
     Ok(Sealed { bytes, id })
 }
 
-/// Genesis: `seq` is 0, `prev` is `null`, one line of prose in the body (law §6.1).
+/// Genesis: `seq` 0, `prev` `null`, one line of prose in the body (law §6.1).
 pub fn genesis(secret: &Secret, statement_md: &str) -> Result<Sealed, Fault> {
     seal(
         secret,
-        // Entry kinds are the law's words (law §6), so they come from the core's closed type, not spelled
-        // here.
+        // Entry kinds are spec tokens (law §6), so they come from the core's closed type, not spelled here.
         zikaron::tokens::EntryType::Genesis.as_str(),
         0,
         None,

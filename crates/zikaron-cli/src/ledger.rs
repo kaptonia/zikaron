@@ -52,15 +52,18 @@ pub fn pile(dir: &LedgerDir) -> Result<Vec<Vec<u8>>, Trouble> {
     Ok(items)
 }
 
-/// The sentence said when refusing a sealed ledger. One name, one home.
-pub const SEALED_SAID: &str = "已锁定:这是 ZIKARON Desk 封存的本机数据,命令行不读";
+/// The sentence said when refusing a sealed ledger, in the language of the lines for people
+/// ([`crate::out::lang`]). One name, one home.
+pub fn sealed_said() -> &'static str {
+    crate::out::Said::Sealed.text()
+}
 
 /// A ledger ZIKARON Desk keeps is sealed local data, and the command line holds no passcode: it reads such a
 /// ledger as the app does while locked, refused by the existing unreadable reason, naming "locked".
 /// `subject` is the ledger read (its path), named on the first stderr line.
 pub fn refuse_sealed(subject: &str, items: &[Vec<u8>]) {
     if items.iter().any(|b| zikaron_glue::sealed::is_sealed(b)) {
-        crate::out::misuse(crate::codes::Reason::Unreadable, subject, crate::out::Said::Sealed);
+        crate::out::misuse(crate::codes::Reason::Unreadable, crate::out::typed(subject), crate::out::Said::Sealed);
     }
 }
 
@@ -208,15 +211,15 @@ pub enum ReadRefused {
 /// `show --entry`): a mirror bundle by its manifest, read by the names the app writes it with
 /// (`zikaron_glue::mirror`: each listed entry from the entries room); a record package (a disclosure kit)
 /// once the kit core verifies it (`kitdir::verify_kit`), the entries in its entries room; anything else as a
-/// ledger directory, strictly, as before. Whether each entry is an entry is the core's, in the audit. Writing
-/// verbs and `init` never come here: they read ledger directories only.
+/// ledger directory, strictly. Whether each entry is an entry is the core's call, in the audit. Writing verbs
+/// and `init` never come here: they read ledger directories only.
 pub fn read_any(path: &str) -> Result<Vec<Vec<u8>>, ReadRefused> {
     crate::seam();
     let dir = std::path::Path::new(path);
     if zikaron_glue::mirror::is_bundle(dir) {
         return zikaron_glue::mirror::entries(dir).map_err(|t| match t {
             zikaron_glue::mirror::ReadTrouble::Unreadable(p) => ReadRefused::Unreadable(p),
-            zikaron_glue::mirror::ReadTrouble::NotJson(x) | zikaron_glue::mirror::ReadTrouble::NotThisKind(x) => ReadRefused::Mirror(x),
+            zikaron_glue::mirror::ReadTrouble::NotJson(x) | zikaron_glue::mirror::ReadTrouble::NotThisKind(x) | zikaron_glue::mirror::ReadTrouble::NotAnEntryName(x) => ReadRefused::Mirror(x),
         });
     }
     if zikaron_glue::read::is_kit(dir) {

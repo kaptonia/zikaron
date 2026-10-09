@@ -66,8 +66,8 @@ pub const SHAPE_V1: &str = "zikaron-desk/keybox/1";
 pub const IV_LEN: usize = 16;
 
 /// The vault file's member names (top level, each seal, the primary record, each slot, the derivation
-/// parameters). One name, one home: the reader and the writer here, and anything that reads the file's raw
-/// members, spell them only through this table.
+/// parameters). The reader and writer here, and anything that reads the file's raw members, spell them only
+/// through this table.
 pub mod member {
     pub const SHAPE: &str = "shape";
     pub const WRONG: &str = "wrong";
@@ -94,7 +94,9 @@ pub mod member {
 /// Passcode length: eight characters, each an ASCII letter or digit, case-sensitive.
 pub const PIN_LEN: usize = 8;
 /// Domain of the bind field (separate from the shape 1 `mac`, so neither can pose as the other).
-const BIND_DOMAIN: &[u8] = b"zikaron-keybox/2";
+pub const BIND_DOMAIN: &[u8] = b"zikaron-keybox/2";
+/// Domain of a secret's member mark ([`member_tag`]).
+pub const MEMBER_INFO: &[u8] = b"zikaron/keybox/member/v1";
 /// Failures before the vault locks.
 pub const WRONG_LIMIT: u64 = 5;
 
@@ -272,7 +274,7 @@ const PRIMARY_LABEL: &str = "primary";
 /// finds its own mark. Salted by the vault's own salt, drawn anew with each new master key, so no mark is
 /// shared between the vault before a master key change and the one after it.
 fn member_tag(secret: &[u8], marks: &[u8; 32]) -> [u8; 32] {
-    let mut msg = b"zikaron/keybox/member/v1".to_vec();
+    let mut msg = MEMBER_INFO.to_vec();
     msg.push(0);
     msg.extend_from_slice(marks);
     crate::cryptx::hmac_sha256(secret, &msg)
@@ -375,8 +377,8 @@ fn lock_path() -> Result<std::path::PathBuf, Fault> {
 /// Take the vault lock, waiting until it is available; creates the directory first if missing.
 ///
 /// Every vault change (set passcode, unlock, change passcode, recover, add or drop a recovery seal, put or
-/// drop a slot, reset an empty vault) starts here, and [`write_book`] takes a reference to the lock, so
-/// writing without the lock cannot be written.
+/// drop a slot, reset an empty vault) starts here, and [`write_book`] takes a reference to the lock, so a
+/// write without the lock does not compile.
 fn lock_book() -> Result<Held, Fault> {
     let p = lock_path()?;
     if let Some(d) = p.parent() {
@@ -576,8 +578,8 @@ fn read_book() -> Result<Option<Book>, Fault> {
     Ok(Some(book))
 }
 
-/// Write the vault. The first argument is the lock in hand: without it the call cannot be made, so writing
-/// without the lock cannot be written (the tests also count that every write is under the lock).
+/// Writes the vault. The first argument is the lock in hand, so a write without the lock does not compile
+/// (the tests also check that every write is under the lock).
 fn write_book(_held: &Held, b: &Book) -> Result<(), Fault> {
     write_book_as(b, &crate::places::keybox_file())
 }
@@ -1123,8 +1125,7 @@ pub fn pin_trouble(pin: &str) -> Option<PinTrouble> {
 /// Set the passcode for the first time: a random master key, sealed with the passcode, the vault written. A
 /// vault that already has a passcode is refused by name.
 pub fn set_pin(pin: &str) -> Result<(), Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::H2);
     if let Some(t) = pin_trouble(pin) {
         return Err(Fault::known(Known::PinShape, t.as_str().to_string()));
@@ -1166,8 +1167,7 @@ pub fn set_pin(pin: &str) -> Result<(), Fault> {
 /// refused by name without trying the passcode). Recorded parameters below the floor are refused with
 /// `KDF_BELOW_FLOOR` and not counted (the file was lowered; the passcode is not at fault).
 pub fn unlock(pin: &str) -> Result<(), Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::H2);
     let held = lock_book()?;
     unlock_held(&held, pin, false)
@@ -1305,8 +1305,7 @@ fn rebind(book: &mut Book, mk: &[u8; MASTER_BYTES]) {
 /// Change the passcode: the old one must match (a mismatch counts like a wrong passcode), then the same
 /// master key is resealed under the new one.
 pub fn change_pin(old: &str, new: &str) -> Result<(), Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::H2);
     if let Some(t) = pin_trouble(new) {
         return Err(Fault::known(Known::PinShape, t.as_str().to_string()));
@@ -1570,7 +1569,7 @@ pub fn local_key() -> Result<LocalKey, Fault> {
     Ok(local_of(&mk.0))
 }
 
-/// The HKDF info string of the local data key (`<app>/local/v1`). One name, one home.
+/// The HKDF info string of the local data key (`<app>/local/v1`).
 pub const LOCAL_INFO: &[u8] = b"zikaron/local/v1";
 
 fn local_of(mk: &[u8; MASTER_BYTES]) -> LocalKey {
@@ -1588,7 +1587,7 @@ pub fn name_key() -> Result<crate::names::NameKey, Fault> {
     Ok(names_of(&mk.0))
 }
 
-/// The HKDF info string of the names key (`<app>/names/v1`). One name, one home.
+/// The HKDF info string of the names key (`<app>/names/v1`).
 pub const NAMES_INFO: &[u8] = b"zikaron/names/v1";
 
 fn names_of(mk: &[u8; MASTER_BYTES]) -> crate::names::NameKey {
@@ -1623,7 +1622,7 @@ impl Drop for LocalKey {
 // unlock [`crate::local::settle_pending`] renames the ones that open under the vault's key and removes the ones
 // that do not, so a cut at any moment leaves either the whole old state or the whole new one.
 
-/// The suffix of a staged file. One name, one home.
+/// The suffix of a staged file.
 pub const NEXT: &str = ".zk-next";
 
 /// A vault built in memory with a new master key, not yet on disk.
@@ -1758,8 +1757,8 @@ fn slot_name(book: &Book, mk: &[u8; MASTER_BYTES], account: &str) -> String {
     }
 }
 
-/// The name the vault files `account`'s slot under, by the same lookup `get` and `put` use (read port: tests
-/// take it from here rather than working it out). Refused by name while locked.
+/// The name the vault files `account`'s slot under, by the same lookup `get` and `put` use (tests take it
+/// from here rather than computing it). Refused by name while locked.
 pub fn slot_name_of(account: &str) -> Result<Option<String>, Fault> {
     let mk = master_now()?;
     let Some(book) = read_book()? else { return Ok(None) };

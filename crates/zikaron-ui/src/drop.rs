@@ -175,7 +175,7 @@ pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&st
                 }
                 Shape::Row => {
                     let gw = if glyph.is_some() { 22.0 + 14.0 } else { 0.0 };
-                    let tw = ui.fonts(|f| f.layout_no_wrap(title.to_string(), heavy.clone(), egui::Color32::BLACK).size().x.max(f.layout_no_wrap(note.to_string(), Type::Note.font(), egui::Color32::BLACK).size().x));
+                    let tw = ui.fonts_mut(|f| f.layout_no_wrap(title.to_string(), heavy.clone(), egui::Color32::BLACK).size().x.max(f.layout_no_wrap(note.to_string(), Type::Note.font(), egui::Color32::BLACK).size().x));
                     let x0 = r.center().x - (gw + tw) / 2.0;
                     if let Some(g) = glyph {
                         icons::glyph_at(p, g, pos2(x0 + 11.0, r.center().y), 22.0, c(C::Ink3));
@@ -240,7 +240,7 @@ pub fn veil(ctx: &egui::Context, on: bool, title: &str, note: &str) {
         return;
     }
     let s = motion::to(ctx, id.with("s"), if on { 1.0 } else { 0.98 }, tokens::MID, Curve::Ease);
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let layer = egui::LayerId::new(egui::Order::Middle, id);
     let p = ctx.layer_painter(layer);
     p.rect_filled(screen, 0.0, c(C::Veil).gamma_multiply(a));

@@ -11,7 +11,7 @@ use zikaron::hexfmt;
 use zikaron::json::Value;
 use zikaron::trace;
 
-/// Result objects are built here only: keys come from [`Key`].
+/// Builds every result object; keys come from [`Key`].
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }
@@ -152,10 +152,10 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
             };
         }
 
-        // Check 4: UNANCHORED. Anchored is PASS; a basis that does not cover is unknown; a retained UNPROVEN
-        // record whose hash is the entry_id of a ledger entry from which g is reachable (§8.2 reading counted
-        // as UNPROVEN) is unknown (the bytes that could anchor g have an anchor that is not decided yet);
-        // only a COMPLETE record FAILs; everything else is unknown.
+        // Check 4: UNANCHORED. Anchored is PASS; a non-covering basis is unknown; a retained UNPROVEN record
+        // whose hash is the entry_id of a ledger entry from which g is reachable (§8.2 with `counted` read as
+        // UNPROVEN) is unknown, since that anchor is undecided; only a COMPLETE report FAILs; anything else is
+        // unknown.
         if let (Some(o), true, true) = (outcome, state[1] == State::Pass, state[2] != State::Fail) {
             let e = o.ledger.iter().find(|e| e.id_hex() == g_id);
             state[3] = match e {

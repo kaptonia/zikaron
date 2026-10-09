@@ -12,9 +12,9 @@ impl Win {
         }
     }
 
-    /// Behind the chain (an exit found anchors this home lacks): the fetch card, to the fetch form.
+    /// When this home is behind the chain (the exit gate found anchors it lacks): a card leading to the fetch form.
     fn home_fetch(&mut self, ui: &mut egui::Ui, now: f64) {
-        // A conflict waits for its confirmation sheet (`conflict_sheet`); the fetch card steps back meanwhile.
+        // While a conflict waits on its confirmation sheet (`conflict_sheet`), the fetch card stays hidden.
         if self.shell.fetch_conflict.is_some() {
             return;
         }
@@ -43,14 +43,14 @@ impl Win {
             card::grid2(ui, "home-top", 2, |ui, i| {
                 if i == 0 {
                     let d = drop::zone(ui, "home-drop", Some(Glyph::Inbox), &[t(Key::WbDropTitle), t(Key::DropClickAny)], None, TOP_H, drop::Shape::Column, true);
-                    new_record = self.drop_or_pick(&d, crate::platform::Pick::FileOrFolder, now);
+                    new_record = self.drop_or_pick(ui.ctx(), "home-drop-1", &d, crate::platform::Pick::FileOrFolder, now);
                 } else if let Some(n) = self.send_card(ui) {
                     send = Some(n);
                 }
             });
         });
-        // Ledger state, records and grants expiring within 30 days. A cell without a reading shows a dash
-        // with the reason under it.
+        // Ledger state, records, and grants expiring within 30 days. A cell without a reading shows a dash with the
+        // reason under it.
         let dash = t(Key::None_).to_string();
         let total = self.shell.rows.as_ref().map(|(r, _)| r.len());
         let (audit_fig, audit_mark, audit_sub) = match self.ledger_state() {
@@ -94,7 +94,7 @@ impl Win {
                 }
             });
         });
-        // The latest five entries: number, type, summary, state; each opens its detail in the ledger.
+        // The latest five entries (number, type, summary, state); each opens its detail in the ledger.
         stagger(ui, 2, |ui| {
             card::section(ui, t(Key::U4Recent), "", |ui| {
                 let rows_all: Vec<crate::ledgerx::Row> = self.shell.rows.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
@@ -141,10 +141,9 @@ impl Win {
         }
     }
 
-    /// The home page's "to be anchored" card: the whole card is the key. With entries waiting its edge turns
-    /// amber and it says "N" and "click the card to anchor"; while a batch is on its way it spins and takes no
-    /// clicks; with nothing waiting its edge is green and it says "all anchored". Returns the batch to send
-    /// when clicked.
+    /// The home page's "to be anchored" card; the whole card is the key. Amber edge with a count when entries
+    /// wait, a spinner and no clicks while a batch is in flight, green "all anchored" when nothing waits.
+    /// Returns the batch to send when clicked.
     fn send_card(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let sendable = self.shell.queue.sendable();
         let busy = self.shell.queue.len().saturating_sub(sendable);
@@ -154,7 +153,7 @@ impl Win {
         let id = resp.id;
         let hot = motion::flag(ui.ctx(), id.with("hot"), state == 0 && resp.hovered(), tk::FAST);
         let press = motion::to(ui.ctx(), id.with("press"), if state == 0 && resp.is_pointer_button_down_on() { 0.99 } else { 1.0 }, tk::FAST, motion::Curve::Ease);
-        // The edge eases between amber, amber and green as the state changes (300 ms).
+        // The edge fades between amber (waiting or in flight) and green (all anchored) over 300 ms.
         let amber = motion::flag(ui.ctx(), id.with("amber"), state != 2, tk::SLOW);
         let r = paint::scaled(rect.translate(egui::vec2(0.0, -hot)), press);
         let p = ui.painter();
@@ -172,7 +171,7 @@ impl Win {
             _ => (t(Key::SendAllDone), c(C::OkInk)),
         };
         let mut sx = x;
-        // On its way it spins, unless no node can be asked for the receipt (the queue page says why).
+        // In flight: spin, unless no node can be asked for the receipt (the queue page says why).
         if state == 1 && self.shell.resume_blocked.is_none() {
             mark::spinner(ui.ctx(), p, egui::pos2(sx + 5.0, lines[2]), 4.25, 1.5, colour, 0.9);
             sx += 16.0;
@@ -209,9 +208,9 @@ impl Win {
                     });
                 } else {
                     let d = drop::zone(ui, "home-verify", Some(Glyph::Kit), &[t(Key::WbVerifyDrop), t(Key::DropClickAny)], None, TOP_H, drop::Shape::Column, true);
-                    // Drop or pick one (a record kit or record file): fill in the path and turn to record
-                    // verification, which runs at once.
-                    if let Some(first) = self.drop_or_pick(&d, crate::platform::Pick::FileOrFolder, now) {
+                    // A dropped or picked record kit or record file goes straight to record verification, which
+                    // runs at once.
+                    if let Some(first) = self.drop_or_pick(ui.ctx(), "home-drop-2", &d, crate::platform::Pick::FileOrFolder, now) {
                         self.typed.vf_path = first;
                         self.ux.u4.verify_autorun = true;
                         to = Some(Place::View(crate::nav::View::Verify, crate::nav::tab::VERIFY_WORK));
@@ -223,7 +222,7 @@ impl Win {
         let green = zikaron_kit::tokens::CheckVerdict::Green.as_str();
         let (need, need_sub) = match self.shell.cards.as_ref() {
             Some((cards, _)) => (cards.iter().filter(|x| x.verdict != green).count().to_string(), String::new()),
-            // Not re-checked yet this run: speak from the verdicts saved by the last pass, with when.
+            // Not re-checked yet this run: use the verdicts saved by the last pass, with their time.
             None if !self.shell.verdicts.is_empty() => {
                 let v = &self.shell.verdicts;
                 let n = v.iter().filter(|(_, x)| x.verdict != green).count();
@@ -264,8 +263,8 @@ impl Win {
                 }
             });
         });
-        // Recent: the check, record verification and revocation readings of this run; a relicense waiting to
-        // be anchored.
+        // Recent: this run's check, record verification and revocation readings, and any relicense waiting to be
+        // anchored.
         let mut recent: Vec<(Mark, String, Place, Option<String>)> = Vec::new();
         if let Some(x) = self.shell.checked.as_ref() {
             let v = x.judged.verdict.as_str();

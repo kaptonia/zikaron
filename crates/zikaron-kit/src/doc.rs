@@ -26,12 +26,12 @@ fn rej_at(token: DocToken, index: usize) -> Reject {
     }
 }
 
-/// A parent-law §3 token passed through `Canon`, bytes unchanged.
+/// A law §3 token passed through `Canon`, bytes unchanged.
 fn canon(token: CanonToken) -> Reject {
     rej(DocToken::Canon(token))
 }
 
-/// A parent-law §5 token passed through `Sig` (borrowed word for word by kit law §3.1).
+/// A law §5 token passed through `Sig` (borrowed word for word by kit law §3.1).
 fn sig(token: SigToken) -> Reject {
     rej(DocToken::Sig(token))
 }
@@ -64,7 +64,7 @@ fn preimage(v: &Value) -> Vec<u8> {
     entry::b6_bytes(v)
 }
 
-/// Kit law §3.1: document signatures follow parent law §5.3 to §5.5 word for word; the signer must equal the
+/// Kit law §3.1: document signatures follow law §5.3 to §5.5 word for word; the signer must equal the
 /// member the document names.
 fn verify_doc_signature(v: &Value, sig: &str, domain: &str, signer: &str) -> Result<(), Reject> {
     let (_, digest) = entry::presig_and_digest(&preimage(v), domain);
@@ -129,7 +129,7 @@ fn check_rows(rows_val: &[Value]) -> Result<Vec<(String, String)>, Reject> {
         };
         rows.push((recipient, variant));
     }
-    // Duplicates found by sorting and comparing neighbours; pairwise comparison would grow with input size.
+    // Find duplicates by sorting and comparing neighbours (pairwise comparison would be quadratic).
     let mut recipients: Vec<&str> = rows.iter().map(|(r, _)| r.as_str()).collect();
     recipients.sort_unstable();
     for i in 1..recipients.len() {

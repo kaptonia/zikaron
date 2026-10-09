@@ -3,7 +3,8 @@
 //!
 //! The card is drawn the way the menus are ([`crate::menu`]): a floating surface (menu corner, menu shadow),
 //! 5 inside, growing from its anchor corner from 0.97 and rising 4 over 120 ms, played backwards when it
-//! leaves; a press outside the card, Esc, or picking a day closes it.
+//! leaves; a press outside the card, Esc, or picking a day closes it. Opened inside a pick list or a sheet it
+//! hangs above that overlay, and its Esc closes the calendar only ([`crate::layer`]).
 //!
 //! The calendar: a head row "‹ month ›"; under it one row of weekdays (the smallest type, ink three); six rows
 //! of seven day cells (32 × 30, corner 6): light grey on hover, a step darker when pressed, the chosen day
@@ -15,7 +16,7 @@
 //! and how a list is filtered by them are the caller's.
 
 use crate::icons::{self, Glyph};
-use crate::motion::{self, Curve};
+
 use crate::paint;
 use crate::palette::{self, c, Lift, C};
 use crate::tokens::{self, Radius, Type};
@@ -123,7 +124,7 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
         let (y, m, _) = parse(value).unwrap_or(today);
         ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
     }
-    match calendar(ui.ctx(), id, rect, value, today, words) {
+    match calendar(ui.ctx(), Some(ui.layer_id()), id, rect, value, today, words) {
         Some(v) if v != *value => {
             *value = v;
             true
@@ -133,30 +134,30 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
 }
 
 /// The open calendar card; returns the day picked (`Some("")` is clear).
-fn calendar(ctx: &egui::Context, id: egui::Id, anchor: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
+fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
     if !crate::menu::is_open(ctx, id) {
         return None;
     }
-    let age = motion::age(ctx, id.with("age"), 0);
-    let e = Curve::Ease.at((age / tokens::FAST).clamp(0.0, 1.0));
-    if age < tokens::FAST {
-        ctx.request_repaint();
-    }
+    let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
     let view_id = id.with("view");
     let view = ctx.data(|d| d.get_temp::<(i32, u32)>(view_id)).unwrap_or((today.0, today.1));
     let w = CELL_W * 7.0 + PAD * 2.0 + 6.0;
     let h = PAD + HEAD_H + WEEK_H + CELL_H * 6.0 + SEP_H + ROW_H + PAD;
-    let x = anchor.left().clamp(8.0, (ctx.screen_rect().right() - w - 8.0).max(8.0));
-    let rect = Rect::from_min_size(pos2(x, anchor.bottom() + 6.0), vec2(w, h));
-    let origin = rect.left_top();
+    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), true);
+    let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + vec2(0.0, -4.0 * (1.0 - e)) });
+    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + drop.moved * (1.0 - e) });
     let chosen = parse(value);
     let mut picked: Option<String> = None;
     let mut turn = 0;
-    let guarded = crate::layer::menu_guard(ctx, layer);
-    egui::Area::new(layer.id).fade_in(false).order(egui::Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
+    crate::layer::place(ctx, layer, parent);
+    let mut guarded = false;
+    crate::layer::over(ctx, layer).show(ctx, |ui| {
+        // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
+        // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
+        guarded = crate::layer::under(ui, crate::layer::Under::Guard);
+        crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
         paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
         let left = rect.left() + PAD + 3.0;
@@ -226,9 +227,9 @@ fn calendar(ctx: &egui::Context, id: egui::Id, anchor: Rect, value: &str, today:
     if turn != 0 {
         ctx.data_mut(|d| d.insert_temp(view_id, shift(view, turn)));
     }
-    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin);
-    ctx.move_to_top(layer);
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin, drop.moved);
+    // Esc closes this card only (the list or sheet it was opened from stays).
+    let esc = crate::layer::esc(ctx, id);
     if picked.is_some() || guarded || esc {
         crate::menu::set(ctx, id, false);
     }
@@ -257,5 +258,48 @@ mod tests {
         assert_eq!(parse("2024-02-29"), Some((2024, 2, 29)));
         assert_eq!(parse("2026-9-1"), None);
         assert_eq!(fmt((2026, 9, 1)), "2026-09-01");
+    }
+
+    /// The calendar's edges by its own rules: February in a leap year, a century year (1900 not, 2000 yes),
+    /// every month's last day and the day after it, a month's last day read and the next month reached across
+    /// a year, many months either way, the weekday on both sides of a century and of a year's turn, and a page
+    /// that starts on a Monday (no days of the month before) and one that needs all six rows.
+    #[test]
+    fn calendar_edges() {
+        for (y, feb) in [(2024, 29), (2023, 28), (1900, 28), (2000, 29), (2100, 28), (2400, 29), (1, 28), (4, 29)] {
+            assert_eq!(days_in(y, 2), feb, "{y}");
+        }
+        for m in 1..=12u32 {
+            let last = days_in(2026, m);
+            assert_eq!(parse(&fmt((2026, m, last))), Some((2026, m, last)), "the last day of {m}");
+            assert_eq!(parse(&fmt((2026, m, last + 1))), None, "the day after the last of {m}");
+            assert_eq!(parse(&fmt((2026, m, 0))), None, "day zero of {m}");
+        }
+        assert_eq!(parse("2026-13-01"), None);
+        assert_eq!(parse("2026-00-01"), None);
+        assert_eq!(parse("1900-02-29"), None);
+        assert_eq!(parse("2000-02-29"), Some((2000, 2, 29)));
+        assert_eq!(parse(" 2026-10-06 "), Some((2026, 10, 6)), "white space around is taken");
+        assert_eq!(parse("2026-10-06x"), None);
+        assert_eq!(parse("+2026-10-06"), None);
+        assert_eq!(shift((2026, 1), 1), (2026, 2));
+        assert_eq!(shift((2026, 12), 13), (2028, 1));
+        assert_eq!(shift((2026, 1), -13), (2024, 12));
+        assert_eq!(shift((2026, 6), 0), (2026, 6));
+        // Weekdays (zero is Monday) across a century and a year's turn.
+        assert_eq!(weekday(1900, 1, 1), 0);
+        assert_eq!(weekday(1899, 12, 31), 6);
+        assert_eq!(weekday(2000, 2, 29), 1);
+        assert_eq!(weekday(2000, 3, 1), 2);
+        assert_eq!(weekday(2026, 12, 31), 3);
+        assert_eq!(weekday(2027, 1, 1), 4);
+        // June 2026 starts on a Monday: the page has no days of May.
+        let june = grid((2026, 6));
+        assert_eq!((june[0], june[29], june[30]), ((2026, 6, 1), (2026, 6, 30), (2026, 7, 1)));
+        // August 2026 starts on a Saturday and has 31 days: it reaches the sixth row.
+        let august = grid((2026, 8));
+        assert_eq!((august[5], august[35], august[36], august[41]), ((2026, 8, 1), (2026, 8, 31), (2026, 9, 1), (2026, 9, 6)));
+        // January's page takes its leading days from the year before.
+        assert_eq!(grid((2027, 1))[0], (2026, 12, 28));
     }
 }

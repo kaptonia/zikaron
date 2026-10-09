@@ -1,24 +1,22 @@
-//! Remote fetch: fetch a record bundle from an `https://` address and hand it to the same kit verification.
+//! Remote fetch: download a record bundle from an `https://` address and run it through the same kit
+//! verification as a local bundle.
 //!
-//! ─── The frozen law is unchanged ───
-//!
-//! Chain to entries (law §2.1, §9), entries to files (law §6.2, kit law §7.6), a bundle to its manifest (kit
-//! law §7.3, §7.4): all three links are in the frozen law, so storage can be entirely untrusted, and bytes
-//! from anyone are recomputed and checked. This layer only carries: fetch the manifest first, fetch file by
-//! file per the manifest, hand the whole enumeration to the kit crate's `verify_enumeration`, and return it
-//! only when it passes. A fetched bundle has no "extra files" question: only files the manifest lists are
-//! fetched, so an extra one cannot be fetched by structure; the face's wording is kept apart from local
+//! The spec links chain to entries (law §2.1, §9), entries to files (law §6.2, kit law §7.6) and a bundle
+//! to its manifest (kit law §7.3, §7.4), so storage can be entirely untrusted: bytes from anyone are
+//! recomputed and checked. This module only transports: fetch the manifest, fetch each file it lists, hand
+//! the whole enumeration to the kit crate's `verify_enumeration`, and return it only if it passes. A fetched
+//! bundle cannot have extra files, since only listed files are fetched; the page labels it apart from local
 //! bundles ("from an address · verified").
 //!
-//! ─── Bounds ───
+//! Bounds:
 //!
 //! - `https://` only; certificate chain and host name always verified (`chainx::Https`, the same TLS client
-//! as node queries, no new crate).
-//! - At most [`MAX_FILE`] per file, at most [`MAX_TOTAL`] per bundle (the same cap as single-file bundles),
-//! at most [`TIMEOUT_SECS`] seconds per fetch.
-//! - Redirects are followed only to the same `https` origin (same host and port), at most [`MAX_HOPS`] times;
-//! other redirects are refused by name and not followed.
-//! - Each way a fetch can fail has its own code (`REMOTE_*`), with the address in the evidence tail.
+//!   as node queries).
+//! - At most [`MAX_FILE`] per file and [`MAX_TOTAL`] per bundle (the same cap as single-file bundles), and
+//!   at most [`TIMEOUT_SECS`] seconds per fetch.
+//! - Redirects are followed only to the same `https` origin (same host and port), at most [`MAX_HOPS`]
+//!   times; other redirects are refused by name.
+//! - Each failure mode has its own code (`REMOTE_*`), with the address in the evidence tail.
 
 use crate::fault::{Fault, Known};
 use zikaron::json::Value;
@@ -50,37 +48,51 @@ impl Base {
     }
 }
 
-/// Recognize an address. `https` only, the scheme and host in any case (read by the one transport's reader);
-/// unrecognized is `REMOTE_NOT_HTTPS`, with the person's input unchanged as subject. The address is kept as
-/// that reader writes it (lowercase scheme and host), so `HTTPS://Host/k` and `https://host/k` are one
-/// address. Pointing at `…/manifest.json` steps back to its directory.
+/// Parses a publish address. `https` only, scheme and host in any case (read by the shared transport's
+/// parser); anything else is `REMOTE_NOT_HTTPS` with the input unchanged as subject. The address is kept as
+/// the parser normalizes it (lowercase scheme and host), so `HTTPS://Host/k` and `https://host/k` are one
+/// address. An address ending in `…/manifest.json` steps back to its directory.
 pub fn base_of(typed: &str) -> Result<Base, Fault> {
     let typed = typed.trim();
     let Some(h) = crate::chainx::Https::new(typed) else {
-        return Err(Fault::known(Known::RemoteNotHttps, typed.to_string()));
+        // Say why when the port or shape is wrong. A publish address is where a kit is published, not a node,
+        // so it is echoed as typed (node addresses are echoed only via `zikaron_net::sayable`).
+        use crate::lang::{filln, Key};
+        let why = match zikaron_net::read_address(typed) {
+            Err(zikaron_net::NotAnAddress::Port) => filln(Key::TailNodePort, &[typed]),
+            Err(zikaron_net::NotAnAddress::Host | zikaron_net::NotAnAddress::Shape) => filln(Key::TailNodeAddress, &[typed]),
+            _ => typed.to_string(),
+        };
+        return Err(Fault::known(Known::RemoteNotHttps, why));
     };
     let normal = h.address();
     let t = normal.as_str();
-    // Step back to the manifest's directory by whole segment only (comparing by suffix would cut
-    // `…/oldmanifest.json` to `…/old/`, and every later file would be fetched from a nonexistent directory,
-    // with the person seeing only 404s).
+    // Step back to the manifest's directory by whole path segment only: a suffix match would cut
+    // `…/oldmanifest.json` to `…/old/`, and every later fetch would get a 404.
     let t = t.strip_suffix(&format!("/{}", zikaron_glue::names::MANIFEST)).map(|x| format!("{x}/")).unwrap_or_else(|| t.to_string());
     let t = t.as_str();
     let url = if t.ends_with('/') { t.to_string() } else { format!("{t}/") };
     Ok(Base { url })
 }
 
-/// Whether this text is an address (the bytes cell branches on it: addresses go to remote fetch, others to
-/// local paths). Read by the one transport's reader, so `HTTPS://…` is an address and not a local path.
+/// Whether this text is written as an address: a scheme (a letter, then letters, digits, `+`, `-`, `.`)
+/// followed by `://`. The bytes cell branches on it: addresses go to remote fetch, everything else to local
+/// paths. Text that is not a valid https address (a port past 16 bits, an empty port, another scheme) is
+/// still refused by name as a remote address, never looked up as a local path.
 pub fn is_address(typed: &str) -> bool {
-    zikaron_net::parse(typed).is_some()
+    match typed.trim().split_once("://") {
+        Some((scheme, _)) => {
+            let mut c = scheme.chars();
+            c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric() || matches!(x, '+' | '-' | '.'))
+        }
+        None => false,
+    }
 }
 
 fn limits() -> zikaron_anchor::rpc::Limits {
-    // Headers and chunk overhead count toward the answer; the body cap is checked separately by `get_one`.
-    // Deadline: `ZKA_TIMEOUT_SECS` (the same environment variable as node queries) may only shorten it, never
-    // beyond [`TIMEOUT_SECS`]. `ZKA_TIMEOUT_MS` (milliseconds), when present, overrides it and may likewise
-    // only shorten (for sites that need a deadline shorter than a second).
+    // Headers and chunk overhead count toward the answer; `get_one` checks the body cap separately. The
+    // deadline can only be shortened, never past [`TIMEOUT_SECS`]: by `ZKA_TIMEOUT_SECS` (shared with node
+    // queries), or by `ZKA_TIMEOUT_MS` when present (for deadlines under a second).
     let secs = std::env::var(zikaron_anchor::rpc::env::TIMEOUT_SECS).ok().and_then(|x| x.parse::<u64>().ok()).filter(|n| *n > 0).map(|n| n.min(TIMEOUT_SECS)).unwrap_or(TIMEOUT_SECS);
     let cap = std::time::Duration::from_secs(TIMEOUT_SECS);
     let deadline = match std::env::var(zikaron_anchor::rpc::env::TIMEOUT_MS).ok().and_then(|x| x.parse::<u64>().ok()).filter(|n| *n > 0) {
@@ -110,7 +122,8 @@ fn origin(url: &str) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port))
 }
 
-/// A fetch's answer: fetched, or the peer says it is absent (404, 410: "missing" when checking publication).
+/// A fetch result: the bytes, or the server says it is absent (404 or 410; "missing" when checking
+/// publication).
 pub enum One {
     Bytes(Vec<u8>),
     Absent(u16),
@@ -160,8 +173,8 @@ fn must(url: &str) -> Result<Vec<u8>, Fault> {
 }
 
 /// The in-bundle paths the manifest lists (entries, files, proofs), read from kit law §7.3's three tables.
-/// This step only reads paths and does not judge the manifest; the `verify_enumeration` that follows judges
-/// it. If the three tables cannot be read, it says what kit verification would say (`E_KIT_MANIFEST`).
+/// The manifest is not judged here; `verify_enumeration` judges it afterwards. If the three tables cannot be
+/// read, this reports what kit verification would (`E_KIT_MANIFEST`).
 fn named_in(manifest: &[u8]) -> Result<Vec<String>, Fault> {
     let v = zikaron::json::parse(manifest).map_err(|_| Fault::known(Known::RemoteKit, zikaron_kit::tokens::KitFailToken::Manifest.as_str().to_string()))?;
     let mut out: Vec<String> = Vec::new();
@@ -183,7 +196,7 @@ fn named_in(manifest: &[u8]) -> Result<Vec<String>, Fault> {
             }
         }
     }
-    // A path that fails kit law §7.2 is not fetched: put into an address it could point elsewhere.
+    // A path that fails kit law §7.2 is not fetched: put into an address, it could point elsewhere.
     if let Some(bad) = out.iter().find(|p| !zikaron_kit::kitdir::is_kit_path(p)) {
         return Err(Fault::known(Known::RemoteKit, format!("E_KIT_MANIFEST:{bad}")));
     }
@@ -210,9 +223,9 @@ pub fn fetch_kit(base: &Base) -> Result<Remote, Fault> {
     let mut total = manifest.len() as u64;
     let mut pairs: Vec<(String, Vec<u8>)> = vec![(zikaron_glue::names::MANIFEST.to_string(), manifest.clone())];
     let named = named_in(&manifest)?;
-    // The item count has a cap too: the byte gate only counts fetched bodies, so a manifest listing a hundred
-    // thousand empty files would pass it, while each requires an https round (each with its own deadline) and
-    // the pass would never return. The item count uses the single-file bundle's cap.
+    // Cap the item count too: the byte cap counts only fetched bodies, so a manifest listing a hundred
+    // thousand empty files would pass it while each needs its own https round trip, and the pass would never
+    // finish. Uses the single-file bundle's item cap.
     if named.len() + 1 > zikaron_glue::container::MAX_ITEMS {
         return Err(Fault::known(Known::RemoteKit, format!("E_KIT_ITEMS:{} · {}", named.len() + 1, base.as_str())));
     }

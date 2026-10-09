@@ -1,32 +1,26 @@
-//! The only module on the app side allowed third-party cryptography.
+//! The only app module allowed to use third-party cryptography.
 //!
-//! Closed table of allowed crates: RustCrypto's `scrypt`, `aes`, `ctr`, `hmac`, `pbkdf2`, `sha2`, `k256`,
-//! `chacha20poly1305` (the XChaCha variant) and `hkdf`, plus `bip39` (only the English word list and checksum), plus `rustls` and `webpki-roots` (for https nodes:
-//! the TLS layer and root certificate table; public nodes are all https, and plain http only reaches a local
-//! anvil). No other module has even one `use scrypt`, which a test checks.
+//! Allowed crates (closed list): RustCrypto's `scrypt`, `aes`, `ctr`, `hmac`, `pbkdf2`, `sha2`, `k256`,
+//! `chacha20poly1305` (XChaCha variant) and `hkdf`, plus `bip39` (English word list and checksum only).
+//! No other module imports them; a test enforces this for `bip39`. TLS lives in `zikaron_net`, and the app
+//! reaches https nodes and remote files only through it (`chainx::Https`).
 //!
-//! ─── What this layer hands out ───
+//! Provided here:
 //!
-//! 1. [`scrypt`] and [`aes128_ctr`]: the two pieces of keystore V3;
-//! 2. [`phrase_of`] and [`entropy_of`]: both directions between 12 words and 16 bytes of entropy (BIP-39);
-//! 3. [`derive`]: derive a private key from entropy (BIP-39 seed plus BIP-32 derivation). The seed does not
-//! leave this module: it lives only within that `derive` call and is zeroed on the way out.
+//! 1. [`scrypt`] and [`aes128_ctr`]: the two primitives of keystore V3 (Web3 Secret Storage).
+//! 2. [`phrase_of`] and [`entropy_of`]: 16 bytes of entropy to 12 words and back (BIP-39).
+//! 3. [`derive`]: a private key from entropy (BIP-39 seed plus BIP-32 derivation). The seed never leaves
+//!    this module: it exists only within one `derive` call and is zeroed on the way out.
 //! 4. [`hkdf_sha256`], [`xchacha_seal`] and [`xchacha_open`]: the local data key derived from the master key,
-//! and the one authenticated cipher that seals local data and the backup body (24-byte nonce, additional data
-//! bound in);
-//! 5. [`tls_connect`]: handshake TLS over an already connected TCP stream and return a readable, writable
-//! [`Tls`] stream. The certificate chain and host name are always verified: roots come only from the table
-//! compiled in with `webpki-roots`, and this module has no path, flag or environment variable that skips
-//! verification; a failed verification is [`TlsTrouble::Certificate`], kept apart from unreachable.
+//!    and the one authenticated cipher that seals local data and the backup body (24-byte nonce, additional
+//!    data bound in).
 //!
-//! ─── How BIP-32 is computed ───
-//!
-//! Built in this module from `hmac` (HMAC-SHA512) plus `k256` scalar arithmetic, without the `bip32` crate:
+//! BIP-32 is computed here from `hmac` (HMAC-SHA512) and `k256` scalar arithmetic, without the `bip32` crate:
 //! master key `I = HMAC-SHA512("Bitcoin seed", seed)`; a hardened child's input is `0x00 ‖ k ‖ ser32(i)`, a
-//! normal child's is `serP(point(k)) ‖ ser32(i)`; `k_i = parse256(I_L) + k mod n`, and `I_L` outside the
-//! order or a zero child returns `None` (no skipping: this family's path table has fixed indices, and
-//! skipping would change the key). The seed is `PBKDF2-HMAC-SHA512(phrase, "mnemonic", 2048)`, with an always
-//! empty passphrase (the family table has no 25th word).
+//! normal child's is `serP(point(k)) ‖ ser32(i)`; `k_i = parse256(I_L) + k mod n`. An `I_L` outside the order
+//! or a zero child returns `None` instead of skipping to the next index: the family's path table has fixed
+//! indices, and skipping would change the key. The seed is `PBKDF2-HMAC-SHA512(phrase, "mnemonic", 2048)`
+//! with an always-empty passphrase (no 25th word).
 
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
@@ -35,11 +29,27 @@ use crate::family::ENTROPY_BYTES;
 
 type HmacSha512 = Hmac<Sha512>;
 
-/// Zero a byte range. The compiler may not optimize it away as a dead write.
+/// Zeroes a byte range with volatile writes, so the compiler cannot drop them as dead stores.
 fn wipe(b: &mut [u8]) {
     for x in b.iter_mut() {
         unsafe { std::ptr::write_volatile(x, 0) };
     }
+}
+
+thread_local! {
+    /// How many password derivations ([`scrypt`], [`pbkdf2_sha256`]) this thread has run. Observation only:
+    /// tests read it to confirm a refusal came before the expensive work. Per thread, so work on other
+    /// threads is not counted.
+    static DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The derivations this thread has run so far ([`DERIVATIONS`]).
+pub fn derivations() -> usize {
+    DERIVATIONS.with(|d| d.get())
+}
+
+fn derived_once() {
+    DERIVATIONS.with(|d| d.set(d.get() + 1));
 }
 
 /// scrypt (RFC 7914). `n` must be a power of two; invalid parameters return false, never panic.
@@ -47,13 +57,24 @@ pub fn scrypt(password: &[u8], salt: &[u8], n: usize, r: usize, p: usize, out: &
     if n < 2 || n & (n - 1) != 0 || r == 0 || p == 0 || r > u32::MAX as usize || p > u32::MAX as usize {
         return false;
     }
+    derived_once();
     let Ok(params) = scrypt::Params::new(n.trailing_zeros() as u8, r as u32, p as u32, out.len()) else {
         return false;
     };
     scrypt::scrypt(password, salt, &params, out).is_ok()
 }
 
-/// AES-128-CTR (the counter is the whole block, big-endian, as in the various keystore V3 implementations).
+/// PBKDF2 with HMAC-SHA256 (RFC 8018), `c` rounds, into `out`. A zero round count returns false, never panics.
+pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], c: u32, out: &mut [u8]) -> bool {
+    if c == 0 {
+        return false;
+    }
+    derived_once();
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password, salt, c, out);
+    true
+}
+
+/// AES-128-CTR with the whole 16-byte block as a big-endian counter, as keystore V3 implementations use it.
 /// Encrypts or decrypts in place.
 pub fn aes128_ctr(key: &[u8; 16], iv: &[u8; 16], buf: &mut [u8]) {
     use ctr::cipher::{KeyIvInit, StreamCipher};
@@ -104,23 +125,20 @@ pub enum PhraseTrouble {
 pub fn phrase_of(entropy: &[u8; ENTROPY_BYTES]) -> String {
     match bip39::Mnemonic::from_entropy_in(bip39::Language::English, entropy) {
         Ok(m) => m.to_string(),
-        // 16 bytes is a length BIP-39 allows, so this branch is unreachable by construction; if reached, it
-        // still gives no false phrase.
+        // Unreachable: 16 bytes is a valid BIP-39 length. Even so, it never yields a false phrase.
         Err(_) => String::new(),
     }
 }
 
-/// Which of the twelve cells are not words from the English list. Empty cells are not wrong (not filled yet).
+/// Which of the twelve cells are not words in the English list; empty cells (not filled yet) are not flagged.
 ///
-/// The interface paints cells red by it: which cell is not in the list is visible at once, instead of waiting
-/// for a press to say "this is not a phrase" without saying which cell. The checksum is not judged here (that
-/// needs all twelve words).
+/// The UI marks those cells red, so the user sees at once which word is wrong. The checksum is not checked
+/// here; it needs all twelve words.
 pub fn strangers(words: &[crate::secret::Secret; crate::family::WORDS]) -> [bool; crate::family::WORDS] {
     let list = bip39::Language::English.word_list();
     let mut out = [false; crate::family::WORDS];
     for (i, w) in words.iter().enumerate() {
-        // No lowercase copy of the word is made (it would not be zeroed): each is compared with the list
-        // case-insensitively.
+        // Compared case-insensitively instead of lowercased, so no unzeroed copy of the word is made.
         let w = w.expose().trim();
         out[i] = !w.is_empty() && !list.iter().any(|x| x.eq_ignore_ascii_case(w));
     }
@@ -222,9 +240,6 @@ fn walk(seed: &[u8], path: &[u32], point: impl Fn(&[u8; 32]) -> Option<Vec<u8>>)
     Some(k)
 }
 
-// TLS lives in the one transport (`zikaron_net`): its client configuration is built there once, and the
-// app reaches https nodes and remote files only through it (`chainx::Https`).
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,8 +248,7 @@ mod tests {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// BIP-32 specification test vector 1 (seed 000102…0f): private keys of m/0H and m/0H/1. Expected values
-    /// from the specification.
+    /// BIP-32 test vector 1 (seed 000102…0f): private keys of m/0H and m/0H/1.
     #[test]
     fn bip32_vector_one() {
         use k256::elliptic_curve::sec1::ToEncodedPoint;

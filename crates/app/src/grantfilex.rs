@@ -1,34 +1,33 @@
-//! Grant file: a small single-file container, the bundle that makes checking easy.
+//! Grant file: a small single-file container that bundles everything needed to check a grant.
 //!
 //! A grant code is to a grant file as a magnet link is to a torrent file. The grant code is still the
-//! smallest verifiable unit; the grant file is not signed itself, and everything in it is tied to the grant
+//! smallest verifiable unit; the grant file itself is not signed, and everything in it is tied to the grant
 //! code and the chain by hashes:
 //!
-//! - `entries/`: the entry bytes of each hop of the grant chain, optionally with the issuer's ledger (when
-//! included, the user's six checks have material at once);
+//! - `entries/`: the entry bytes of each hop of the grant chain, optionally with the issuer's ledger (so the
+//!   grantee's six checks have material at once);
 //! - `files/zikaron-grant.txt`: the grant code text (the same text as "copy grant code", the kit crate's
-//! `badge::encode`);
+//!   `badge::encode`);
 //! - `files/terms/<digest>/<kit name>`: the terms document itself (the one kept at signing, `termsx`);
 //! - `files/publish.txt`: the publish address pointer (a hint only, may be absent).
 //!
-//! The shape is the glue crate's single-file bundle (`zikaron_glue::container`, kit law §7.1's enumeration);
-//! opened, it is an enumeration handed to the same kit verification (`verify_enumeration`). The grant chain
-//! is taken from the grant code inside, and each hop's bytes must be in the manifest's entry table (both
-//! places must say the same bytes, otherwise refused by name), so the container cannot hold a chain different
-//! from the grant code.
+//! The shape is the glue crate's single-file bundle (`zikaron_glue::container`, kit law §7.1's
+//! enumeration); opened, it is an enumeration handed to the same kit verification (`verify_enumeration`).
+//! The grant chain is taken from the grant code inside, and each hop's bytes must also be in the manifest's
+//! entry table (the two must agree, otherwise it is refused by name), so the container cannot hold a chain
+//! different from its grant code.
 
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
 use std::path::{Path, PathBuf};
 
-/// The grant code and publish pointer files in the container (under `files/`): named once, in the reading the
-/// app and the command line share (`zikaron_glue::grantfile`).
+/// File names of the grant code and the publish pointer inside the container (under `files/`), shared with
+/// the command line (`zikaron_glue::grantfile`).
 pub use zikaron_glue::grantfile::{CODE_FILE, PUBLISH_FILE};
-/// The vault room keeping grant files (under `grants-held/`; mirroring carries the whole vault directory).
+/// Vault subdirectory holding kept grant files (under `grants-held/`; mirroring carries the whole vault).
 pub const KEPT: &str = "files";
 
-/// A grant file's name: `grant-<first ten digits of the id>` (extension given separately). One name, one
-/// home.
+/// A grant file's name stem: `grant-<first ten hex digits of the id>` (the extension is added separately).
 pub fn stem(id: &str) -> String {
     let head: String = id.trim().trim_start_matches("0x").chars().take(10).collect();
     format!("grant-{head}")
@@ -58,10 +57,10 @@ impl Opened {
     }
 }
 
-/// Open a grant file's bytes, by the one reading the app and the command line share
-/// (`zikaron_glue::grantfile::open`). A wrong single-file bundle shape (magic, order, caps) is `GRANT_FILE`;
-/// failed kit verification, a missing grant code, or a chain hop missing from the entry table is
-/// `GRANT_FILE_KIT`; a grant code the kit core refuses is `PAYLOAD_REFUSED`. Returned only when all pass.
+/// Opens a grant file's bytes with the reader shared with the command line (`zikaron_glue::grantfile::open`).
+/// A wrong container shape (magic, order, caps) is `GRANT_FILE`; failed kit verification, a missing grant
+/// code, or a chain hop missing from the entry table is `GRANT_FILE_KIT`; a grant code the kit core refuses
+/// is `PAYLOAD_REFUSED`. Returned only when all pass.
 pub fn open_bytes(bytes: &[u8]) -> Result<Opened, Fault> {
     use zikaron_glue::grantfile::Refused;
     crate::trace::mark(crate::feature::Feature::D6);
@@ -77,8 +76,8 @@ pub fn open_bytes(bytes: &[u8]) -> Result<Opened, Fault> {
     Ok(Opened { hops: o.hops, ledger: o.ledger, terms: o.terms, publish: o.publish, kit_id: zikaron::hexfmt::encode(&o.kit_id), files: o.files })
 }
 
-/// Open a grant file. Check the size first (over the single-file bundle cap is refused without reading it
-/// in).
+/// Opens a grant file. The size is checked first: a file over the single-file bundle cap is refused without
+/// reading it in.
 pub fn open(path: &Path) -> Result<Opened, Fault> {
     let md = std::fs::metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.len() > zikaron_glue::container::MAX_TOTAL {
@@ -88,8 +87,8 @@ pub fn open(path: &Path) -> Result<Opened, Fault> {
     open_bytes(&bytes)
 }
 
-/// Whether this file is a grant file (by its start). Unreadable means not (the reading exit names its own
-/// error).
+/// Whether this file is a grant file, judged by its first bytes. Unreadable means no (the caller that reads
+/// it reports its own error).
 pub fn is_grant_file(path: &Path) -> bool {
     use std::io::Read;
     let mut head = [0u8; 32];
@@ -98,9 +97,9 @@ pub fn is_grant_file(path: &Path) -> bool {
     zikaron_glue::container::is_container(&head[..n])
 }
 
-/// Build a grant file's bytes. The chain from the root; `ledger` is the accompanying issuer ledger (may be
-/// empty); terms documents and publish address may each be absent. Once built it goes to the glue crate's
-/// in-memory self-verification (`pack::enumerate`, returned only on KIT_OK).
+/// Builds a grant file's bytes. `chain` runs from the root; `ledger` is the accompanying issuer ledger (may
+/// be empty); terms documents and publish address may each be absent. The result goes through the glue
+/// crate's in-memory self-verification (`pack::enumerate`, returned only on KIT_OK).
 pub fn build(chain: &[Vec<u8>], ledger: &[Vec<u8>], terms: &[(String, Vec<u8>)], publish: Option<&str>) -> Result<(Vec<u8>, usize), Fault> {
     let code = crate::badgex::payload_text(chain)?;
     let mut entries: Vec<Vec<u8>> = chain.to_vec();
@@ -130,12 +129,12 @@ pub struct Exported {
     pub files: usize,
 }
 
-/// Export a grant file. The chain is cascaded to the root from the vault and this seat's ledger
-/// (`badgex::chain_for`); when this grant is in this seat's ledger, that ledger goes along (the issuer's
-/// ledger); each hop with an issuance record in this home and a kept document carries the document; the
-/// publish address comes from the settings cell. It lands in the folder the person chose (named by
-/// `home::choose`, numbered when the name exists), written only through the glue crate's landing.
-/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+/// Exports a grant file. The chain is followed to the root through the vault and this seat's ledger
+/// (`badgex::chain_for`); when the grant is in this seat's ledger, that ledger (the issuer's) goes along;
+/// each hop with an issuance record and a kept terms document here carries the document; the publish address
+/// comes from settings. The file is written into the chosen folder (named by `home::choose`, numbered if the
+/// name exists) only through the glue crate's landing path. `_pass` is the exit gate's
+/// [`crate::exitgate::Pass`]: this effect cannot be reached without the gate.
 pub fn export(_pass: &crate::exitgate::Pass, home: &Home, id: &str, publish: Option<&str>, folder: &Path) -> Result<Exported, Fault> {
     let pool = crate::badgex::pool(home)?;
     let chain = crate::badgex::chain_for(&pool, id)?;
@@ -159,9 +158,9 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, id: &str, publish: Opt
     Ok(Exported { path: chosen.at.clone(), chosen, hops: chain.len(), terms: terms.len(), ledger: !ledger.is_empty(), files })
 }
 
-/// The path of the copy kept in the vault (named by bundle id, kept once). One name, one home.
+/// Path of the copy kept in the vault (named by bundle id, kept once).
 pub fn kept_path(home: &Home, kit_id: &str) -> Result<PathBuf, Fault> {
-    // Keyed by the names key (`names`): locked, the name does not say the bundle.
+    // Named through the names key (`names`), so the file name does not reveal the bundle.
     let name = crate::names::key()?.name(crate::names::Logical::Kept(kit_id));
     Ok(home.dir(Slot::GrantsHeld).join(KEPT).join(format!("{name}.{}", zikaron_glue::container::EXT)))
 }

@@ -1,17 +1,14 @@
-//! Choosing entries: by seq range or by work digest, plus one closure rule.
+//! Choosing entries for a kit: by seq range, work digest or named ids, plus closure rules.
 //!
-//! A revocation always travels with the grant it revokes. If a chosen entry is a grant and the ledger holds a
-//! revocation pointing at it, that revocation enters the kit whatever range the caller gave.
+//! A revocation always travels with the grant it revokes: if a chosen grant has a revocation in the ledger,
+//! that revocation enters the kit whatever range the caller gave. The sixth grant check (REVOKED) looks for it
+//! in the pile at hand, so leaving it out would make the recipient pass a revoked grant. It is the only
+//! omission that flips a verdict; a missing lineage link instead gives SEQ_GAP, label GAPS and checks PARTIAL
+//! ("not known yet", not "fine").
 //!
-//! This is fixed in the selector because the sixth grant check (REVOKED) looks for that revocation in the
-//! pile at hand. Left out, the recipient's checks would pass a revoked grant. Of all omissions this is the
-//! only one that flips a verdict: a missing lineage link makes the audit report SEQ_GAP, the label drop to
-//! GAPS and the checks fall to PARTIAL, which says "not known yet", not "fine".
-//!
-//! The ledger's spine travels with the kit: a partial kit also carries the genesis entry and every
-//! succession, so the verifier can tell whose ledger it is and which keys' anchors to look for on chain. The
-//! spine is not a record and is not listed among the recipient's records; it only answers "whose entries are
-//! these".
+//! The ledger's spine also travels with the kit: a partial kit carries the genesis entry and every succession,
+//! so the verifier can tell whose ledger it is and which keys' anchors to look for on chain. The spine is not
+//! listed among the recipient's records.
 
 use crate::names::Field;
 use zikaron::entry::{self, Entry};
@@ -26,8 +23,8 @@ pub struct Selection {
     pub to: Option<u64>,
     /// Work digest: keep only entries about this work.
     pub work: Option<String>,
-    /// Named entry ids (`0x` plus 64 lowercase hex): when non-empty, keep only these. Named choices pass the
-    /// closure rule too.
+    /// Named entry ids (`0x` plus 64 lowercase hex): when non-empty, keep only these. The closure rules still
+    /// apply.
     pub ids: Vec<String>,
 }
 
@@ -40,10 +37,10 @@ pub struct Chosen {
     pub spine: Vec<String>,
 }
 
-/// About this work: a history whose `content` is it (the kit law §9.2 reading, the same predicate as the kit
-/// core's depth), or a grant whose `work` is it.
+/// About this work: a history whose `content` is the digest (the kit law §9.2 reading, the same
+/// predicate as the kit core's depth), or a grant whose `work` is it.
 ///
-/// The second half is a product choice, not a law reading: the law does not say which entries belong to a
+/// Including grants is a product choice, not a spec rule: the spec does not say which entries belong to a
 /// work, and a kit with history but no grants is of no use to the other party.
 fn about(e: &Entry, work: &str) -> bool {
     let member = match e.kind {
@@ -54,9 +51,8 @@ fn about(e: &Entry, work: &str) -> bool {
     e.body.member(member.as_str()).and_then(|x| x.as_str()) == Some(work)
 }
 
-/// The closure rule: for each chosen grant, pull in the revocations pointing at it, and name them.
-///
-/// It stands alone because this is the only omission that flips a verdict.
+/// The revocation closure: for each chosen grant, pull in and name the revocations pointing at it (the only
+/// omission that would flip a verdict).
 pub fn pull_revocations(read: &[(usize, Entry)], take: &mut Vec<usize>) -> Vec<String> {
     crate::seam_v2();
     let picked: Vec<String> = read
@@ -80,8 +76,8 @@ pub fn pull_revocations(read: &[(usize, Entry)], take: &mut Vec<usize>) -> Vec<S
     pulled
 }
 
-/// Choose. Bytes that fail §4.3 are never chosen (in a kit they would only be an `invalid` row in the
-/// manifest).
+/// Choose entries. Bytes that fail law §4.3 are never chosen (in a kit they would only be an `invalid`
+/// manifest row).
 pub fn choose(pile: &[Vec<u8>], sel: &Selection) -> Chosen {
     crate::seam_v2();
     let read: Vec<(usize, Entry)> = pile
@@ -126,8 +122,8 @@ pub fn choose(pile: &[Vec<u8>], sel: &Selection) -> Chosen {
     }
 }
 
-/// The spine rule: whatever is chosen brings the ledger's spine (genesis and every succession) along, named.
-/// Nothing chosen pulls nothing (an empty named choice is refused above).
+/// The spine rule: any non-empty choice brings the ledger's spine (genesis and every succession), named. An
+/// empty choice pulls nothing (an empty named choice is refused above).
 pub fn pull_lineage(read: &[(usize, Entry)], take: &mut Vec<usize>) -> Vec<String> {
     crate::seam_v2();
     if take.is_empty() {
@@ -144,11 +140,8 @@ pub fn pull_lineage(read: &[(usize, Entry)], take: &mut Vec<usize>) -> Vec<Strin
     spine
 }
 
-/// Read the pile of a ledger directory through the storage crate's strict read (its bytes are the audit
-/// pile).
-///
-/// Kit output neither writes nor reads the directory directly: what is there, what cannot be accounted for
-/// and what is over the cap are all judged and named by the storage crate.
+/// Read a ledger directory's pile through the storage crate's strict read (its bytes are the audit pile). Kit
+/// output never touches the directory directly: unknown files and size caps are handled by the storage crate.
 pub fn read_ledger(root: &str) -> Result<Vec<Vec<u8>>, zikaron_store::codes::Trouble> {
     crate::seam_v2();
     let dir = zikaron_store::ledger::LedgerDir::open(root)?;

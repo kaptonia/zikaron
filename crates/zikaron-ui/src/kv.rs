@@ -1,5 +1,6 @@
-//! Key-value tables: a 132 key column in the second ink, values in body text (monospace for hashes,
-//! addresses and times), rows 14 apart, columns 20 apart. Long values wrap anywhere.
+//! Key-value tables: a key column in the second ink as wide as the table's widest key (132 to 180; a wider
+//! key wraps), values in body text (monospace for hashes, addresses and times), rows 14 apart, columns 20
+//! apart. Long values wrap.
 
 use crate::mark::{self, Mark};
 use crate::palette::{c, C};
@@ -28,9 +29,16 @@ impl Val {
     }
 }
 
+/// The key column's width for a table whose widest key's words are `widest` wide: those words, at least 132,
+/// at most 180 (same way as the type column of tables).
+pub fn key_width(widest: f32) -> f32 {
+    widest.ceil().clamp(tokens::LABEL_W, tokens::LABEL_MAX_W)
+}
+
 /// A key-value table.
 pub fn kv(ui: &mut egui::Ui, rows: &[(&str, Val)]) {
-    let key_w = tokens::LABEL_W;
+    let widest = rows.iter().map(|(k, _)| ui.painter().layout_no_wrap(k.to_string(), Type::Body.font(), egui::Color32::BLACK).size().x).fold(0.0, f32::max);
+    let key_w = key_width(widest);
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = tokens::KV_ROW_GAP;
         for (k, v) in rows {
@@ -62,7 +70,10 @@ pub fn value(ui: &mut egui::Ui, v: &Val) {
     let room = ui.available_width();
     let wrap = |ui: &mut egui::Ui, s: &str, t: Type, colour: egui::Color32, width: f32| {
         let mut job = egui::text::LayoutJob::single_section(s.to_string(), egui::TextFormat { font_id: t.font(), color: colour, line_height: Some(Type::Body.line()), ..Default::default() });
-        job.wrap = egui::text::TextWrapping { max_width: width.max(1.0), break_anywhere: true, ..Default::default() };
+        // Break where the words allow (`break_anywhere: false`): at a space between English words, between any
+        // two Chinese characters, then at a dash or punctuation; only a single word longer than the line is cut
+        // inside itself.
+        job.wrap = egui::text::TextWrapping { max_width: width.max(1.0), break_anywhere: false, ..Default::default() };
         ui.label(job);
     };
     match v {
@@ -82,5 +93,18 @@ pub fn value(ui: &mut egui::Ui, v: &Val) {
                 wrap(ui, s, Type::Body, c(C::Ink), room - tokens::MARK - tokens::S2);
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The key column takes its widest key's words, at least 132, at most 180.
+    #[test]
+    fn the_key_column_fits_its_widest_key_between_its_bounds() {
+        assert_eq!(key_width(60.0), tokens::LABEL_W, "short keys: the floor");
+        assert_eq!(key_width(140.3), 141.0, "a longer key widens it, to whole points");
+        assert_eq!(key_width(400.0), tokens::LABEL_MAX_W, "the ceiling; the key wraps");
     }
 }

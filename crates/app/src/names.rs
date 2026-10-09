@@ -1,13 +1,12 @@
-//! Names on disk: the one place a name that would say something on the chain is made.
+//! On-disk names for anything that could be linked to on-chain data.
 //!
-//! Locked, nothing on this machine may lead to an identity on the chain: not a file's bytes (sealed, `local`)
-//! and not its name. Every name built from an address, an identity id, an entry id, a grant id or a terms
-//! digest is keyed here by the names key NK (`keybox::name_key`, derived from the master key): the same master
-//! key always gives the same name for the same thing (a deleted identity imported again finds its two homes),
-//! and a new master key renames everything. The names that stay plain are a closed table of fixed room and
-//! file names; anything not in it goes through here.
+//! While locked, nothing on this machine may lead to an on-chain identity: not file contents (sealed, see
+//! `local`) and not file names. Every name derived from an address, identity id, entry id, grant id or terms
+//! digest is an HMAC under the names key NK (`keybox::name_key`, derived from the master key). The same master
+//! key always gives the same name for the same thing (so a deleted identity imported again finds its homes),
+//! and a new master key renames everything. Only fixed directory and file names stay plain.
 
-/// What a name is made from. Closed: a new kind of named thing is added here, never spelled at its call site.
+/// What a name is derived from. New kinds of named things are added here, never built at the call site.
 #[derive(Clone, Copy, Debug)]
 pub enum Logical<'a> {
     /// An identity's home directory (by identity id): `<place>/<name>/<seat>`.
@@ -44,14 +43,14 @@ impl Logical<'_> {
     fn value(&self) -> String {
         let v = match self {
             Logical::Home(x) | Logical::Entry(x) | Logical::Held(x) | Logical::Kept(x) | Logical::TermsDir(x) | Logical::TermsDoc(x) | Logical::TermsRecord(x) => x.trim().trim_start_matches("0x").to_ascii_lowercase(),
-            // An account name is taken as it is (it is not an id).
+            // An account name is used as is (it is not an id).
             Logical::Slot(a) => return a.to_string(),
         };
         v
     }
 
-    /// How many hex digits the name keeps: a home keeps the shape of an address (40), everything else the shape
-    /// of an entry id (64), so the store's and the walkers' shape checks still hold.
+    /// How many hex digits the name keeps: 40 for a home (address-shaped), 64 otherwise (entry-id-shaped), so
+    /// existing shape checks in the store and directory walkers still hold.
     fn width(&self) -> usize {
         match self {
             Logical::Home(_) => 40,
@@ -60,7 +59,7 @@ impl Logical<'_> {
     }
 }
 
-/// The names key in hand, wiped when dropped.
+/// The names key, wiped when dropped.
 pub struct NameKey([u8; 32]);
 
 impl NameKey {
@@ -68,7 +67,8 @@ impl NameKey {
         NameKey(k)
     }
 
-    /// The name on disk of one logical thing under this key (lowercase hex).
+    /// The on-disk name of one logical item under this key: truncated `HMAC-SHA256(NK, tag ‖ 0 ‖ value)`, as
+    /// lowercase hex.
     pub fn name(&self, l: Logical) -> String {
         let mut msg = Vec::with_capacity(64);
         msg.extend_from_slice(l.tag());
@@ -88,13 +88,13 @@ impl Drop for NameKey {
     }
 }
 
-/// The names key of the vault now (refused with `LOCKED` while locked).
+/// The vault's current names key (`LOCKED` while locked).
 pub fn key() -> Result<NameKey, crate::fault::Fault> {
     crate::keybox::name_key()
 }
 
-/// Whether a directory name has the shape of a home name (40 lowercase hex digits): the layout rule, used where
-/// the register cannot be read (a restore from the lock card).
+/// Whether a directory name has the shape of a home name (40 hex digits), for when the register cannot be
+/// read (a restore from the lock screen).
 pub fn is_home_name(n: &str) -> bool {
     n.len() == 40 && n.bytes().all(|b| b.is_ascii_hexdigit())
 }

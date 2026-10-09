@@ -1,36 +1,36 @@
-//! The retraction convention: a reading convention under the open entry types of law §6.9.
+//! The retraction convention, built on the open entry types of law §6.9.
 //!
-//! The app and the command surface both write retractions, so both must write the same shape and read it the
-//! same way. The convention lives here only: type literal, body keys, body shape, reading and writing rule.
+//! The app and the CLI both write retractions, so they must write and read the same shape. The whole convention
+//! lives here: type literal, body keys, body shape, and the reading and writing rules.
 //!
 //! - `entryType` = [`ENTRY_TYPE`];
 //! - body [`SUBJECT`] (hex32, the `entry_id` of a `history` entry in this ledger, required);
 //! - body [`NOTE_MD`] (prose, optional).
 //!
-//! Reading goes by ascending seq. A well-shaped retraction pointing at an earlier `history` in this ledger
-//! that was not deleted before marks it deleted. A repeated deletion, a non-history subject, a subject not in
-//! this ledger or a malformed body reads as invalid with its reason ([`Invalid`]). Reading never rejects a
-//! ledger and adds no error to law §4.3.
+//! Reading goes by ascending seq. A well-shaped retraction pointing at an earlier, not yet deleted `history` in
+//! this ledger marks it deleted. A repeated deletion, a non-history subject, a subject not in this ledger or a
+//! malformed body reads as invalid with its reason ([`Invalid`]). Reading never rejects a ledger and adds no
+//! error to law §4.3.
 //!
-//! Before writing a retraction, ask [`may_retract`]: the subject is hex32, is a `history` on this ledger's
-//! lineage, and is not deleted yet. Otherwise it is refused by name ([`Invalid::token`]), so neither writer
-//! ever writes a retraction that reads invalid.
+//! Before writing, ask [`may_retract`]: the subject must be hex32, a `history` on this ledger's lineage, and not
+//! yet deleted; otherwise it is refused by name ([`Invalid::token`]), so no writer produces an invalid
+//! retraction.
 //!
-//! No law decision is made here: the core verifies the entry under law §4, the audit lists it under
-//! `UNKNOWN_TYPE`, and the label does not change because of it.
+//! This adds nothing to the spec: the core verifies the entry under law §4, the audit lists it under
+//! `UNKNOWN_TYPE`, and the ledger's label is unaffected.
 
 use std::collections::BTreeMap;
 use zikaron::entry::Entry;
 use zikaron::json::Value;
 use zikaron::tokens::EntryType;
 
-/// The convention's type literal, defined once.
+/// The convention's type literal.
 pub const ENTRY_TYPE: &str = "retraction";
 
 /// Body key naming the retracted entry.
 pub const SUBJECT: &str = "subject";
 
-/// Body key of the optional note (the same name as the §6.8 annotation body).
+/// Body key of the optional note (the same name as in the law §6.8 annotation body).
 pub const NOTE_MD: &str = "note_md";
 
 /// Build a retraction body. An empty `note_md` leaves the field out (it is optional).
@@ -40,7 +40,6 @@ pub fn body(subject: &str, note_md: &str) -> Value {
     if !note.is_empty() {
         m.push((NOTE_MD.to_string(), Value::Str(note.to_string())));
     }
-    // Member order is set by the core's canonicalizer.
     Value::Obj(m)
 }
 
@@ -73,7 +72,7 @@ pub enum Invalid {
 }
 
 impl Invalid {
-    /// The token given on refusal, defined once; the command surface passes it on unchanged.
+    /// The refusal token; the CLI passes it on unchanged.
     pub fn token(self) -> &'static str {
         match self {
             Invalid::Shape => "E_RETRACT_SHAPE",
@@ -86,13 +85,13 @@ impl Invalid {
     pub const ALL: [Invalid; 4] = [Invalid::Shape, Invalid::NotInLedger, Invalid::NotAWork, Invalid::Repeated];
 }
 
-/// How an entry of a ledger looks to the convention; reading and writing rule use only these fields.
+/// The fields of a ledger entry the convention uses; the reading and writing rules use nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     /// Entry id (`0x` plus 64 hex).
     pub id: String,
     pub seq: u64,
-    /// The type read through the law §6 table by the core; unlisted types are `Other`.
+    /// The type as classified by the core's law §6 table; unlisted types are `Other`.
     pub kind: EntryType,
     /// The type literal on the wire, unchanged.
     pub raw_type: String,
@@ -181,8 +180,8 @@ pub fn read(lines: &[Line]) -> Reading {
 }
 
 /// The writing rule: whether this ledger can take a retraction of `subject` now. Returns the work record's id
-/// (as spelled in the ledger) or the reason. The new entry follows the ledger head, so "points at an earlier
-/// entry" holds and a retraction that passes this rule always reads as valid.
+/// (as spelled in the ledger) or the reason. The new entry follows the ledger head, so it points at an earlier
+/// entry and a retraction that passes this rule always reads as valid.
 pub fn may_retract(lines: &[Line], subject: &str) -> Result<String, Invalid> {
     let s = subject.trim();
     if !zikaron::hexfmt::is_hex32(s) {
@@ -220,8 +219,8 @@ mod tests {
         }
     }
 
-    /// Each of the four refusals refuses; a valid subject returns the ledger's spelling, and a retraction
-    /// that passes reads as valid.
+    /// Each of the four refusals fires; a valid subject returns the ledger's spelling, and the resulting
+    /// retraction reads as valid.
     #[test]
     fn the_production_law_refuses_every_shape_the_reading_would_call_invalid() {
         let mut lines = vec![

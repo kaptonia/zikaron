@@ -1,63 +1,49 @@
-//! Grant check page. A tab that needs no identity, with a matching CLI: take a payload or a grant file,
-//! show the six checks each as a three-state light plus an overall verdict; multiple hops get one row of
-//! lights per hop and one verdict for the chain. PARTIAL is a state of its own, and the basis is shown with
-//! the verdict.
+//! Grant check page. Needs no identity and mirrors the CLI: takes a payload or a grant file and shows the
+//! six checks as three-state lights plus an overall verdict. A multi-hop chain gets one row of lights per hop
+//! and one verdict for the chain. PARTIAL is its own state, and the basis is shown with the verdict.
 //!
-//! ─── Judged in one place only ───
+//! Judging lives only in the kit crate (kit law §10): `zikaron_kit::check::grant_check` for the six checks
+//! and `zikaron_kit::check::chain_check` for chains, the same code as the CLI's `check-grant` /
+//! `chain-check` and the vault re-check. The same bytes, audit input and `now` give byte-identical result
+//! objects on the page and in the CLI. This module only lays out the kit's result object and never folds
+//! PARTIAL into green or red.
 //!
-//! The six checks belong to `zikaron_kit::check::grant_check` and the chain check to
-//! `zikaron_kit::check::chain_check` (kit law §10), the same implementation as the CLI's `check-grant` /
-//! `chain-check` and the vault re-check: the same bytes, the same audit input and the same `now` give
-//! byte-identical result objects on the tab and in the CLI. This layer judges no check; it only lays the kit
-//! crate's result object out for the face. PARTIAL is the kit crate's own state, and nothing here folds it
-//! into green or red.
+//! No permissions: it reads no keychain, writes no archive and sends no transaction. Input is read-only
+//! (payload bytes, grant files, ledger directories), the chain is read-only (anchor scans agreed across
+//! endpoints, single sources flagged), and verdicts live only in memory. It works without a home: endpoints
+//! and basis are entered on the page and not saved to settings.
 //!
-//! ─── Zero permissions ───
+//! Absence is not guilt: without a ledger directory only checks one and five can run; the others answer
+//! UNKNOWN and the kit judges PARTIAL. A ledger with no genesis cannot build the audit input
+//! (`auditx::root_of` answers NO_GENESIS), so that hop says "no input" and stays undecided. An unreachable
+//! chain is reported in the basis column and does not turn the verdict red.
 //!
-//! This file reads no keychain, writes no archive and sends no transaction: input is read-only (payload
-//! bytes, grant files, ledger directories), the chain is read-only (anchor scans through
-//! `auditx::scan_agreed`, converged by the endpoint rule, single sources flagged), and verdicts live only in
-//! memory. It works without a home: endpoints and basis are filled in on the page and not saved to settings.
-//!
-//! ─── Absence is not guilt ───
-//!
-//! Without a ledger directory only checks one and five can be done; the others answer UNKNOWN and the kit
-//! crate judges PARTIAL. A ledger with no genesis cannot build the audit input (`auditx::root_of` answers
-//! NO_GENESIS, read the same way as the record verifier); that hop says "no input" and the kit crate still reads
-//! it as undecided. An unreachable chain says so in the basis column, and the verdict does not turn red for
-//! it.
-//!
-//! ─── QR entry ───
-//!
-//! The badge packer encodes the payload text into a QR code; scanning it yields exactly that
-//! `zikaron-grant:` text, and pasting it here takes the payload form. Entry and exit match: the same text,
-//! the same `badge::decode`.
+//! QR input: the badge packer encodes the payload text as a QR code; scanning it yields the same
+//! `zikaron-grant:` text, which can be pasted here and is decoded by the same `badge::decode`.
 
 use crate::fault::{Fault, Known};
 use std::path::PathBuf;
 use zikaron::json::Value;
 use zikaron_kit::tokens::Key;
 
-/// Which form the input is: the same closed table as the vault (`payloadx::Form`).
+/// Input form; the same closed set as the vault (`payloadx::Form`).
 pub use crate::payloadx::Form;
 
-/// The hops taken in, from the root (the payload's segment order is the chain order, as the kit crate reads
-/// it).
+/// The parsed hops, from the root (the payload's segment order is the chain order, as the kit reads it).
 #[derive(Clone, Debug)]
 pub struct Hops {
     pub form: Form,
     pub hops: Vec<Vec<u8>>,
-    /// When the input is a grant file: its path and the opened bundle (its ledger is supply at the "record
-    /// bundle" level, its pointer at the "publish address" level).
+    /// For a grant file: its path and the opened bundle (its ledger supplies the "record bundle" level, its
+    /// pointer the "publish address" level).
     pub file: Option<(PathBuf, crate::grantfilex::Opened)>,
 }
 
-/// Take in. The reading lives in `payloadx` only (shared with the vault): payload text and payload files
-/// are decoded by the kit crate; grant files are opened and verified; entry files pass the core's thirteen
-/// steps and must be a grant. Empty is refused by name.
+/// Parses the input via `payloadx` (shared with the vault): payload text and files are decoded by the kit
+/// crate, grant files are opened and verified, entry files must pass the core entry check and be a grant.
+/// Empty input is refused by name.
 pub fn hops_of(typed: &str) -> Result<Hops, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::P1);
     let taken = crate::payloadx::take_full(typed)?;
     let (form, hops, file) = (taken.form, taken.hops, taken.file);
@@ -78,12 +64,12 @@ pub enum InputFrom {
     NoLedger,
     /// A ledger was given and the input was built.
     Ledger { entries: usize },
-    /// A ledger was given and the input could not be built, by name (NO_GENESIS and others, as
-    /// `auditx::root_of` reads them).
+    /// A ledger was given but the input could not be built; carries the refusal (NO_GENESIS and others,
+    /// from `auditx::root_of`).
     Refused(String),
 }
 
-/// One hop's reading. Every cell is read from the kit crate's result object; this layer does not re-judge.
+/// One hop's reading, taken from the kit crate's result object; nothing is re-judged here.
 #[derive(Clone, Debug)]
 pub struct HopRead {
     pub id: String,
@@ -100,7 +86,7 @@ pub struct HopRead {
     pub input: InputFrom,
     /// The terms digest the grant records (hex32).
     pub terms: String,
-    /// First-anchor block time of this grant in the issuer's ledger, from this check's fragment.
+    /// Block time of this grant's first anchor in the issuer's ledger, from this check's fragment.
     pub anchored_at: Option<u64>,
 }
 
@@ -174,22 +160,22 @@ fn hop_read(bytes: &[u8], checked: &Value, input: InputFrom) -> HopRead {
     }
 }
 
-/// The output of one judgment.
+/// The result of one judgment.
 #[derive(Clone, Debug)]
 pub struct Judged {
     pub hops: Vec<HopRead>,
     /// Only with multiple hops.
     pub chain: Option<ChainRead>,
-    /// Overall verdict: one hop gives that hop's verdict, several give the chain check's. GREEN / PARTIAL /
-    /// FAIL, the kit crate's three states unchanged.
+    /// Overall verdict: the hop's verdict for one hop, the chain check's for several (GREEN / PARTIAL /
+    /// FAIL, unchanged from the kit).
     pub verdict: String,
-    /// The kit crate's result object, unchanged: kit law §10.3's object for one hop, §10.5's for several.
-    /// This is what the CLI prints.
+    /// The kit crate's result object, unchanged (kit law §10.3 for one hop, §10.5 for several); this is what
+    /// the CLI prints.
     pub value: Value,
 }
 
-/// Judge. Each hop has an optional audit input (the same shape as the CLI's `--hop <file>=<input file>`); one
-/// hop goes to `grant_check`, several to `chain_check`. This layer judges nothing itself.
+/// Judges the hops. Each hop has an optional audit input (like the CLI's `--hop <file>=<input file>`); one
+/// hop goes to `grant_check`, several to `chain_check`. Nothing is judged here.
 pub fn judge(hops: &[Vec<u8>], inputs: &[Option<Value>], froms: &[InputFrom], now: Option<u64>) -> Judged {
     crate::trace::mark(crate::feature::Feature::P1);
     let from_of = |i: usize| froms.get(i).cloned().unwrap_or(InputFrom::NoLedger);
@@ -237,9 +223,9 @@ pub fn judge(hops: &[Vec<u8>], inputs: &[Option<Value>], froms: &[InputFrom], no
     Judged { verdict: chain.verdict.clone(), hops: reads, chain: Some(chain), value }
 }
 
-/// Verdict to color. Closed, and PARTIAL is a state of its own: green only for GREEN, red only for FAIL,
-/// yellow for PARTIAL, gray for anything else (empty, unrecognized). The face's lights are translated only
-/// here, so "partial pass shown as green" cannot be written.
+/// Verdict color. PARTIAL keeps its own color: green only for GREEN, red only for FAIL, amber for PARTIAL,
+/// grey for anything else (empty, unrecognized). The page's lights are mapped only here, so a partial pass
+/// can never show as green.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
     Green,
@@ -273,7 +259,7 @@ pub fn tone(verdict: &str) -> Tone {
     }
 }
 
-/// Color of a check's three states: PASS green, FAIL red, UNKNOWN gray (no yellow: a single check has no
+/// Color of a check's three states: PASS green, FAIL red, UNKNOWN grey (no amber: a single check has no
 /// "partial").
 pub fn light_tone(state: &str) -> Tone {
     use zikaron_kit::tokens::State;
@@ -286,7 +272,7 @@ pub fn light_tone(state: &str) -> Tone {
     }
 }
 
-/// Where `now` comes from. Closed (only chain time and an injected now).
+/// Where `now` came from: injected, chain time, or absent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NowFrom {
     Injected,
@@ -304,7 +290,7 @@ impl NowFrom {
     }
 }
 
-/// The basis column: which basis the verdict was made against. Built by the face and shown with the verdict.
+/// The basis the verdict was judged against, shown with the verdict.
 #[derive(Clone, Debug)]
 pub struct Basis {
     pub chain: u64,
@@ -314,28 +300,28 @@ pub struct Basis {
     pub senders: Vec<String>,
     /// How many endpoints were asked.
     pub asked: usize,
-    /// Single-source answer (given by the endpoint rule).
+    /// The answer came from a single source (flagged by the endpoint rule).
     pub single_source: bool,
     pub unanswered: Vec<String>,
     /// How many anchor records the fragment scan found.
     pub anchors: usize,
 }
 
-/// One check's reading. Every cell is what the background pass brought back.
+/// One check's full result, as brought back by the background pass.
 #[derive(Clone, Debug)]
 pub struct Checked {
     pub form: Form,
     pub judged: Judged,
-    /// Basis: the one scanned when the scan succeeded; otherwise the evidence words of the named refusal (not
-    /// configured, unreachable, rejected by the law check; the bytes are unchanged).
+    /// The scanned basis on success; otherwise the refusal's evidence text (not configured, unreachable,
+    /// rejected by the basis check).
     pub basis: Result<Basis, String>,
-    /// The refusal itself when the scan failed (a gray light's gap is split by its code: no node configured
-    /// and chain unread are different things).
+    /// The refusal when the scan failed; its code separates the grey-light gaps (no node configured versus
+    /// chain not read).
     pub basis_why: Option<Fault>,
     /// Files in the issuer's ledger location that could not be read as entries, each named.
     pub refused: Vec<crate::verifyx::Rejected>,
-    /// Per hop: which level the ledger came from and where, and which levels failed on the way (`supplyx`, in
-    /// fixed order).
+    /// Per hop: which supply level the ledger came from and where, and which levels failed before it
+    /// (`supplyx`, fixed order).
     pub found: Vec<Source>,
     pub now: Option<u64>,
     pub now_from: NowFrom,
@@ -426,9 +412,8 @@ impl Checked {
     }
 }
 
-/// This hop's ledger source is settled: supply came from this machine and all six lights are green. Then the
-/// "change…" cell is not offered (there is no gap to fill, and opening it would only show a permanently empty
-/// input).
+/// True when this hop's ledger came from this machine and all six lights are green; the "change…" source
+/// cell is then not offered, since there is no gap to fill.
 pub fn source_settled(c: &Checked, hop: usize) -> bool {
     let local = matches!(c.found.get(hop).and_then(|f| f.from.as_ref()), Some((crate::supplyx::Level::Local, _)));
     let green = c.judged.hops.get(hop).map(|h| !h.lights.is_empty() && h.lights.iter().all(|(_, s)| light_tone(s) == Tone::Green)).unwrap_or(false);
@@ -438,20 +423,19 @@ pub fn source_settled(c: &Checked, hop: usize) -> bool {
 /// One hop's ledger source.
 #[derive(Clone, Debug, Default)]
 pub struct Source {
-    /// Which level supply came from and where; `None` when none of the four levels has it (the face says
+    /// Which level supplied the ledger and where; `None` when none of the four levels has it (shown as
     /// "ledger source: none").
     pub from: Option<(crate::supplyx::Level, String)>,
     /// The publish address level: how many files were fetched by the manifest.
     pub files: Option<usize>,
     /// Which levels failed on the way (level, named refusal).
     pub misses: Vec<(crate::supplyx::Level, Fault)>,
-    /// The ids of the entries that level supplied (read port: what came back, entry by entry; empty with no
-    /// supply).
+    /// Ids of the entries that level supplied; empty with no supply.
     pub entry_ids: Vec<[u8; 32]>,
 }
 
-/// What a gray light is missing. Closed: the face's action sentence comes from it (what is missing and where
-/// to get it), keeping gray apart from red.
+/// What a grey light is missing. The page's action sentence (what is missing and where to get it) comes
+/// from it, keeping grey distinct from red.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Gap {
     /// None of the four levels has the issuer's ledger.
@@ -462,17 +446,17 @@ pub enum Gap {
     NoNode,
     /// Configured, but this pass could not read the chain, with the refusal's words.
     ChainUnread(String),
-    /// A ledger exists and every network was read, but this one is not yet anchored: verify again in a few
-    /// minutes. With a network left out this pass it is `ChainUnread` instead, naming the networks not read:
-    /// the anchor may be on one of them.
+    /// A ledger exists and every network was read, but the grant is not anchored yet: verify again in a few
+    /// minutes. If a network was skipped this pass it is `ChainUnread` instead, naming the skipped networks,
+    /// since the anchor may be there.
     NotYetAnchored,
-    /// The chain's current time could not be read (for the window check).
+    /// The chain's current time could not be read (needed for the validity-window check).
     NoTime,
 }
 
-/// A light's gap. Answers only for the UNKNOWN state, from four things in the result object (where supply
-/// came from, whether the basis was built, unreadable files, where the time came from), without guessing.
-/// BAD_SIG always has an answer and is not here.
+/// The gap behind an UNKNOWN light, derived without guessing from the result (supply source, whether the
+/// basis was built, unreadable files, time source). `None` for any other state. BAD_SIG always has an
+/// answer and is not covered.
 pub fn gap(x: &Checked, hop: usize, token: &str, state: &str) -> Option<Gap> {
     use zikaron_kit::tokens::{Check as C, State};
     if state != State::Unknown.as_str() {
@@ -523,13 +507,12 @@ fn anchors_in(fragment: &Value) -> usize {
     }
 }
 
-/// The whole check. This runs on a background thread: fetch supply, scan the chain, judge.
+/// The whole check, run on a background thread: fetch supply, scan the chain, judge.
 ///
-/// With `ground` not configured the basis column says so by name and the kit crate reads the verdict as
-/// undecided; an empty `eps` likewise. Each hop's ledger is resolved level by level (`supplyx::find`: this
-/// machine, vault, record bundle, publish address, in fixed order) and assembled with `auditx::input_of`,
-/// refused by name when it cannot be; the fragment is the one this pass scanned (shared by all hops), empty
-/// when the scan fails.
+/// Without `ground` configured, or with empty `eps`, the basis column names the refusal and the kit reads
+/// the verdict as undecided. Each hop's ledger is resolved level by level (`supplyx::find`: this machine,
+/// vault, record bundle, publish address) and assembled by `auditx::input_of`, refused by name when it
+/// cannot be. All hops share the fragment scanned in this pass; it is empty when the scan fails.
 pub fn run(
     hops: Hops,
     mut shelf: crate::supplyx::Shelf,
@@ -538,13 +521,11 @@ pub fn run(
     injected: Option<u64>,
     chain: Option<u64>,
 ) -> Checked {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, the
-    // CLI) are traced too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::P1);
-    // now: an injected one first; otherwise ask the chain; with neither, absent. Chain time needs only a
-    // chain id: ask even when the basis cannot be built (no endpoints). The caller gives the chain id (it
-    // already worked it out from endpoints and settings, in `action::check_payload`); when the basis is
-    // built, its id wins; only when neither has one is there none.
+    // now: injected first, else chain time, else absent. Chain time needs only a chain id, so it is asked
+    // even when the basis cannot be built. The basis's chain id wins over the one the caller derived from
+    // endpoints and settings (`action::check_payload`).
     let chain_id: Option<u64> = ground.as_ref().ok().map(|g| g.chain).or(chain);
     let (now, now_from) = match injected {
         Some(n) => (Some(n), NowFrom::Injected),
@@ -553,8 +534,7 @@ pub fn run(
             None => (None, NowFrom::Absent),
         },
     };
-    // The input is a grant file: its ledger is the "record bundle" level, its pointer the "publish address"
-    // level.
+    // A grant file's ledger is the "record bundle" level and its pointer the "publish address" level.
     if let Some((p, o)) = hops.file.as_ref() {
         if o.carries_ledger() {
             shelf.carried = Some((p.display().to_string(), o.ledger.clone()));
@@ -584,9 +564,9 @@ pub fn run(
         }
         froms.push(InputFrom::NoLedger);
     }
-    // Basis: the senders are the union of every hop's ledger lineage (sorted and deduplicated, one way to
-    // assemble a scan). The refusal's evidence keeps its two forms: not-configured and law-check refusals use
-    // `said`, chain queries and scans use `evidence` (bytes frozen).
+    // Basis senders: the union of every hop's ledger lineage and each hop's author, sorted and deduplicated.
+    // Refusal evidence keeps two forms: configuration and validation refusals use `said`, chain queries and
+    // scans use `evidence`.
     let basis: Result<(Basis, Value, Vec<crate::widex::Missed>), (Fault, bool)> = (|| {
         let mut senders: Vec<String> = Vec::new();
         for p in piles.iter().flatten() {
@@ -600,12 +580,11 @@ pub fn run(
         senders.sort();
         senders.dedup();
         if !shelf.reads.is_empty() {
-            // Across networks, as every path that reads someone else's material (`widex::scan`, one rule): the
-            // main network, when configured, is one window that fails by name like any other chain (no node,
-            // no head), and every read-only network is read on its own, each chain to agreement.
-            // The main network the page names: not configured (no registry anywhere, no chain id from any node or
-            // setting) is no window at all, as on the verify page; a cell typed wrong is refused by name as before,
-            // never read as "not configured".
+            // Read across networks the same way as every path that reads someone else's material
+            // (`widex::scan`): the main network, if configured, is one window that fails by name like any
+            // other chain, and every read-only network is read separately, each to agreement. An unconfigured
+            // main network (no registry, no chain id anywhere) is no window at all, as on the verify page; a
+            // mistyped setting is refused by name, never treated as unconfigured.
             let main = match &ground {
                 Ok(g) => Some(g),
                 Err(f) if f.which() == Some(Known::NoRegistry) || (f.which() == Some(Known::NoChainId) && f.tail().is_empty()) => None,
@@ -651,7 +630,7 @@ pub fn run(
         g.to_block = head.max(g.from_block);
         g.senders = senders;
         crate::task::stage_at(crate::task::Kind::Check, 1);
-        // Zero permissions: this page touches no local file, so it scans without the record of checked facts.
+        // No permissions: this page touches no local file, so it scans without the checked-facts cache.
         match crate::auditx::scan_agreed_with(&eps, &g, crate::auditx::Facts::Bare).map_err(|f| (f, true))? {
             crate::auditx::Scan::Basis(a) => Ok((
                 Basis {
@@ -675,9 +654,9 @@ pub fn run(
         Ok((b, f, m)) => (Ok(b), None, f, m),
         Err((f, long)) => (Err(if long { f.evidence() } else { f.said().to_string() }), Some(f), crate::auditx::empty_fragment(), Vec::new()),
     };
-    // A network left out this pass joins the judge's basis as a window with no registry: the kit core's own
-    // covering rule then finds the basis does not cover, and the grant is not called unanchored for want of a
-    // chain not read. With nothing missed the fragment is the one scanned, byte for byte.
+    // A network skipped this pass joins the basis as a window with no registry, so the kit's coverage rule
+    // sees the basis does not cover it and the grant is not called unanchored for want of an unread chain.
+    // With nothing missed the fragment is unchanged.
     let senders = basis.as_ref().map(|b| b.senders.clone()).unwrap_or_default();
     let fragment = crate::widex::with_unread_windows(&fragment, &missed, &senders);
     // Input, per hop.

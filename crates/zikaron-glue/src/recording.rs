@@ -1,6 +1,6 @@
-//! The record convention: how a `history` entry's `content` and `mode` are written for bytes (law §6.2 asks
-//! for both and leaves their meaning to the writer). One home for the app's anchoring desk and the command
-//! line's `history --file`: the same file gives the same two members either way.
+//! The recording convention: how a `history` entry's `content` and `mode` are filled for bytes (`zikaron/1`
+//! §6.2 requires both and leaves their meaning to the writer). Shared by the app and the CLI's `history --file`,
+//! so the same file gives the same two members either way.
 //!
 //! `mark` is always [`FAMILY`]; `toolchain` is the sha256 of that literal's UTF-8 bytes. The toolchain names the
 //! convention (which bytes are hashed, by which algorithm), not the program that hashed them.

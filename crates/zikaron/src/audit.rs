@@ -709,9 +709,9 @@ pub struct Outcome {
     pub ledger: Vec<Entry>,
     /// Report findings flattened by name and entry (kit law §10.2 looks up AUTHORITY_MISMATCH per entry).
     pub findings: Vec<FindingRow>,
-    /// Anchor records ruled counted after trimming (anchoring and bounds of kit law §8.2).
+    /// Anchor records counted after trimming (anchoring and bounds of kit law §8.2).
     pub counted: Vec<CountedAnchor>,
-    /// Anchor records ruled UNPROVEN after trimming (check 4 of kit law §10.2).
+    /// Anchor records judged UNPROVEN after trimming (check 4 of kit law §10.2).
     pub unproven: Vec<CountedAnchor>,
     /// Whole-set lineage of law §7.4 (coverage in check 4 of kit law §10.2).
     pub lineage: Vec<String>,

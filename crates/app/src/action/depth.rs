@@ -7,9 +7,8 @@ pub(super) fn read_depth(shell: &mut Shell, work: &str) -> Result<Spawned, crate
         .as_ref()
         .map(|h| h.root().to_path_buf())
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
-    // With an online audit done, use its fragment (depth is relative to the declared basis); otherwise take
-    // the offline empty basis, and the reading carries its own label, so "relative to which records" is
-    // visible.
+    // With an online audit done, use its fragment (depth is relative to the declared basis); otherwise use the
+    // empty offline basis. The reading is labelled with its basis either way.
     let fragment = match shell.audit.as_ref() {
         Some(a) => a.fragment.clone(),
         None => crate::auditx::empty_fragment(),

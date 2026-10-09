@@ -1,14 +1,21 @@
-//! `zikaron-pack`: the packaging pieces from a script.
+//! `zikaron-pack`: the packaging helpers, for use from scripts.
 //!
 //! - `notices --target <triple> --root <package>... [--with <file>]... --out <file>`: the third-party notices.
 //! - `hfs-owners <image> --epoch <seconds>`: owners and dates in the HFS+ catalog of a read/write image made
 //!   with no partition map (the volume starts at the image's first byte).
-//! - `dmg-names <image>`: the partition names of a disk image in one neutral form.
-//! - `elf-comment <file>...`: zero the toolchain words of each ELF file's `.comment`.
+//! - `dmg-names <image>`: rewrite a disk image's partition names to one neutral form.
+//! - `elf-comment <file>...`: zero the toolchain strings in each ELF file's `.comment`.
 //! - `windows --out <dir> [--target <triple>]`: build the Windows package and lay it out under `<dir>` (the
 //!   target defaults to the package's own, `x86_64-pc-windows-msvc`).
+//! - `appimage-runtime <file> [--arch <arch>]`: whether the file is the AppImage runtime pinned for that
+//!   architecture (`runtime`; x86_64 when none is named).
+//! - `rustflags [--target-dir <dir>]`: the compiler flags for a release build, in cargo's encoded form
+//!   (`CARGO_ENCODED_RUSTFLAGS`): flags already set in the environment, then the path remappings that keep this
+//!   machine's paths out of the binaries (`windows::remaps`, the single table every packaging script uses).
+//! - `no-paths <file>...`: check that no built file contains a path from this machine (`paths`).
 //!
-//! Each verb says what it did on one line and exits 0, or names what failed and exits 1.
+//! Each verb prints one line describing what it did and exits 0 (for `rustflags` the line is the flags), or
+//! names what failed and exits 1.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -104,6 +111,40 @@ fn run(args: &[String]) -> Result<String, String> {
             let at = zikaron_pack::windows::package(&root, &target, &out)?;
             Ok(format!("windows: laid out {}", at.display()))
         }
-        _ => Err("usage: zikaron-pack notices|hfs-owners|dmg-names|elf-comment|windows ...".into()),
+        Some("appimage-runtime") => {
+            let (f, arch) = match &args[1..] {
+                [f] => (f, "x86_64"),
+                [f, flag, a] if flag == "--arch" => (f, a.as_str()),
+                _ => return Err("usage: appimage-runtime <file> [--arch <arch>]".into()),
+            };
+            let digest = zikaron_pack::runtime::check_for(arch, &read(f)?).map_err(|e| format!("{f}: {e}"))?;
+            Ok(format!("appimage-runtime: {f} is type2-runtime {} for {arch} (sha256 {digest})", zikaron_pack::runtime::COMMIT))
+        }
+        Some("rustflags") => {
+            let root = zikaron_pack::windows::plain(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+            let target_dir = match &args[1..] {
+                [] => std::env::var_os("CARGO_TARGET_DIR").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| root.join("target")),
+                [flag, d] if flag == "--target-dir" => PathBuf::from(d),
+                _ => return Err("usage: rustflags [--target-dir <dir>]".into()),
+            };
+            // The line is just the flags, so scripts can use it as is.
+            Ok(zikaron_pack::windows::encoded_flags(&root, &target_dir))
+        }
+        Some("no-paths") if args.len() > 1 => {
+            let cwd = std::env::current_dir().ok().map(|p| p.display().to_string());
+            let needles = zikaron_pack::paths::needles(|k| std::env::var(k).ok(), cwd);
+            let mut hits = Vec::new();
+            for f in &args[1..] {
+                for (path, at, form) in zikaron_pack::paths::found(&read(f)?, &needles) {
+                    hits.push(format!("{f}: {form} {path:?} at byte {at}"));
+                }
+            }
+            if hits.is_empty() {
+                Ok(format!("no-paths: {} files, none of this machine's {} paths", args.len() - 1, needles.len()))
+            } else {
+                Err(format!("no-paths: {} places carry this machine's paths:\n{}", hits.len(), hits.join("\n")))
+            }
+        }
+        _ => Err("usage: zikaron-pack notices|hfs-owners|dmg-names|elf-comment|windows|appimage-runtime|no-paths ...".into()),
     }
 }

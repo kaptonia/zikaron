@@ -1,46 +1,37 @@
-//! Font lookup: on macOS two faces embedded and the Chinese ones read from system paths; on Windows the same,
-//! the Chinese ones being Microsoft YaHei UI from the system's font folder, with the embedded Noto Sans SC when
-//! it is not there; on Linux all five embedded. This is the Chinese-font part of the
-//! platform interface (see the app's `platform` module): the system faces' file names, face numbers and
-//! search directories are one table per system (`ROLES`, `FALLBACK`, `ROOTS`), chosen by the build target;
-//! a port to another system adds its rows here and nothing else.
+//! Font lookup for the five roles, per platform:
 //!
-//! On Linux the three Chinese roles are embedded too: Noto Sans SC Regular (SIL OFL 1.1, the notofonts
-//! `noto-cjk` subset release; licence `fonts/OFL-NotoSansSC.txt`), one weight for body, medium and strong, so
-//! a Linux machine needs no Chinese font installed. Its bytes enter every build but macOS's: on Windows it is
-//! the fallback of the three Chinese roles.
+//! - macOS: Latin and monospace faces are embedded; the Chinese roles come from the system's PingFang SC
+//!   (body face 3, medium face 7, strong Semibold face 11, all in one `PingFang.ttc` read once per process).
+//!   Face 0 of `PingFang.ttc` is the Hong Kong glyph set and mainland readers need the simplified faces, so
+//!   face numbers are fixed in the table. macOS keeps PingFang in AssetsV2 content-addressed directories
+//!   (`.../<40 hex>.asset/AssetData/`) that differ per machine, so lookup walks them by file name instead of
+//!   hard-coding a path. System faces are never embedded.
+//! - Windows: the same embedded faces; the Chinese roles are Microsoft YaHei UI (body and medium, in
+//!   `msyh.ttc`) and Microsoft YaHei UI Bold (strong, in `msyhbd.ttc`, a real bold) from the system font
+//!   folder, taken by full name ([`NAMED`], [`face_named`]) rather than by a face number the file's layout
+//!   could move. The embedded Noto Sans SC is the fallback.
+//! - Linux and any other system: all five faces embedded; the three Chinese roles share Noto Sans SC
+//!   Regular, so no Chinese font needs to be installed.
 //!
-//! On Windows the Chinese roles follow the system, as on macOS: Microsoft YaHei UI (body and medium, in
-//! `msyh.ttc`) and Microsoft YaHei UI Bold (strong, in `msyhbd.ttc`), which give a real bold. Within those
-//! collections the face is taken by its full name ([`NAMED`], [`face_named`]), not by a number the file's
-//! layout could move.
+//! Medium and strong text have their own faces because egui has one weight per face.
 //!
-//! Five faces: Latin body text embeds Inter (SIL OFL 1.1); Chinese body text is PingFang SC, face 3 (from the
-//! system); monospace embeds JetBrains Mono (SIL OFL 1.1); medium text is PingFang SC Medium, face 7, and
-//! strong text PingFang SC Semibold, face 11 (both from the system). Medium and strong text have their own
-//! faces because egui has one weight per face. The three system faces share one file, read once per process.
-//! Face 0 of `PingFang.ttc` is the Hong Kong glyph set; mainland readers need the simplified faces, so face
-//! numbers live in the closed table.
-//!
-//! Embedded faces: SF and SF Mono may not be redistributed and PingFang ships with the system, so the Latin
-//! and monospace faces are embedded from two SIL OFL 1.1 fonts, whose licence allows embedding and commercial
-//! use with the licence text included:
+//! SF and SF Mono may not be redistributed, so the Latin and monospace faces are embedded from SIL OFL 1.1
+//! fonts, whose licence allows embedding and commercial use with the licence text included:
 //!
 //! - `JetBrainsMono-Regular.ttf` (JetBrains Mono 2.304, official release; licence
-//! `fonts/OFL-JetBrainsMono.txt`);
-//! - `Inter-Regular.ttf` (Inter 4.1, official release; licence `fonts/OFL-Inter.txt`).
+//!   `fonts/OFL-JetBrainsMono.txt`);
+//! - `Inter-Regular.ttf` (Inter 4.1, official release; licence `fonts/OFL-Inter.txt`);
+//! - Noto Sans SC Regular (the notofonts `noto-cjk` subset release; licence `fonts/OFL-NotoSansSC.txt`), in
+//!   every build except macOS.
 //!
-//! The licence texts are in the repository and reported on the about page. On macOS the system faces
-//! (Chinese and strong) are never embedded.
+//! The licence texts are in the repository and shown on the about page.
 //!
-//! Font file names, face numbers, search directories and the embedded faces' bytes live only in `ROLES`,
-//! `ROOTS` and `embedded`.
+//! This is the Chinese-font part of the platform interface (see the app's `platform` module). File names,
+//! face numbers, search directories and embedded bytes live only in `ROLES`, `FALLBACK`, `ROOTS` and
+//! `embedded`, chosen by build target; a port to another system adds its rows here and nothing else.
 //!
-//! macOS moved PingFang into AssetsV2 content-addressed directories (`.../<40 hex>.asset/AssetData/`) that
-//! differ per machine, so lookup walks the directories by file name instead of hard-coding a path.
-//!
-//! Missing faces are not silent: `install` returns them to the caller to show on screen. Rendering boxes for
-//! missing glyphs would be a silent failure. The embedded faces are never missing.
+//! Missing faces are not silent: `install` returns them for the caller to show on screen, since boxes for
+//! missing glyphs would be a silent failure. Embedded faces are never missing.
 
 use std::path::{Path, PathBuf};
 
@@ -98,8 +89,8 @@ const INTER: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
 /// The licence of the embedded faces (reported on screen), defined once.
 pub const OFL: &str = "SIL OFL 1.1";
 
-/// Role, file name, face number and place: the first choice. Face numbers are part of the decision (PingFang
-/// faces 3, 7 and 11).
+/// Role, file name, face number and place of each first choice. Face numbers matter (PingFang faces 3, 7
+/// and 11).
 #[cfg(target_os = "macos")]
 pub const ROLES: [(Role, &str, u32, Place); 5] = [
     (Role::Latin, "Inter-Regular.ttf", 0, Place::Embedded),
@@ -228,7 +219,7 @@ fn roots() -> Vec<PathBuf> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Face {
     pub role: Role,
-    /// File name (the decided one, without path). Same on every machine.
+    /// File name without path; the same on every machine.
     pub file: &'static str,
     /// Face number.
     pub index: u32,

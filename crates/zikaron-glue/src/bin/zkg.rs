@@ -1,7 +1,5 @@
-//! `zkg`: a small driver binary for disclosure kit output.
-//!
-//! No decision is made here: entry selection lives in `select`, laying out and self-verification in `pack`.
-//! Two verbs: `pack` (write a kit) and `verify` (ask the kit core whether a kit is valid).
+//! `zkg`: a small driver binary for disclosure kit output. Two verbs: `pack` (write a kit) and `verify` (ask the
+//! kit core whether a kit is valid). Entry selection lives in `select`, layout and self-verification in `pack`.
 
 use std::process::ExitCode;
 use zikaron::json::{canon_bytes, Value};
@@ -19,7 +17,7 @@ fn unreadable(p: &str) -> ! {
     std::process::exit(2)
 }
 
-/// stdout carries one canonical JSON value with no trailing newline, as on the command surface.
+/// stdout carries one canonical JSON value with no trailing newline, as in the main CLI.
 fn say(v: &Value, code: u8) -> ExitCode {
     use std::io::Write;
     let mut out = std::io::stdout();
@@ -59,7 +57,7 @@ impl Flags {
         }
         Flags { pairs }
     }
-    /// A flag given twice is misuse; silently taking the first would pack A when the person meant B.
+    /// A repeated flag is misuse; silently taking the first could pack something other than what was meant.
     fn one(&self, k: &str) -> Option<String> {
         let mut hit = self.pairs.iter().filter(|(n, _)| n == k);
         let first = hit.next()?;
@@ -71,8 +69,7 @@ impl Flags {
     fn need(&self, k: &str) -> String {
         self.one(k).unwrap_or_else(|| misuse(&format!("缺 --{k}")))
     }
-    /// Each verb's flag list is closed: a flag outside it is misuse, so a removed flag fails loudly in old
-    /// scripts.
+    /// Each verb's flag list is closed: any other flag is misuse, so a removed flag fails loudly in old scripts.
     fn close(&self, allowed: &[&str]) {
         for (k, _) in &self.pairs {
             if !allowed.contains(&k.as_str()) {
@@ -98,8 +95,8 @@ fn pair_at<'a>(spec: &'a str, shape: &str) -> (&'a str, &'a str) {
     spec.split_once('=').unwrap_or_else(|| misuse(shape))
 }
 
-/// Collect files and directories. A file that cannot be taken is the same failure as a malformed `--file`
-/// path, with the same code (1), whether or not it came from walking a directory.
+/// Collect files and directories. An unreadable file fails like a malformed `--file` path (code 1), whether
+/// or not it came from walking a directory.
 fn gather_into(b: &mut Bundle, f: &Flags) -> Result<(), (String, String)> {
     for spec in f.many("file") {
         let (kit, src) = pair_at(&spec, "--file 的形是 <包内路径>=<盘上的路>");
@@ -149,7 +146,6 @@ fn main() -> ExitCode {
     let verb = argv.first().cloned().unwrap_or_default();
     let f = Flags::parse(&argv.into_iter().skip(1).collect::<Vec<_>>());
     match verb.as_str() {
-        // Write a kit.
         "pack" => {
             f.close(&["ledger", "entry", "out", "from", "to", "work", "file", "dir", "proof", "note", "root"]);
             let chosen = select::choose(&pile_of(&f), &selection(&f));

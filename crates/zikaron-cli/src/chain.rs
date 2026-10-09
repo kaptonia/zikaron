@@ -21,23 +21,26 @@ pub struct Refused {
     pub detail: String,
 }
 
-/// `--endpoint <chain>=<url>`, several per chain allowed (the endpoint rule).
-pub fn endpoint_specs(raw: &[String]) -> Vec<(u64, String)> {
+/// `--endpoint <chain>=<url>`, several per chain allowed (the endpoint rule), each with its place among the
+/// arguments. Every value is read whole here, before any node is asked: its spelling by the one reader (the
+/// app's too, `rpc::endpoint_spec`) and its address by the transport's (`rpc::read_address`). A value that does
+/// not read is misuse named by its place and length, never echoed ([`out::unechoed_endpoint`]).
+pub fn endpoint_specs(raw: &[(usize, String)]) -> Vec<(u64, String)> {
     crate::seam();
     let mut out_specs = Vec::new();
-    for spec in raw {
-        let (c, url) = match spec.split_once('=') {
-            Some(x) => x,
-            None => out::misuse(Reason::Args, spec, out::Said::EndpointShape),
-        };
-        let id: u64 = match c.parse() {
-            Ok(x) => x,
-            Err(_) => out::misuse(Reason::Args, c, out::Said::ChainIdNotInt),
-        };
-        out_specs.push((id, url.to_string()));
+    for (at, spec) in raw {
+        let subject = || out::unechoed_endpoint(*at, spec);
+        match zikaron_anchor::rpc::endpoint_spec(spec) {
+            Ok((chain, address)) => match zikaron_anchor::rpc::read_address(&address) {
+                Ok(_) => out_specs.push((chain, address)),
+                Err(_) => out::misuse(Reason::Args, subject(), out::address_said(&address)),
+            },
+            Err(zikaron_anchor::rpc::NotAnEndpoint::ChainNotInt) => out::misuse(Reason::Args, subject(), out::Said::ChainIdNotInt),
+            Err(_) => out::misuse(Reason::Args, subject(), out::Said::EndpointShape),
+        }
     }
     if out_specs.is_empty() {
-        out::misuse(Reason::Args, "--endpoint", out::Said::NeedEndpoint);
+        out::misuse(Reason::Args, out::Subject::flag("endpoint"), out::Said::NeedEndpoint);
     }
     out_specs
 }
@@ -66,22 +69,14 @@ pub fn nth_for(specs: &[(u64, String)], chain: u64, k: usize) -> String {
 /// Single-source chains: fewer than two distinct endpoints. Endpoints are counted, not rounds: one endpoint
 /// agreeing with itself corroborates nothing.
 pub fn thin_chains(specs: &[(u64, String)]) -> Vec<u64> {
-    chains_of(specs)
-        .into_iter()
-        .filter(|c| {
-            let mut urls: Vec<&String> = specs.iter().filter(|(x, _)| x == c).map(|(_, u)| u).collect();
-            urls.sort();
-            urls.dedup();
-            urls.len() < 2
-        })
-        .collect()
+    zikaron_anchor::endpoints::thin_chains(specs, &chains_of(specs))
 }
 
 fn wire_of(path: &str) -> (Vec<u8>, W) {
     let b = crate::args::slurp(path);
     match wire::parse(&b) {
         Some(v) => (b, v),
-        None => out::misuse(Reason::Unreadable, path, out::Said::NotJson),
+        None => out::misuse(Reason::Unreadable, out::typed(path), out::Said::NotJson),
     }
 }
 
@@ -92,7 +87,7 @@ fn adoptions_of(v: &W) -> Vec<(u64, [u8; 32])> {
             e.member("chainId").and_then(|x| x.as_u64()),
             e.member("tx").and_then(|x| x.as_str()),
         ) else {
-            out::misuse(Reason::Args, "--adoptions", out::Said::AdoptionShape)
+            out::misuse(Reason::Args, out::Subject::flag("adoptions"), out::Said::AdoptionShape)
         };
         out_pairs.push((c, h32(t)));
     }
@@ -102,10 +97,10 @@ fn adoptions_of(v: &W) -> Vec<(u64, [u8; 32])> {
 pub fn h32(x: &str) -> [u8; 32] {
     let b = match zikaron::hexfmt::decode(x) {
         Some(b) => b,
-        None => out::misuse(Reason::Args, x, out::Said::NotHex),
+        None => out::misuse(Reason::Args, out::typed(x), out::Said::NotHex),
     };
     if b.len() != 32 {
-        out::misuse(Reason::Args, x, out::Said::Not32);
+        out::misuse(Reason::Args, out::typed(x), out::Said::Not32);
     }
     let mut o = [0u8; 32];
     o.copy_from_slice(&b);
@@ -115,10 +110,10 @@ pub fn h32(x: &str) -> [u8; 32] {
 pub fn h20(x: &str) -> [u8; 20] {
     let b = match zikaron::hexfmt::decode(x) {
         Some(b) => b,
-        None => out::misuse(Reason::Args, x, out::Said::NotHex),
+        None => out::misuse(Reason::Args, out::typed(x), out::Said::NotHex),
     };
     if b.len() != 20 {
-        out::misuse(Reason::Args, x, out::Said::Not20);
+        out::misuse(Reason::Args, out::typed(x), out::Said::Not20);
     }
     let mut o = [0u8; 20];
     o.copy_from_slice(&b);
@@ -136,13 +131,13 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
     let adoptions = adoptions_of(&fx);
     let recorded = fx.member("rpc").cloned().unwrap_or(W::of(Body::Obj(Vec::new())));
     let Body::Obj(chains) = &recorded.body else {
-        out::misuse(Reason::Args, path, out::Said::RpcNotObject)
+        out::misuse(Reason::Args, out::typed(path), out::Said::RpcNotObject)
     };
     let mut replays: Vec<(u64, rpc::Replay)> = Vec::new();
     for (cid, exchanges) in chains {
         let id: u64 = match cid.parse() {
             Ok(x) => x,
-            Err(_) => out::misuse(Reason::Args, cid, out::Said::ChainIdNotInt),
+            Err(_) => out::misuse(Reason::Args, out::typed(cid), out::Said::ChainIdNotInt),
         };
         let ex = exchanges.as_arr().unwrap_or(&[]).to_vec();
         match rpc::Replay::new(format!("replay:{id}"), &ex) {
@@ -181,7 +176,8 @@ pub fn live_fragment(
         let url = nth_for(specs, c, round);
         match rpc::Http::new(&url) {
             Some(h) => https.push((c, h)),
-            None => out::misuse(Reason::Args, &url, out::Said::EndpointScheme),
+            // Read whole by `endpoint_specs` before; named, never echoed, all the same.
+            None => out::misuse(Reason::Args, out::Subject::flag("endpoint"), out::address_said(&url)),
         }
     }
     let names: Vec<String> = https

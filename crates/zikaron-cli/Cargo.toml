@@ -1,7 +1,7 @@
 [package]
 name = "zikaron-cli"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 license = "MIT"
 
 # A thin shell: assembles inputs, calls the base crates and renders state; it invents no byte format and

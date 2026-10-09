@@ -1,4 +1,5 @@
-//! The `zikaron` command line: twenty-one verbs.
+//! The `zikaron` command line: twenty-two verbs; with `--home`, ten of them are done by the running desktop
+//! through its local IPC endpoint ([`desk`]).
 //!
 //! The verbs are a thin shell: entries are built and checked by the core, directories read and written by the
 //! storage crate, chains scanned and written by the anchoring crate, documents, payloads, kits, depth and
@@ -30,10 +31,12 @@ pub fn seam() {
 pub mod args;
 pub mod chain;
 pub mod codes;
+pub mod desk;
 pub mod docs;
 pub mod entropy;
 pub mod entry;
 pub mod kitout;
 pub mod ledger;
 pub mod out;
+pub mod sent;
 pub mod verbs;

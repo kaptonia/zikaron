@@ -1,11 +1,9 @@
-//! The third-party notices the app carries, made now for the target being built by the one generator the
-//! packages also use (`zikaron_pack::notices`), for the app's own dependency tree, and written into the
-//! build's output directory, where `about::NOTICES` embeds it. The settings page "About" shows it.
+//! Build script: generates the third-party notices for the app's dependency tree on the target being built,
+//! using the same generator as the packages (`zikaron_pack::notices`), and writes them to `OUT_DIR`, where
+//! `about::NOTICES` embeds them. The build fails if the notices cannot be generated.
 //!
-//! A build where the list cannot be made stops here with the reason: a binary without its notices is not built.
-//!
-//! For a Windows target only, the window binary also gets its version resource and icon: a compiled resource
-//! file is written here (no resource compiler is run) and handed to the linker. Other targets get nothing more.
+//! On Windows targets it also writes a compiled resource file (version info and icon) directly, without a
+//! resource compiler, and passes it to the linker.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +30,7 @@ fn main() {
 /// The sizes of the window icon, one image each (PNG, which the system reads inside an icon since Vista).
 const ICON_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
-/// `RT_ICON`, `RT_GROUP_ICON`, `RT_VERSION`.
+/// Resource type ids: `RT_ICON`, `RT_GROUP_ICON`, `RT_VERSION`.
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const RT_VERSION: u16 = 16;

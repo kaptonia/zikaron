@@ -10,23 +10,25 @@ use egui::{pos2, vec2, Rect};
 /// Draw a cover. `add` gets a child the size of the window; the value it returns comes back.
 pub fn cover<R>(ctx: &egui::Context, id_salt: &str, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
     let id = egui::Id::new(("zikaron-cover", id_salt));
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
+    let a = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::MID);
     let age = motion::age(ctx, id.with("age"), 0);
-    let a = Curve::Ease.at((age / tokens::MID).clamp(0.0, 1.0));
     let settle = Curve::Ease.at((age / tokens::SLOW).clamp(0.0, 1.0));
     if age < tokens::SLOW {
         ctx.request_repaint();
     }
     let layer = egui::LayerId::new(egui::Order::Middle, id);
-    let r = egui::Area::new(layer.id).order(egui::Order::Middle).fixed_pos(screen.min).constrain(false).show(ctx, |ui| {
+    crate::layer::place(ctx, layer, None);
+    let r = crate::layer::over(ctx, layer).show(ctx, |ui| {
+        // The ground: the page colour over the whole window in the cover's own layer, taking every press and drag
+        // so nothing under it reacts.
+        crate::layer::under(ui, crate::layer::Under::Ground(c(C::Ground).gamma_multiply(a)));
         ui.set_clip_rect(screen);
-        ui.painter().rect_filled(screen, 0.0, c(C::Ground).gamma_multiply(a));
-        ui.allocate_rect(screen, egui::Sense::click_and_drag());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(screen).layout(egui::Layout::top_down(egui::Align::Min)));
         child.multiply_opacity(a);
         add(&mut child, 10.0 * (1.0 - settle))
     });
-    crate::layer::keep(ctx, id.with("keep"), layer, tokens::MID, 1.0, screen.center());
+    crate::layer::keep(ctx, id.with("keep"), layer, tokens::MID, 1.0, screen.center(), egui::Vec2::ZERO);
     r.inner
 }
 
@@ -131,7 +133,12 @@ pub fn steps(ui: &mut egui::Ui, steps: &[Step], current: usize) -> Option<usize>
 /// one on the selection ground with an accent edge, its dot popping in.
 pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: Option<&str>, sub: &str) -> egui::Response {
     let w = ui.available_width();
-    let h = 12.0 + crate::tokens::Type::Strong.line() + 2.0 + crate::tokens::Type::Small.line() + 12.0;
+    // The line under the title wraps inside the row (the row grows by its lines), never past the row's edge.
+    let text_x = 14.0 + 8.0 + 8.0 + 10.0;
+    let mut job = egui::text::LayoutJob::single_section(sub.to_string(), egui::TextFormat { font_id: crate::tokens::Type::Small.font(), color: c(C::Ink2), line_height: Some(crate::tokens::Type::Small.line()), ..Default::default() });
+    job.wrap.max_width = (w - text_x - 14.0).max(1.0);
+    let sub_g = ui.fonts_mut(|f| f.layout_job(job));
+    let h = 12.0 + crate::tokens::Type::Strong.line() + 2.0 + sub_g.size().y.max(crate::tokens::Type::Small.line()) + 12.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
     let lit = motion::flag(ui.ctx(), id.with("on"), on, tokens::FAST);
     let dot = motion::to(ui.ctx(), id.with("dot"), if on { 1.0 } else { 0.0 }, tokens::FAST, Curve::Spring);
@@ -144,7 +151,7 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     if dot > 0.0 {
         p.circle_filled(rc, 4.5 * dot, c(C::Accent));
     }
-    let x = rc.x + 8.0 + 10.0;
+    let x = rect.left() + text_x;
     let ty = rect.top() + 12.0;
     let tr = p.text(pos2(x, ty), egui::Align2::LEFT_TOP, title, crate::tokens::Type::Strong.font(), c(C::Ink));
     if let Some(s) = pill {
@@ -153,6 +160,6 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pr));
         crate::mark::pill(&mut child, s, crate::palette::Tone::Ok);
     }
-    p.text(pos2(x, ty + crate::tokens::Type::Strong.line() + 2.0), egui::Align2::LEFT_TOP, sub, crate::tokens::Type::Small.font(), c(C::Ink2));
+    p.galley(pos2(x, ty + crate::tokens::Type::Strong.line() + 2.0), sub_g, c(C::Ink2));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

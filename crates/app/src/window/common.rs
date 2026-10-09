@@ -1,5 +1,5 @@
 //! Page parts shared by every page, laid out from the kit's controls: labelled fields, the location row,
-//! detail heads, the details fold, key rows. Nothing here sets a size or a color of its own.
+//! detail heads, the details fold, button rows. Nothing here sets a size or a color of its own.
 
 use super::*;
 
@@ -21,7 +21,7 @@ pub(super) fn field<R>(ui: &mut egui::Ui, label: &str, optional: Option<&str>, a
 }
 
 /// The location row: the label (132), the chosen folder's name in monospace (the whole path on hover), or a
-/// quiet "not chosen", and a key at the right. Returns whether the key was pressed.
+/// quiet "not chosen", and a button at the right. Returns whether the button was pressed.
 pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &str, key_label: &str, none: &str) -> bool {
     let mut hit = false;
     let w = ui.available_width();
@@ -40,7 +40,7 @@ pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &str, key_label: &s
                     paint::line(ui, none, Type::Body, c(C::Ink3), room);
                 } else {
                     let r = paint::line(ui, &width::file_name(p), Type::Mono, c(C::Ink2), room);
-                    r.on_hover_text(p);
+                    zikaron_ui::layer::tip(r, p);
                 }
             });
         });
@@ -48,22 +48,61 @@ pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &str, key_label: &s
     hit
 }
 
-/// A path picker in a field: the location row without a label. Returns whether the path changed.
+/// The path mailbox (the file dialog does not block the frame). A place that offers "choose…" asks under its
+/// own key in the frame its button is pressed ([`path_answer`]); the window opens the dialog at the end of
+/// that frame (one at a time) and waits for the answer in the background; the chosen path lands here under
+/// the asking key and the place takes it the next frame it is drawn. A cancel lands nothing; an answer no
+/// place takes within two frames is dropped (the place is gone: its sheet was closed meanwhile).
+#[derive(Clone, Default)]
+pub(super) struct PathMail {
+    /// Asked this frame: the place's key and what the dialog allows.
+    pub(super) asked: Option<(egui::Id, crate::platform::Pick)>,
+    /// The place whose dialog is open.
+    pub(super) ticket: Option<egui::Id>,
+    /// A landed answer: the place's key, the path, the frame it landed.
+    pub(super) answer: Option<(egui::Id, String, u64)>,
+}
+
+pub(super) fn path_mail() -> egui::Id {
+    egui::Id::new("zikaron-path-mail")
+}
+
+/// The one way a place asks for a path: under `site` (its own key), asking when `ask` (its "choose…" was
+/// pressed this frame); gives the path the person chose for `site` when it has landed, once.
+pub(super) fn path_answer(ctx: &egui::Context, site: egui::Id, ask: bool, kind: crate::platform::Pick) -> Option<String> {
+    ctx.data_mut(|d| {
+        let m = d.get_temp_mut_or_default::<PathMail>(path_mail());
+        if ask {
+            m.asked = Some((site, kind));
+        }
+        if m.answer.as_ref().is_some_and(|a| a.0 == site) {
+            m.answer.take().map(|a| a.1)
+        } else {
+            None
+        }
+    })
+}
+
+/// A path picker in a field: the location row without a label. Returns whether the path changed. Its key in
+/// the path mailbox is the field the answer goes into (that field's place in the window, fixed for the
+/// window's life), so two pickers drawn in one card never take each other's answer.
 pub(super) fn pick_path(ui: &mut egui::Ui, slot: &mut String, kind: crate::platform::Pick) -> bool {
     let key_label = match kind {
         crate::platform::Pick::File => t(Key::PickFile),
         _ => t(Key::PickFolder),
     };
-    if path_row(ui, "", slot, key_label, t(Key::PickNone)) {
-        if let Some(p) = crate::platform::choose_path(kind) {
+    let asked = path_row(ui, "", slot, key_label, t(Key::PickNone));
+    let site = egui::Id::new(("zikaron-pick-path", slot as *const String as usize));
+    match path_answer(ui.ctx(), site, asked, kind) {
+        Some(p) => {
             *slot = p;
-            return true;
+            true
         }
+        None => false,
     }
-    false
 }
 
-/// A row of keys, 8 apart, wrapping when narrow.
+/// A row of buttons, 8 apart, wrapping when narrow.
 pub(super) fn keys_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(tk::S2, tk::S2);
@@ -140,7 +179,7 @@ impl Win {
         v
     }
 
-    /// The phase of a long key started by an action of kind `k`: busy while that kind runs (with its
+    /// The phase of a long-running button started by an action of kind `k`: busy while that kind runs (with its
     /// fraction when counted), a check or a cross for a moment after it lands.
     pub(super) fn phase_of(&self, k: crate::task::Kind) -> Phase {
         if self.shell.tasks.in_flight(k) {
@@ -154,12 +193,12 @@ impl Win {
         .now(self.ux.now)
     }
 
-    /// A long key: its phase follows the task of kind `k`. Returns whether it was pressed.
+    /// A long-running button: its phase follows the task of kind `k`. Returns whether it was pressed.
     pub(super) fn long_key(&self, ui: &mut egui::Ui, text: &str, role: Role, enabled: bool, k: crate::task::Kind) -> bool {
         key::show(ui, key::Key::new(text, role).enabled(enabled).phase(self.phase_of(k))).clicked()
     }
 
-    /// The stage line under a long key: the stage the task says it is in, the one before it checked; a
+    /// The stage line under a long-running button: the stage the task reports, the previous one checked; a
     /// counted stage shows its count. Nothing while the task is not running.
     pub(super) fn stage_line(&self, ui: &mut egui::Ui, k: crate::task::Kind) {
         let words = stage_words(k);
@@ -199,8 +238,8 @@ impl Win {
     }
 }
 
-/// The stage words of a long task, in the order the task says them (`task::stage_at` inside each task marks
-/// where it is; a task with one stage shows one line).
+/// The stage labels of a long task, in the order the task reports them (`task::stage_at` inside each task
+/// marks where it is; a task with one stage shows one line).
 pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
     use crate::task::Kind;
     match k {
@@ -219,6 +258,7 @@ pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
         Kind::Depth => &[Key::StageReadChain],
         Kind::Gate => &[Key::StageReadChain],
         Kind::ReadNet => &[Key::StageConnect],
+        Kind::Basis => &[Key::StageConnect],
         _ => &[],
     }
 }

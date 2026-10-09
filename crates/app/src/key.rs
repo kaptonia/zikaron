@@ -1,41 +1,27 @@
 //! The anchor key: generation, address, and moving in and out of the local key vault (`keybox`). A plaintext
 //! private key never lands in any file of ours.
 //!
-//! ─── This layer invents no cryptography ───
+//! No cryptography is invented here: the curve order check, address derivation and digests come from the
+//! core's `cryptox`, and hex spelling from the core's `hexfmt`. The only thing done here is drawing thirty-two
+//! bytes from system entropy until they fall within the curve order.
 //!
-//! The curve order range, address derivation and digests all come from the core's `cryptox` (third-party
-//! cryptography lives only there). Hex spelling comes from the core's `hexfmt` (one name, one home). This
-//! file does only one thing itself: take thirty-two bytes from system entropy until they fall within the
-//! order.
+//! Plaintext goes only two places: memory (`Secret`, zeroed when dropped) and ciphertext in the key vault's
+//! file. This crate has no path that writes a `Secret`'s bytes to a file, and the `keystore` module writes
+//! only ciphertext.
 //!
-//! ─── Plaintext goes only two places ───
-//!
-//! Memory (`Secret`, zeroed when it goes out of scope) and ciphertext in the key vault's file. There is no
-//! third: this crate has no path that writes a `Secret`'s bytes to a file, and what the `keystore` branch
-//! writes is ciphertext.
-//!
-//! ─── "Plaintext never lands on disk" is carried by types, not reminders ───
-//!
-//! A `pub(crate)` `Secret::bytes()` would let any module in the crate get the thirty-two bytes, and "nobody
-//! write it to a file" would be a reminder, which cannot guard a module added later.
-//!
-//! So that accessor is private to this module, and `Secret` has only these exits, each handing out something
-//! no longer plaintext:
+//! This is enforced by types, not by convention. A `pub(crate)` `Secret::bytes()` would let any module read
+//! the thirty-two bytes, and "never write them to a file" would be a reminder that cannot guard modules added
+//! later. So that accessor is private to this module, and `Secret` has only these exits, none of which hands
+//! out plaintext to a file:
 //!
 //! 1. [`Secret::address`]: a derived address (law §5.5), which cannot lead back to the key;
-//! 2. [`Secret::with_sign_key`]: lends the bytes to the `sign` layer for one signature, the loan covering
-//! exactly that call;
-//! 3. [`Secret::ciphered`]: the only path toward a file, already through `cryptx::aes128_ctr` on the way out
-//! (so the `keystore` branch can only write ciphertext);
-//! 4. [`Secret::with_tx_key`]: lends the bytes to the anchoring crate for one anchoring transaction, the loan
-//! covering exactly that call, with exactly one caller, and it leads to no file either.
-//!
-//! The fifth is [`reveal_once`], which takes the `Secret` away (so once-only is structural); the string it
-//! hands out lives in interface state, and not one byte enters any file.
-//!
-//! So "write the private key bytes into a file" has no callable path in this crate: there are five exits in
-//! all; the first hands out no plaintext, the third hands out ciphertext, the second and fourth lend once and
-//! lead to no file, and the fifth goes to the screen once.
+//! 2. [`Secret::with_sign_key`]: lends the bytes to the `sign` module for exactly one signature;
+//! 3. [`Secret::ciphered`]: the only path toward a file, already encrypted with `cryptx::aes128_ctr` (so
+//!    the `keystore` module can only write ciphertext);
+//! 4. [`Secret::with_tx_key`]: lends the bytes to the anchoring crate for exactly one anchoring transaction,
+//!    with exactly one caller, and leads to no file;
+//! 5. [`reveal_once`]: consumes the `Secret` (so once-only is structural); the string it returns lives in UI
+//!    state and never enters a file.
 
 use crate::fault::{classify, Fault, Known};
 use crate::keybox;
@@ -58,15 +44,12 @@ pub fn random(n: usize) -> Result<Vec<u8>, Fault> {
     Ok(b)
 }
 
-/// The base of the key's slot name in the key vault comes from [`crate::places`]: it may be set only once,
-/// and the statement that sets it lives only in the test hooks (the `drive` feature, off in normal builds).
-/// The shipped build has no path to change it.
+// The base of the key's slot name in the key vault comes from [`crate::places`]: it can be set only once, and
+// only by test hooks behind a cargo feature that is off in normal builds. The shipped build cannot change it.
 
-/// How many times this process lent the key for signing (observation only, read only by tests; nothing in
-/// the product decides on it).
-///
-/// The two lending exits (`with_sign_key`, `with_tx_key`) are the only sources of signatures; each loan is
-/// counted once, in one counter.
+/// How many times this process lent the key for signing (observation only, read by tests; no product
+/// decision depends on it). The two lending exits (`with_sign_key`, `with_tx_key`) are the only sources of
+/// signatures, and each loan is counted once.
 static LENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn lent() {
@@ -91,7 +74,7 @@ impl Drop for Secret {
 }
 
 impl Secret {
-    /// Take thirty-two bytes. Outside the curve order is refused (law §5.7).
+    /// Takes thirty-two bytes. Values outside the curve order are refused (law §5.7).
     pub fn take(bytes: [u8; 32]) -> Option<Secret> {
         if cryptox::in_range(&bytes) {
             Some(Secret(bytes))
@@ -100,32 +83,27 @@ impl Secret {
         }
     }
 
-    /// Private to this module. The exits are the three below; this accessor cannot leave this file, so
-    /// "plaintext bytes reachable elsewhere in the crate" cannot be written.
+    /// Private to this module, so plaintext bytes cannot be reached elsewhere in the crate.
     fn bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// This key's address (the same derivation as law §5.5, from the core).
+    /// This key's address (law §5.5, derived by the core).
     pub fn address(&self) -> Option<Address> {
         cryptox::address_of_privkey(&self.0).map(Address)
     }
 
-    /// The signing exit. Lends the bytes to the `sign` layer once, the loan covering exactly that call.
+    /// The signing exit: lends the bytes to the `sign` module for exactly one call.
     ///
-    /// Why lend rather than sign here: every call site of the primitive that actually signs (the core's
-    /// `cryptox::sign_digest`) is in `sign.rs`. "Who can sign" in code means "where its call sites are", and
-    /// moving the primitive into this file would open another place outside the three signing entry points. So this
-    /// layer only lends and does not sign.
+    /// It lends rather than signs so that every call site of the actual signing primitive (the core's
+    /// `cryptox::sign_digest`) stays in `sign.rs`: "who can sign" is "where the call sites are", and signing
+    /// here would add a place outside the three signing entry points. There is exactly one caller (counted by
+    /// the self-check suite), and its next statement is that primitive.
     ///
-    /// There is exactly one caller (counted by the self-check suite), and its next statement is that
-    /// primitive.
-    ///
-    /// Visible only to the `sign` file. With `pub(crate)` any file in the crate could borrow the key, and
-    /// since the signing primitive is the core's public surface, another signing exit taking free domain
-    /// strings could be opened anywhere, so "a fourth domain has no form at compile time" would hold only
-    /// inside `sign.rs`. With `pub(in crate::sign)` other files cannot even write the call: without the key,
-    /// no second place can combine a domain and preimage and hand them to the primitive.
+    /// Visible only to `sign`. With `pub(crate)` any file could borrow the key and, since the primitive is the
+    /// core's public API, open another signing exit with free-form domain strings. With
+    /// `pub(in crate::sign)` other files cannot even write the call, so no second place can pair a domain and
+    /// preimage and sign them.
     pub(in crate::sign) fn with_sign_key<R>(&self, f: impl FnOnce(&[u8; 32]) -> R) -> R {
         lent();
         f(&self.0)
@@ -133,29 +111,25 @@ impl Secret {
 
     /// The signing exit for the anchoring transaction.
     ///
-    /// The anchoring crate's `send::anchor` takes thirty-two bytes (Ethereum's signing rules are in that
-    /// crate, not here), so this lends them once, for exactly that call: the caller cannot keep the
-    /// reference, and no second place calls it (the self-check suite counts the callers: exactly one, whose
-    /// next statement is `send::anchor`).
+    /// The anchoring crate's `send::anchor` takes the thirty-two bytes (Ethereum signing lives in that crate),
+    /// so this lends them for exactly that call: the caller cannot keep the reference, and the self-check
+    /// suite counts exactly one caller, whose next statement is `send::anchor`. It leads to no file; the only
+    /// path to disk is `ciphered`.
     ///
-    /// This leads to no file. Writing to disk has only the `ciphered` path.
-    ///
-    /// Visible only to the `sign` file, and the closure runs the send itself. A `pub(crate)` version called
-    /// as `with_tx_key(|k| *k)` would copy all thirty-two bytes out and move them into a background thread,
-    /// contradicting "the loan covers exactly that call"; and any file in the crate could borrow once that
-    /// way and call the core's public primitive directly, growing a general signing exit back. With `pub(in
-    /// crate::sign)` other files cannot even write the call; the only caller (`sign::anchor_send`) runs the
-    /// anchoring crate's `send::anchor` entirely in the closure, so the loan is exactly that send.
+    /// Visible only to `sign`, and the closure runs the send itself. A `pub(crate)` version could be called
+    /// as `with_tx_key(|k| *k)`, copying the bytes out (e.g. into a background thread) and letting any file
+    /// call the core's signing primitive directly. With `pub(in crate::sign)`, the only caller
+    /// (`sign::anchor_send`) runs `send::anchor` entirely inside the closure, so the loan is exactly that send.
     pub(in crate::sign) fn with_tx_key<R>(&self, f: impl FnOnce(&[u8; 32]) -> R) -> R {
         lent();
         f(&self.0)
     }
 
-    /// The only exit of the path to disk, and it leaves as ciphertext.
+    /// The only exit toward disk, and it leaves as ciphertext.
     ///
-    /// Takes an AES key and an iv, runs the thirty-two bytes through `cryptx::aes128_ctr`, and returns the
-    /// ciphertext. The plaintext is one copy inside this function, zeroed when the function ends. Everything
-    /// the keystore branch writes can only come from here.
+    /// Runs the thirty-two bytes through `cryptx::aes128_ctr` with the given key and iv and returns the
+    /// ciphertext. The one plaintext copy made here is zeroed when the function returns. Everything the
+    /// keystore module writes comes from here.
     pub(crate) fn ciphered(&self, key: &[u8; 16], iv: &[u8; 16]) -> Vec<u8> {
         let mut buf = Wipe(self.0);
         crate::cryptx::aes128_ctr(key, iv, &mut buf.0);
@@ -163,8 +137,8 @@ impl Secret {
     }
 }
 
-/// A thirty-two-byte scratch buffer that zeroes itself. The copy in `ciphered` lives in it, so the plaintext
-/// never stays on the stack as an ordinary array.
+/// A thirty-two-byte scratch buffer that zeroes itself on drop, so the copy in `ciphered` never lingers on
+/// the stack as an ordinary array.
 struct Wipe([u8; 32]);
 
 impl Drop for Wipe {
@@ -185,8 +159,8 @@ impl Address {
         hexfmt::encode(&self.0)
     }
 
-    /// Recognize an address from a string pasted back by a person. Case is ignored: wallets spell
-    /// differently, and "the echo does not match" should not be said over a case difference.
+    /// Parses an address pasted back by a user. Case is ignored: wallets spell it differently, and a case
+    /// difference should not be reported as a mismatch.
     pub fn parse(s: &str) -> Option<Address> {
         let t = s.trim();
         let low = t.to_ascii_lowercase();
@@ -200,11 +174,10 @@ impl Address {
     }
 }
 
-/// Generate one. Take thirty-two bytes from system entropy, retrying while outside the order; if the retry
-/// limit is reached, a named error, never silently a key outside the order.
+/// Generates a key: draws thirty-two bytes from system entropy, retrying while outside the curve order. If
+/// the retry limit is reached it returns a named error, never a key outside the order.
 pub fn generate() -> Result<Secret, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::H2);
     for _ in 0..64 {
         let mut b = [0u8; 32];
@@ -220,35 +193,33 @@ pub fn generate() -> Result<Secret, Fault> {
 /// this.
 ///
 /// `acct` is the current slot (`identity::account_now`, read by the caller from the register): without a
-/// register, the slot at the account base; with a register, the current identity's current seat's slot. An
-/// empty current seat (`None`) answers "absent" (that seat has no key).
+/// register, the account-base slot; with one, the current identity's current seat's slot. An empty current
+/// seat (`None`) answers "absent".
 pub fn present(acct: Option<&str>) -> Result<bool, Fault> {
-    // This asks "present?", not "take it out": the vault's `present` reads only slot names in the book on
-    // disk and does not touch the master key, so it can answer while the vault is locked or does not exist
-    // yet. Using `get` would need the master key: the product asking "is there a key" at startup on a machine
-    // without a passcode would get "the key vault is locked", landing in the trouble bar as a toast nobody
-    // can act on. The presence question must not go through the lock.
+    // Use the vault's `present`, not `get`: it reads only slot names on disk and does not need the master
+    // key, so it answers while the vault is locked or does not exist yet. With `get`, asking "is there a key"
+    // at startup on a machine without a passcode would raise an unactionable "the key vault is locked" toast.
     let Some(acct) = acct else { return Ok(false) };
     keybox::present(acct)
 }
 
-/// Put a key into the current slot (`acct`, as [`present`] reads it). An empty current seat is refused by
-/// name (no slot, nowhere to put it).
+/// Puts a key into the current slot (`acct`, as [`present`] reads it). An empty current seat is refused by
+/// name (there is no slot to put it in).
 pub fn install(acct: Option<&str>, s: &Secret) -> Result<(), Fault> {
     let acct = acct
         .ok_or_else(|| Fault::known(Known::SeatUnseated, crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string()))?;
     keybox::put(acct, s.bytes())
 }
 
-/// Put a key into a named slot (used by the identity layer when creating identities; slot names are assembled
+/// Puts a key into a named slot (used by the identity layer when creating identities; slot names are built
 /// only by `places`).
 pub(crate) fn install_at(account: &str, s: &Secret) -> Result<(), Fault> {
     keybox::put(account, s.bytes())
 }
 
 /// Both seat keys of a recovery-word identity as vault slots (slot name, key bytes), for a vault being built
-/// anew (a restore): the bytes go straight to `keybox::build_new` to be sealed, as `install_at` hands them to
-/// `keybox::put`.
+/// anew (a restore): the bytes go straight to `keybox::build_new` to be sealed, as `install_at` hands them
+/// to `keybox::put`.
 pub(crate) fn seat_slots(entropy: &[u8; crate::family::ENTROPY_BYTES]) -> Option<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     for role in crate::roles::Role::ALL {
@@ -259,8 +230,8 @@ pub(crate) fn seat_slots(entropy: &[u8; crate::family::ENTROPY_BYTES]) -> Option
     Some(out)
 }
 
-/// Derive this seat's key from entropy along the family path (`cryptx` produces the bytes; this file wraps
-/// them as a `Secret`).
+/// Derives this seat's key from entropy along the family path (`cryptx` produces the bytes; this wraps them
+/// as a `Secret`).
 pub(crate) fn derived(entropy: &[u8; crate::family::ENTROPY_BYTES], role: crate::roles::Role) -> Option<Secret> {
     let mut raw = crate::cryptx::derive(entropy, &crate::family::path(role))?;
     let s = Secret::take(raw);
@@ -270,7 +241,7 @@ pub(crate) fn derived(entropy: &[u8; crate::family::ENTROPY_BYTES], role: crate:
     s
 }
 
-/// Recognize a private key from pasted hex (optional `0x`, case ignored). `None` when unrecognized.
+/// Parses a private key from pasted hex (optional `0x`, case ignored). `None` when unrecognized.
 pub(crate) fn from_hex(text: &str) -> Option<Secret> {
     let t = text.trim().to_ascii_lowercase();
     let t = if t.starts_with("0x") { t } else { format!("0x{t}") };
@@ -293,14 +264,14 @@ pub(crate) fn from_hex(text: &str) -> Option<Secret> {
     s
 }
 
-/// Load the current slot's key (`acct`, as [`present`] reads it) from the key vault. A locked vault is
-/// refused by name as `LOCKED`; bytes of the wrong shape are refused by name, never forced.
+/// Loads the current slot's key (`acct`, as [`present`] reads it) from the key vault. A locked vault is
+/// refused as `LOCKED`; bytes of the wrong shape are refused by name, never forced into a key.
 pub fn load(acct: Option<&str>) -> Result<Option<Secret>, Fault> {
     let Some(acct) = acct else { return Ok(None) };
     load_at(acct)
 }
 
-/// Load the key from a named slot.
+/// Loads the key from a named slot.
 pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
     let Some(mut raw) = keybox::get(acct)? else {
         return Ok(None);
@@ -317,10 +288,8 @@ pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
     let mut b = [0u8; 32];
     b.copy_from_slice(&raw);
     let got = Secret::take(b);
-    // Wipe both copies. This is the hot path taken on every signature: the part taken from the vault (`raw`)
-    // and this stack copy (`b`) are both the plaintext key. Without wiping, "locking means no key remains in
-    // memory" would hold only for the master key, while the key itself stayed in the returned heap buffer and
-    // on this frame's stack (`address_of`, `from_hex` and `words_of` already wipe this way).
+    // Wipe both plaintext copies: `raw` from the vault and the stack copy `b`. This runs on every signature;
+    // without it, locking would clear the master key but leave this key in a heap buffer and on the stack.
     for x in raw.iter_mut() {
         unsafe { std::ptr::write_volatile(x, 0) };
     }
@@ -331,8 +300,8 @@ pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
         .map(Some)
 }
 
-/// Read bytes as a key and compute its address (used by migration to check each slot's address). `None` for
-/// the wrong shape.
+/// Reads bytes as a key and computes its address (used by migration to check each slot). `None` for the
+/// wrong shape.
 pub(crate) fn address_of(raw: &[u8]) -> Option<Address> {
     if raw.len() != 32 {
         return None;
@@ -351,8 +320,8 @@ pub fn address_of_probe(raw: &[u8]) -> Option<Address> {
     address_of(raw)
 }
 
-/// Recover the vault with a private key (the existing-key identity path: the key decrypted from a keystore
-/// file). The bytes do not leave this file.
+/// Recovers the vault with a private key (the existing-key identity path: the key decrypted from a keystore
+/// file). The bytes do not leave this module.
 pub(crate) fn recover_with(s: &Secret, new_pin: &str) -> Result<(), Fault> {
     let a = s
         .address()
@@ -360,24 +329,23 @@ pub(crate) fn recover_with(s: &Secret, new_pin: &str) -> Result<(), Fault> {
     keybox::recover(s.bytes(), new_pin, &a.hex(), &[crate::places::key_slot(&a)])
 }
 
-/// Record a recovery seal for this identity (an existing-key identity recovers with its private key). The
-/// bytes do not leave this file: handed to `keybox` to seal, and the file it writes holds ciphertext.
+/// Records a recovery seal for this identity (an existing-key identity recovers with its private key). The
+/// bytes go only to `keybox` to be sealed, and the file it writes holds ciphertext.
 pub(crate) fn seal_recovery(id: &str, s: &Secret) -> Result<bool, Fault> {
     keybox::add_recovery(id, keybox::PrimaryKind::KeyFile, s.bytes())
 }
 
-/// Show a raw private key once. This function takes the `Secret` away (the caller's slot becomes empty and
-/// the bytes are zeroed at once) and returns a hex string for the person to copy.
+/// Shows a raw private key once. Takes the `Secret` out of the slot (leaving `None`; the key's bytes are
+/// zeroed when it drops) and returns a hex string for the user to copy.
 ///
-/// Once-only is thus structural: on a second call the slot is already `None`, with nothing to take. The
-/// string on screen lives in interface state and is cleared when the person clicks "copied"; not one byte
-/// enters any file.
+/// Once-only is structural: a second call finds the slot empty. The string lives in UI state and is cleared
+/// when the user clicks "copied"; not one byte enters any file.
 pub fn reveal_once(slot: &mut Option<Secret>) -> Option<String> {
     let s = slot.take()?;
     Some(hexfmt::encode(s.bytes()))
 }
 
-/// One sweep's reading: the result for each slot and the enumeration recheck.
+/// The result of one sweep: the outcome for each slot and the enumeration recheck.
 #[derive(Clone, Debug, Default)]
 pub struct Swept {
     /// Slots removed.
@@ -399,18 +367,17 @@ impl Swept {
     }
 }
 
-/// Remove this family of slots: the one at the account base and every one starting with "account base-" (key
+/// Removes this family of slots: the account-base slot and every one starting with "account base-" (key
 /// slots, seed slots).
 ///
-/// Which to remove is enumerated from the slots in the key vault now, not from names recorded when this
-/// process created them: identities created in the window and slots left by an earlier unfinished sweep are
-/// all in this family and found by one enumeration. After removal it enumerates again to recheck, recording
-/// what remains; any slot that cannot be removed and any enumeration error is recorded for the caller to
-/// report, never dropped.
+/// What to remove is enumerated from the vault now, not from names recorded when this process created them,
+/// so identities created in the window and slots left by an earlier unfinished sweep are all found. After
+/// removal it enumerates again and records what remains; any slot that cannot be removed and any enumeration
+/// error is recorded for the caller to report, never dropped.
 ///
-/// The shipped account base [`crate::places::ACCOUNT`] family is never swept (returns an empty reading): this
-/// broom is only for the test account. The shipped build has no caller (deleting an identity goes
-/// through `identity::delete`, removing only that identity's slots).
+/// The shipped account base [`crate::places::ACCOUNT`] is never swept (returns an empty result): this is
+/// only for test accounts. The shipped build has no caller (deleting an identity goes through
+/// `identity::delete`, which removes only that identity's slots).
 pub fn forget() -> Swept {
     let base = crate::places::key_account().to_string();
     let mut s = Swept::default();
@@ -419,8 +386,8 @@ pub fn forget() -> Swept {
     }
     let prefix = crate::places::family_prefix();
     let mine = |a: &str| a == base || a.starts_with(&prefix);
-    // Locked, a shape 3 vault keeps its account names sealed. A test account's vault file is its own (named by
-    // the account), so every slot in it is this family's: dropped whole, then counted again.
+    // While locked, a shape 3 vault keeps its account names sealed. A test account's vault file is its own
+    // (named by the account), so every slot in it belongs to this family: drop them all, then count again.
     if let Err(f) = keybox::accounts() {
         if f.which() != Some(crate::fault::Known::Locked) {
             s.recheck = Some(f.said().to_string());

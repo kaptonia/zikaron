@@ -1,12 +1,12 @@
-//! Reading a disclosure kit's entries by its layout's names (`names`): the entries room, the entry suffix. The
-//! kit core verifies the kit (`kitdir::verify_kit`); this reads the bytes it verified, deciding nothing.
+//! Reading a disclosure kit's entries by the layout names in `names` (entries folder, entry suffix). The kit
+//! core verifies the kit (`kitdir::verify_kit`); this only reads the bytes.
 
 /// Whether a directory is a disclosure kit (its manifest is there).
 pub fn is_kit(dir: &std::path::Path) -> bool {
     dir.join(crate::names::MANIFEST).is_file()
 }
 
-/// The entry files in a kit's entries room, in name order (a file that does not read: its path).
+/// The entry files in a kit's entries folder, in name order (on error, the unreadable file's path).
 pub fn kit_entries(dir: &std::path::Path) -> Result<Vec<Vec<u8>>, String> {
     crate::seam_v2();
     let room = dir.join(crate::names::ENTRIES_DIR);

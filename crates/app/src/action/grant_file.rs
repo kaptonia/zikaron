@@ -1,8 +1,8 @@
 use super::*;
 
-/// Everything an export of a grant file can be refused for without reading the chain: the id's shape, a
-/// home, the folder the person gave (empty means the home's kits) and the grant's chain in this home. Asked
-/// before the exit gate starts and again by the export where the gate landed; the judgment lives only here.
+/// Everything a grant file export can be refused for without reading the chain: the id's shape, a home, the
+/// folder given (empty means the home's kits folder) and the grant's chain in this home. Checked before the
+/// exit gate starts and again by the export after it passes; this is the only place that decides.
 pub(super) fn grant_file_plan(shell: &Shell, id: &str, to: &str) -> Result<(String, std::path::PathBuf), crate::fault::Fault> {
     let id = id.trim().to_string();
     if !zikaron::hexfmt::is_hex32(&id) {
@@ -14,8 +14,8 @@ pub(super) fn grant_file_plan(shell: &Shell, id: &str, to: &str) -> Result<(Stri
     Ok((id, folder))
 }
 
-/// Export a grant file. It lands in the folder the person chose (empty means the home's kits); the publish
-/// address pointer comes from the settings cell.
+/// Exports a grant file to the chosen folder (empty means the home's kits folder); the publish address pointer
+/// comes from settings.
 pub(super) fn export_grant_file(shell: &mut Shell, id: &str, to: &str, pass: &crate::exitgate::Pass) -> Result<crate::grantfilex::Exported, crate::fault::Fault> {
     let (id, folder) = grant_file_plan(shell, id, to)?;
     let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
@@ -23,19 +23,18 @@ pub(super) fn export_grant_file(shell: &mut Shell, id: &str, to: &str, pass: &cr
     crate::grantfilex::export(pass, home, &id, shell.settings.publish.as_deref(), &folder)
 }
 
-/// Set the publish address. `https://` only; unrecognized is `REMOTE_NOT_HTTPS`, and not one byte of the
-/// settings file changes. Empty clears it.
+/// Sets the publish address. Only `https://` is accepted; anything else is `REMOTE_NOT_HTTPS` and the settings
+/// file is left untouched. Empty clears it.
 pub(super) fn set_publish(shell: &mut Shell, url: &str) -> Result<Option<String>, crate::fault::Fault> {
     let t = url.trim();
     let v = if t.is_empty() { None } else { Some(crate::fetchx::base_of(t)?.as_str().to_string()) };
     let keep = v.clone();
     shell.commit_settings(|s| s.publish = keep)?;
-    // The publish base changed: bundles of this home without a hand-filled `link` are reassembled on the new
-    // base.
+    // The publish base changed: re-link this home's bundles that have no hand-filled `link` to the new base.
     if let Some(home) = shell.home.as_ref() {
         let room = home.dir(crate::home::Slot::Kits);
         let r = crate::ledgerx::root_of(home).and_then(|root| crate::home::machine_dir().and_then(|m| crate::kitsindex::relink(&m, &root, &room, v.as_deref())));
-        // A ledger without genesis has exported no bundles, which is not a trouble.
+        // A ledger without genesis has exported no bundles; that is not an error.
         if let Err(f) = r.map(|_| ()) {
             if f.which() != Some(crate::fault::Known::Ledger) {
                 shell.faults.push(f);
@@ -46,11 +45,11 @@ pub(super) fn set_publish(shell: &mut Shell, url: &str) -> Result<Option<String>
     Ok(v)
 }
 
-/// Fetch the ledger and check its tail. Only for a restored identity's home (with the mark): fetch this
-/// identity's full ledger through the four levels (`from` is the person's place for the last two), land it in
-/// this home (skipping existing entries), then scan this identity's anchors on chain and check "every
-/// anchored digest is in this ledger". Node or basis not configured, or chain unreachable, is refused by name
-/// and the mark stays (without a tail check, writing does not open).
+/// Fetches the ledger and checks its tail. Only for a restored identity's home (marked not yet fetched): takes
+/// this identity's full ledger from the whole-machine backup at `from`, lands it in this home (skipping
+/// existing entries), then scans this identity's anchors on chain and checks that every anchored digest is in
+/// this ledger. A missing node or basis, or an unreachable chain, is refused by name and the mark stays
+/// (writing stays closed until the tail check passes).
 pub(super) fn fetch_ledger(shell: &mut Shell, from: &str, password: crate::secret::Secret) -> Result<Spawned, crate::fault::Fault> {
     let f = fetch_from(shell, from)?;
     if !shell.tasks.in_flight(Kind::Fetch) {
@@ -59,10 +58,10 @@ pub(super) fn fetch_ledger(shell: &mut Shell, from: &str, password: crate::secre
     Ok(shell.tasks.spawn(Kind::Fetch, move || {
         let items = crate::backup::ledger_of(&f.at, password.expose(), &f.id, f.seat)?;
         let home = crate::home::Home::open(&f.root)?;
-        // Reconcile before landing: this home's existing entries plus the fetched ones go to the core for one
-        // offline reconciliation. Broken together while the fetched ledger holds on its own is a conflict
-        // (the same place in the chain, other contents): nothing lands, and the person is asked (setting this
-        // home aside is the one way through, `fetch_aside`). A fetched ledger broken on its own is refused.
+        // Reconcile before landing: this home's entries plus the fetched ones go through one offline
+        // reconciliation. If they break together while the fetched ledger is sound on its own, that is a
+        // conflict (same chain position, different contents): nothing lands and the person is asked (setting
+        // this home aside with `fetch_aside` is the way through). A fetched ledger broken on its own is refused.
         let have = home.ledger()?.pile()?.items;
         if let Some(c) = at_odds(&have, &items)? {
             let rows = offline_rows(&home, &items)?;
@@ -75,23 +74,23 @@ pub(super) fn fetch_ledger(shell: &mut Shell, from: &str, password: crate::secre
     }))
 }
 
-/// Check the tail of this identity's seats against the chain, whatever their ledgers came from (fetched from a
-/// backup, adopted in place, or never anywhere): for each seat home holding the not-fetched mark, the gate's
-/// own reading (`exitgate::tail`: the lineage of that ledger and that seat's key, nodes agreeing, on that
-/// home's own chain cells and nodes) says whether every anchored digest is in that home's ledger. Passing
-/// removes the mark and opens writing; an anchor this ledger lacks turns the mark into "newer entries
-/// elsewhere" (`Shell::fetch_landed`). Basis and nodes are asked first: without them it is refused by name and
-/// every mark stays. Whoever polls this records the asking before it asks (`Shell::take_tail_due`), so a
-/// refusal is not asked again every frame.
+/// Checks the tail of this identity's seats against the chain, wherever their ledgers came from (fetched from a
+/// backup, adopted in place, or created here). For each seat home with the not-fetched mark, the exit gate's
+/// own reading (`exitgate::tail`: that ledger's lineage and that seat's key, nodes agreeing, on that home's
+/// own chain settings and nodes) says whether every anchored digest is in that home's ledger. Passing removes
+/// the mark and opens writing; an anchor missing from the ledger turns the mark into "newer entries elsewhere"
+/// (`Shell::fetch_landed`). Basis and nodes are checked first: without them it is refused by name and every
+/// mark stays. Pollers record the attempt before asking (`Shell::take_tail_due`), so a refusal is not retried
+/// every frame.
 pub(super) fn check_tail(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
-    // The open home's cells are asked first, as before: without them nothing can be checked.
+    // The open home's settings are checked first: without them nothing can be checked.
     crate::exitgate::ask_of(shell)?;
     let view = crate::register::view(shell.settings.role)?;
     let (row, _) = crate::identity::now_row(&view).ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
     let open = shell.home.as_ref().map(|h| h.root().to_path_buf());
-    // Each seat this identity holds whose home holds the mark (an unreadable mark counts as held, as
-    // everywhere), with what the gate needs for that home.
+    // Each seat of this identity whose home has the mark (an unreadable mark counts as present), with what the
+    // gate needs for that home.
     let mut asks: Vec<crate::exitgate::Ask> = Vec::new();
     for seat in row.seats() {
         let (Some(root), Some(addr)) = (row.home(seat), row.address(seat)) else { continue };
@@ -100,9 +99,9 @@ pub(super) fn check_tail(shell: &mut Shell) -> Result<Spawned, crate::fault::Fau
             continue;
         }
         let is_open = open.as_deref().map(|o| crate::home::same_place(o, &root)).unwrap_or(false);
-        // Another seat's home is asked on its own network when it has one (it may be set to another than the
-        // open one): a cell or node it lacks there keeps its mark and is said by name, never read on the open
-        // home's network instead. Only a home with no network of its own at all is asked on the open home's.
+        // Another seat's home is checked on its own network if it has one (it may differ from the open home's):
+        // a setting or node missing there keeps its mark and is reported by name, never read on the open
+        // home's network instead. Only a home with no network of its own uses the open home's.
         let own_net = if is_open { Ok(false) } else { crate::settings::Settings::read(&h).map(|s| s.chain_id.is_some()) };
         match own_net {
             Ok(false) => {
@@ -122,7 +121,7 @@ pub(super) fn check_tail(shell: &mut Shell) -> Result<Spawned, crate::fault::Fau
     }
     let spawned = shell.tasks.spawn(Kind::Fetch, move || {
         let mut checked = Vec::new();
-        // Each home answers on its own: one whose chain cannot be read does not hold back the others.
+        // Each home is checked separately: one whose chain cannot be read does not hold back the others.
         for ask in asks {
             let tail = crate::exitgate::tail(&ask);
             checked.push((ask.root, tail));
@@ -135,9 +134,8 @@ pub(super) fn check_tail(shell: &mut Shell) -> Result<Spawned, crate::fault::Fau
     Ok(spawned)
 }
 
-/// Start the tail check when it falls due (`Shell::tail_due`). The places that make it due call this: an
-/// identity landing with its homes marked, nodes or basis set, a ledger adopted in place; the window's clock
-/// asks the same question for the rest.
+/// Starts the tail check when it is due (`Shell::tail_due`). Called wherever it becomes due (an identity landing
+/// with marked homes, nodes or basis set, a ledger adopted in place); the window's timer covers the rest.
 pub(super) fn tail_if_due(shell: &mut Shell) {
     if shell.take_tail_due() {
         if let Err(f) = check_tail(shell) {
@@ -157,7 +155,7 @@ struct FetchFrom {
 }
 
 impl FetchFrom {
-    /// What the gate needs to judge the tail of the ledger landed at `root` (this seat's key, these cells).
+    /// What the gate needs to judge the tail of the ledger landed at `root` (this seat's key, these settings).
     fn ask(&self, root: &std::path::Path) -> crate::exitgate::Ask {
         crate::exitgate::Ask {
             root: root.to_path_buf(),
@@ -170,11 +168,10 @@ impl FetchFrom {
     }
 }
 
-/// Whether this home's ledger and the fetched one are at odds: an entry here and a fetched entry at the same
-/// place in the chain (the same sequence number) with other contents. `None` when there is none; the number of
-/// this home's entries the fetched ledger lacks when there is (entries recorded here that would stay only in
-/// the old data). A fetched ledger broken on its own, or the two broken together some other way, is refused by
-/// name.
+/// Whether this home's ledger and the fetched one conflict: an entry here and a fetched entry with the same
+/// sequence number but different contents. Returns `None` if not; otherwise the number of this home's entries
+/// the fetched ledger lacks (entries that would remain only in the old data). A fetched ledger broken on its
+/// own, or the two broken together in another way, is refused by name.
 fn at_odds(have: &[Vec<u8>], items: &[Vec<u8>]) -> Result<Option<usize>, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let broken = |all: &[Vec<u8>]| -> Result<bool, Fault> {
@@ -201,8 +198,8 @@ fn at_odds(have: &[Vec<u8>], items: &[Vec<u8>]) -> Result<Option<usize>, crate::
     Ok(None)
 }
 
-/// This home's entries the fetched ledger lacks, as table rows, each with when it was queued (the entries
-/// recorded here offline: they stay only in the old data when this home is set aside).
+/// This home's entries the fetched ledger lacks, as table rows with their queue time (entries recorded here
+/// offline, which would remain only in the old data if this home is set aside).
 fn offline_rows(home: &crate::home::Home, items: &[Vec<u8>]) -> Result<Vec<(crate::ledgerx::Row, Option<u64>)>, crate::fault::Fault> {
     let fetched: Vec<String> = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).map(|e| e.id_hex().to_ascii_lowercase()).collect();
     let queue = crate::queue::Queue::read(home).unwrap_or_default();
@@ -218,11 +215,11 @@ fn offline_rows(home: &crate::home::Home, items: &[Vec<u8>]) -> Result<Vec<(crat
         .collect())
 }
 
-/// The checks fetching asks first, and what it needs.
+/// The checks fetching runs first, and what it needs.
 fn fetch_from(shell: &mut Shell, from: &str) -> Result<FetchFrom, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
-    // Handover and the writer lock are asked first (fetching lands entries in the ledger); broken chain and pen
-    // are not asked here: fetching is exactly the way to repair those two.
+    // Handover and the writer lock are checked first (fetching writes entries into the ledger). A broken chain
+    // and a held pen are not: fetching is how those are repaired.
     if let Some(to) = shell.handed.as_ref() {
         return Err(Fault::known(Known::HandedOver, to.clone()));
     }
@@ -232,8 +229,8 @@ fn fetch_from(shell: &mut Shell, from: &str) -> Result<FetchFrom, crate::fault::
         None => return Err(Fault::known(Known::NoHome, crate::lang::t(crate::lang::Key::Tail005).to_string())),
     }
     let home = shell.home.as_ref().ok_or_else(|| Fault::known(Known::NoHome, String::new()))?;
-    // An unreadable mark is still treated as "not yet fetched" (landing overwrites it with a readable form or
-    // removes it), never locking this home forever.
+    // An unreadable mark is still treated as "not yet fetched" (landing replaces it with a readable one or
+    // removes it), so it never locks this home forever.
     if matches!(crate::restorex::read(home), Ok(None)) {
         return Err(Fault::known(Known::SubjectMissing, crate::lang::t(crate::lang::Key::Tail215).to_string()));
     }
@@ -252,11 +249,11 @@ fn fetch_from(shell: &mut Shell, from: &str) -> Result<FetchFrom, crate::fault::
     Ok(FetchFrom { root, at, id, seat, g, eps })
 }
 
-/// The person said yes to the conflict: this seat's home is set aside whole (`local::set_home_aside`: kept
-/// in the machine directory under a number, listed among this machine's data folders so it can be opened and
-/// read; its read-only mark stays, and the exit gate refuses it since the chain holds what it lacks); a fresh
-/// home in its place (the same place, its settings carried over) receives the fetched ledger, and the tail is
-/// checked as for `fetch_ledger`. Nothing is deleted. The same first checks as fetching.
+/// The person accepted the conflict: this seat's home is set aside whole (`local::set_home_aside`: kept in the
+/// machine directory under a number and listed among this machine's data folders, so it can still be opened
+/// and read; it keeps its read-only mark, and the exit gate refuses it since the chain holds what it lacks). A
+/// fresh home in the same place, with its settings carried over, receives the fetched ledger, and the tail is
+/// checked as in `fetch_ledger`. Nothing is deleted. The first checks are the same as for fetching.
 pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret::Secret) -> Result<Spawned, crate::fault::Fault> {
     let f = fetch_from(shell, from)?;
     if !shell.tasks.in_flight(Kind::Fetch) {
@@ -264,9 +261,9 @@ pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret
     }
     Ok(shell.tasks.spawn(Kind::Fetch, move || {
         let items = crate::backup::ledger_of(&f.at, password.expose(), &f.id, f.seat)?;
-        // Everything is done beside this home before it is touched: a fetched ledger broken on its own is
-        // refused, the fresh home is staged (its other rooms carried, its mark placed), the fetched ledger lands
-        // there and its tail is checked against the chain. Any refusal up to here leaves this home as it was.
+        // Everything is prepared beside this home before touching it: a fetched ledger broken on its own is
+        // refused, the fresh home is staged (other folders carried over, mark placed), the fetched ledger lands
+        // there and its tail is checked against the chain. Any refusal up to here leaves this home unchanged.
         at_odds(&[], &items)?;
         let staged = crate::local::stage_fresh_home(&f.root)?;
         let done = (|| -> Result<(usize, usize, crate::restorex::Tail), crate::fault::Fault> {
@@ -281,12 +278,12 @@ pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret
                 return Err(e);
             }
         };
-        // Then the swap, all or nothing (`local::swap_aside`).
+        // Then swap, all or nothing (`local::swap_aside`).
         let aside = match crate::local::swap_aside(&f.root) {
             Ok(a) => a,
             Err(e) => {
-                // Forward when the old data is whole in its place, back otherwise (as a cut is at the next
-                // unlock); the shell opens this home again as it then is.
+                // Roll forward if the old data is intact in its place, otherwise back (as an interrupted swap is
+                // settled at the next unlock); the shell then reopens this home as it is.
                 if !crate::local::is_cut(&e) {
                     if let Err(s) = crate::local::settle_swap() {
                         crate::local::note_trouble(s);
@@ -299,10 +296,9 @@ pub(super) fn fetch_aside(shell: &mut Shell, from: &str, password: crate::secret
     }))
 }
 
-/// Check publication. Runs on a background thread. The local record bundle (chosen by the person; empty means
-/// the latest in the home's kits) is compared file by file with what is fetched from the publish address; the
-/// product does not upload for the person, and this step only reads. No publish address configured is refused
-/// by name.
+/// Checks publication on a background thread. The local record bundle (chosen by the person; empty means the
+/// latest in the home's kits folder) is compared file by file with what is fetched from the publish address.
+/// The app never uploads for the person; this only reads. A missing publish address is refused by name.
 pub(super) fn check_published(shell: &mut Shell, local: &str) -> Result<Spawned, crate::fault::Fault> {
     let url = shell.settings.publish.clone().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::FieldMissing, crate::lang::t(crate::lang::Key::PublishNoUrl).to_string())

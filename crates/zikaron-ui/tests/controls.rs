@@ -34,11 +34,11 @@ fn hex(c: zikaron_ui::egui::Color32) -> String {
     format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
 }
 
-/// Bytes live only in the faces the closed table names `Place::Embedded` on this target: monospace and Latin body
-/// everywhere, and the Chinese face on every system but macOS (macOS takes it from the system; Windows carries it as
-/// the fallback of the system's). Embedding happens only in
-/// `fonts.rs`; the files this build carries (an `include_bytes!` gated to another OS does not ship) are exactly
-/// the embedded files of the table, and each reports its licence.
+/// Bytes live only in the faces the closed table marks `Place::Embedded` on this target: monospace and Latin
+/// body everywhere, and the Chinese face on every system but macOS (macOS takes it from the system; Windows
+/// carries it as the fallback for the system face). Embedding happens only in `fonts.rs`; the files this
+/// build carries (an `include_bytes!` gated to another OS does not ship) are exactly the table's embedded
+/// files, and each reports its licence.
 #[test]
 fn bytes_are_embedded_only_where_the_closed_table_says_so() {
     use zikaron_ui::fonts::{embedded, Place, OFL, ROLES};

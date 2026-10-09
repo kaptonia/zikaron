@@ -10,8 +10,7 @@ fn src(name: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("读不出 {}:{e}", p.display()))
 }
 
-/// A test's own temporary directory, removed when the test lets go of it (passing or failing), so no run
-/// leaves anything in the temporary directory.
+/// A per-test temporary directory, removed on drop whether the test passes or fails.
 struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -63,10 +62,8 @@ fn run_in(dir: &Path, args: &[&str]) -> Ran {
     }
 }
 
-/// A ready ledger: three entries, one grant and one revocation of it.
-///
-/// Building it through the command surface would start another package's binary, so the storage directory is
-/// laid out through the public API of `zikaron-store` instead.
+/// A ready ledger: three entries, one grant and one revocation of it. Built through `zikaron-store`'s public
+/// API, since the CLI is another package's binary.
 fn a_ledger(dir: &Path) -> (String, String) {
     use zikaron::json::Value;
     use zikaron_store::layout::EntryName;
@@ -161,7 +158,7 @@ fn a_bundle_that_the_kit_law_refuses_never_reaches_the_caller_s_path() {
     );
     assert_eq!(r.code, 1, "自验不符该退 1:{}", r.out);
     assert!(!w.join("bundle").exists(), "验不过的包不该落地");
-    // A half-laid staging area does not stay on disk.
+    // A partially laid-out staging area does not stay on disk.
     let leftovers: Vec<String> = std::fs::read_dir(&w)
         .expect("列不动")
         .filter_map(|x| x.ok())
@@ -179,8 +176,8 @@ fn the_revocation_of_a_chosen_grant_is_always_in_the_bundle() {
     // so the closure rule pulls it in. Without it the recipient's checks would pass a revoked grant.
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "bundle", "--work", &work, "--note", ""]);
     assert_eq!(r.code, 0, "{}", r.out);
-    // Three entries: the grant, the revocation pulled in, and the spine (genesis travels with the kit so the
-    // verifier can tell whose ledger it is).
+    // Three entries: the grant, the pulled-in revocation, and the spine (genesis, so the verifier can tell
+    // whose ledger it is).
     assert!(r.out.contains("\"entries\":3"), "该有三枚条目:{}", r.out);
     assert!(
         r.out.contains("\"pulled\":[\"0x"),
@@ -198,7 +195,7 @@ fn platform_junk_is_dropped_by_name_and_a_bad_path_is_refused_by_name() {
     std::fs::write(w.join("stuff/art.bin"), "作品").expect("写不下");
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b1", "--dir", "art=stuff", "--note", ""]);
     assert_eq!(r.code, 0, "{}", r.out);
-    // A dropped item is named: silently missing one differs from refusing one.
+    // A dropped item is named, never silently missing.
     assert!(r.out.contains("\"dropped\":[\"art/.DS_Store\"]"), "{}", r.out);
     std::fs::write(w.join("up.bin"), "x").expect("写不下");
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b2", "--file", "README.md=up.bin", "--note", ""]);
@@ -279,7 +276,7 @@ fn every_part_of_a_tampered_bundle_is_refused_with_its_own_verdict() {
     }
     seen.sort();
     seen.dedup();
-    // Each tampered part has its own refusal: four tamperings must not collapse into one sentence.
+    // Each tampered part has its own refusal; the four must not collapse into one.
     assert_eq!(seen.len(), 4, "四处篡改只报出 {} 种拒因:{seen:?}", seen.len());
 }
 
@@ -314,7 +311,7 @@ fn every_kit_output_module_emits_its_own_mark() {
 
 #[test]
 fn no_kit_law_literal_lives_outside_the_bases() {
-    // Kit law bytes come from the kit core's constants.
+    // Kit spec bytes come from the kit core's constants.
     for name in ["pack.rs", "select.rs", "tidy.rs", "names.rs"] {
         let text = src(name);
         for f in ["\"zikaron.kit/1\"", "\"KIT_OK\"", "\"GREEN\"", "\"PARTIAL\"", "\"FAIL\""] {
@@ -329,7 +326,7 @@ fn the_junk_list_is_a_closed_table_and_the_path_law_is_the_kit_s() {
     // Whether a path is a valid kit path is answered by the kit core; no second character-set check here.
     assert!(text.contains("kitdir::is_kit_path"));
     assert!(!text.contains("is_ascii_lowercase"), "别在这里重写一遍 kit 法 §7.2");
-    // The junk list is closed; an entry needs a reason.
+    // The junk list is closed.
     assert!(text.contains("pub const JUNK: [&str; 6]"));
 }
 
@@ -388,8 +385,7 @@ fn one_call_gives_one_answer_and_a_repeated_flag_is_misuse() {
 fn a_flag_outside_a_verb_s_own_list_is_misuse() {
     let w = scratch("closed-flags");
     a_ledger(&w);
-    // A verb outside the list fails loudly: `defend` was removed and is now misuse, where running and passing
-    // with the name silently ignored would be wrong.
+    // A verb outside the list is misuse, never silently ignored: `defend` is no longer a verb.
     let r = run_in(&w, &["defend", "--ledger", "book", "--out", "d"]);
     assert_eq!(r.code, 2, "{}", r.out);
     assert!(r.out.is_empty());

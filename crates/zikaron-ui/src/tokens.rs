@@ -197,8 +197,10 @@ pub const INPUT_H: f32 = 38.0;
 pub const INPUT_PAD_X: f32 = 12.0;
 /// The mark at the right edge of a field that opens a picker (the date field's calendar).
 pub const INPUT_ICON: f32 = 14.0;
-/// The label column of a path row and of key-value tables.
+/// The label column of a path row and of key-value tables (a key-value table's key column widens to its
+/// widest key, up to 180; a key wider still wraps).
 pub const LABEL_W: f32 = 132.0;
+pub const LABEL_MAX_W: f32 = 180.0;
 
 /// Segmented control 34 high (2 of track around a 30 thumb); switch 34 × 20; pills 24 high; type tags 24
 /// high and at least 52 wide; status icons 18.
@@ -210,11 +212,18 @@ pub const TAG_H: f32 = 24.0;
 pub const TAG_MIN_W: f32 = 52.0;
 pub const MARK: f32 = 18.0;
 
-/// Tables: head 40, rows 56, the sequence column 36 and the type column 84; 12 between cells.
+/// Tables: head 40, rows 56, the sequence column 36 and the type column at least 84 (as wide as its widest
+/// tag up to 148, a tag wider still elided); 12 between cells; the body column keeps 120 before the fixed
+/// columns give way.
 pub const TABLE_HEAD_H: f32 = 40.0;
 pub const ROW_H: f32 = 56.0;
 pub const SEQ_W: f32 = 36.0;
 pub const TYPE_W: f32 = 84.0;
+pub const TYPE_MAX_W: f32 = 148.0;
+/// A tag's words and its padding (8 each side).
+pub const TAG_PAD: f32 = 16.0;
+/// The body (share) columns' floor: narrower than this, the fixed columns give way first.
+pub const BODY_MIN_W: f32 = 120.0;
 /// The type column of a pick list inside a sheet.
 pub const PICK_TYPE_W: f32 = 64.0;
 pub const CELL_GAP: f32 = S3;
@@ -223,7 +232,7 @@ pub const LIST_PAD_Y: f32 = 4.0;
 pub const LIST_PAD_X: f32 = 6.0;
 pub const ROW_INSET: f32 = 12.0;
 
-/// Key-value: key column 132, rows 14 apart, columns 20 apart.
+/// Key-value: key column 132 (up to 180 for a wider key), rows 14 apart, columns 20 apart.
 pub const KV_ROW_GAP: f32 = 14.0;
 pub const KV_COL_GAP: f32 = 20.0;
 

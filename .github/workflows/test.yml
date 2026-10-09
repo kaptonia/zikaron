@@ -2,7 +2,8 @@
 # joins main (set both checks as required on the main branch); the Windows cell builds and tests the Windows
 # implementation of the platform pieces, and is not required until it has passed here and on a Windows machine.
 # Steps call cargo only, except the Linux cell's one line installing the build dependencies README lists for
-# building from source (configuration).
+# building from source (configuration). The Linux cell names its image, so a change of `ubuntu-latest` does
+# not change the package names under it.
 name: test
 
 on:
@@ -23,17 +24,25 @@ jobs:
             os: macos-latest
             required: true
           - name: linux
-            os: ubuntu-latest
+            os: ubuntu-24.04
             required: true
           - name: windows
             os: windows-latest
             required: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: linux build dependencies
         if: matrix.name == 'linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev xdg-desktop-portal xdg-desktop-portal-gtk
       - name: build
         run: cargo build --workspace --locked
       - name: test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
+      # A release build, with the mapping the packaging scripts give, carries no path of this runner (its home,
+      # its workspace, Cargo's and rustup's homes, its temporary directory and tool cache).
+      - name: release build carries no runner path
+        if: matrix.name != 'windows'
+        run: |
+          cargo build --release --locked -p zikaron-pack
+          CARGO_ENCODED_RUSTFLAGS="$(target/release/zikaron-pack rustflags --target-dir "$PWD/target")" cargo build --release --locked -p app -p zikaron-cli
+          target/release/zikaron-pack no-paths target/release/app target/release/zikaron

@@ -31,11 +31,14 @@ PACK="$TARGET_DIR/release/zikaron-pack"
 # Every date the packages record: the moment of the commit being built, unless SOURCE_DATE_EPOCH says another.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
 
-# Keep local paths (home directory, checkout, build directory) out of the shipped binaries.
-CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$CARGO_HOME_DIR=/cargo --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$TARGET_DIR=/target --remap-path-prefix=$ROOT=/zikaron --remap-path-prefix=$HOME=/home"
-cargo build --release --locked -p app -p zikaron-cli -p zikaron-pack
+# Keep local paths (home directory, checkout, build directory) out of the shipped binaries: the packaging tool
+# is built first and gives the flags, from the one table of path mappings (`zikaron-pack rustflags`).
+cargo build --release --locked -p zikaron-pack
+CARGO_ENCODED_RUSTFLAGS="$("$PACK" rustflags --target-dir "$TARGET_DIR")"
+export CARGO_ENCODED_RUSTFLAGS
+cargo build --release --locked -p app -p zikaron-cli
+# The built binaries carry no path of this machine (`zikaron-pack no-paths`); no package is made if they do.
+"$PACK" no-paths "$TARGET_DIR/release/app" "$TARGET_DIR/release/zikaron"
 
 rm -rf "$WORK"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST"

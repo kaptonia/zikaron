@@ -1,7 +1,8 @@
-//! Exit codes, refusal tokens, output keys and law field names, each spelled once.
+//! Exit codes, refusal tokens, output keys, the `contract` verb's member names and law field names, each
+//! spelled once.
 //!
-//! Every free name this crate prints (keys, refusals, field names) is written once in this file; everything
-//! else uses these `as_str()`. `CLI-SCHEMA.md` is the readable form of these four tables.
+//! Every free name this crate prints (keys, refusals, exit names, field names) is written once in this file;
+//! everything else uses these `as_str()`. `CLI-SCHEMA.md` is the readable form of these tables.
 //!
 //! The law's own bytes are not copied: `zikaron/1` comes from [`zikaron::tokens::SPEC`], the seven type names
 //! from [`zikaron::tokens::EntryType::as_str`], signing domains from [`zikaron::tokens::Domain::as_str`], the
@@ -14,13 +15,10 @@
 /// | code | meaning | stdout |
 /// |---|---|---|
 /// | 0 | answered, affirmative (entry stands, GREEN, COMPLETE, KIT_OK, PAIRED) | one canonical JSON value |
-/// | 1 | answered, negative (the law refused the bytes, FAIL, BROKEN_CHAIN, NO_LABEL) | one canonical JSON
-/// value |
+/// | 1 | answered, negative (the law refused the bytes, FAIL, BROKEN_CHAIN, NO_LABEL) | one canonical JSON value |
 /// | 2 | misuse: malformed arguments, unreadable path, a flag the verb does not know | zero bytes |
-/// | 3 | answered, neither: PARTIAL / GAPS / UNAVAILABLE, its own state, never merged into green | one
-/// canonical JSON value |
-/// | 4 | no answer: endpoint unreachable, readings disagree, scan declined. Law §9.4: a scan failure is the
-/// absence of an answer, never an answer of absence | one canonical JSON value with `reason` |
+/// | 3 | answered, neither: PARTIAL / GAPS / UNAVAILABLE, its own state, never merged into green | one canonical JSON value |
+/// | 4 | no answer: endpoint unreachable, readings disagree, scan declined (law §9.4: a scan failure is the absence of an answer, never an answer of absence) | one canonical JSON value with `reason` |
 ///
 /// Codes 3 and 4 carry the weight of the table. Folding PARTIAL into 0 would let a buyer take an unanchored
 /// grant as a green light; folding an unreachable endpoint into 1 would make a network fault read as "this
@@ -42,6 +40,17 @@ impl Exit {
             Exit::Misuse => 2,
             Exit::Partial => 3,
             Exit::Unanswered => 4,
+        }
+    }
+
+    /// The short name of each code: the one spelling the `contract` verb answers it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Exit::Affirmed => "affirmed",
+            Exit::Denied => "denied",
+            Exit::Misuse => "misuse",
+            Exit::Partial => "partial",
+            Exit::Unanswered => "unanswered",
         }
     }
 
@@ -87,6 +96,10 @@ pub enum Reason {
     TxStatus,
     /// Not included by the deadline.
     TxNotYet,
+    /// `anchor`: what was sent is void, no node holding it and its nonce used by another transaction, so it will
+    /// never be included; nothing new was sent by this answer (the desktop's entries are back in its queue; the
+    /// direct `anchor` sends afresh when run again).
+    TxVoid,
     /// The kit core refused the document we built (with its token).
     Doc,
     /// The kit core judged the kit invalid (with the kit law verdict).
@@ -117,6 +130,17 @@ pub enum Reason {
     /// `anchor`: the endpoint refused to estimate the transaction's gas (the call would revert), or estimated
     /// it above the ceiling (it would run out of gas on chain with the fee paid): nothing is broadcast.
     GasRefused,
+    /// `--home`: the desktop gave no answer for that home: it is locked, not open, has another home open, or is
+    /// not running; or its local endpoint could not be reached or broke off (`detail`, one of [`Door`]). Nothing
+    /// was done by this command.
+    Desktop,
+    /// `--home`: the action asks for the passcode, so it is done on the desktop, never through its local endpoint.
+    OnDesktop,
+    /// `--home` `anchor` with the desktop set to leave sending to the user: nothing was sent; the entries wait in
+    /// its queue (`count`) for the user to send them from the desktop.
+    Queued,
+    /// `--home`: the desktop's action layer refused (its code in `token`, its evidence in `detail`).
+    DesktopRefused,
 }
 
 impl Reason {
@@ -136,6 +160,7 @@ impl Reason {
             Reason::Unreachable => "E_UNREACHABLE",
             Reason::TxStatus => "E_TX_STATUS",
             Reason::TxNotYet => "E_TX_NOT_YET",
+            Reason::TxVoid => "E_TX_VOID",
             Reason::Doc => "E_DOC",
             Reason::Kit => "E_KIT",
             Reason::Badge => "E_BADGE",
@@ -146,10 +171,14 @@ impl Reason {
             Reason::WouldBreak => "E_WOULD_BREAK",
             Reason::GrantFile => "E_GRANT_FILE",
             Reason::GasRefused => "E_GAS_REFUSED",
+            Reason::Desktop => "E_DESKTOP",
+            Reason::OnDesktop => "E_ON_DESKTOP",
+            Reason::Queued => "E_QUEUED",
+            Reason::DesktopRefused => "E_DESKTOP_REFUSED",
         }
     }
 
-    pub const ALL: [Reason; 24] = [
+    pub const ALL: [Reason; 29] = [
         Reason::Args,
         Reason::Unreadable,
         Reason::Key,
@@ -164,6 +193,7 @@ impl Reason {
         Reason::Unreachable,
         Reason::TxStatus,
         Reason::TxNotYet,
+        Reason::TxVoid,
         Reason::Doc,
         Reason::Kit,
         Reason::Badge,
@@ -174,10 +204,15 @@ impl Reason {
         Reason::WouldBreak,
         Reason::GrantFile,
         Reason::GasRefused,
+        Reason::Desktop,
+        Reason::OnDesktop,
+        Reason::Queued,
+        Reason::DesktopRefused,
     ];
 }
 
-/// Output object keys. Closed: every member name this crate prints is one of these.
+/// Output object keys. Closed: every member name this crate prints is one of these, except the members of
+/// the `contract` verb's answer below `ok`, which are [`Contract`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     Ok,
@@ -298,6 +333,59 @@ impl Key {
 
 }
 
+/// The member names of the `contract` verb's answer (beside [`Key::Ok`]). Closed: the answer prints these and
+/// no other; `CLI-SCHEMA.md` section 10 lists them (checked by the tests).
+///
+/// The answer is one object: `exits` (each exit code as `{code, name}`, [`Exit::ALL`] in order, `name` from
+/// [`Exit::name`]), `reasons` ([`Reason::ALL`] as `as_str`, in order), `standsFor` (each flag that gives
+/// another flag's value another way as `{flag, for}`, from `args::STANDS_FOR`: a verb that takes `for` takes
+/// `flag` too) and `verbs` (each verb as `{name, flags}`, `verbs::VERBS` in order, `flags` that verb's closed
+/// list from `verbs::accepts`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Contract {
+    Exits,
+    Code,
+    Name,
+    Reasons,
+    StandsFor,
+    Flag,
+    For,
+    Verbs,
+    Flags,
+    HomeFlags,
+}
+
+impl Contract {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Contract::Exits => "exits",
+            Contract::Code => "code",
+            Contract::Name => "name",
+            Contract::Reasons => "reasons",
+            Contract::StandsFor => "standsFor",
+            Contract::Flag => "flag",
+            Contract::For => "for",
+            Contract::Verbs => "verbs",
+            Contract::Flags => "flags",
+            Contract::HomeFlags => "homeFlags",
+        }
+    }
+
+    /// The whole set.
+    pub const ALL: [Contract; 10] = [
+        Contract::Exits,
+        Contract::Code,
+        Contract::Name,
+        Contract::Reasons,
+        Contract::StandsFor,
+        Contract::Flag,
+        Contract::For,
+        Contract::Verbs,
+        Contract::Flags,
+        Contract::HomeFlags,
+    ];
+}
+
 /// The shell's own words: the flag values it recognizes. Closed, one spelling each for `--form` and the two
 /// `badge` sides.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -315,12 +403,45 @@ impl Word {
     }
 }
 
+/// Why the desktop gave no answer through its local IPC endpoint, the door (`E_DESKTOP`'s `detail`). Closed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Door {
+    /// No endpoint for that home: the desktop is locked, does not have that home open (or reads it while another
+    /// instance writes it), or is not running.
+    NotOpen,
+    /// The desktop locked, closed the home or quit before it answered.
+    Closed,
+    /// The endpoint's path is longer than this system's local channel allows.
+    PathTooLong,
+    /// The endpoint belongs to another user.
+    NotYou,
+    /// The connection broke off, or the answer is something this version does not read.
+    Broken,
+    /// This machine's folder could not be found (the system says no home directory, or its pointer does not
+    /// read).
+    NoMachine,
+}
+
+impl Door {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Door::NotOpen => "NOT_OPEN",
+            Door::Closed => "CLOSED",
+            Door::PathTooLong => "PATH_TOO_LONG",
+            Door::NotYou => "NOT_YOU",
+            Door::Broken => "BROKEN",
+            Door::NoMachine => "NO_MACHINE",
+        }
+    }
+
+    pub const ALL: [Door; 6] = [Door::NotOpen, Door::Closed, Door::PathTooLong, Door::NotYou, Door::Broken, Door::NoMachine];
+}
+
 /// Law field names: the seven envelope members (law §4.1), the body members of the seven types (law §6), kit
 /// document members (kit law §4, §5) and kit manifest members (kit law §7.3).
 ///
-/// These names belong to the law and would ideally be exported by the core and the kit core, which today
-/// spell them only inside their `check_*` functions. Until they export constants, the shell keeps them in
-/// this one closed table, so switching to re-exports later touches only this file.
+/// These names belong to the law; the core and the kit core spell them only inside their `check_*` functions
+/// and export no constants, so the shell keeps them in this one closed table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Field {
     // Envelope (law §4.1).

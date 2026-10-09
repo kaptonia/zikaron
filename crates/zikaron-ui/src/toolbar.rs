@@ -48,7 +48,7 @@ pub fn toolbar<R>(
                 }
             }
             if on {
-                let _ = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let _ = crate::layer::tip(resp, tip).on_hover_cursor(egui::CursorIcon::PointingHand);
             }
             x += 28.0 + 2.0;
         }

@@ -1,20 +1,19 @@
-//! The local index and "verify a file".
+//! The local signing index and "verify a file".
 //!
-//! A `history` in the ledger records only the content's digest (`content`), not which file or where; the
-//! recorder asks "was this file signed, which entry is it, is it anchored". File names and paths are this
-//! machine's matter, and homes may not store absolute paths, so this index lives in the machine directory:
-//! `<machine directory>/records/index.json` (this desk's own; sibling apps do not read it). A row records
-//! only what was fixed at signing (which ledger, digest, entry id, `seq`, file name, path); anchor state is
-//! not stored but asked of this pass's audit report (stored anchor state would go stale, a silent error).
+//! A ledger `history` entry records only the content digest (`content`), not the file name or location.
+//! To answer "was this file signed, which entry is it, is it anchored", this machine keeps its own index at
+//! `<machine directory>/records/index.json` (homes must not store absolute paths; other apps do not read it).
+//! A row holds only what was fixed at signing (ledger, digest, entry id, `seq`, file name, path). Anchor state
+//! is not stored, because it would go stale; it is taken from the current audit report.
 //!
-//! "Verify a file" does not decide by this index: it computes the file's digest now and reads the ledger now
-//! for a `history` with the same `content`; the index only adds "which file was signed back then".
+//! "Verify a file" does not rely on this index: it hashes the file now and searches the ledger for a `history`
+//! entry with the same `content`. The index only adds which file was signed.
 
 use crate::fault::{Fault, Known};
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// Form literal. One name, one home.
+/// Format identifier written into the index file.
 pub const FORM: &str = "zikaron-desk/records/1";
 pub const DIR: &str = "records";
 pub const FILE: &str = "index.json";
@@ -53,7 +52,7 @@ fn int_of(v: &Value, k: &str) -> Option<u64> {
     }
 }
 
-/// Read. No file means empty; a wrong shape is refused by name.
+/// Read the index. A missing file means no rows; a malformed file is refused.
 pub fn read(machine: &Path) -> Result<Vec<Row>, Fault> {
     let p = path_in(machine);
     let Some(bytes) = crate::local::read(&p, crate::local::Doc::Records)? else { return Ok(Vec::new()) };

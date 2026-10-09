@@ -1,6 +1,7 @@
 //! Menus and pop-ups: rows 34 high on a floating card; the hovered row fills with blue and its words turn
 //! white. A menu grows out of its anchor's corner from 0.97 and fades in over 120 ms, and leaves the same way
-//! backwards (120 ms, back to 0.97). A click outside, Esc, or picking a row closes it.
+//! backwards (120 ms, back to 0.97 and up the 4 it came down). A press outside (taken by its guard, so it
+//! reaches nothing under the menu), Esc, or picking a row closes it.
 //!
 //! The identity lens (only the switch-identity menu uses it): identity rows ([`Item::Who`]) are 48 high with
 //! two lines (the name; the kind, with "primary" and "in use" in the accent ink at its end). The current or
@@ -104,20 +105,22 @@ pub fn set(ctx: &egui::Context, id: egui::Id, open: bool) {
 /// Draw an open menu under `anchor` (aligned to its left edge when `left`, its right edge otherwise), at
 /// least `min_w` wide. Returns the picked row's index.
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
+    show_from(ctx, None, id, anchor, left, min_w, items)
+}
+
+/// As [`show`], for a menu whose anchor lies in `parent` (an overlay it then hangs above; see
+/// [`crate::layer::under`]).
+pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     if !is_open(ctx, id) {
         return None;
     }
-    let age = motion::age(ctx, id.with("age"), 0);
-    let e = Curve::Ease.at((age / tokens::FAST).clamp(0.0, 1.0));
-    if age < tokens::FAST {
-        ctx.request_repaint();
-    }
+    let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
     // Width: the widest row, at least `min_w`.
     let row_w = |it: &Item| -> f32 {
         match it {
             Item::Row(r) => {
                 let f = if r.mono { egui::FontId::new(14.0, egui::FontFamily::Monospace) } else { Type::Key.font() };
-                let mut w = ctx.fonts(|fo| fo.layout_no_wrap(r.label.to_string(), f, egui::Color32::BLACK).size().x) + 24.0;
+                let mut w = ctx.fonts_mut(|fo| fo.layout_no_wrap(r.label.to_string(), f, egui::Color32::BLACK).size().x) + 24.0;
                 if !r.lead.is_empty() {
                     w += 36.0;
                 }
@@ -125,7 +128,7 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
                     w += 22.0;
                 }
                 if let Some((p, _)) = r.pill {
-                    w += ctx.fonts(|fo| fo.layout_no_wrap(p.to_string(), Type::Small.font(), egui::Color32::BLACK).size().x) + 32.0;
+                    w += ctx.fonts_mut(|fo| fo.layout_no_wrap(p.to_string(), Type::Small.font(), egui::Color32::BLACK).size().x) + 32.0;
                 }
                 if !r.trail.is_empty() || r.tick_right {
                     w += 40.0;
@@ -134,14 +137,14 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
             }
             Item::Who(wr) => {
                 let tags = if wr.tags.is_empty() { String::new() } else { format!(" \u{b7} {}", wr.tags.join(" \u{b7} ")) };
-                let a = ctx.fonts(|fo| fo.layout_no_wrap(wr.name.to_string(), Type::Key.font(), egui::Color32::BLACK).size().x);
-                let b = ctx.fonts(|fo| fo.layout_no_wrap(format!("{}{tags}", wr.kind), Type::Small.font(), egui::Color32::BLACK).size().x);
+                let a = ctx.fonts_mut(|fo| fo.layout_no_wrap(wr.name.to_string(), Type::Key.font(), egui::Color32::BLACK).size().x);
+                let b = ctx.fonts_mut(|fo| fo.layout_no_wrap(format!("{}{tags}", wr.kind), Type::Small.font(), egui::Color32::BLACK).size().x);
                 a.max(b) + 24.0
             }
             _ => 0.0,
         }
     };
-    let w = items.iter().map(row_w).fold(min_w, f32::max).min(ctx.screen_rect().width() - 32.0) + 10.0;
+    let w = items.iter().map(row_w).fold(min_w, f32::max).min(ctx.content_rect().width() - 32.0) + 10.0;
     let h: f32 = items
         .iter()
         .map(|it| match it {
@@ -152,13 +155,11 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
         })
         .sum::<f32>()
         + 10.0;
-    let x = if left { anchor.left() } else { anchor.right() - w };
-    let x = x.clamp(8.0, (ctx.screen_rect().right() - w - 8.0).max(8.0));
-    let rect = Rect::from_min_size(pos2(x, anchor.bottom() + 6.0), vec2(w, h));
-    let origin = if left { rect.left_top() } else { rect.right_top() };
+    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), left);
+    let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + vec2(0.0, -4.0 * (1.0 - e)) });
+    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + drop.moved * (1.0 - e) });
     let mut picked = None;
     // The lens: which identity rows there are, where each sits, and which one it frames now.
     let lens = items.iter().any(|it| matches!(it, Item::Who(_)));
@@ -196,7 +197,14 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
             picked = Some(who_rows[at].0);
         }
     }
-    let shown = egui::Area::new(layer.id).order(egui::Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
+    // The guard under the card takes a press outside it: that press closes the menu and reaches nothing under it.
+    crate::layer::place(ctx, layer, parent);
+    let mut guarded = false;
+    let shown = crate::layer::over(ctx, layer).show(ctx, |ui| {
+        // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
+        // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
+        guarded = crate::layer::under(ui, crate::layer::Under::Guard);
+        crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
         paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
         let mut y = rect.top() + 5.0;
@@ -248,11 +256,10 @@ pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: 
         }
         ui.allocate_rect(rect, egui::Sense::hover());
     });
-    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin);
-    // Close on pick, Esc, or a press outside the menu and its anchor.
-    let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().map(|p| !rect.contains(p) && !anchor.contains(p)).unwrap_or(false));
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    if picked.is_some() || outside || esc {
+    crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin, drop.moved);
+    // Close on pick, Esc, or a press on the guard (outside the card, its anchor included).
+    let esc = crate::layer::esc(ctx, id);
+    if picked.is_some() || guarded || esc {
         set(ctx, id, false);
     }
     let _ = shown;
@@ -266,7 +273,7 @@ pub fn menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, left: bool, min_w
     if resp.clicked() {
         toggle(ui.ctx(), id);
     }
-    show(ui.ctx(), id, resp.rect, left, min_w, items)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, left, min_w, items)
 }
 
 /// A key without a caret that opens a menu (the "recent addresses" key beside a field).
@@ -276,7 +283,7 @@ pub fn plain_key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, l
     if resp.clicked() {
         toggle(ui.ctx(), id);
     }
-    show(ui.ctx(), id, resp.rect, left, min_w, items)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, left, min_w, items)
 }
 
 /// One plain row drawn in `rr` (menus and the pickers share it): hovered rows fill with blue and their words

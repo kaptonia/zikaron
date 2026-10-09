@@ -1,27 +1,21 @@
-//! The assembly half of the disclosure kit maker. Not one byte of kit shape is invented here.
+//! Assembling disclosure kits. The kit format itself lives in the glue and kit crates; nothing here defines
+//! it.
 //!
-//! ─── This layer does three parameter jobs ───
+//! This layer:
 //!
-//! 1. Lay out "which entries" as the glue crate's [`select::Selection`] (a range cell and a named-ids cell).
-//! The selection decides which entries go into the kit and which records' originals may be attached.
-//! 2. Read "what to attach" into the glue crate's `files` table (through its `gather`, which does not follow
-//! symbolic links); the entry first passes [`Originals`]: a digest that is not a selected record's `content`
-//! is refused by name.
-//! 3. Hand both to the glue crate's [`pack::export`].
+//! 1. Expresses "which entries" as the glue crate's [`select::Selection`] (a seq range or named ids). The
+//! selection decides which entries go into the kit and which records' originals may be attached.
+//! 2. Reads attachments into the glue crate's `files` table (through `gather`, which does not follow symbolic
+//! links), after checking each against [`Originals`]: a digest that is not a selected record's `content` is
+//! refused.
+//! 3. Hands both to the glue crate's [`pack::export`].
 //!
-//! ─── No kit when self-verification fails ───
-//!
-//! That rule is not in this layer: the glue crate first lays the kit out in a temporary place under the same
-//! parent directory, and renames the whole thing into place only after the kit crate's `verify_kit` judges
-//! `KIT_OK`; on failure the temporary place is cleared at once, and not one byte of the caller's path
-//! changes. So "write first, check later" has no place on this path, and its owners are the glue and kit
-//! crates, not this layer (reuse is mandatory).
-//!
-//! ─── Revocation closure ───
+//! The glue crate builds the kit in a temporary directory beside the target and renames it into place only
+//! after the kit crate's `verify_kit` returns `KIT_OK`; on failure the temporary directory is removed and the
+//! target path is untouched. A kit that fails self-verification is never written.
 //!
 //! If the chosen entries include a grant, the glue crate also pulls in the revocations that reference it and
-//! reports each one pulled in. The face says so plainly: what else went into a kit must be visible to the
-//! person.
+//! reports each one; the UI shows them so the user sees everything that went into the kit.
 
 use crate::fault::{Fault, Known};
 use crate::home::Home;
@@ -30,31 +24,27 @@ use std::path::Path;
 use zikaron_glue::pack::{self, Bundle};
 use zikaron_glue::select::{self, Selection};
 
-/// The selector's two cells (entry range). There is no record cell: two filters ANDed together often came up
-/// empty without the person knowing why; the engine's `Selection.work` member stays, used by the command
-/// line.
+/// The entry selection: a seq range or named ids. There is no per-record filter here (ANDing two filters
+/// often gave empty results with no visible reason); `Selection.work` remains for the command line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pick {
     /// Lower seq bound (inclusive).
     pub from: Option<u64>,
     /// Upper seq bound (inclusive).
     pub to: Option<u64>,
-    /// The named entries (ids, `0x` plus sixty-four digits; any subset toggled one by one). When non-empty
-    /// only these are kept; when empty the range applies. Named entries also go through revocation closure
-    /// (closure lives only in the glue crate's selector).
+    /// Named entry ids (`0x` plus 64 hex digits). When non-empty only these are kept; when empty the range
+    /// applies. Named entries also get revocation closure (done by the glue crate's selector).
     pub ids: Vec<String>,
 }
 
 impl Pick {
-    /// Lay out in the glue crate's form. Neither bound given means everything (the glue crate's reading; not
-    /// redefined here).
+    /// As the glue crate's selection. Neither bound given means everything (as the glue crate defines it).
     pub fn selection(&self) -> Selection {
         Selection { from: self.from, to: self.to, work: None, ids: self.ids.clone() }
     }
 
-    /// Recognize from the face's cells. Empty bounds mean "no limit"; an unrecognized number is refused by
-    /// name, never quietly read as no limit. `ids` has one per line (or comma separated); one that is not an
-    /// id is refused by name.
+    /// Parse from the UI fields. Empty bounds mean no limit; an invalid number is an error, never read as no
+    /// limit. `ids` holds one id per line (or comma separated); anything that is not an id is an error.
     pub fn parse_ids(from: &str, to: &str, ids: &str) -> Result<Pick, Fault> {
         let mut pick = Pick::parse(from, to)?;
         for one in ids.split(|c: char| c.is_whitespace() || c == ',').filter(|x| !x.trim().is_empty()) {
@@ -69,7 +59,7 @@ impl Pick {
         Ok(pick)
     }
 
-    /// Recognize only the two bounds (the named cell empty).
+    /// Parse only the two bounds (no named ids).
     pub fn parse(from: &str, to: &str) -> Result<Pick, Fault> {
         let num = |s: &str, what: &str| -> Result<Option<u64>, Fault> {
             let t = s.trim();
@@ -84,23 +74,21 @@ impl Pick {
     }
 }
 
-/// One selection's reading: how many were chosen and which were pulled in by closure.
+/// A selection's result: the chosen entries and the ids pulled in by revocation closure.
 pub struct Chosen {
     pub items: Vec<Vec<u8>>,
     pub pulled: Vec<String>,
 }
 
-/// The whole ledger pile, through the store crate's strict read (the home's entries are sealed: opened through
-/// `local::Ledger`). Choosing and exporting read the same place.
+/// All ledger entries, through the store's strict read (`local::Ledger`, since the home's entries are
+/// sealed). Choosing and exporting read the same source.
 fn whole(home: &Home) -> Result<Vec<Vec<u8>>, Fault> {
     Ok(home.ledger()?.pile()?.items)
 }
 
-/// Record bundle directory name (one name, one home): `kit-<first eight digits of the first selected record's
-/// original digest>`. The first is the selected entry with the smallest seq that has an original digest
-/// (`work`); named selection follows the names, a range follows the range, neither means the whole ledger.
-/// With no entry carrying a digest (only grants selected) it stays `kit`. Name collisions are numbered by the
-/// landing place (`home::choose`). Reads the ledger rows in memory, not the disk (the window frame calls it).
+/// Kit directory name: `kit-<first 8 hex digits of the original digest>` of the lowest-seq selected entry
+/// that has one (`work`), or `kit` when none does (only grants selected). Name collisions are numbered later
+/// (`home::choose`). Works on in-memory ledger rows, not the disk, since the UI frame calls it.
 pub fn landing_stem(rows: &[crate::ledgerx::Row], pick: &Pick) -> String {
     let mut chosen: Vec<&crate::ledgerx::Row> = rows
         .iter()
@@ -119,18 +107,16 @@ pub fn landing_stem(rows: &[crate::ledgerx::Row], pick: &Pick) -> String {
     }
 }
 
-/// What a pick takes from this home's ledger, as [`export`] will take it: the front room of the export mouth,
-/// reading the same judgement ([`chosen_in`]).
+/// What a pick selects from this home's ledger, exactly as [`export`] will (both use [`chosen_in`]).
 pub fn choose(home: &Home, pick: &Pick) -> Result<Chosen, Fault> {
     chosen_in(&whole(home)?, pick)
 }
 
-/// The selection's one judgement: the glue crate chooses, and every entry named by id must be among what it
-/// chose. [`export`] and [`choose`] both read it.
+/// The single selection logic used by [`export`] and [`choose`]: the glue crate chooses, and every entry
+/// named by id must be among the chosen.
 fn chosen_in(pile: &[Vec<u8>], pick: &Pick) -> Result<Chosen, Fault> {
     let got = select::choose(pile, &pick.selection());
-    // Every entry named by id is one this ledger holds: judged on what the selection actually chose, so a
-    // named entry it did not find is refused by name, never left out of the package without a word.
+    // A named id the selection did not find is an error, never silently left out of the kit.
     let chosen_ids: Vec<String> = got.items.iter().map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(b))).collect();
     if let Some(missing) = pick.ids.iter().find(|x| !chosen_ids.iter().any(|c| c.eq_ignore_ascii_case(x))) {
         return Err(Fault::known(Known::SubjectMissing, missing.clone()));
@@ -138,12 +124,12 @@ fn chosen_in(pile: &[Vec<u8>], pick: &Pick) -> Result<Chosen, Fault> {
     Ok(Chosen { items: got.items, pulled: got.pulled })
 }
 
-/// Which originals the selected records accept: the `content` (hex32, lowercase) of every history in the
-/// selected entries.
+/// The originals the selected records accept: the `content` (hex32, lowercase) of every history entry in the
+/// selection.
 ///
-/// Whether an attachment is valid asks only this set: a file by the sha256 of its bytes
-/// (`anchorx::file_digest`), a directory by its manifest digest (`anchorx::of_dir`), both the same code that
-/// computes `content` at signing. File names, paths and suffixes count for nothing.
+/// An attachment is valid only if its digest is in this set: a file by the sha256 of its bytes
+/// (`anchorx::file_digest`), a directory by its manifest digest (`anchorx::of_dir`), the same code that
+/// computes `content` at signing. File names, paths and extensions are irrelevant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Originals(BTreeSet<String>);
 
@@ -164,8 +150,8 @@ impl Originals {
         self.0.contains(&zikaron::hexfmt::encode(digest).to_ascii_lowercase())
     }
 
-    /// As [`Originals::admits`], with the digest as a hex32 string (the form computed in the background). A
-    /// malformed one is not accepted.
+    /// As [`Originals::admits`], with the digest as a hex32 string (as computed in the background). A
+    /// malformed string is not accepted.
     pub fn admits_hex(&self, digest: &str) -> bool {
         self.0.contains(&digest.trim().to_ascii_lowercase())
     }
@@ -179,7 +165,7 @@ impl Originals {
     }
 }
 
-/// One original of a selected record in the local index (the attachment area lists them for ticking).
+/// One original of a selected record from the local index (listed in the attachment area for ticking).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed {
     pub id: String,
@@ -187,15 +173,13 @@ pub struct Listed {
     pub name: String,
     /// The absolute path at signing time.
     pub path: String,
-    /// Whether a file is at that path now (only presence is checked; the digest is computed by the export
-    /// gate).
+    /// Whether a file is at that path now (presence only; the digest is checked at export).
     pub present: bool,
 }
 
-/// The originals of the selected records, listed from the local index (`records/index.json`). Only entries of
-/// this ledger (same root) within the selection are listed; those the index lacks (a directory or repository
-/// was signed, or signed on another machine) are not listed and can be dragged in by the person, still going
-/// through [`Originals`]. Sorted by seq.
+/// The originals of the selected records from the local index (`records/index.json`), for this ledger only,
+/// sorted by seq. Originals the index lacks (a signed directory or repository, or one signed on another
+/// machine) are not listed; the user can drag them in, still checked by [`Originals`].
 pub fn originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
     let chosen = choose(home, pick)?;
     let ids: BTreeSet<String> = chosen
@@ -220,9 +204,8 @@ pub fn originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
     Ok(out)
 }
 
-/// Preview. The same selection as export (the glue crate's `select::choose`): ids of the chosen entries and
-/// those pulled in by closure. The face's list comes only from here and is not re-judged in the interface
-/// layer.
+/// Preview: the ids of the chosen entries and of those pulled in by closure, from the same selection export
+/// uses. The UI list comes only from here.
 pub fn preview(home: &Home, pick: &Pick) -> Result<(Vec<String>, Vec<String>), Fault> {
     let got = choose(home, pick)?;
     let ids = got
@@ -236,20 +219,19 @@ pub fn preview(home: &Home, pick: &Pick) -> Result<(Vec<String>, Vec<String>), F
 
 // ───────────────────────── Names inside the kit ─────────────────────────
 
-/// The table of original names to kit names, stored in the kit (under `files/`). It is itself a file in the
-/// manifest. One name, one home.
+/// The table mapping original names to kit names, stored in the kit (under `files/`) and listed in the
+/// manifest.
 pub const NAMES_FILE: &str = "zikaron-names.json";
 
 /// How many hex digits of the original name's digest are appended when transliterating.
 pub const DIGEST_HEX: usize = 8;
 
-/// One name segment → a valid kit name segment. The rule is the kit crate's `is_kit_path` (kit law §7.2:
-/// lowercase letters, digits, `.` `_` `-`, not starting with `-`, at most 255 bytes per segment); this layer
-/// writes no second copy. Already valid stays unchanged; otherwise transliterate: lowercase, replace each run
-/// of characters outside the set with one `-`, append the first eight digits of the sha256 of the original
-/// name (UTF-8 bytes) to keep it unique, and keep the extension (when valid after lowercasing). Still invalid
-/// after transliteration (too long, for example) gives `None`: it really cannot be converted, the face marks
-/// it red and the export button is disabled.
+/// Convert one name segment to a valid kit name segment, as defined by the kit crate's `is_kit_path`
+/// (kit law §7.2: lowercase letters, digits, `.` `_` `-`, not starting with `-`, at most 255 bytes).
+/// A valid segment is kept as is. Otherwise: lowercase, replace each run of other characters with one `-`,
+/// append the first 8 hex digits of the sha256 of the original name (UTF-8) for uniqueness, and keep the
+/// extension when valid. `None` when the result is still invalid (too long, for example); the UI then marks
+/// it red and disables export.
 pub fn kit_segment(orig: &str) -> Option<String> {
     if zikaron_kit::kitdir::is_kit_path(orig) && !orig.contains('/') {
         return Some(orig.to_string());
@@ -284,17 +266,17 @@ pub fn kit_segment(orig: &str) -> Option<String> {
     if zikaron_kit::kitdir::is_kit_path(&name) { Some(name) } else { None }
 }
 
-/// Transliterate a relative path segment by segment (directory attachments alike). The whole path must still
-/// pass `is_kit_path` (the 1024 total length rule is checked here).
+/// Transliterate a relative path segment by segment. The whole path must still pass `is_kit_path`, which
+/// also enforces the 1024-byte total length.
 pub fn kit_rel(orig: &str) -> Option<String> {
     let segs: Option<Vec<String>> = orig.split('/').map(kit_segment).collect();
     let rel = segs?.join("/");
     if zikaron_kit::kitdir::is_kit_path(&rel) { Some(rel) } else { None }
 }
 
-/// What an attachment will be called in the kit: per item (per file for a directory) the original name and
-/// kit name; the kit name is `None` for items that cannot be converted. The attachment preview and export
-/// read the same place (what the preview shows is what lands in the kit).
+/// What an attachment will be called in the kit: for each item (each file of a directory) the original name
+/// and the kit name, `None` when it cannot be converted. Uses the same conversion as export, so the preview
+/// matches the kit.
 pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault> {
     let name = path
         .file_name()
@@ -302,10 +284,8 @@ pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault
         .ok_or_else(|| Fault::known(Known::FileMissing, path.display().to_string()))?;
     let md = std::fs::symlink_metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.is_dir() {
-        // The preview needs names only and reads no content. Walking through the glue crate's `gather` would
-        // read every file's bytes into memory only to drop them here: an attachment directory of tens of GB
-        // would stall the frame and grow memory. This only lists names (order, symbolic links and irregular
-        // files judged as `gather` does); real export still goes through `gather`.
+        // Names only: `gather` would read every file into memory, and a directory of tens of GB would stall
+        // the UI. `walk_names` applies the same rules as `gather`; real export still uses `gather`.
         let mut got: Vec<String> = Vec::new();
         walk_names(path, &name, &mut got)?;
         Ok(got.into_iter().map(|p| (p.clone(), kit_rel(&p))).collect())
@@ -314,18 +294,16 @@ pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault
     }
 }
 
-/// A pass that lists names only (the same rules as `pack::gather`: names in byte order, symbolic links and
-/// irregular files are `E_BAD_PATH`, directories are descended), reading not one byte of content. Used by the
-/// attachment preview; the writing pass still goes through `gather` (the owner).
+/// List names only, with the same rules as `pack::gather` (byte order, symbolic links and irregular files are
+/// `E_BAD_PATH`, directories are descended), without reading any content. Used by the attachment preview.
 fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fault> {
     let bad = |rel: &str| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(rel.to_string()));
-    // Read and write errors take the export pass's form (code and subject as in `gather`): preview and real
-    // export say the same sentence.
-    let io = |rel: &str| Fault::of_landing(zikaron_glue::pack::Trouble::Io(rel.to_string()));
-    let listing = std::fs::read_dir(root).map_err(|_| io(prefix))?;
+    // I/O errors take the same form as in `gather`, so preview and export report them identically.
+    let io = |rel: &str, at: &Path, what: &str, e: std::io::Error| Fault::of_landing(zikaron_glue::pack::Trouble::Io(rel.to_string(), format!("{what} {}: {e}", at.display())));
+    let listing = std::fs::read_dir(root).map_err(|e| io(prefix, root, "read directory", e))?;
     let mut names: Vec<std::ffi::OsString> = Vec::new();
     for item in listing {
-        let e = item.map_err(|_| io(prefix))?;
+        let e = item.map_err(|e| io(prefix, root, "read directory", e))?;
         names.push(e.file_name());
     }
     names.sort_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
@@ -335,7 +313,7 @@ fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fa
         };
         let rel = if prefix.is_empty() { name_str.to_string() } else { format!("{prefix}/{name_str}") };
         let at = root.join(&name);
-        let md = std::fs::symlink_metadata(&at).map_err(|_| io(&rel))?;
+        let md = std::fs::symlink_metadata(&at).map_err(|e| io(&rel, &at, "read metadata", e))?;
         if md.file_type().is_symlink() || (!md.is_dir() && !md.is_file()) {
             return Err(bad(&rel));
         }
@@ -349,10 +327,9 @@ fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fa
 }
 
 /// The digest of an attachment path: a file by its bytes ([`crate::anchorx::file_digest`]), a directory by
-/// its manifest digest ([`crate::anchorx::of_dir`]), the same as the [`attach`] gate and as `content` at
-/// signing; symbolic links and device files are refused by name. The export page asks it in the background
-/// when something is dragged in (`Action::VetAttachments`), so the row can say "not an original of the
-/// selected records" early; the export gate still applies.
+/// its manifest digest ([`crate::anchorx::of_dir`]), as [`attach`] and signing compute it; symbolic links and
+/// device files are refused. The export page computes it in the background when something is dragged in
+/// (`Action::VetAttachments`) to flag non-originals early; [`attach`] still checks at export.
 pub fn digest_of(path: &Path) -> Result<[u8; 32], Fault> {
     let md = std::fs::symlink_metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.is_file() {
@@ -365,16 +342,15 @@ pub fn digest_of(path: &Path) -> Result<[u8; 32], Fault> {
     }
 }
 
-/// Attach. One path gives one thing: a file attaches that file; a directory attaches the whole tree (through
-/// the glue crate's `gather`).
+/// Attach a file, or a whole directory tree (through the glue crate's `gather`).
 ///
-/// The entry first asks [`Originals`]: a file's sha256 or a directory's manifest digest that is not among the
-/// selected records' `content` is refused by name (`NOT_AN_ORIGINAL`, subject the path), and nothing is
-/// attached. The interface and the command line pass the same gate.
+/// The digest (a file's sha256 or a directory's manifest digest) must be in [`Originals`]; otherwise the
+/// attachment is refused (`NOT_AN_ORIGINAL`, with the path) and nothing is attached. The UI and the command
+/// line share this check.
 ///
-/// Kit names go through [`kit_rel`] item by item (the only transliteration); renamed items are recorded in
-/// `names` (original name, kit name) and written as [`NAMES_FILE`] at export. An item that cannot be
-/// converted is refused by name (`LANDING` · `E_BAD_PATH`), and nothing is attached.
+/// Kit names come from [`kit_rel`]; renamed items are recorded in `names` (original name, kit name) and
+/// written as [`NAMES_FILE`] at export. An item that cannot be converted is refused (`LANDING` ·
+/// `E_BAD_PATH`) and nothing is attached.
 pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut Vec<(String, String)>) -> Result<usize, Fault> {
     let name = path
         .file_name()
@@ -416,8 +392,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
             into.files.push((inside, b));
         }
     } else {
-        // Other shapes (symbolic links, device files) are not attached: attaching them would pull things
-        // outside the kit into it.
+        // Symbolic links and device files are refused: they could pull content from outside into the kit.
         return Err(Fault::known(
             Known::NotAdoptable,
             crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()]),
@@ -426,7 +401,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
     Ok(into.files.len() - before)
 }
 
-/// The name table's member names. One name, one home.
+/// Member names of the name table.
 pub mod names_member {
     pub const NAMES: &str = "names";
     pub const FROM: &str = "from";
@@ -446,8 +421,8 @@ pub fn names_table(names: &[(String, String)]) -> Vec<u8> {
     zikaron::json::canon_bytes(&Value::Obj(vec![(names_member::NAMES.to_string(), Value::Arr(arr))]))
 }
 
-/// The most recent record bundle in the home's kits room (the directory with a manifest and the latest
-/// modification time). "Check publication" uses it when no local kit was chosen.
+/// The most recent kit in the home's kits directory (the one whose manifest was modified last). "Check
+/// publication" uses it when no local kit was chosen.
 pub fn latest_kit(kits: &Path) -> Option<std::path::PathBuf> {
     let listing = std::fs::read_dir(kits).ok()?;
     listing
@@ -458,8 +433,8 @@ pub fn latest_kit(kits: &Path) -> Option<std::path::PathBuf> {
         .map(|(_, p)| p)
 }
 
-/// This home's anchoring point: its basis (chain id, registry, start block) as the settings hold it now; none
-/// when the chain or the registry is not configured.
+/// This home's anchoring point (chain id, registry, start block) from current settings; `None` when the chain
+/// or the registry is not configured.
 pub fn anchored_on(home: &Home) -> Result<Option<crate::kitsindex::AnchoredOn>, Fault> {
     let s = crate::settings::Settings::read(home)?;
     Ok(match (s.chain_id, s.registry) {
@@ -468,7 +443,7 @@ pub fn anchored_on(home: &Home) -> Result<Option<crate::kitsindex::AnchoredOn>, 
     })
 }
 
-/// One export's reading.
+/// The result of an export.
 pub struct Made {
     pub path: String,
     pub kit_id: String,
@@ -479,18 +454,15 @@ pub struct Made {
     pub dropped: Vec<String>,
 }
 
-/// Export. Choose, attach, and hand to the glue crate to write.
+/// Export: choose, attach, and hand to the glue crate to write.
 ///
-/// The kit holds only the chosen entries: a selection choosing zero entries is refused by name (nothing is
-/// written); otherwise the kit holds the chosen entries plus the revocations pulled in by closure (the glue
-/// crate's `select::choose`). The selection also decides [`Originals`] (which records' originals may be
-/// attached) and the terms documents that travel with the kit. The verifier sees only these entries.
+/// An empty selection is refused and nothing is written. Otherwise the kit holds the chosen entries plus the
+/// revocations pulled in by closure. The selection also decides [`Originals`] and which terms documents
+/// travel with the kit.
 ///
-/// Self-verification is carried by the glue and kit crates (see the file header); this layer only lines the
-/// three things up and brings the glue crate's refusal back unchanged: "something is already at that path",
-/// "two files with one path in the kit" and "self-verification failed" each have their own name, never merged
-/// into "cannot export".
-/// `_pass` is the exit gate's [`crate::exitgate::Pass`]: there is no way to this effect but through the gate.
+/// Self-verification happens in the glue and kit crates (see the module header). Their errors are returned
+/// unchanged, so "path already exists", "duplicate path in the kit" and "self-verification failed" stay
+/// distinct. `_pass` ([`crate::exitgate::Pass`]) ensures this is only reachable through the exit gate.
 pub fn export(
     _pass: &crate::exitgate::Pass,
     home: &Home,
@@ -499,8 +471,7 @@ pub fn export(
     note: &str,
     out: &Path,
 ) -> Result<Made, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::W5);
     let pile = whole(home)?;
     let chosen = chosen_in(&pile, pick)?;
@@ -511,7 +482,7 @@ pub fn export(
         ));
     }
     let originals = Originals::of(&chosen);
-    // Where this kit is anchored travels with it: the home's basis now, as the note's fixed last line.
+    // The home's current anchoring point travels with the kit as the note's last line.
     let note = crate::kitsindex::note_with(note, anchored_on(home)?.as_ref());
     let mut b = Bundle { entries: chosen.items.clone(), note, ..Default::default() };
     let mut names: Vec<(String, String)> = Vec::new();
@@ -522,14 +493,12 @@ pub fn export(
         }
         attach(Path::new(t), &originals, &mut b, &mut names)?;
     }
-    // For renamed items, write a table of original names to kit names (itself a file in the manifest, not
-    // record content).
+    // Renamed items get a name table (a file in the manifest, not record content).
     if !names.is_empty() {
         b.files.push((NAMES_FILE.to_string(), names_table(&names)));
     }
-    // The terms documents kept when the selected grants were signed travel with the kit: the kit path is the
-    // relative path in the `kits` room (assembled only by `termsx::doc_rel`), so a verifier can recompute the
-    // digest and read exclusivity by themselves.
+    // Terms documents kept when the selected grants were signed travel with the kit (path from
+    // `termsx::doc_rel`), so a verifier can recompute their digest and check exclusivity.
     for bytes in &chosen.items {
         let Ok(e) = zikaron::entry::check(bytes) else { continue };
         if e.kind != zikaron::tokens::EntryType::Grant {
@@ -579,6 +548,7 @@ mod stem_tests {
         }
     }
 
+    /// The folder name comes from the lowest-seq chosen entry that has an original digest.
     #[test]
     fn the_kit_folder_is_named_after_the_first_chosen_record() {
         let rows = vec![row(0, "0x00", None), row(1, "0x01", Some("0xAABBCCDD11223344")), row(2, "0x02", Some("0x5566778899aabbcc"))];
@@ -593,11 +563,13 @@ mod stem_tests {
 mod names_tests {
     use super::*;
 
+    /// Transliteration keeps valid names, adds a digest for uniqueness, keeps extensions and rejects overlong
+    /// results.
     #[test]
     fn names_are_transliterated_in_one_place() {
         assert_eq!(kit_segment("notes.txt").as_deref(), Some("notes.txt"), "已合法即原样");
-        // Whether the digest goes before or after the transliterated part is free and not pinned: only
-        // require that the transliterated segments and one digest are present, with the extension kept.
+        // The digest's position is not pinned: only require the transliterated words, one digest, and the
+        // extension.
         let parts = |seg: &str, ext: &str| -> (String, usize) {
             let stem = seg.strip_suffix(ext).unwrap_or(seg);
             let is_digest = |p: &&str| p.len() == DIGEST_HEX && p.chars().all(|c| c.is_ascii_hexdigit());
@@ -622,10 +594,9 @@ mod names_tests {
     }
 }
 
-/// The selected entries not yet anchored (the export page follows anchor state): lights are read from the
-/// table; confirmed ones (asked only through [`crate::ledgerx::Lamp::confirmed`], as the status bar reads)
-/// and delete entries do not count. Returns (ids and lights of those not yet anchored, and which of them
-/// "anchor now" can send: true when not yet queued).
+/// The selected entries not yet anchored, for the export page. Confirmed entries
+/// ([`crate::ledgerx::Lamp::confirmed`], as the status bar uses) and deletions do not count. Returns the ids
+/// and lamps of unanchored entries, and which of them "anchor now" can send (`true` when not yet queued).
 pub fn unanchored(picked: &[&crate::ledgerx::Row]) -> (Vec<(String, crate::ledgerx::Lamp)>, Vec<(String, bool)>) {
     use crate::ledgerx::Lamp;
     let red: Vec<(String, Lamp)> = picked

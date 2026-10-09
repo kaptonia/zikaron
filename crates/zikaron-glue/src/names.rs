@@ -1,10 +1,10 @@
-//! Every free name this crate spells (kit directories and file names, manifest members, entry body members,
-//! answer keys) is written once, here.
+//! Every name this crate spells (kit directories and file names, manifest members, entry body members, answer
+//! keys) is defined once, here.
 //!
-//! The law's own bytes are not copied: `zikaron.kit/1` comes from [`zikaron_kit::tokens::SPEC_KIT`], `KIT_OK`
-//! and the three verdicts from the kit core's constants, entry types from [`zikaron::tokens::EntryType`].
+//! Spec bytes are not copied: `zikaron.kit/1` comes from [`zikaron_kit::tokens::SPEC_KIT`], `KIT_OK` and the
+//! three verdicts from the kit core's constants, entry types from [`zikaron::tokens::EntryType`].
 
-/// The three places in a kit and the manifest file name (kit law §7.1 to §7.4).
+/// The three kit directories and the manifest file name (kit law §7.1 to §7.4).
 pub const ENTRIES_DIR: &str = "entries";
 pub const FILES_DIR: &str = "files";
 pub const PROOFS_DIR: &str = "proofs";
@@ -55,7 +55,7 @@ impl Field {
     }
 }
 
-/// Kit paths of the items this layer adds itself (the verification note). Closed set.
+/// Kit paths of items this crate adds itself (the verification note). Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
     /// The verification note: how to check this kit (every kit carries it, so it is a fixed member of

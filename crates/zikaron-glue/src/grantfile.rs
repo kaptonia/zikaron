@@ -1,18 +1,17 @@
-//! Reading a grant file: one reading for the app and the command line.
+//! Reading a grant file, shared by the app and the CLI.
 //!
-//! A grant file is a single-file bundle ([`crate::container`]) holding a disclosure kit whose `files/` carry
-//! the grant code (`files/zikaron-grant.txt`), the terms documents (`files/terms/…`) and a publish pointer
-//! (`files/publish.txt`), and whose `entries/` carry each hop of the grant chain, with the issuer's ledger
-//! when included. This module lays the reading out and decides nothing: the bundle shape is this crate's own
-//! format; whether the kit stands is the kit core's (`kitdir::verify_enumeration`); what the grant code
-//! says is the kit core's (`badge::decode`); whether every hop it names is carried is the kit core's
-//! (`badge::uncarried`). Each answer is passed on unchanged.
+//! A grant file is a single-file bundle ([`crate::container`]) holding a disclosure kit whose `files/` carry the
+//! grant code (`files/zikaron-grant.txt`), the terms documents (`files/terms/…`) and a publish pointer
+//! (`files/publish.txt`), and whose `entries/` carry each hop of the grant chain, plus the issuer's ledger when
+//! included. This module decides nothing itself: the bundle shape is this crate's format; kit validity
+//! (`kitdir::verify_enumeration`), grant code decoding (`badge::decode`) and whether every named hop is carried
+//! (`badge::uncarried`) are the kit core's answers, passed on unchanged.
 
-/// The grant code text file in the bundle (under `files/`). One name, one home.
+/// The grant code text file in the bundle (under `files/`).
 pub const CODE_FILE: &str = "zikaron-grant.txt";
-/// The publish address pointer file (under `files/`). One name, one home.
+/// The publish address pointer file (under `files/`).
 pub const PUBLISH_FILE: &str = "publish.txt";
-/// The terms room (under `files/`, and in a home's kits room). One name, one home.
+/// The terms folder (under `files/`, and in a home's kits folder).
 pub const TERMS_ROOM: &str = "terms";
 
 /// An opened grant file.
@@ -32,7 +31,7 @@ pub struct Opened {
     pub files: usize,
 }
 
-/// Why a grant file did not open: whose answer it was, unchanged.
+/// Why a grant file did not open, with the refusing layer's answer unchanged.
 #[derive(Debug)]
 pub enum Refused {
     /// The single-file bundle shape (this crate's own format): its code and subject.

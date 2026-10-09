@@ -1,33 +1,31 @@
-//! Reading the ledger view: turn bytes into a table in descending seq order.
+//! The ledger view: entries as a table in descending seq order.
 //!
-//! No law decision is made here: whether bytes are an entry, which of the seven types, its seq and prev are
-//! all answered by the core's `entry::check`; whether the chain is broken by the label of the core's `audit`,
-//! never by comparing prev here. The summary reads the body members law §6.2 to §6.8 name, and says "unread"
-//! when it cannot read them instead of filling a pleasant default.
+//! Validity is not decided here: whether bytes are an entry, its type, seq and prev all come from the core's
+//! `entry::check`, and whether the chain is broken comes from the core's `audit` label, never from comparing
+//! prev here. Summaries read the body members law §6 defines for each entry type and show "—" when
+//! they are missing instead of a plausible default.
 //!
-//! Anchor lamp colors each have a source: green (anchored) only from the audited report's `anchored` item,
-//! when the entry's id is in the counted anchor set; grey (queued) from the local queue file; yellow for
-//! recorded but not anchored. Before any audit, green never appears: "not asked" and "not on chain" look
-//! different.
+//! Anchor lamp colors: green (anchored) only when the audit report's `anchored` item includes the entry; grey
+//! (queued) from the local queue file; yellow for recorded but not anchored. Without an audit green never
+//! appears, so "not checked" and "not on chain" look different.
 
 use crate::fault::{Fault, Known};
 use crate::home::Home;
 use zikaron::json::Value;
 use zikaron::tokens::EntryType;
 
-/// Anchor lamp. Closed (entry cards, record cards, the queue page and watch rows all read this one).
+/// Anchor status of an entry, shared by entry cards, record cards, the queue page and watch rows.
 ///
-/// Green (anchored) comes only from the audited report; without an audit it never appears. The other members
-/// come from the local queue file (`queue::Step` with its `blocks` and `anchored` books) and the ledger's
-/// retraction reading.
+/// `Anchored` comes only from the audit report. The other states come from the local queue file
+/// (`queue::Step` and its `blocks` and `anchored` records) and the ledger's retractions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lamp {
     /// Confirmed: the core's report says it is anchored.
     Anchored,
-    /// Confirming: the receipt says it was included (recorded in the queue file); the report has not counted
-    /// it yet.
+    /// Confirming: the receipt says it was included (recorded in the queue file); the audit has not counted it
+    /// yet.
     Included,
-    /// Waiting to be anchored: broadcast and echoed, waiting for the receipt.
+    /// Broadcast and acknowledged by the node, waiting for the receipt.
     Submitted,
     /// To be anchored: queued, not sent.
     Queued,
@@ -39,16 +37,15 @@ pub enum Lamp {
     Landed,
     /// Deleted, not anchored: the deleted entry was never published.
     Deleted,
-    /// Local deletion: it deletes an unpublished entry, and this retraction stays local too, not anchored.
+    /// A retraction of an unpublished entry; it stays local too and is not anchored.
     LocalDeletion,
-    /// Checked last time: this pass's report has not arrived, and the last audit's `anchored` set (disk
-    /// cache) has it. It is not "anchored": places that require anchored still accept only
-    /// [`Lamp::Anchored`].
+    /// Anchored according to the last audit's cached `anchored` set; the current audit has not arrived yet.
+    /// Anything that requires anchoring still accepts only [`Lamp::Anchored`].
     Remembered,
-    /// As above, with that set stale (`lastread::STALE_SECS`): the lamp turns grey, not yellow.
+    /// As above, with a stale cache (`lastread::STALE_SECS`): shown grey, not yellow.
     RememberedStale,
-    /// Someone else's ledger only: no counted anchor reaches it on the chains read, and this pass left a
-    /// network out, where its anchor may be. Never "not on chain"; never on this home's own ledger.
+    /// Someone else's ledger only: no anchor was found on the chains read, but a network was skipped where it
+    /// may be anchored. Never shown as "not on chain", and never used for this home's own ledger.
     ChainUnread,
 }
 
@@ -85,21 +82,19 @@ impl Lamp {
         }
     }
 
-    /// Whether it is confirmed on chain; the one classification. Counted by the report (`Anchored`) or
-    /// recorded in the last audit's set (`Remembered`, `RememberedStale`) is confirmed; included by receipt
-    /// but not yet counted (`Included`) is not, nor are queued, submitted, reverted, refused, unqueued or
-    /// either deletion. The status bar and the export page's red lamps both read this.
+    /// Whether it is confirmed on chain: `Anchored`, `Remembered` or `RememberedStale`. `Included` (receipt
+    /// seen, not yet audited) is not. Used by the status bar and the export page.
     pub fn confirmed(self) -> bool {
         matches!(self, Lamp::Anchored | Lamp::Remembered | Lamp::RememberedStale)
     }
 
-    /// Whether it is queued (to be anchored, waiting, reverted, not sent).
+    /// Whether it is in the anchoring queue (queued, submitted, reverted or refused).
     pub fn in_queue(self) -> bool {
         matches!(self, Lamp::Queued | Lamp::Submitted | Lamp::Reverted | Lamp::Refused)
     }
 
-    /// Whether it stays local and is not anchored (the local deletion pair). Density and watch do not count
-    /// it as owing an anchor.
+    /// Whether it stays local and is never anchored (either side of a local deletion). Density and watch do
+    /// not count it as needing an anchor.
     pub fn local(self) -> bool {
         matches!(self, Lamp::Deleted | Lamp::LocalDeletion)
     }
@@ -114,28 +109,24 @@ pub struct Row {
     pub id: String,
     pub prev: Option<String>,
     pub author: String,
-    /// Summary: what the body of this type contains, read out.
+    /// One-line summary of the body.
     pub summary: String,
     pub lamp: Lamp,
     /// When anchored, which transaction anchored it (chain id and tx hash).
     pub tx: Option<(u64, String)>,
     /// Canonical byte length.
     pub bytes: usize,
-    /// The `content` of a history entry (hex32), unchanged.
-    ///
-    /// The summary shows its first twelve characters for the eyes; feeding the display string back as input
-    /// fails `is_hex32`, so a page doing that would never compute. The source and the display string live
-    /// apart, which is why this field exists.
+    /// The full `content` of a history entry (hex32). The summary shows only a shortened form, which would
+    /// fail `is_hex32` if used as input; code must use this field instead.
     pub work: Option<String>,
-    /// The summary's raw material, unchanged: the interface builds plain words from it; the summary string
-    /// itself is for table output.
+    /// The raw values behind the summary, from which the UI builds its text; `summary` is for table output.
     pub facts: Facts,
-    /// First-anchor block time (Unix seconds), from the chain fragment of the audit, others'-ledger
-    /// read or verification this row came out of. `None` until a pass has read the chain.
+    /// Block time of the first anchor (Unix seconds), from the chain data of the audit, other-ledger read or
+    /// verification that produced this row. `None` until the chain has been read.
     pub anchored_at: Option<u64>,
 }
 
-/// What a body shows the eye, taken unchanged from the members law §6 names; empty when absent.
+/// Display values taken unchanged from an entry body's members; empty when absent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     /// The first line of `note_md` or `statement_md`.
@@ -156,14 +147,13 @@ pub struct Facts {
     pub cosigned: bool,
     /// The `to` of a succession.
     pub to: Option<String>,
-    /// Whether a local-convention entry (`retractx`) has a body that fits the convention. Always false for
-    /// other types; reading does not look at it.
+    /// Whether a retraction entry (`retractx` convention) has a well-formed body. Always false for other types.
     pub shape_ok: bool,
-    /// The entry type as written (`entryType`; types outside the seven are recognizable only here).
+    /// The `entryType` as written (the only way to identify types outside the seven known ones).
     pub raw_type: String,
 }
 
-/// Take an entry's raw material.
+/// Extract an entry body's display values.
 pub fn facts(kind: EntryType, body: &Value) -> Facts {
     let note = |k: &str| text(body, k).map(|s| one_line(s, 48)).filter(|s| !s.is_empty());
     let mut f = Facts::default();
@@ -196,13 +186,12 @@ pub fn facts(kind: EntryType, body: &Value) -> Facts {
     f
 }
 
-/// Take an entry's raw material, including the local reading convention (`retractx`) among unlisted types.
-/// One source for this ledger and others' ledgers.
+/// As [`facts`], plus the retraction convention (`retractx`) for unlisted types. Used for both this ledger
+/// and others' ledgers.
 pub fn facts_of(e: &zikaron::entry::Entry) -> Facts {
     let mut f = facts(e.kind, &e.body);
-    // The retraction fields come only from the convention table: `zikaron_glue::retraction::Line::of` is
-    // shared by the command line and this table. Filling `subject` and `shape_ok`
-    // separately here would let the two readers disagree on a malformed retraction.
+    // Retraction fields come only from `zikaron_glue::retraction::Line::of`, shared with the command line, so
+    // the two never disagree on a malformed retraction.
     let line = zikaron_glue::retraction::Line::of(e);
     f.raw_type = line.raw_type;
     if zikaron_glue::retraction::is_retraction(e.kind, &e.entry_type) {
@@ -234,11 +223,10 @@ fn int(v: &Value, k: &str) -> Option<u64> {
     }
 }
 
-/// A short form of a hex string (the first twelve characters, `0x` included). For the eyes only; nothing
-/// decides by it.
+/// A short form of a hex string (the first twelve characters, `0x` included). For display only.
 ///
-/// It cuts characters, not bytes: strings from the summary come from the body, which can hold any code point,
-/// and a byte cut inside a multi-byte character panics (the whole background task would crash).
+/// Cuts characters, not bytes: body strings can hold any code point, and slicing inside a multi-byte
+/// character would panic and crash the background task.
 pub fn short(h: &str) -> String {
     if h.chars().count() <= 12 {
         return h.to_string();
@@ -246,7 +234,7 @@ pub fn short(h: &str) -> String {
     format!("{}…", h.chars().take(12).collect::<String>())
 }
 
-/// Which record this entry records (hex32), if any. Decisions take this, not the summary field.
+/// The record (content digest, hex32) a history entry records, if any. Use this, not the summary.
 pub fn work_of(kind: EntryType, body: &Value) -> Option<String> {
     if kind != EntryType::History {
         return None;
@@ -254,11 +242,11 @@ pub fn work_of(kind: EntryType, body: &Value) -> Option<String> {
     text(body, "content").map(|s| s.to_string())
 }
 
-/// One summary sentence. It reads the body members the law names; when it cannot read them, it says so.
+/// A one-line summary from the body members of each entry type; "—" for missing members.
 pub fn summarize(kind: EntryType, body: &Value) -> String {
     let missing = "—".to_string();
     match kind {
-        // §6.1: a prose sentence.
+        // §6.1: the statement's first line.
         EntryType::Genesis => text(body, "statement_md")
             .map(|s| one_line(s, 60))
             .unwrap_or(missing),
@@ -299,13 +287,13 @@ pub fn summarize(kind: EntryType, body: &Value) -> String {
             let signed = member(body, "attestation").is_some();
             format!("{n} · {}", if signed { "cosigned" } else { "—" })
         }
-        // §6.7: kind and to.
+        // §6.7: kind and successor.
         EntryType::Succession => {
             let k = text(body, "kind").unwrap_or("—");
             let to = text(body, "to").map(short).unwrap_or_else(|| "—".into());
             format!("{k} · {to}")
         }
-        // §6.8: the entry annotated (or the whole ledger).
+        // §6.8: the entry annotated (or the note, for the whole ledger).
         EntryType::Annotation => match text(body, "subject") {
             Some(s) => short(s),
             None => text(body, crate::entryx::NOTE_MD).map(|s| one_line(s, 48)).unwrap_or(missing),
@@ -323,7 +311,7 @@ fn one_line(s: &str, cap: usize) -> String {
     format!("{cut}…")
 }
 
-/// The anchored set, from the `anchored` item of the audited report: id to (chain id, tx).
+/// The anchored set from the audit report's `anchored` item: entry id to (chain id, tx).
 pub fn anchored_of(report: &Value) -> Vec<(String, (u64, String))> {
     let mut out = Vec::new();
     let Some(Value::Arr(rows)) = member(report, zikaron::tokens::Key::Anchored.as_str()) else {
@@ -342,8 +330,8 @@ pub fn anchored_of(report: &Value) -> Vec<(String, (u64, String))> {
     out
 }
 
-/// **Stamp the first-anchor block time** on each row from a chain fragment (see
-/// [`crate::auditx::first_anchored`]); a fragment that does not audit leaves the rows as they are.
+/// Set each row's first-anchor block time from chain data (see [`crate::auditx::first_anchored`]); chain
+/// data that does not audit leaves the rows unchanged.
 pub fn stamp(rows: &mut [Row], items: &[Vec<u8>], fragment: &Value) {
     let Some(at) = crate::auditx::first_anchored(items, fragment) else { return };
     for r in rows.iter_mut() {
@@ -351,16 +339,15 @@ pub fn stamp(rows: &mut [Row], items: &[Vec<u8>], fragment: &Value) {
     }
 }
 
-/// One table reading.
+/// A ledger table.
 pub struct Table {
     pub rows: Vec<Row>,
-    /// How many stray files could not be read as entries (the storage crate's lenient read lists them in
-    /// `skipped`).
+    /// How many files could not be read as entries (listed in `skipped` by the store's lenient read).
     pub strays: usize,
 }
 
-/// Read a table. `report` is the last audit's report (`None` without one: then no green lamp); `queued` are
-/// the ids in the local queue (all read as queued; for the full states use [`table_with`]).
+/// Read a table. `report` is the last audit report (`None`: no entry shows as anchored); `queued` are the ids
+/// in the local queue, all shown as queued (use [`table_with`] for full queue states).
 pub fn table(home: &Home, report: Option<&Value>, queued: &[String]) -> Result<Table, Fault> {
     let q = crate::queue::Queue {
         items: queued
@@ -372,15 +359,13 @@ pub fn table(home: &Home, report: Option<&Value>, queued: &[String]) -> Result<T
     table_with(home, report, &q)
 }
 
-/// Read a table, lamps computed from the queue file. Without the last pass's cache (readings that do not
-/// need it use this).
+/// Read a table with lamps from the queue file, without the cached audit set.
 pub fn table_with(home: &Home, report: Option<&Value>, queue: &crate::queue::Queue) -> Result<Table, Fault> {
     table_remembering(home, report, queue, None, 0)
 }
 
-/// As above, with the last pass's set. The one source: the shell reads the table here. In this report means
-/// anchored; missing from it but in the last pass's set (disk cache) means checked last time; neither, from
-/// the queue file.
+/// As above, with the cached audit set; the shell reads the table through this. In the report means
+/// `Anchored`; only in the cached set means `Remembered`; otherwise the lamp comes from the queue file.
 pub fn table_remembering(
     home: &Home,
     report: Option<&Value>,
@@ -395,7 +380,7 @@ pub fn table_remembering(
     let anchored = report.map(anchored_of).unwrap_or_default();
     let mut rows: Vec<Row> = Vec::new();
     for b in &survey.items {
-        // Bytes that are not entries stay off the table: they are strays, counted in `strays`.
+        // Non-entries stay off the table; they are counted in `strays`.
         let Ok(e) = zikaron::entry::check(b) else { continue };
         let id = zikaron::hexfmt::encode(&e.id);
         let tx = anchored.iter().find(|(h, _)| *h == id).map(|(_, t)| t.clone());
@@ -406,10 +391,11 @@ pub fn table_remembering(
             _ => lamp_of(&id, tx.is_some(), queue),
         };
         let tx = tx.or(recalled);
-        // Included but not counted yet, submitted and reverted entries take their transaction from the queue
-        // file (so an entry in flight shows its tx hash).
+        // In-flight entries (included, submitted, reverted) take their transaction from the queue file.
         let tx = tx.or_else(|| queue.block_of(&id).map(|b| (b.chain, b.tx.clone()))).or_else(|| match queue.step_of(&id) {
-            Some(crate::queue::Step::Submitted { tx, chain }) | Some(crate::queue::Step::Reverted { tx, chain }) => Some((*chain, tx.clone())),
+            Some(crate::queue::Step::Submitted { tx, chain, .. }) | Some(crate::queue::Step::Reverted { tx, chain }) => Some((*chain, tx.clone())),
+            // Resent: the latest transaction (the one with the current fees).
+            Some(crate::queue::Step::Resent { txs, chain, .. }) => txs.last().map(|t| (*chain, t.clone())),
             _ => None,
         });
         rows.push(Row {
@@ -427,10 +413,9 @@ pub fn table_remembering(
             anchored_at: None,
         });
     }
-    // The local deletion pair: the deleted entry was never published, so it and its retraction stay local.
-    // The rule lives in `queue::Queue::published`; reading lives in `retractx` (the same rows the deletion
-    // path reads). Entries remembered as anchored by the last pass (cache) count as published
-    // too, so they do not read as local-only while the report is pending.
+    // Local deletion: when the deleted entry was never published, it and its retraction stay local. The rule
+    // is `queue::Queue::published`; pairs come from `retractx`. Entries in the cached audit set count as
+    // published, so they do not show as local-only while the report is pending.
     let report_ids: Vec<String> = anchored
         .iter()
         .map(|(h, _)| h.clone())
@@ -450,13 +435,13 @@ pub fn table_remembering(
             }
         }
     }
-    // Descending seq; entries with the same seq ordered by id, so the order repeats every pass.
+    // Descending seq, ties by id, so the order is stable.
     rows.sort_by(|a, b| (b.seq, &a.id).cmp(&(a.seq, &b.id)));
     Ok(Table { rows, strays: survey.skipped.len() })
 }
 
-/// One entry's lamp: green when the report says anchored; otherwise from the queue file (included, which
-/// step); neither means not on chain.
+/// One entry's lamp: `Anchored` when in the report; otherwise from the queue file; `Landed` (not on chain)
+/// when neither.
 pub fn lamp_of(id: &str, in_report: bool, queue: &crate::queue::Queue) -> Lamp {
     if in_report {
         return Lamp::Anchored;
@@ -466,15 +451,15 @@ pub fn lamp_of(id: &str, in_report: bool, queue: &crate::queue::Queue) -> Lamp {
     }
     match queue.step_of(id) {
         Some(crate::queue::Step::Queued) => Lamp::Queued,
-        Some(crate::queue::Step::Submitted { .. }) => Lamp::Submitted,
+        // Resent is still waiting for a receipt, like submitted.
+        Some(crate::queue::Step::Submitted { .. }) | Some(crate::queue::Step::Resent { .. }) => Lamp::Submitted,
         Some(crate::queue::Step::Reverted { .. }) => Lamp::Reverted,
         Some(crate::queue::Step::Refused { .. }) => Lamp::Refused,
         None => Lamp::Landed,
     }
 }
 
-/// One entry's details: canonical bytes, id, prev, anchor transaction. Bytes are read from disk now, never
-/// kept in the table.
+/// One entry's details. The bytes are read from disk on demand, never kept in the table.
 #[derive(Clone, Debug)]
 pub struct Detail {
     pub id: String,
@@ -486,7 +471,7 @@ pub struct Detail {
     pub body: Value,
 }
 
-/// Read one entry's details. The file name comes from the storage crate's own name constructor.
+/// Read one entry's details. The file name comes from the store crate's name constructor.
 pub fn detail(home: &Home, id: &str) -> Result<Detail, Fault> {
     let ledger = home.ledger()?;
     let bare = id.trim().trim_start_matches("0x");
@@ -508,15 +493,19 @@ pub fn detail(home: &Home, id: &str) -> Result<Detail, Fault> {
     })
 }
 
-/// This ledger's head now: the highest seq and its entry id. The next entry follows it. `None` for an empty
-/// ledger (then genesis is what to write).
+/// The ledger's current head: the highest seq and its entry id. `None` for an empty ledger (genesis comes
+/// next).
 pub fn head(home: &Home) -> Result<Option<(u64, String)>, Fault> {
     let ledger = home.ledger()?;
     let survey = ledger
         .survey()?;
-    // No unreadable item may exist. New entries follow the ledger's last entry, and an unreadable item might
-    // be that entry; treating it as absent would write a second entry at the same seq (EQUIVOCATION, law
-    // §8.4, and a ledger has no way to delete). So this fails closed.
+    // Fail closed on any unreadable item: it might be the last entry, and ignoring it would write a second
+    // entry at the same seq (EQUIVOCATION, law §8.4, which a ledger cannot undo). An empty entry file
+    // is reported as such (`local::EMPTY`, as the strict read does).
+    let empty = crate::local::empty_in(&survey.skipped);
+    if !empty.is_empty() {
+        return Err(crate::local::empty_fault(&empty));
+    }
     if !survey.skipped.is_empty() {
         return Err(Fault::known(
             Known::Ledger,
@@ -538,15 +527,14 @@ pub fn head(home: &Home) -> Result<Option<(u64, String)>, Fault> {
     Ok(best)
 }
 
-/// Whether the root is confirmed on chain: the genesis entry's (`seq` 0) lamp, read now; the ledger status
-/// bar reads only this. Confirmation is decided by [`Lamp::confirmed`] (the export page reads the same).
-/// `None` without a genesis in the table (the status bar says nothing).
+/// Whether the genesis entry (`seq` 0) is confirmed on chain ([`Lamp::confirmed`]), for the ledger status
+/// bar. `None` without a genesis in the table.
 pub fn root_anchored(rows: &[Row]) -> Option<bool> {
     rows.iter().find(|r| r.seq == 0 && r.kind == EntryType::Genesis).map(|r| r.lamp.confirmed())
 }
 
-/// This ledger's root: the id of the genesis entry (`seq` 0). The kit index's `root` field reads it. A ledger
-/// without genesis is refused by name.
+/// This ledger's root: the id of the genesis entry (`seq` 0), used as the kit index's `root`. A ledger
+/// without genesis is an error.
 pub fn root_of(home: &Home) -> Result<String, Fault> {
     let pile = home.ledger()?.pile()?;
     pile.items

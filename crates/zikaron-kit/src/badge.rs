@@ -17,7 +17,7 @@ pub struct EncodeReject {
 }
 
 /// A decoding refusal (kit law §6.2): one of seven tokens; per-segment ones carry an index, E_BADGE_ENTRY
-/// also carries the parent law's inner token.
+/// also carries the inner `zikaron/1` token.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodeReject {
     pub token: BadgeDecodeToken,
@@ -69,8 +69,8 @@ pub fn byte_link(u: &Entry, d: &Entry) -> bool {
 /// acceptance then type (the in-segment order of §6.2 step 3); the cap is tested last.
 pub fn encode(entries: &[Vec<u8>]) -> Result<String, EncodeReject> {
     trace::mark(t::K2);
-    // §6.1 is defined for one or more segments; with zero, the bytes built by the rule are the prefix alone
-    // (the harness always passes at least one path), and §6.2 refuses it at segment 0 with E_BADGE_B64.
+    // §6.1 is defined for one or more segments; with zero the result is the prefix alone (the harness always
+    // passes at least one path), which §6.2 refuses at segment 0 with E_BADGE_B64.
     let mut segments: Vec<String> = Vec::with_capacity(entries.len());
     for (k, bytes) in entries.iter().enumerate() {
         let e = match entry::check(bytes) {
@@ -100,7 +100,7 @@ pub fn encode(entries: &[Vec<u8>]) -> Result<String, EncodeReject> {
     Ok(payload)
 }
 
-/// Kit law §6.2: decoding is total and judged in the written order; a token result renders nothing.
+/// Kit law §6.2: decoding is total and checked in the specified order; a refusal returns no entries.
 pub fn decode(payload: &[u8]) -> Result<Vec<Entry>, DecodeReject> {
     trace::mark(t::K2);
     let prefix = t::BADGE_PREFIX.as_bytes();
@@ -129,8 +129,7 @@ pub fn decode(payload: &[u8]) -> Result<Vec<Entry>, DecodeReject> {
         }
         grants.push(e);
     }
-    // A segment-0 grant whose body has an `upstream` key (any value) means the payload does not start at the
-    // grant that declares no upstream.
+    // A segment-0 grant with an `upstream` key (any value) means the payload does not start at the root grant.
     if grants[0].body.member("upstream").is_some() {
         return Err(rej(BadgeDecodeToken::Incomplete));
     }
@@ -142,9 +141,9 @@ pub fn decode(payload: &[u8]) -> Result<Vec<Entry>, DecodeReject> {
     Ok(grants)
 }
 
-/// The first hop of a grant chain that is not among `carried`, byte for byte (`None` when every hop is). A
-/// bundle that carries a grant code and the entries beside it must carry the same bytes in both places: a
-/// code naming a hop the bundle does not hold would be checked against entries that are not its own.
+/// The first grant-chain hop not among `carried`, byte for byte (`None` when all are). A bundle carrying a
+/// grant code and entries must carry the same bytes in both places; otherwise the code would be checked against
+/// entries that are not its own.
 pub fn uncarried<'a>(hops: &'a [Vec<u8>], carried: &[Vec<u8>]) -> Option<&'a [u8]> {
     trace::mark(t::K2);
     hops.iter().find(|h| !carried.iter().any(|b| b == *h)).map(|h| h.as_slice())

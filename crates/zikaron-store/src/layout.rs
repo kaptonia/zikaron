@@ -1,13 +1,15 @@
-//! Layout: the one place this crate builds and recognizes file names.
+//! Layout: the only place this crate builds and recognizes file names.
 //!
-//! Every name in an archive falls in exactly one class: entry (bytes this crate landed), temporary (a write
-//! in flight or cut off) or foreign. A strict read therefore cannot skip anything silently.
+//! Every name in an archive falls in exactly one class: entry (bytes this crate wrote), temporary (a write in
+//! progress or interrupted), system (a file the OS writes beside this crate's names, closed table
+//! [`SYSTEM_SIDE`]) or foreign. So a strict read never skips anything silently: it skips system files by class
+//! and refuses foreign ones.
 //!
-//! Entry names are 64 lowercase hex characters: the shape of an `entry_id` (law §4.2). Same name means same
-//! entry, so refusing to overwrite is meaningful; lowercase only, because case-folding file systems (APFS by
-//! default) treat two names that differ in case as one file.
+//! Entry names are 64 lowercase hex characters, the shape of an `entry_id` (law §4.2). Same name means
+//! same entry, so refusing to overwrite is meaningful; lowercase only, because case-insensitive file systems
+//! (APFS by default) treat names differing only in case as one file.
 //!
-//! The suffix and temporary-file shape are product constants, not law constants.
+//! The suffix and temporary-file shape are this crate's own constants, not spec constants.
 
 use std::path::{Path, PathBuf};
 
@@ -19,6 +21,10 @@ pub const NAME_HEX_LEN: usize = 64;
 pub const TMP_PREFIX: &str = ".zks-tmp-";
 /// Hex digits of the random part of a temporary-file name.
 pub const TMP_NONCE_LEN: usize = 16;
+/// Files the OS writes beside this crate's names (closed set): the Finder view file (`.DS_Store`), and an
+/// AppleDouble sidecar (`._` followed by one of this crate's entry or temporary names), written on volumes
+/// without extended attribute support. A sidecar of any other name is foreign.
+pub const SYSTEM_SIDE: (&str, &str) = (".DS_Store", "._");
 
 /// An entry name: 64 lowercase hex. No other shape can be built.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -45,16 +51,27 @@ impl EntryName {
 pub enum Kind {
     Entry,
     Tmp,
+    /// A file the OS writes beside this crate's names ([`SYSTEM_SIDE`]).
+    System,
     Foreign,
 }
 
-/// Classify a name. Strict read, lenient read, sweep and layout report all ask this one function.
+/// Classify a name. The strict read, lenient read and layout report all use this function.
 pub fn classify(name: &str) -> Kind {
     if parse_entry_file(name).is_some() {
         return Kind::Entry;
     }
     if tmp_shaped(name) {
         return Kind::Tmp;
+    }
+    let (view, sidecar) = SYSTEM_SIDE;
+    if name == view {
+        return Kind::System;
+    }
+    if let Some(of) = name.strip_prefix(sidecar) {
+        if parse_entry_file(of).is_some() || tmp_shaped(of) {
+            return Kind::System;
+        }
     }
     Kind::Foreign
 }

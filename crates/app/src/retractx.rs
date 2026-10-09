@@ -1,29 +1,26 @@
-//! The "delete" reading convention: this desk's reading convention under law §6.9's open entry types.
+//! The "delete" reading convention, built on the open entry types of law §6.9.
 //!
 //! Law §6.9 makes `entryType` an open enumeration: types beyond the seven are fully verified per §4, the body
 //! need only be an object, §4.3 step 12 never fails because of it, and the audit lists it under §8.7's
-//! `UNKNOWN_TYPE` without changing the label. This desk adds one entry type through that valve, as a reading
-//! only: readers who know it (this desk) read it by the convention table, and other readers list it as an
-//! unknown type per the law. The core, the kit crate and the law text are unchanged.
+//! `UNKNOWN_TYPE` without changing the label. This desk adds one entry type through that opening, as a reading
+//! only: readers that know it (this desk) apply the convention table; other readers list it as an unknown type
+//! per the law. The core, the kit crate and the law text are unchanged.
 //!
-//! ─── The convention table lives in one place ───
+//! The convention table (type literal, body keys, body shape, reading table, production rule) lives in
+//! [`zikaron_glue::retraction`], because deletes have two producers (this desk and the CLI's `zikaron retract`)
+//! that must write and read the same shape. This file only maps this desk's ledger rows ([`Row`]) onto it.
 //!
-//! The type literal, body keys, body shape, reading table and production rule live in
-//! [`zikaron_glue::retraction`]: deletes have two producers (this desk and the command line's `zikaron
-//! retract`), both writing the same shape and reading the same way, so the convention has one home. This file
-//! only connects this desk's ledger table rows ([`Row`]) to that table.
+//! Reading:
 //!
-//! ─── Reading (this desk) ───
+//! * Well formed and pointing at a `history` in this ledger that was not already deleted: that entry reads as
+//!   "deleted".
+//! * A repeated delete, a delete of a non-record, one pointing at an entry outside this ledger (including
+//!   other people's ledgers), or a malformed one: the delete entry reads as invalid, with the reason. The
+//!   ledger is never refused, and no error is added to §4.3.
 //!
-//! * Well formed, pointing at a `history` in this ledger that was not deleted before: that entry reads as
-//! "deleted";
-//! * A repeated delete, deleting a non-record, pointing at an entry not in this ledger (including entries of
-//! others' ledgers), or malformed: this entry reads as "this delete is invalid" and says why; the ledger is
-//! never refused, and no error is added to §4.3.
-//!
-//! A deleted record: marked "deleted" in the record list and record bundle list, cannot be the subject of a
-//! new grant, and is removed from the anchor queue if not yet anchored. The delete entry itself is queued and
-//! anchored as usual; grants already issued are not affected.
+//! A deleted record is marked "deleted" in the record list and record bundle list, cannot be the subject of a
+//! new grant, and leaves the anchor queue if not yet anchored. The delete entry itself is queued and anchored
+//! as usual; grants already issued are not affected.
 
 use crate::ledgerx::Row;
 use zikaron::tokens::EntryType;
@@ -47,22 +44,22 @@ fn lines(rows: &[Row]) -> Vec<convention::Line> {
     rows.iter().map(line).collect()
 }
 
-/// Whether this row is a convention type entry.
+/// Whether this row is a delete-convention entry.
 pub fn is_retraction(row: &Row) -> bool {
     convention::is_retraction(row.kind, &row.facts.raw_type)
 }
 
-/// Read a ledger (the reading lives in the convention table).
+/// Read a ledger with the convention table.
 pub fn read(rows: &[Row]) -> Reading {
     convention::read(&lines(rows))
 }
 
-/// The valid delete pairs: (delete entry id, deleted entry id). The reading lives in the convention table.
+/// The valid delete pairs: (delete entry id, deleted entry id).
 pub fn pairs(rows: &[Row]) -> Vec<(String, String)> {
     read(rows).deleted.into_iter().map(|(subject, (_, retraction))| (retraction, subject)).collect()
 }
 
-/// Production rule (in the convention table): whether this ledger can delete `subject` now. When it can,
+/// Production rule (from the convention table): whether this ledger can delete `subject` now. On success,
 /// returns that record's id.
 pub fn may_retract(rows: &[Row], subject: &str) -> Result<String, Invalid> {
     convention::may_retract(&lines(rows), subject)
@@ -105,8 +102,8 @@ mod tests {
         format!("0x{}", format!("{n:02x}").repeat(32))
     }
 
-    /// A valid delete deletes one; repeated, non-record, outside the table and malformed each read as
-    /// invalid, and none refuses the ledger (the reading is returned as usual).
+    /// A valid delete deletes its target; repeated, non-record, outside-ledger and malformed deletes read as
+    /// invalid, and none of them refuses the ledger.
     #[test]
     fn the_reading_table_holds() {
         let rows = vec![

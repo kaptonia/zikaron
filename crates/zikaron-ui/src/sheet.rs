@@ -1,8 +1,9 @@
 //! Sheets: a white card centered over a dimming scrim, 440, 520 or 640 wide. It grows from 0.96 and fades in
-//! over 200 ms, and leaves the same way backwards (200 ms, back to 0.96). A click outside does nothing; Esc is cancel. A sheet with steps
-//! slides from one step to the next inside the same card, the card's height easing along. The content
-//! scrolls inside the card; the keys at the bottom stay put. Sheets lie above the first-run wizard and the
-//! passcode gate.
+//! over 200 ms, and leaves the same way backwards (200 ms, back to 0.96). A click outside does nothing; Esc
+//! is cancel (unless a menu, list or calendar opened over it is still up: that one takes the Esc first). A
+//! sheet with steps slides from one step to the next inside the same card, the card's height easing along.
+//! The content scrolls inside the card; the keys at the bottom stay put. Sheets lie above the first-run
+//! wizard and the passcode gate.
 
 use crate::motion::{self, Curve};
 use crate::paint;
@@ -79,19 +80,11 @@ pub fn show<T, B, F>(ctx: &egui::Context, spec: Spec, state: &mut T, body: impl 
     // The pass number is read before taking the data lock (asking the context inside it would deadlock).
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("zikaron-sheet-up"), pass));
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
+    let enter = crate::layer::entrance(ctx, &[id.with("card-keep")], id.with("age"), tokens::MID);
     let age = motion::age(ctx, id.with("age"), 0);
-    let enter = Curve::Ease.at((age / tokens::MID).clamp(0.0, 1.0));
-    if age < tokens::MID {
-        ctx.request_repaint();
-    }
-    // The scrim: its own layer, taking every click so nothing under it reacts.
-    let scrim_layer = egui::LayerId::new(egui::Order::Foreground, id.with("scrim"));
-    egui::Area::new(scrim_layer.id).order(egui::Order::Foreground).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
-        ui.painter().rect_filled(screen, 0.0, c(C::Scrim).gamma_multiply(enter));
-        ui.allocate_rect(screen, egui::Sense::click_and_drag());
-    });
-    crate::layer::keep(ctx, id.with("scrim-keep"), scrim_layer, tokens::MID, 1.0, screen.center());
+    let layer = egui::LayerId::new(egui::Order::Foreground, id.with("card"));
+    crate::layer::place(ctx, layer, None);
 
     let max_h = (screen.height() - 64.0).max(160.0);
     let w = spec.width.min(screen.width() - 32.0);
@@ -126,15 +119,17 @@ pub fn show<T, B, F>(ctx: &egui::Context, spec: Spec, state: &mut T, body: impl 
     let card_h = st.shown_h.round();
     let shake = motion::shake_at(ctx, spec.shake_at, 0.36);
     let card = Rect::from_center_size(screen.center(), vec2(w, card_h)).translate(vec2(shake, 0.0));
-    let layer = egui::LayerId::new(egui::Order::Foreground, id.with("card"));
     let scale = 0.96 + 0.04 * enter;
     ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: card.center().to_vec2() * (1.0 - scale) });
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    let out = egui::Area::new(layer.id)
-        .order(egui::Order::Foreground)
-        .fixed_pos(card.min)
-        .constrain(false)
+    let esc = crate::layer::esc(ctx, id);
+    let out = crate::layer::over(ctx, layer)
         .show(ctx, |ui| {
+            // The scrim: the ground the card lies on in its own layer, taking every press and drag so nothing
+            // under it reacts; then the card's body.
+            let screen = crate::layer::ground(ui);
+            ui.painter().rect_filled(screen, 0.0, c(C::Scrim).gamma_multiply(enter));
+            crate::layer::under(ui, crate::layer::Under::Taken);
+            crate::layer::body(ui, card);
             ui.multiply_opacity(enter);
             ui.set_clip_rect(card.expand(64.0));
             paint::surface(ui.painter(), card, Radius::Sheet, c(C::Surface), Lift::Float);
@@ -152,7 +147,7 @@ pub fn show<T, B, F>(ctx: &egui::Context, spec: Spec, state: &mut T, body: impl 
             let slide_a = if matches!(st.slide, Slide::Forward | Slide::Back) && step_p < 1.0 { Curve::Ease.at(step_p) } else { 1.0 };
             let (b, content_h) = egui::ScrollArea::vertical()
                 .id_salt(("zikaron-sheet-scroll", spec.id))
-                .drag_to_scroll(false)
+                .scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL })
                 .max_height(body_room)
                 .auto_shrink([false, true])
                 .show(&mut bui, |ui| {
@@ -190,10 +185,7 @@ pub fn show<T, B, F>(ctx: &egui::Context, spec: Spec, state: &mut T, body: impl 
             Out { body: b, foot: fr.inner, esc }
         })
         .inner;
-    // The card rides directly above its own scrim: a press on the scrim raises the scrim's layer, and without
-    // this the scrim would then cover the card for as long as the sheet is open.
-    ctx.set_sublayer(scrim_layer, layer);
-    crate::layer::keep(ctx, id.with("card-keep"), layer, tokens::MID, 0.96, card.center());
+    crate::layer::keep(ctx, id.with("card-keep"), layer, tokens::MID, 0.96, card.center(), egui::Vec2::ZERO);
     out
 }
 
@@ -209,8 +201,6 @@ pub fn title(ui: &mut egui::Ui, s: &str, sub: &str) {
     ui.add_space((tokens::S4 - ui.spacing().item_spacing.y).max(0.0));
 }
 
-/// The quiet words at the left end of a sheet's foot (drawn last in the right-to-left row, so they take what
-/// the keys leave).
 /// A line saying work is under way: a small turning ring, then the words on one line (elided to fit), at the
 /// left or centred.
 pub fn busy_note(ui: &mut egui::Ui, s: &str, centred: bool) {
@@ -229,6 +219,8 @@ pub fn busy_note(ui: &mut egui::Ui, s: &str, centred: bool) {
     ui.painter().galley(egui::pos2(x + ring * 2.0 + gap, y - g.size().y / 2.0), g, colour);
 }
 
+/// The quiet words at the left end of a sheet's foot (drawn last in the right-to-left row, so they take what
+/// the keys leave).
 pub fn foot_note(ui: &mut egui::Ui, s: &str) {
     if s.is_empty() {
         return;

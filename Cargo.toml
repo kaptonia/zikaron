@@ -1,7 +1,7 @@
 # ZIKARON Desk workspace.
 # base/ holds the zikaron/1 law texts and their reference implementation; no crate depends on it by path.
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
   "crates/zikaron",
   "crates/zikaron-kit",
@@ -17,9 +17,27 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [profile.release]
 strip = "symbols"
 lto = "thin"
+
+# Debug builds and tests derive keys at the shipped scrypt level (a whole-machine backup is always sealed at it).
+# Unoptimized, one such derivation takes about a minute, so the scrypt crates are optimized in debug builds too.
+# Release builds are unchanged.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3

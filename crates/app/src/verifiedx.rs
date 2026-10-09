@@ -1,20 +1,21 @@
-//! The kit verification result file: what a verification on the window found, left where sibling apps read it.
+//! The kit verification result file: what a verification in the window found, written where sibling apps
+//! read it.
 //!
-//! GALEED Desk and ERAVON read this desk and never the chain: which chain a kit's records are anchored on,
-//! and whether the kit holds, reach them only through this file. A kit verified on the window writes one,
+//! GALEED Desk and ERAVON read this desk's output, never the chain: which chain a kit's records are anchored
+//! on, and whether the kit holds, reach them only through this file. A kit verified in the window writes
 //! `<machine directory>/kits/verified/<manifestSha256>.json` ([`path_of`]); verifying the same kit again
 //! replaces it whole.
 //!
-//! The file speaks only of chains read. A kit that holds is written when this pass read at least one chain;
-//! when it read none (the kit names a network that is neither the main network nor a read-only one, or no
-//! network is configured, or none could be read) nothing is written, for there is no chain to speak of. A pass
-//! that read some chains and not others is written, the ones not read named in `missed`. A kit that does not
-//! hold is written whatever was read (its verdict, no `kit`, no `basis`).
+//! The file describes only chains actually read. A kit that holds is written when this pass read at least
+//! one chain; when it read none (the kit names a network that is neither the main network nor a read-only
+//! one, no network is configured, or none could be read) nothing is written, since there is no chain to
+//! report. A pass that read some chains but not others is written, with the unread ones in `missed`. A kit
+//! that does not hold is written regardless (its verdict, no `kit`, no `basis`).
 //!
-//! This desk never reads it back: it is an export for people and their tools, not a second home for a
-//! verdict. Plain, owner-only, temporary name then replace (`home::put_at`).
+//! This desk never reads it back: it is an export for people and their tools, not a second store for
+//! verdicts. Plain (unsealed), owner-only, written under a temporary name then renamed (`home::put_at`).
 //!
-//! ─── Shape ───
+//! Format:
 //!
 //! `{"anchors":[…],"at":s,"basis":{…}?,"core":hex32,"form":"zikaron.kit-verification/1","kit":hex32?,
 //! "kitVerdict":{"subject":"…"?,"verdict":"…"},"manifestSha256":hex32,"missed":[…],"records":[…]}`, canonical
@@ -34,9 +35,9 @@ use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 use zikaron_anchor::scan::Emitters;
 
-/// The file's form literal. One name, one home.
+/// The file's format identifier.
 pub const FORM: &str = "zikaron.kit-verification/1";
-/// The room under the machine directory's `kits` room that holds the result files.
+/// The directory under the machine directory's `kits` that holds the result files.
 pub const DIR: &str = "verified";
 
 /// Where the result file of the kit whose manifest bytes hash to `manifest_sha256` (hex32) is.
@@ -74,7 +75,7 @@ fn h32(s: &str) -> Option<[u8; 32]> {
     zikaron::hexfmt::decode(s)?.try_into().ok()
 }
 
-/// The file's value. Writing has this one source.
+/// The file's value; the only source for writing.
 pub fn value_of(f: &Found) -> Value {
     let mut m: Vec<(String, Value)> = Vec::new();
     let ok = f.kit.ok;
@@ -152,9 +153,8 @@ pub fn value_of(f: &Found) -> Value {
     Value::Obj(m)
 }
 
-/// Write the result file of one verification, replacing any earlier one of the same kit. Returns where it
-/// landed. The bytes are judged by the reader before they land: bytes the canonical reader would refuse are
-/// refused by name, never written.
+/// Write the result file of one verification, replacing any earlier one for the same kit. Returns the path.
+/// The bytes are first checked with the canonical reader: bytes it would refuse are an error, never written.
 pub fn write(machine: &Path, f: &Found) -> Result<PathBuf, Fault> {
     let bytes = json::canon_bytes(&value_of(f));
     if let Err(t) = json::parse(&bytes) {

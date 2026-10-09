@@ -1,8 +1,7 @@
-//! Family literals: the ZIKARON row of the family derivation path table.
+//! Derivation literals: the ZIKARON row of the shared family derivation-path table.
 //!
-//! Path form `m/44'/60'/project'/group/index`. This desk's project number, group number, the two roles'
-//! indices and the recovery word count live only in this constant table (one name, one home); the law
-//! texts have nothing to do with it.
+//! Path form `m/44'/60'/project'/group/index`. The project number, group number, the two roles' indices and
+//! the recovery word count live only in this table; the `zikaron/1` spec does not define them.
 
 use crate::roles::Role;
 
@@ -25,7 +24,7 @@ pub const WORDS: usize = 12;
 /// Entropy length matching the word count (bytes).
 pub const ENTROPY_BYTES: usize = 16;
 
-/// This seat's index in the table.
+/// The role's index in the table.
 pub fn index_of(role: Role) -> u32 {
     match role {
         Role::Author => AUTHOR_INDEX,
@@ -33,12 +32,12 @@ pub fn index_of(role: Role) -> u32 {
     }
 }
 
-/// This seat's derivation path (per-level indices, the first three hardened).
+/// The role's derivation path (per-level indices, the first three hardened).
 pub fn path(role: Role) -> [u32; 5] {
     [PURPOSE | HARDENED, COIN | HARDENED, PROJECT | HARDENED, GROUP, index_of(role)]
 }
 
-/// This seat's derivation path as text (the `m/44'/60'/0'/0/0` form).
+/// The role's derivation path as text (`m/44'/60'/0'/0/0` form).
 pub fn path_text(role: Role) -> String {
     format!("m/{PURPOSE}'/{COIN}'/{PROJECT}'/{GROUP}/{}", index_of(role))
 }

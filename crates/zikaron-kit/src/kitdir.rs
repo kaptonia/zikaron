@@ -357,7 +357,7 @@ pub fn verify_enumeration(pairs: &[(String, Vec<u8>)]) -> KitVerdict {
         return fail(KitFailToken::Extra, extra[0]);
     }
 
-    // Listed ids whose bytes fail `accept`, in entries order, each with its parent-law token (informational).
+    // Listed ids whose bytes fail `accept`, in entries order, each with its `zikaron/1` token (informational).
     let mut invalid: Vec<(String, Token)> = Vec::new();
     for id in &m.entries {
         let path = format!("entries/{}.zk1", &id[2..]);

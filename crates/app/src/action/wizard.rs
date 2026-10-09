@@ -11,19 +11,14 @@ pub(super) fn wizard_tick(
             crate::lang::filln(crate::lang::Key::Tail046, &[&format!("{:?}", step.trim())]),
         )
     })?;
-    // The checklist also writes bytes into this home. Read-only instance, broken chain and handed over may
-    // not write: with no gate on this path, a second instance could overwrite the writer's checklist with one
-    // press.
+    // The checklist writes into this home, so the entry write gate applies (read-only instance, broken chain,
+    // handed over); otherwise a second instance could overwrite the writer's checklist.
     shell.may_write_entries()?;
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // The shell's copy is this home's checklist. It is loaded when the home opens (`Shell::hydrate`) and
-    // updated in place when ticked, so this does not read the disk again.
-    //
-    // Reading the disk on every tick would guard against no second writer (the writing side has one instance,
-    // behind the lock and broken-chain gates), and it would add another consumer of "read it back", leaving
-    // "close and reopen and stay where you were" without a place of its own in the record.
+    // The shell's copy is this home's checklist: loaded when the home opens (`Shell::hydrate`) and updated in
+    // place on each tick, so the disk is not reread. The write gate already guarantees a single writer.
     let mut w = shell.wizard.clone();
     let done = w.tick(s, said)?;
     w.write(home)?;

@@ -1,23 +1,21 @@
-//! Self-check: really reads the disk.
+//! Self-check from real disk reads.
 //!
-//! The first thing on the shell that shows a real source. It reads where each of the four fonts comes from
-//! (the two embedded ones give their byte counts, the two taken from the system give their location and byte
-//! count on this machine), and the trace channel's sink and how many lines its file has. Not one hard-coded
-//! number, not one container that is always empty; when something cannot be read, the error goes through
-//! `fault`'s three paths, never pretending it was read.
+//! Reports where each of the four fonts comes from (embedded fonts with their byte counts, system fonts with
+//! their path and size on this machine), the trace sink, and how many lines the trace file has. Nothing is
+//! hard-coded; anything unreadable is reported as an error through `fault`, never shown as if it were read.
 
 use crate::fault::{classify, Fault};
 use crate::trace::{self, Sink};
 use zikaron_ui::fonts;
 
-/// One font's reading.
+/// One font's details.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Face {
     pub role: &'static str,
     pub file: &'static str,
     pub index: u32,
     pub bytes: u64,
-    /// The path on this machine for a system font; embedded fonts have no path, written empty.
+    /// The path of a system font on this machine; empty for embedded fonts.
     pub path: String,
     /// Embedded or taken from the system.
     pub place: &'static str,
@@ -25,13 +23,13 @@ pub struct Face {
     pub licence: &'static str,
 }
 
-/// One self-check's reading.
+/// A self-check result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     pub faces: Vec<Face>,
     pub missing: Vec<&'static str>,
     pub sink: String,
-    /// How many lines the sink file has (the in-memory ring form has no file, so None).
+    /// How many lines the trace file has (`None` for the in-memory sink).
     pub trace_lines: Option<usize>,
     pub marks: usize,
 }
@@ -42,16 +40,15 @@ impl Report {
     }
 }
 
-/// Run once. This is the work on the background thread, so it touches no egui.
+/// Run the self-check. Runs on a background thread, so it does not touch egui.
 pub fn run() -> Result<Report, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are marked too.
+    // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::H1);
     let found = fonts::find();
     let mut faces = Vec::new();
     for f in &found.faces {
-        // System fonts are read from disk now (unreadable is refused by name, never pretending); embedded
-        // fonts' byte counts come from the table itself.
+        // System font sizes are read from disk now (an unreadable font is an error); embedded font sizes come
+        // from the font table.
         let bytes = match &f.path {
             Some(p) => std::fs::metadata(p).map_err(|e| classify(&e, &p.display().to_string()))?.len(),
             None => f.bytes,

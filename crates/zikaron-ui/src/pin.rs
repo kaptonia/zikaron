@@ -131,7 +131,7 @@ pub fn words_grid(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::secret::
 /// The masked display: until opened, a dashed striped block with "click to show"; opened, the twelve numbered
 /// words in `cols` columns, each cell entering 25 ms after the one before. The words are painted, not
 /// selectable, so they cannot be copied. Returns the block's response (a click while masked reveals).
-pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[String]>, cover: &str, cols: usize, height: f32) -> egui::Response {
+pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Secret]>, cover: &str, cols: usize, height: f32) -> egui::Response {
     let id = ui.id().with(("zikaron-mask", id_salt));
     let w = ui.available_width();
     let cols = cols.max(1);
@@ -174,7 +174,7 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[String]>, cover: &
                 let cell = Rect::from_min_size(pos2(rect.left() + (cw + gap) * cc as f32, rect.top() + (cell_h + gap) * r as f32 + 6.0 * (1.0 - e)), vec2(cw, cell_h));
                 p.rect(cell, egui::CornerRadius::same(8), c(C::Surface).gamma_multiply(e), egui::Stroke::new(1.0_f32, c(C::Line).gamma_multiply(e)), egui::StrokeKind::Inside);
                 p.text(pos2(cell.left() + 12.0 + 16.0, cell.center().y), egui::Align2::RIGHT_CENTER, (i + 1).to_string(), Type::Tiny.font(), c(C::Ink3).gamma_multiply(e));
-                p.text(pos2(cell.left() + 12.0 + 16.0 + 8.0, cell.center().y), egui::Align2::LEFT_CENTER, word, Type::MonoSmall.font(), c(C::Ink).gamma_multiply(e));
+                p.text(pos2(cell.left() + 12.0 + 16.0 + 8.0, cell.center().y), egui::Align2::LEFT_CENTER, word.expose(), Type::MonoSmall.font(), c(C::Ink).gamma_multiply(e));
             }
         }
     }

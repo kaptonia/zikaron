@@ -1,18 +1,14 @@
-//! First run and adoption into the home. Every precondition is built by the product; an existing ledger
+//! First run and adoption into the home. The product sets up every precondition itself; an existing ledger
 //! directory is adopted entry by entry into this home's sealed ledger, and self-audit runs after adoption.
 //!
-//! ─── What adopting leaves where ───
+//! The given directory is only read: not one byte of it changes, and other programs may keep reading it.
+//! This home's ledger holds each entry sealed under the local data key (`local::Ledger`), so adopting writes
+//! a sealed copy of every entry; a hard link would put plain bytes inside the home, where every local file
+//! is sealed.
 //!
-//! The directory someone gave is read and never written: not one byte of it changes, and other programs may
-//! go on reading it. This home's ledger holds each entry sealed under the local data key (`local::Ledger`),
-//! so adopting writes a sealed copy of every entry; a hard link would put the plain bytes inside this home,
-//! where every local file is sealed.
-//!
-//! ─── Foreign layouts are read ───
-//!
-//! Someone else's directory may contain a README or other programs' things. Detection uses the store crate's
-//! lenient read: entries read are checked one by one through the core, and everything that cannot be read as
-//! an entry is reported with its reason, never treated as absent.
+//! Someone else's directory may contain a README or other programs' files. Detection uses the store crate's
+//! lenient read: entries are checked one by one by the core, and anything that cannot be read as an entry is
+//! reported with its reason, never treated as absent.
 
 use crate::auditx;
 use crate::fault::{Fault, Known};
@@ -29,7 +25,7 @@ pub struct Sighting {
     pub checked: usize,
     /// Everything that could not be read as an entry (name and reason), reported, never hidden.
     pub skipped: Vec<(String, String)>,
-    /// Every entry that failed the core check (name and the law's token).
+    /// Every entry that failed the core check (name and the spec's token).
     pub refused: Vec<(String, String)>,
 }
 
@@ -40,7 +36,7 @@ impl Sighting {
     }
 }
 
-/// Inspect and re-verify entry by entry. Not one byte of that directory changes.
+/// Inspects a directory and re-verifies it entry by entry. Not one byte of that directory changes.
 pub fn look(dir: &std::path::Path) -> Result<Sighting, Fault> {
     let ledger = LedgerDir::open(dir).map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?;
     let survey = ledger
@@ -59,9 +55,8 @@ pub fn look(dir: &std::path::Path) -> Result<Sighting, Fault> {
     for b in &survey.items {
         let name = bare_id(b);
         match k1::check(b) {
-            // A name that does not match the id also fails: that entry has the wrong name in this directory.
-            // File name spelling comes from the store crate (`layout::entry_file_name`); this layer spells
-            // nothing itself.
+            // A file whose name does not match the entry id also fails. File names are spelled by the store
+            // crate (`layout::entry_file_name`), not here.
             Ok(_) => match EntryName::parse(&name).map(|n| layout::entry_file_name(&n)) {
                 Some(file) => match ledger.read_named(&file) {
                     Ok(same) if &same == b => out.checked += 1,
@@ -88,10 +83,10 @@ pub struct Adopted {
     pub complete: bool,
 }
 
-/// Adopt. After inspection, append every entry, sealed, to this home's ledger; not one byte of the original
-/// directory changes. After landing, run self-audit once and pass the label through unchanged. A home that
-/// holds the not-fetched mark (an imported key) opens for writing after this as any other does: once its tail
-/// is checked against the chain (`action::check_tail`, started by the action layer after adopting).
+/// Adopts a directory: after inspection, appends every entry, sealed, to this home's ledger, leaving the
+/// original directory unchanged; then runs self-audit once and passes the label through unchanged. A home with
+/// the not-fetched mark (an imported key) opens for writing afterwards like any other: once its tail is
+/// checked against the chain (`action::check_tail`, started by the action layer after adopting).
 pub fn adopt(dir: &std::path::Path, into: &Home) -> Result<Adopted, Fault> {
     let seen = look(dir)?;
     if !seen.adoptable() {
@@ -152,11 +147,9 @@ impl Author {
             Author::AnchorKey => "anchor_key",
             Author::Pin => "pin",
             Author::GasFloat => "gas_float",
-            // The product's own names do not share a form with the law's words. This one names one of the
-            // first-run points (the same family as anchor_key / gas_float / backup), and it asks
-            // "does this ledger have a root yet". Spelled as the law's entry kind literal, a reader could not
-            // tell whether it is the law's literal or the shell's name, and the law's literals live only in
-            // the base. With its own name, this family needs no exemption from that rule.
+            // App names never share spelling with spec tokens. This first-run point asks "does this ledger
+            // have a root yet"; spelled like the spec's entry kind, a reader could not tell a spec literal
+            // from the app's own name.
             Author::Genesis => "rooted",
             Author::Backup => "backup",
         }
@@ -196,16 +189,16 @@ impl Grantee {
 
 // ───────────────────────── The mirror slot point ─────────────────────────
 
-/// A point's three colors. Gray is not a kind of bad; it means "existed, but unclear right now".
+/// A point's four colours. Grey is not a kind of bad: never backed up, or backed up and not measured yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shade {
     /// Complete: the last backup holds everything there is now.
     Green,
     /// Backed up, but more has been written since.
     Amber,
-    /// Backed up, and how much is here now has not been measured yet.
+    /// Never backed up; or backed up, and how much is here now has not been measured yet.
     Grey,
-    /// Never backed up.
+    /// The last backup tried was not written, or did not read back.
     Red,
 }
 
@@ -228,15 +221,19 @@ pub fn fresh_machine(shell: &crate::shell::Shell) -> bool {
     !pin && !identity
 }
 
-/// What color the whole-machine backup point reads (the setup check's last point, the wizard's sixth step). A
-/// pure function: it asks no disk, only compares the machine settings' record of the last backup with the
-/// count the last measurement brought back (ledger entries and held grants).
+/// Colour of the whole-machine backup point (the setup check's last point, the wizard's sixth step). Pure:
+/// reads no disk, only compares the machine settings' record of the last backup with the latest measured
+/// count (ledger entries and held grants).
 ///
-/// Red is kept for "never backed up", something the person has not done yet; backed up but behind is amber;
-/// backed up with nothing measured yet is grey ("done, unclear now"), not red.
-pub fn backup_point(last: Option<&crate::machine::Backed>, now: Option<u64>) -> Shade {
+/// Red only for a backup attempt that failed (`failed`: not written, or not read back). Never backed up is
+/// grey (not done yet); backed up but behind is amber; backed up with nothing measured yet is grey ("done,
+/// unclear now").
+pub fn backup_point(last: Option<&crate::machine::Backed>, now: Option<u64>, failed: Option<u64>) -> Shade {
+    if failed.is_some() {
+        return Shade::Red;
+    }
     match (last, crate::machine::backup_behind(last, now)) {
-        (None, _) => Shade::Red,
+        (None, _) => Shade::Grey,
         (Some(_), None) => Shade::Grey,
         (Some(_), Some(n)) if n > 0 => Shade::Amber,
         (Some(_), Some(_)) => Shade::Green,

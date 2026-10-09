@@ -1,25 +1,19 @@
-//! The diagnostic trace channel: on in release builds, and a trace mark's content is a component code.
+//! The diagnostic trace channel: on in release builds; a mark's content is a component code.
 //!
-//! The channel is not a temporary debugging device; it ships with the build. So this file has no `cfg` at
-//! all: there is no switch that compiles it out.
+//! The channel ships with the build rather than being a temporary debugging aid, so this file has no `cfg`
+//! that could compile it out. Marks are diagnostics only: nothing in the product decides anything from them.
 //!
-//! Trace marks are diagnostics only: nothing in the product decides anything from them. This file only
-//! makes marks drop, and decides where they land.
-//!
-//! Two sinks: an in-memory ring (always) and a file (added when `ZIKARON_TRACE` names one). A file that
-//! cannot be written is not silent: that error goes to `trouble` and is said on the face.
-//!
-//! ─── Same channel format as the core's and the store crate's ───
+//! Two sinks: an in-memory ring (always) and a file (when `ZIKARON_TRACE` names one). A file that cannot be
+//! written is not silent: the error goes to `trouble` and is shown in the UI.
 //!
 //! The environment variable name and the `<id>\n` line format match `zikaron::trace` and
-//! `zikaron_store::trace` byte for byte. Each crate carries its own copy rather than depending on another
-//! crate just to emit a mark: the trace channel is diagnostics, not a feature, and should not add edges to
-//! the dependency graph. This file is the third copy, a deliberate duplication.
+//! `zikaron_store::trace` byte for byte. Each crate keeps its own copy rather than depending on another crate
+//! just to emit a mark: tracing is diagnostics, not a feature, and should not add dependency edges. This is
+//! the third copy, deliberately.
 //!
-//! This copy has two more things than the other two, both needed by the shell: the in-memory ring (the
-//! window face reads how many dropped this run) and `trouble` (when the sink cannot be opened, someone must
-//! say so). The parameter differs too: those two take `&str`, this one takes the closed type `Feature`, so
-//! free text cannot be put in and marks cannot grow into a second log.
+//! This copy adds two things the shell needs: the in-memory ring (the UI shows how many marks were emitted
+//! this run) and `trouble` (a sink that cannot be opened must be reported). It also takes the closed type
+//! `Feature` instead of `&str`, so free text cannot be passed and marks cannot grow into a second log.
 
 use crate::fault::{classify, Fault};
 use crate::feature::Feature;
@@ -36,11 +30,10 @@ pub enum Sink {
     File(PathBuf),
 }
 
-/// The environment variable naming the sink file. One name, one home: this name is written only here.
+/// The environment variable naming the sink file (spelled only here).
 pub const SINK_ENV: &str = "ZIKARON_TRACE";
 
-/// At most this many marks are kept in the ring. Marks are diagnostics, not a ledger: they should not grow
-/// to eat memory.
+/// At most this many marks are kept in the ring; marks are diagnostics and must not grow without bound.
 pub const RING: usize = 512;
 
 #[derive(Debug, Default)]
@@ -49,7 +42,7 @@ pub struct Trace {
     dropped: usize,
     sink: Option<Sink>,
     trouble: Option<Fault>,
-    /// The moment the sink file reaches its cap: writing stops at the cap, and this error is said once.
+    /// Set when the sink file reaches its cap: writing stops there and this error is reported once.
     full: Option<Fault>,
     full_said: bool,
 }
@@ -61,10 +54,10 @@ fn cell() -> &'static Mutex<Trace> {
 
 /// Settle the sink. Only the first call counts; later calls return the same answer.
 ///
-/// Both `open` and `mark` call it, so "a mark dropped before the channel opened" loses nothing: that mark
-/// opens the channel itself. This is necessary, not caution: the widget library's trace mark is emitted
-/// before the shell starts, and if the sink waited for `open`, those marks would land only in the ring, and
-/// "half dropped" is the hardest kind to notice.
+/// Both `open` and `mark` call it, so a mark emitted before the channel opens loses nothing: it opens the
+/// channel itself. This matters because the widget library emits its mark before the shell starts; if the
+/// sink waited for `open`, those marks would land only in the ring, and partial loss is the hardest kind to
+/// notice.
 fn settle(t: &mut Trace) -> Sink {
     if let Some(s) = &t.sink {
         return s.clone();
@@ -86,15 +79,15 @@ fn settle(t: &mut Trace) -> Sink {
     sink
 }
 
-/// Open the channel. Read the environment once and settle the sink; an error opening the sink file is kept
-/// for the face to say. Starting twice is safe. The shell calls it explicitly once at startup so that error
-/// is seen early, not so marks can drop (`mark` handles that itself).
+/// Open the channel: read the environment once and settle the sink; an error opening the sink file is kept
+/// for the UI. Calling twice is safe. The shell calls it once at startup so that error is seen early (`mark`
+/// opens the channel itself if needed).
 pub fn open() -> Sink {
     let mut t = cell().lock().unwrap_or_else(|e| e.into_inner());
     settle(&mut t)
 }
 
-/// Drop a trace mark. Its content is the component code and nothing else.
+/// Emit a trace mark. Its content is the component code and nothing else.
 pub fn mark(f: Feature) {
     let mut t = cell().lock().unwrap_or_else(|e| e.into_inner());
     let id = f.id();
@@ -105,9 +98,8 @@ pub fn mark(f: Feature) {
     t.ring.push(id);
     if let Sink::File(p) = settle(&mut t) {
         if let Ok(mut h) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-            // Writing stops at the cap (the cap lives only in `.cargo/config.toml`, read by all three
-            // emitters); the first time it is reached, a named error is recorded and handed to the face by
-            // the shell (`take_full`).
+            // Writing stops at the cap (set only in `.cargo/config.toml`, shared by all three emitters); the
+            // first time it is reached, an error is recorded, which the shell shows (`take_full`).
             let size = h.metadata().map(|m| m.len()).unwrap_or(0);
             if over_cap(size, id.len() as u64 + 1) {
                 if t.full.is_none() {
@@ -120,8 +112,8 @@ pub fn mark(f: Feature) {
     }
 }
 
-/// The error of the sink file reaching its cap, handed out only once (`None` after that). The shell takes it
-/// where it receives background results and puts it in the trouble bar.
+/// The error for the sink file reaching its cap, returned only once (`None` afterwards). The shell takes it
+/// when receiving background results and shows it in the trouble bar.
 pub fn take_full() -> Option<Fault> {
     let mut t = cell().lock().unwrap_or_else(|e| e.into_inner());
     if t.full_said {
@@ -155,12 +147,12 @@ pub fn over_cap(size: u64, line: u64) -> bool {
     size + line > TRACE_CAP_BYTES
 }
 
-/// How many marks dropped this run.
+/// How many marks were emitted this run.
 pub fn dropped() -> usize {
     cell().lock().unwrap_or_else(|e| e.into_inner()).dropped
 }
 
-/// Which marks are in the ring now (in the order dropped).
+/// The marks in the ring now, in emission order.
 pub fn ring() -> Vec<&'static str> {
     cell().lock().unwrap_or_else(|e| e.into_inner()).ring.clone()
 }
@@ -175,7 +167,7 @@ pub fn sink() -> Sink {
         .unwrap_or(Sink::Memory)
 }
 
-/// The trouble at the moment the channel opened (if any). Not silent: the face must say it.
+/// The error from opening the channel, if any. Not silent: the UI must show it.
 pub fn trouble() -> Option<Fault> {
     cell().lock().unwrap_or_else(|e| e.into_inner()).trouble.clone()
 }

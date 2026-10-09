@@ -1,11 +1,11 @@
 [package]
 name = "zikaron-ui"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 license = "MIT"
 
 # Third party: the egui family. This crate is the one place it enters the project.
 # `default-features = false` turns off `default_fonts` (egui's own font bytes); the fonts this crate
 # embeds are the ones in `fonts/`.
 [dependencies]
-egui = { version = "0.31.1", default-features = false }
+egui = { version = "0.33", default-features = false }

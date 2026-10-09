@@ -1,12 +1,12 @@
 //! Errors in three parts: known ones are translated, unknown ones pass through, and the evidence tail is
 //! always kept.
 //!
-//! 1. Known errors live in one closed table, `Known`, with plain words from `translate` only. An error
-//! outside the table is never guessed into it: `classify` recognizes only what it knows, and everything else
-//! goes to the unknown branch.
-//! 2. Unknown errors pass through unchanged: the sentence on screen equals the one from below byte for byte.
-//! 3. Evidence tail: both branches carry `tail`, and both constructors of `Fault` require it, so losing the
-//! original return cannot be written.
+//! 1. Known errors live in one closed table, [`Known`], with plain words from [`translate`] only. An error
+//!    outside the table is never guessed into it: [`classify`] recognizes only what it knows, and everything
+//!    else goes to the unknown branch.
+//! 2. Unknown errors pass through unchanged: the sentence on screen equals the underlying one byte for byte.
+//! 3. Evidence tail: both branches carry `tail`, and both constructors of [`Fault`] require it, so the
+//!    original error text cannot be lost.
 
 use std::io::ErrorKind;
 
@@ -111,9 +111,9 @@ pub enum Known {
     AnswerTooLong,
     /// The node's answer is not JSON.
     AnswerNotJson,
-    /// The current seat is empty: this identity's key is not on this seat (one key, one seat).
+    /// The current seat has no key: this identity's key is not in this seat (one key per seat).
     SeatUnseated,
-    /// This domain is not signed by the current seat (the seat × domain table).
+    /// This domain is not signed by the current seat (per the seat × domain table).
     SeatDomain,
     /// The backup key file did not land on disk (read back after writing, it does not match).
     BackupNotLanded,
@@ -136,7 +136,7 @@ pub enum Known {
     LedgerNotFetched,
     /// The fetched ledger does not match this identity's anchors on chain: newer entries exist elsewhere.
     NewerElsewhere,
-    /// The law refused this entry (token in the evidence tail).
+    /// The core rejected this entry (spec token in the evidence tail).
     EntryRefused,
     /// This ledger has no genesis entry.
     NoGenesis,
@@ -182,7 +182,7 @@ pub enum Known {
     GasRefused,
     /// Gas was not estimated for this batch, or was estimated for another count.
     GasNotShown,
-    /// Sent, and the receipt says it did not succeed (law §9.1: status other than 1 is no anchor).
+    /// Sent, and the receipt says it did not succeed (law §9.1: a status other than 1 is no anchor).
     SendFailed,
     /// No anchor audit has run yet; this field has no reading.
     NotAudited,
@@ -217,13 +217,14 @@ pub enum Known {
     /// Material was read at a level of the audit input, and it is not the ledger that holds this grant
     /// (another issuer's): not used, and said by name.
     NotThisLedger,
-    /// The bytes pass the law but are not a grant (the vault holds grants only).
+    /// The bytes pass the core check but are not a grant (the vault holds grants only).
     NotAGrant,
     /// This grant is already in the vault.
     AlreadyHeld,
     /// A note was given for a grant that is not in the vault (its id in the evidence tail).
     GrantNotHeld,
-    /// The folder chosen for "import grant folder" holds no file at all (only the system's side files, or nothing).
+    /// The folder chosen for "import grant folder" holds no file at all (only the system's side files, or
+    /// nothing).
     GrantDirEmpty,
     /// This entry is already on chain (queueing it again would only pay gas again).
     AlreadyAnchored,
@@ -233,6 +234,9 @@ pub enum Known {
     /// this seat's ledger.
     ChainIncomplete,
     IdentityExists,
+    IdentityHereAs,
+    IdentityNameTaken,
+    PlaceOneLine,
     NoIdentity,
     PhraseWords,
     PhraseInvalid,
@@ -274,9 +278,11 @@ pub enum Known {
     TraceFull,
     /// The pasted claim text cannot be read (header, hex, three members, canonical form).
     ClaimShape,
-    /// A sealed local file does not open with this machine's local data key (sealed under another master key, or altered).
+    /// A sealed local file does not open with this machine's local data key (sealed under another master
+    /// key, or altered).
     LocalSeal,
-    /// Migrating plain local files: a sealed copy did not open back to the same bytes; migration stopped and no plain file was deleted.
+    /// Migrating plain local files: a sealed copy did not open back to the same bytes; migration stopped and
+    /// no plain file was deleted.
     MigrateMismatch,
     /// The recovery secret belongs to a secondary identity: only the primary identity recovers the passcode.
     RecoveryNotPrimary,
@@ -298,15 +304,21 @@ pub enum Known {
     Rekeying,
     /// The backup does not hold the identity asked for.
     BackupNoIdentity,
-    /// A data folder the register names is not where it was (its place is gone, e.g. a disk not attached): a change that must reseal every local file refuses rather than leave that folder behind.
+    /// A data folder the register names is not where it was (e.g. a disk not attached): a change that must
+    /// reseal every local file refuses rather than leave that folder behind.
     HomeUnreachable,
-    /// Another background task is still running: changing the master key or restoring waits for it to land, so nothing is written under the key being replaced.
+    /// Another background task is still running: changing the master key or restoring waits for it to land,
+    /// so nothing is written under the key being replaced.
     BusyForRekey,
-    /// The system file dialog could not open on this machine (on Linux: the desktop portal and its zenity fallback both failed, as the dialog itself reports), said instead of reading as a cancel.
+    /// The system file dialog could not open on this machine (on Linux: the desktop portal and its zenity
+    /// fallback both failed, as the dialog reports), reported instead of being read as a cancel.
     DialogUnavailable,
-    /// Local files sealed under a master key that is gone (the key store was reset or lost) were moved aside, byte for byte, before a new passcode made a new master key; said once.
+    /// Local files sealed under a master key that is gone (the key store was reset or lost) were moved aside,
+    /// byte for byte, before a new passcode made a new master key; reported once.
     LocalSetAside,
-    /// A place was read but none of the material wanted could be taken from it, and some files there could not be read as entries: named with the place, how many and the first one's reason, never dropped silently.
+    /// A place was read but none of the wanted material could be taken from it, and some files there could
+    /// not be read as entries: reported with the place, the count and the first reason, never dropped
+    /// silently.
     EntriesUnreadable,
     /// A read-only network with the same chain and registry contract is already in the table (or is the main
     /// network): refused by name, the table unchanged.
@@ -314,6 +326,28 @@ pub enum Known {
     /// The new place of a move is this home's root or lies under it (real paths, links resolved): refused before
     /// one byte is copied, the old home unwritten.
     InsideHome,
+    /// The command line's door could not open on this side (a path too long for the system, or the system
+    /// refused): the command line cannot work through the desktop now.
+    DoorShut,
+    /// A request received at the door could not be read (not this version's form, or over its size
+    /// cap): nothing was done.
+    DoorUnread,
+    /// The same kind of background work is running: a request through the door did not start another.
+    InFlight,
+    /// "Enable command line": something else is at the command line's place (another install's copy, a link to
+    /// another program, a plain file): never overwritten or removed.
+    CliPathTaken,
+    /// "Enable command line": the system's administrator dialog was cancelled; nothing changed.
+    CliPathCancelled,
+    /// "Enable command line": the system did not allow it (no permission, a wrong password at its dialog, a place
+    /// that cannot be written, a path too long to keep).
+    CliPathNotAllowed,
+    /// "Enable command line": this way of running the app cannot be put on the path (opened inside its disk image,
+    /// an AppImage, no command line beside the app).
+    CliPathUnsupported,
+    /// A sent batch is void: none of its transactions was included, no node holds any of them, and its nonce
+    /// was used on chain by another transaction. Its entries are back in the queue.
+    BatchVoided,
 }
 
 impl Known {
@@ -338,7 +372,7 @@ impl Known {
         Known::NodeRefused,
     ];
 
-    pub const ALL: [Known; 152] = [
+    pub const ALL: [Known; 163] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
@@ -447,6 +481,9 @@ impl Known {
         Known::PayloadRefused,
         Known::ChainIncomplete,
         Known::IdentityExists,
+        Known::IdentityHereAs,
+        Known::IdentityNameTaken,
+        Known::PlaceOneLine,
         Known::NoIdentity,
         Known::PhraseWords,
         Known::PhraseInvalid,
@@ -491,6 +528,14 @@ impl Known {
         Known::EntriesUnreadable,
         Known::NetworkListed,
         Known::InsideHome,
+        Known::DoorShut,
+        Known::DoorUnread,
+        Known::InFlight,
+        Known::CliPathTaken,
+        Known::CliPathCancelled,
+        Known::CliPathNotAllowed,
+        Known::CliPathUnsupported,
+        Known::BatchVoided,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -603,6 +648,9 @@ impl Known {
             Known::PayloadRefused => "PAYLOAD_REFUSED",
             Known::ChainIncomplete => "CHAIN_UNREACHED",
             Known::IdentityExists => "IDENTITY_EXISTS",
+            Known::IdentityHereAs => "IDENTITY_HERE_AS",
+            Known::IdentityNameTaken => "IDENTITY_NAME_TAKEN",
+            Known::PlaceOneLine => "PLACE_ONE_LINE",
             Known::NoIdentity => "NO_IDENTITY",
             Known::PhraseWords => "PHRASE_WORDS",
             Known::PhraseInvalid => "PHRASE_INVALID",
@@ -647,14 +695,22 @@ impl Known {
             Known::EntriesUnreadable => "ENTRIES_UNREADABLE",
             Known::NetworkListed => "NETWORK_LISTED",
             Known::InsideHome => "INSIDE_HOME",
+            Known::DoorShut => "DOOR_SHUT",
+            Known::DoorUnread => "DOOR_UNREAD",
+            Known::InFlight => "IN_FLIGHT",
+            Known::CliPathTaken => "CLI_PATH_TAKEN",
+            Known::CliPathCancelled => "CLI_PATH_CANCELLED",
+            Known::CliPathNotAllowed => "CLI_PATH_NOT_ALLOWED",
+            Known::CliPathUnsupported => "CLI_PATH_UNSUPPORTED",
+            Known::BatchVoided => "BATCH_VOIDED",
         }
     }
 }
 
 
-/// The two sentences on screen (what happened, what next), from the string table in the interface language,
-/// one pair per member. `translate` gives the evidence words used by tests and raw errors (format stable), not
-/// shown at the first level.
+/// The two sentences on screen (what happened, what next) as string-table keys in the UI language, one pair
+/// per member. [`translate`] gives the evidence words used by tests and raw errors (stable format), which are
+/// not shown at the first level.
 impl Known {
     pub fn what(self) -> crate::lang::Key {
         use crate::lang::Key as L;
@@ -767,6 +823,9 @@ impl Known {
             Known::PayloadRefused => L::FaultWhatPayloadRefused,
             Known::ChainIncomplete => L::FaultWhatChainIncomplete,
             Known::IdentityExists => L::FaultWhatIdentityExists,
+            Known::IdentityHereAs => L::FaultWhatIdentityHereAs,
+            Known::IdentityNameTaken => L::FaultWhatIdentityNameTaken,
+            Known::PlaceOneLine => L::FaultWhatPlaceOneLine,
             Known::NoIdentity => L::FaultWhatNoIdentity,
             Known::PhraseWords => L::FaultWhatPhraseWords,
             Known::PhraseInvalid => L::FaultWhatPhraseInvalid,
@@ -811,6 +870,14 @@ impl Known {
             Known::EntriesUnreadable => L::FaultWhatEntriesUnreadable,
             Known::NetworkListed => L::FaultWhatNetworkListed,
             Known::InsideHome => L::FaultWhatInsideHome,
+            Known::DoorShut => L::FaultWhatDoorShut,
+            Known::DoorUnread => L::FaultWhatDoorUnread,
+            Known::InFlight => L::FaultWhatInFlight,
+            Known::CliPathTaken => L::FaultWhatCliPathTaken,
+            Known::CliPathCancelled => L::FaultWhatCliPathCancelled,
+            Known::CliPathNotAllowed => L::FaultWhatCliPathNotAllowed,
+            Known::CliPathUnsupported => L::FaultWhatCliPathUnsupported,
+            Known::BatchVoided => L::FaultWhatBatchVoided,
         }
     }
 
@@ -925,6 +992,9 @@ impl Known {
             Known::PayloadRefused => L::FaultNextPayloadRefused,
             Known::ChainIncomplete => L::FaultNextChainIncomplete,
             Known::IdentityExists => L::FaultNextIdentityExists,
+            Known::IdentityHereAs => L::FaultNextIdentityHereAs,
+            Known::IdentityNameTaken => L::FaultNextIdentityNameTaken,
+            Known::PlaceOneLine => L::FaultNextPlaceOneLine,
             Known::NoIdentity => L::FaultNextNoIdentity,
             Known::PhraseWords => L::FaultNextPhraseWords,
             Known::PhraseInvalid => L::FaultNextPhraseInvalid,
@@ -969,6 +1039,14 @@ impl Known {
             Known::EntriesUnreadable => L::FaultNextEntriesUnreadable,
             Known::NetworkListed => L::FaultNextNetworkListed,
             Known::InsideHome => L::FaultNextInsideHome,
+            Known::DoorShut => L::FaultNextDoorShut,
+            Known::DoorUnread => L::FaultNextDoorUnread,
+            Known::InFlight => L::FaultNextInFlight,
+            Known::CliPathTaken => L::FaultNextCliPathTaken,
+            Known::CliPathCancelled => L::FaultNextCliPathCancelled,
+            Known::CliPathNotAllowed => L::FaultNextCliPathNotAllowed,
+            Known::CliPathUnsupported => L::FaultNextCliPathUnsupported,
+            Known::BatchVoided => L::FaultNextBatchVoided,
         }
     }
 }
@@ -1084,6 +1162,9 @@ pub fn translate(k: Known) -> &'static str {
         Known::PayloadRefused => "这段载荷 K2 不收(它的 token 在证据尾)",
         Known::ChainIncomplete => "上游链级不到根,缺的那一枚在证据尾",
         Known::IdentityExists => "这个身份已经在这台机器上了",
+        Known::IdentityHereAs => "这个身份已在本机,名字是证据尾里那一个,没有改名",
+        Known::IdentityNameTaken => "本机另一个身份已用这个名字,什么也没写",
+        Known::PlaceOneLine => "指处给了多行;这一页只读一处",
         Known::NoIdentity => "登记表里没有这个身份",
         Known::PhraseWords => "助记词的词数不对",
         Known::PhraseInvalid => "助记词里有词不在英文词表里,或校验位对不上",
@@ -1128,6 +1209,14 @@ pub fn translate(k: Known) -> &'static str {
         Known::EntriesUnreadable => "这一处读到了,可里面有档读不成条目,要的那一本没取到",
         Known::NetworkListed => "这条网络已在只读网络里",
         Known::InsideHome => "搬家的新处在这处数据目录里头",
+        Known::DoorShut => "命令行的门在桌面这一侧开不了",
+        Known::DoorUnread => "门收到的请求读不出,没有照做",
+        Known::InFlight => "同一类后台活正在跑,这一次不开始",
+        Known::CliPathTaken => "命令行那一处已被别的安装占着,不覆盖",
+        Known::CliPathCancelled => "系统的管理员框取消了,命令行那一处没动",
+        Known::CliPathNotAllowed => "系统不许动命令行那一处",
+        Known::CliPathUnsupported => "这样开的应用接不进终端的命令路径",
+        Known::BatchVoided => "这一批交易作废了:没有一笔入块、没有节点还持有、nonce 已被别的交易用掉;条目已回到排队",
     }
 }
 
@@ -1137,8 +1226,8 @@ pub struct Fault {
     class: Class,
     said: String,
     tail: String,
-    /// For faults that carry a law token (`ENTRY_REFUSED`, `SCAN_REFUSED`), the plain words looked up by that
-    /// token; when present, the screen's half sentence says this. Code, tail and evidence words are
+    /// For faults that carry a spec token (`ENTRY_REFUSED`, `SCAN_REFUSED`), the plain-words key for that
+    /// token; when present, the screen's first sentence uses it. Code, tail and evidence words are
     /// unaffected.
     say: Option<crate::lang::Key>,
     /// Likewise, the next-step sentence (`None` uses the closed table's).
@@ -1207,8 +1296,8 @@ impl Fault {
         Fault { landing: Some(t.clone()), ..Fault::landing(t.code(), t.subject()) }
     }
 
-    /// The same fault, saying which place a person named could not be read (kept when one is already said:
-    /// the innermost place wins).
+    /// The same fault, recording which place a person named could not be read (an already recorded place is
+    /// kept: the innermost wins).
     pub fn at_place(mut self, place: impl Into<String>) -> Fault {
         if self.place.is_none() {
             self.place = Some(place.into());
@@ -1237,14 +1326,14 @@ impl Fault {
         self.landing.as_ref()
     }
 
-    /// The law refused an entry: the tail is the token's name, the screen's sentence comes from
+    /// The core rejected an entry: the tail is the token's name; the screen's sentence comes from
     /// [`entry_token_say`].
     pub fn entry_refused(t: zikaron::tokens::Token) -> Fault {
         Fault { say: Some(entry_token_say(t)), ..Fault::known(Known::EntryRefused, format!("{t:?}")) }
     }
 
-    /// An entry in a mirror bundle was refused by the law: the code stays `MIRROR_ENTRY` (the whole bundle is
-    /// refused), the tail carries the file name and token; the screen's sentence comes from
+    /// An entry in a mirror bundle was rejected by the core: the code stays `MIRROR_ENTRY` (the whole bundle
+    /// is refused), the tail carries the file name and token; the screen's sentence comes from
     /// [`entry_token_say`].
     pub fn mirror_entry(name: &str, t: zikaron::tokens::Token) -> Fault {
         Fault { say: Some(entry_token_say(t)), ..Fault::known(Known::MirrorEntry, crate::lang::filln(crate::lang::Key::Tail193, &[name, &format!("{t:?}")])) }
@@ -1262,8 +1351,7 @@ impl Fault {
         format!("{}:{}", r.code(), r.detail())
     }
 
-    /// Unknown: passed through unchanged. The sentence on screen is the one from below, nothing added or
-    /// changed.
+    /// Unknown: passed through unchanged; the sentence on screen is the underlying one.
     pub fn unknown(tail: impl Into<String>) -> Fault {
         let tail = tail.into();
         Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None }
@@ -1278,10 +1366,8 @@ impl Fault {
         &self.said
     }
 
-    /// The half sentence of plain words shown at the first level: the known branch without the table code
-    /// (code and tail fold into the raw error); the unknown branch has no plain words and stays as is.
-    /// The same fault said in other words on screen (the first sentence, the next-step sentence); code,
-    /// tail and evidence unchanged. `None` keeps the table's.
+    /// The same fault in other words on screen (first sentence, next-step sentence); code, tail and evidence
+    /// unchanged. `None` keeps the current wording.
     pub fn worded(self, say: Option<crate::lang::Key>, then: Option<crate::lang::Key>) -> Fault {
         Fault { say: say.or(self.say), then: then.or(self.then), ..self }
     }
@@ -1291,6 +1377,18 @@ impl Fault {
         self.then
     }
 
+    /// The key of the sentence said first for a known fault (its own wording, or the table's); `None` for the
+    /// unknown branch, which has no table sentence.
+    pub fn what_key(&self) -> Option<crate::lang::Key> {
+        match (self.which(), self.say) {
+            (Some(_), Some(said)) => Some(said),
+            (Some(k), None) => Some(k.what()),
+            (None, _) => None,
+        }
+    }
+
+    /// The plain-words sentence shown at the first level: for the known branch, without the table code (code
+    /// and tail go to the raw error); the unknown branch has no plain words and stays as is.
     pub fn human(&self) -> &str {
         match (self.which(), self.say) {
             (Some(_), Some(said)) => crate::lang::t(said),
@@ -1329,10 +1427,9 @@ impl Fault {
         Known::ALL.iter().copied().find(|k| k.as_str() == code)
     }
 
-    /// Evidence words: `said · tail`. Tests read this form (the first word up to `:` is the code), and so do
-    /// readings built from faults (status line, check input source, mirror and vault refusals); the format is
-    /// stable. The two screen sentences and the raw error use `human`,
-    /// `next` and `raw`.
+    /// Evidence words: `said · tail`. Tests and readings built from faults (status line, check input source,
+    /// mirror and vault refusals) parse this form (the first word up to `:` is the code), so the format is
+    /// stable. The screen sentences and raw error use `human`, `next` and `raw`.
     pub fn evidence(&self) -> String {
         format!("{} · {}", self.said, self.tail)
     }
@@ -1342,14 +1439,14 @@ impl Fault {
         &self.tail
     }
 
-    /// The unknown branch passes through byte for byte, computed.
+    /// Whether the unknown branch passed through byte for byte.
     pub fn passthrough(&self) -> bool {
         self.class == Class::Unknown && self.said == self.tail
     }
 }
 
-/// Law entry refusal tokens to plain words (the 26 members of law §10). Exhaustive over the closed type: a
-/// new token does not compile until added here.
+/// Entry rejection tokens to plain words (the 26 members of law §10). Exhaustive over the closed type: a new
+/// token does not compile until added here.
 pub fn entry_token_say(t: zikaron::tokens::Token) -> crate::lang::Key {
     use crate::lang::Key as L;
     use zikaron::tokens::Token as T;
@@ -1396,8 +1493,24 @@ pub fn scan_refusal_say(r: &zikaron_anchor::scan::Refusal) -> crate::lang::Key {
     }
 }
 
-/// Classify. Only the table's members are recognized; everything else goes to the unknown branch, never
-/// guessed.
+/// A whole number typed in a cell that goes into an entry: within the spec's whole-number ceiling
+/// (`2^53 − 1`), or refused as a shape error (`SETTINGS_SHAPE`) with one of two messages: past the ceiling
+/// (any run of digits beyond it, within 64 bits or not), or not a whole number at all (`not_a_number`, given
+/// the text). Surrounding whitespace, leading zeros and a leading `+` read as the same number.
+pub fn whole_within_ceiling(typed: &str, not_a_number: crate::lang::Key) -> Result<u64, Fault> {
+    let t = typed.trim();
+    let digits = t.strip_prefix('+').unwrap_or(t);
+    let past = || Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailPastIntCeiling, &[t]));
+    match t.parse::<u64>() {
+        Ok(n) if n <= zikaron::json::MAX_INT => Ok(n),
+        Ok(_) => Err(past()),
+        Err(_) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => Err(past()),
+        Err(_) => Err(Fault::known(Known::SettingsShape, crate::lang::filln(not_a_number, &[&format!("{t:?}")]))),
+    }
+}
+
+/// Classifies an I/O error. Only the table's members are recognized; everything else goes to the unknown
+/// branch, never guessed.
 pub fn classify(e: &std::io::Error, subject: &str) -> Fault {
     let tail = format!("{subject}: {e}");
     match e.kind() {

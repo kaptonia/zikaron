@@ -2,14 +2,14 @@ use super::*;
 
 pub(super) fn revoke(shell: &mut Shell, grant: &str, case: &str) -> Result<(String, Enqueued), crate::fault::Fault> {
     let body = crate::grantx::revocation_body(grant, case)?;
-    // The revoked grant must be in this ledger. The zikaron/1 law (§6.4) says `grant` is "the entry_id of a
-    // grant in this ledger"; a revocation pointing nowhere is a valid entry with a dangling reference (§11),
-    // and that is not what the person wants: it is refused by name at once, so it never lands on chain.
+    // The revoked grant must be in this ledger. In zikaron/1 a revocation pointing elsewhere is still a valid
+    // entry with a dangling reference, but it is never what the person wants, so it is refused by name before
+    // anything reaches the chain.
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // Read that entry now, not through the register table: the two have separate owners, and this question
-    // only needs "is it in this ledger, and is it a grant".
+    // Read the entry directly rather than through the register table: this only needs to know whether it is a
+    // grant in this ledger.
     let d = crate::ledgerx::detail(home, grant).map_err(|_| {
         crate::fault::Fault::known(crate::fault::Known::SubjectMissing, grant.trim().to_string())
     })?;
@@ -38,7 +38,7 @@ pub(super) fn revoke(shell: &mut Shell, grant: &str, case: &str) -> Result<(Stri
     };
     let id = land_sealed(shell, sealed)?;
     let n = queue_it(shell, &id);
-    // The register row's state changes too: clear it so it is reread.
+    // The grant's register row changes too; mark it stale so it is reread.
     shell.stale_grants();
     shell.stale_rows();
     Ok((id, n))

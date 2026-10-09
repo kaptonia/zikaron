@@ -1,10 +1,9 @@
 //! Role labels and the two-seat view.
 //!
-//! A seat is a view, never a process (one app, several seats, identity switching). So there is only a label
-//! here: no second chain access, no second notification channel, no second process. One anchor key opens both
-//! seats.
+//! A seat is a view, never a process (one app, several seats, identity switching). So this is only a label:
+//! no second chain connection, notification channel or process. One anchor key opens both seats.
 
-/// Two seats. Closed.
+/// The two seats.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     /// Author seat.
@@ -30,7 +29,7 @@ impl Role {
         }
     }
 
-    /// Switch seat. What changes is the view; key, home and notifications stay.
+    /// The other seat. Switching changes only the view; key, home and notifications stay.
     pub fn other(self) -> Role {
         match self {
             Role::Author => Role::Grantee,

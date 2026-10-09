@@ -1,24 +1,16 @@
-//! Bilingual base. The zh and en tables have equal key sets, checkable by machine.
+//! UI strings in Chinese and English.
 //!
-//! ─── Key set equality is carried by construction ───
+//! There is one closed [`Key`] type and one [`TABLE`] whose rows carry both languages, so a key cannot exist
+//! in one language and not the other (separate per-language maps would drift). [`trouble`] checks the rest:
+//! each key has exactly one row, neither language is empty, slots match, and no two keys share the same text
+//! in one language.
 //!
-//! Two maps each with its own keys would drift: someday one side gains a key the other lacks, and a machine
-//! check only finds that after the split.
-//!
-//! The design makes the two sides not two copies at all: one closed type [`Key`], one [`TABLE`], and every
-//! row carries both languages. So "zh has it and en does not" cannot be written: it would require a row
-//! missing half a cell, and a row is a triple. The machine checks what remains: each key has exactly one row,
-//! neither language is empty, and no two keys share the same words in one language.
-//!
-//! ─── Taking keys ───
-//!
-//! The interface has no hard-coded sentence: every place calls [`t`] (or the [`fill1`] family with slots).
-//! The self-check suite scans the window module and fails on any Chinese literal, so a new visible surface is
-//! done only when both languages are in.
+//! The UI has no hard-coded text: every string comes from [`t`] (or [`filln`] and friends for templates). The
+//! self-check suite fails on any Chinese literal in the window module.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Two languages. Closed.
+/// The supported languages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
     Zh,
@@ -52,7 +44,7 @@ impl Lang {
 
 static LANG: AtomicU8 = AtomicU8::new(0);
 
-/// Which language is spoken now.
+/// The current UI language.
 pub fn lang() -> Lang {
     if LANG.load(Ordering::Relaxed) == 0 {
         Lang::Zh
@@ -61,14 +53,13 @@ pub fn lang() -> Lang {
     }
 }
 
-/// Switch language. This is a public entry point of the language module, so it drops a trace mark (every
-/// public entry emits one).
+/// Switch the UI language.
 pub fn set(l: Lang) {
     crate::trace::mark(crate::feature::Feature::H6);
     LANG.store(if l == Lang::Zh { 0 } else { 1 }, Ordering::Relaxed);
 }
 
-/// The key of every sentence in the interface. Closed; the interface has no hard-coded sentence.
+/// The key of every UI string.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     PageRevoke,
@@ -192,6 +183,8 @@ pub enum Key {
     SaidSubmitted,
     SaidRepo,
     SaidBasis,
+    SaidBasisFingerprint,
+    SaidBasisFingerprintKept,
     SaidAuditEvery,
     SaidSince,
     SaidDetail,
@@ -395,6 +388,7 @@ pub enum Key {
     SetGasSay,
     SetNoKey,
     SetNotRead,
+    SetReadFailedNow,
     SaidCopied,
     SetNodes,
     SetRegistry,
@@ -574,6 +568,8 @@ pub enum Key {
     U3FromTo,
     U3GasEstimate,
     U3FeeCap,
+    U3FeeFallback,
+    U3FeeLeftNodes,
     U3NoEstimateTitle,
     U3NoEstimateWhy,
     U3Retry,
@@ -631,6 +627,14 @@ pub enum Key {
     U3ScopeNote,
     U3SeenBeforeDots,
     U3SendAll,
+    U3BumpKey,
+    U3BumpTitle,
+    U3BumpOldCap,
+    U3BumpPriceNow,
+    U3BumpNewCap,
+    U3BumpNote,
+    U3BumpSpent,
+    U3BumpWaiting,
     U3SendGo,
     U3Estimating,
     U3Sending,
@@ -640,6 +644,8 @@ pub enum Key {
     TaskTake,
     TaskRecord,
     TaskMigrate,
+    TaskPath,
+    PathAlreadyOpen,
     U3SendNote,
     U3SendNow,
     U3QueueIt,
@@ -1066,6 +1072,8 @@ pub enum Key {
     Tail091,
     Tail092,
     Tail093,
+    TailNodePort,
+    TailNodeAddress,
     Tail094,
     Tail095,
     Tail096,
@@ -1173,6 +1181,8 @@ pub enum Key {
     Tail215,
     Tail216,
     Tail217,
+    TailPastIntCeiling,
+    TailPastHops,
     Tail218,
     Tail219,
     Tail219Opaque,
@@ -1196,6 +1206,12 @@ pub enum Key {
     NavDoing,
     FaultWhatIdentityExists,
     FaultNextIdentityExists,
+    FaultWhatIdentityHereAs,
+    FaultNextIdentityHereAs,
+    FaultWhatIdentityNameTaken,
+    FaultNextIdentityNameTaken,
+    FaultWhatPlaceOneLine,
+    FaultNextPlaceOneLine,
     FaultWhatNoIdentity,
     FaultNextNoIdentity,
     FaultWhatPhraseWords,
@@ -1372,6 +1388,8 @@ pub enum Key {
     Tail233,
     Tail234,
     Tail235,
+    Tail236,
+    Tail237,
     V2PendingNote,
     V2WorksEmpty,
     V2GrantToOthers,
@@ -1578,6 +1596,7 @@ pub enum Key {
     CheckFromAddress,
     CheckRefetch,
     CheckRejectedRow,
+    CheckRejectedUnsaid,
     CheckMissRow,
     ReaderNoContent,
     NotObtained,
@@ -1604,6 +1623,7 @@ pub enum Key {
     TaskCheckTail,
     TaskGate,
     TaskReadNet,
+    TaskBasis,
     KitNotAnOriginalRow,
     KitVetting,
     KitOriginalsRemoved,
@@ -1657,6 +1677,19 @@ pub enum Key {
     NavDoingMore,
     SaidAnchorKeyPlain,
     SaidAppearance,
+    SetProxy,
+    ProxySystem,
+    ProxyOff,
+    ProxyManual,
+    ProxyHint,
+    ProxyNowDirect,
+    ProxyNowVia,
+    ProxyNowAutoConfig,
+    ProxyNowLoopback,
+    ProxyNowUnread,
+    SaidProxy,
+    TailProxyShape,
+    TailProxyCredentials,
     SaidAttestedPlain,
     SaidBookedOn,
     SaidBookedOff,
@@ -1832,6 +1865,7 @@ pub enum Key {
     WizExitKeep,
     WizExitGo,
     GapBackupNever,
+    GapBackupFailed,
     GapBackupBehind,
     IdKeyFilePassword,
     WizDoGenerate,
@@ -1876,6 +1910,7 @@ pub enum Key {
     BadgeSingle,
     BadgeDown,
     BadgeFingerprint,
+    BadgeUnchecked,
     VerifyNotAddedSaid,
     ReadNetTitle,
     ReadNetAdd,
@@ -1888,11 +1923,59 @@ pub enum Key {
     VerifyAddNetwork,
     VerifyNotAdded,
     VerifyResultFile,
+    TailNotYetAt,
+    TailNodeBehind,
+    TailWrongChainNode,
+    SetUnanswered,
+    SetUnansweredCount,
+    SetWhatEachSaid,
+    TailUnreadKept,
+    TailTicketVoid,
+    SetOtherMachine,
+    SetMarkUnread,
+    SetTakeWriter,
+    TailOtherMachine,
+    FaultWhatDoorShut,
+    FaultNextDoorShut,
+    FaultWhatDoorUnread,
+    FaultNextDoorUnread,
+    FaultWhatInFlight,
+    FaultNextInFlight,
+    TailDoorNotForm,
+    TailDoorTooLarge,
+    TailDoorNothingCame,
+    SetCliAnchor,
+    CliAnchorSend,
+    CliAnchorQueue,
+    SaidCliAnchor,
+    SaidSendAsked,
+    FaultWhatCliPathTaken,
+    FaultNextCliPathTaken,
+    FaultWhatCliPathCancelled,
+    FaultNextCliPathCancelled,
+    FaultWhatCliPathNotAllowed,
+    FaultNextCliPathNotAllowed,
+    FaultWhatCliPathUnsupported,
+    FaultNextCliPathUnsupported,
+    FaultWhatBatchVoided,
+    FaultNextBatchVoided,
+    U3Unheld,
+    U3ResendKey,
+    U3UnheldNote,
+    TailCliPathTooLong,
+    SetCliPath,
+    CliPathOnSay,
+    CliPathTakenSay,
+    CliPathProvidedSay,
+    CliPathUnsupportedSay,
+    SaidCliPathOn,
+    SaidCliPathOff,
+    TaskCliPath,
 }
 
 impl Key {
     /// All keys, in [`TABLE`] order.
-    pub const ALL: [Key; 1817] = [
+    pub const ALL: [Key; 1909] = [
         Key::PageRevoke,
         Key::PageAdopt,
         Key::PageSucceed,
@@ -2014,6 +2097,8 @@ impl Key {
         Key::SaidSubmitted,
         Key::SaidRepo,
         Key::SaidBasis,
+        Key::SaidBasisFingerprint,
+        Key::SaidBasisFingerprintKept,
         Key::SaidAuditEvery,
         Key::SaidSince,
         Key::SaidDetail,
@@ -2217,6 +2302,7 @@ impl Key {
         Key::SetGasSay,
         Key::SetNoKey,
         Key::SetNotRead,
+        Key::SetReadFailedNow,
         Key::SaidCopied,
         Key::SetNodes,
         Key::SetRegistry,
@@ -2396,6 +2482,8 @@ impl Key {
         Key::U3FromTo,
         Key::U3GasEstimate,
         Key::U3FeeCap,
+        Key::U3FeeFallback,
+        Key::U3FeeLeftNodes,
         Key::U3NoEstimateTitle,
         Key::U3NoEstimateWhy,
         Key::U3Retry,
@@ -2453,6 +2541,14 @@ impl Key {
         Key::U3ScopeNote,
         Key::U3SeenBeforeDots,
         Key::U3SendAll,
+        Key::U3BumpKey,
+        Key::U3BumpTitle,
+        Key::U3BumpOldCap,
+        Key::U3BumpPriceNow,
+        Key::U3BumpNewCap,
+        Key::U3BumpNote,
+        Key::U3BumpSpent,
+        Key::U3BumpWaiting,
         Key::U3SendGo,
         Key::U3Estimating,
         Key::U3Sending,
@@ -2462,6 +2558,8 @@ impl Key {
         Key::TaskTake,
         Key::TaskRecord,
         Key::TaskMigrate,
+        Key::TaskPath,
+        Key::PathAlreadyOpen,
         Key::U3SendNote,
         Key::U3SendNow,
         Key::U3QueueIt,
@@ -2888,6 +2986,8 @@ impl Key {
         Key::Tail091,
         Key::Tail092,
         Key::Tail093,
+        Key::TailNodePort,
+        Key::TailNodeAddress,
         Key::Tail094,
         Key::Tail095,
         Key::Tail096,
@@ -2995,6 +3095,8 @@ impl Key {
         Key::Tail215,
         Key::Tail216,
         Key::Tail217,
+        Key::TailPastIntCeiling,
+        Key::TailPastHops,
         Key::Tail218,
         Key::Tail219,
         Key::Tail219Opaque,
@@ -3018,6 +3120,12 @@ impl Key {
         Key::NavDoing,
         Key::FaultWhatIdentityExists,
         Key::FaultNextIdentityExists,
+        Key::FaultWhatIdentityHereAs,
+        Key::FaultNextIdentityHereAs,
+        Key::FaultWhatIdentityNameTaken,
+        Key::FaultNextIdentityNameTaken,
+        Key::FaultWhatPlaceOneLine,
+        Key::FaultNextPlaceOneLine,
         Key::FaultWhatNoIdentity,
         Key::FaultNextNoIdentity,
         Key::FaultWhatPhraseWords,
@@ -3194,6 +3302,8 @@ impl Key {
         Key::Tail233,
         Key::Tail234,
         Key::Tail235,
+        Key::Tail236,
+        Key::Tail237,
         Key::V2PendingNote,
         Key::V2WorksEmpty,
         Key::V2GrantToOthers,
@@ -3400,6 +3510,7 @@ impl Key {
         Key::CheckFromAddress,
         Key::CheckRefetch,
         Key::CheckRejectedRow,
+        Key::CheckRejectedUnsaid,
         Key::CheckMissRow,
         Key::ReaderNoContent,
         Key::NotObtained,
@@ -3426,6 +3537,7 @@ impl Key {
         Key::TaskCheckTail,
         Key::TaskGate,
         Key::TaskReadNet,
+        Key::TaskBasis,
         Key::KitNotAnOriginalRow,
         Key::KitVetting,
         Key::KitOriginalsRemoved,
@@ -3479,6 +3591,19 @@ impl Key {
         Key::NavDoingMore,
         Key::SaidAnchorKeyPlain,
         Key::SaidAppearance,
+        Key::SetProxy,
+        Key::ProxySystem,
+        Key::ProxyOff,
+        Key::ProxyManual,
+        Key::ProxyHint,
+        Key::ProxyNowDirect,
+        Key::ProxyNowVia,
+        Key::ProxyNowAutoConfig,
+        Key::ProxyNowLoopback,
+        Key::ProxyNowUnread,
+        Key::SaidProxy,
+        Key::TailProxyShape,
+        Key::TailProxyCredentials,
         Key::SaidAttestedPlain,
         Key::SaidBookedOn,
         Key::SaidBookedOff,
@@ -3654,6 +3779,7 @@ impl Key {
         Key::WizExitKeep,
         Key::WizExitGo,
         Key::GapBackupNever,
+        Key::GapBackupFailed,
         Key::GapBackupBehind,
         Key::IdKeyFilePassword,
         Key::WizDoGenerate,
@@ -3698,6 +3824,7 @@ impl Key {
         Key::BadgeSingle,
         Key::BadgeDown,
         Key::BadgeFingerprint,
+        Key::BadgeUnchecked,
         Key::VerifyNotAddedSaid,
         Key::ReadNetTitle,
         Key::ReadNetAdd,
@@ -3710,12 +3837,59 @@ impl Key {
         Key::VerifyAddNetwork,
         Key::VerifyNotAdded,
         Key::VerifyResultFile,
+        Key::TailNotYetAt,
+        Key::TailNodeBehind,
+        Key::TailWrongChainNode,
+        Key::SetUnanswered,
+        Key::SetUnansweredCount,
+        Key::SetWhatEachSaid,
+        Key::TailUnreadKept,
+        Key::TailTicketVoid,
+        Key::SetOtherMachine,
+        Key::SetMarkUnread,
+        Key::SetTakeWriter,
+        Key::TailOtherMachine,
+        Key::FaultWhatDoorShut,
+        Key::FaultNextDoorShut,
+        Key::FaultWhatDoorUnread,
+        Key::FaultNextDoorUnread,
+        Key::FaultWhatInFlight,
+        Key::FaultNextInFlight,
+        Key::TailDoorNotForm,
+        Key::TailDoorTooLarge,
+        Key::TailDoorNothingCame,
+        Key::SetCliAnchor,
+        Key::CliAnchorSend,
+        Key::CliAnchorQueue,
+        Key::SaidCliAnchor,
+        Key::SaidSendAsked,
+        Key::FaultWhatCliPathTaken,
+        Key::FaultNextCliPathTaken,
+        Key::FaultWhatCliPathCancelled,
+        Key::FaultNextCliPathCancelled,
+        Key::FaultWhatCliPathNotAllowed,
+        Key::FaultNextCliPathNotAllowed,
+        Key::FaultWhatCliPathUnsupported,
+        Key::FaultNextCliPathUnsupported,
+        Key::FaultWhatBatchVoided,
+        Key::FaultNextBatchVoided,
+        Key::U3Unheld,
+        Key::U3ResendKey,
+        Key::U3UnheldNote,
+        Key::TailCliPathTooLong,
+        Key::SetCliPath,
+        Key::CliPathOnSay,
+        Key::CliPathTakenSay,
+        Key::CliPathProvidedSay,
+        Key::CliPathUnsupportedSay,
+        Key::SaidCliPathOn,
+        Key::SaidCliPathOff,
+        Key::TaskCliPath,
     ];
 }
 
-/// Each row carries both languages: key set equality is carried by this shape, not by counting two tables
-/// against each other.
-pub const TABLE: [(Key, &str, &str); 1817] = [
+/// Every UI string: `(key, Chinese, English)`. One row per key, both languages in each row.
+pub const TABLE: [(Key, &str, &str); 1909] = [
     (Key::PageRevoke, "撤销授权", "Revoke grant"),
     (Key::PageAdopt, "导入上链存证", "Import anchor proofs"),
     (Key::PageSucceed, "移交账本", "Hand over ledger"),
@@ -3837,6 +4011,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::SaidSubmitted, "已提交 {0} 条,等待确认", "Submitted {0}, waiting for confirmation"),
     (Key::SaidRepo, "已添加仓库 {0}", "Repository added: {0}"),
     (Key::SaidBasis, "已保存链 {0} 的登记合约", "Registry contract saved for chain {0}"),
+    (Key::SaidBasisFingerprint, "登记合约 {0} 不是钉定构建，链设置没有保存", "The registry {0} is not the pinned build; the chain settings were not saved"),
+    (Key::SaidBasisFingerprintKept, "登记合约 {0} 不是钉定构建(先前存下的链设置仍在)", "The registry {0} is not the pinned build (the chain settings saved earlier are still there)"),
     (Key::SaidAuditEvery, "检查间隔已设为 {0} 秒", "Check interval set to {0} seconds"),
     (Key::SaidSince, "HEAD {0},上次上链后新增提交:{1}", "HEAD {0}; new commits since last record: {1}"),
     (Key::SaidDetail, "已打开 {0}({1} 字节)", "Opened {0} ({1} bytes)"),
@@ -4056,6 +4232,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::SetGasSay, "{0} ETH", "{0} ETH"),
     (Key::SetNoKey, "尚无签名密钥", "No signing key yet"),
     (Key::SetNotRead, "未读取", "Not read"),
+    (Key::SetReadFailedNow, "这一次没读成:{0}", "This read failed: {0}"),
     (Key::SaidCopied, "已复制:{0}", "Copied: {0}"),
     (Key::SetNodes, "节点", "Nodes"),
     (Key::SetRegistry, "登记合约", "Registry contract"),
@@ -4120,8 +4297,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::CfBlank, "(无)", "(none)"),
     (Key::WbRecentNone, "暂无条目", "No entries yet"),
     (Key::NavReadFailed, "同步失败", "Sync failed"),
-    (Key::TagAnchor, "存证", "Anchored record"),
-    (Key::TagHandover, "换密钥或移交", "Key change or handover"),
+    (Key::TagAnchor, "存证", "Record"),
+    (Key::TagHandover, "换密钥或移交", "Key handover"),
     (Key::U3AdoptMenu, "导入已有存证…", "Import existing records…"),
     (Key::U3AdoptTitle, "导入已有存证", "Import existing records"),
     (Key::U3AdEarlier, "这把密钥早先发过的", "Sent earlier by this key"),
@@ -4235,6 +4412,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::U3FromTo, "{0} 至 {1}", "{0} to {1}"),
     (Key::U3GasEstimate, "Gas 费估算", "Gas estimate"),
     (Key::U3FeeCap, "Gas 费上限", "Gas cap"),
+    (Key::U3FeeFallback, "节点未给基础费,上限按保底值", "No base fee from the nodes; cap at the fallback"),
+    (Key::U3FeeLeftNodes, "{0}:链不同,未读费率", "{0}: other chain; fees not read"),
     (Key::U3NoEstimateTitle, "无法估算 Gas 费", "Cannot estimate gas"),
     (Key::U3NoEstimateWhy, "原因", "Reason"),
     (Key::U3Retry, "重试", "Retry"),
@@ -4292,6 +4471,14 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::U3ScopeNote, "使用范围", "Scope"),
     (Key::U3SeenBeforeDots, "地址簿", "Address book"),
     (Key::U3SendAll, "全部上链", "Put all on chain"),
+    (Key::U3BumpKey, "加价重发", "Resend with higher fees"),
+    (Key::U3BumpTitle, "加价重发这一批", "Resend this batch with higher fees"),
+    (Key::U3BumpOldCap, "原来的上限", "Cap it went out with"),
+    (Key::U3BumpPriceNow, "链上现价", "Price now"),
+    (Key::U3BumpNewCap, "重发的上限", "Cap of the resend"),
+    (Key::U3BumpNote, "以同一 nonce 重签发出,先入块的作数;一批至多重发 {0} 次", "Signed again at the same nonce; the first included counts. At most {0} resends per batch"),
+    (Key::U3BumpSpent, "已重发 {0} 次,不再加价", "Resent {0} times; no further raises"),
+    (Key::U3BumpWaiting, "本轮查收据后发出…", "Sending after this receipt check…"),
     (Key::U3SendGo, "确认上链", "Confirm and send"),
     (Key::U3Estimating, "正在估算", "Estimating"),
     (Key::U3Sending, "正在上链", "Sending"),
@@ -4301,6 +4488,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::TaskTake, "计算指纹", "Computing a fingerprint"),
     (Key::TaskRecord, "记录文件", "Recording files"),
     (Key::TaskMigrate, "迁移数据目录", "Moving the data directory"),
+    (Key::TaskPath, "等你在选档框里选一处", "Waiting for your choice in the file dialog"),
+    (Key::PathAlreadyOpen, "选档框已经开着:先在它里面选一处或取消", "A file dialog is already open: choose in it or cancel it first"),
     (Key::U3SendNote, "上链后不可撤回,通常几分钟内确认", "Once on chain it cannot be withdrawn; it usually confirms within minutes"),
     (Key::U3SendNow, "现在上链", "Put on chain now"),
     (Key::U3QueueIt, "排进待上链", "Add to pending"),
@@ -4351,7 +4540,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::U3WhatThisDoes, "工作方式", "How it works"),
     (Key::U3WhichWork, "哪一条记录", "Which record"),
     (Key::U3Window, "有效期", "Validity"),
-    (Key::U3Work, "记录", "Record"),
+    (Key::U3Work, "记录", "Entries"),
     (Key::U3WorkName, "记录名称", "Record name"),
     (Key::BatchChosen, "已选 {0} 个文件 · 逐条签入", "{0} files chosen · signed one by one"),
     (Key::ForFold, "为谁留证(可选)", "Recorded for (optional)"),
@@ -4727,6 +4916,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::Tail091, "录制中无此请求", "Request not in recording"),
     (Key::Tail092, "录制自相矛盾", "The recording contradicts itself"),
     (Key::Tail093, "{0}:须以 http:// 或 https:// 开头", "{0}: must start with http:// or https://"),
+    (Key::TailNodePort, "{0}:端口要是 0 到 65535 之间的整数", "{0}: the port must be a whole number from 0 to 65535"),
+    (Key::TailNodeAddress, "{0}:不是有效的节点地址", "{0}: not a valid node address"),
     (Key::Tail094, "{0}:无法解析响应", "{0}: response could not be parsed"),
     (Key::Tail095, "eth_blockNumber · 链 {0}", "eth_blockNumber · chain {0}"),
     (Key::Tail096, "{0}:区块高度无效 {1}", "{0}: invalid block height {1}"),
@@ -4834,6 +5025,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::Tail215, "尚未对账", "Not reconciled yet"),
     (Key::Tail216, "{0}:节点地址须以 http:// 或 https:// 开头", "{0}: node address must start with http:// or https://"),
     (Key::Tail217, "生效时间须为十进制整数,收到 {0}", "Effective time must be a decimal integer; got {0}"),
+    (Key::TailPastIntCeiling, "{0} 过了整数上界 9007199254740991", "{0} is past the whole-number ceiling 9007199254740991"),
+    (Key::TailPastHops, "授权链过了 64 跳的上限，第 65 跳是 {0}", "The grant chain is past its limit of 64 hops; the 65th is {0}"),
     (Key::Tail218, "移交无法追溯新密钥", "Handover cannot trace the new key"),
     (Key::Tail219, "{0} 任务", "{0} task"),
     (Key::Tail219Opaque, "panic 未带可读的文字", "the panic carried no readable text"),
@@ -4857,6 +5050,12 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::NavDoing, "进行中:{0}", "In progress: {0}"),
     (Key::FaultWhatIdentityExists, "此身份已存在。", "This identity already exists."),
     (Key::FaultNextIdentityExists, "在「切换身份」中选择它。", "Select it in Switch identity."),
+    (Key::FaultWhatIdentityHereAs, "这个身份已在本机,用的是另一个名字,没有改名。", "This identity is already on this machine under another name; it was not renamed."),
+    (Key::FaultNextIdentityHereAs, "请在「切换身份」中选用或改名", "Select or rename it under Switch identity"),
+    (Key::FaultWhatIdentityNameTaken, "本机已有一个同名的身份,这一个没有导入。", "Another identity on this machine has this name; this one was not imported."),
+    (Key::FaultNextIdentityNameTaken, "换一个名字再导入。", "Import it again under another name."),
+    (Key::FaultWhatPlaceOneLine, "「记录内容」这一格给了不止一处,这一页只读一处。", "The record place was given on more than one line; this page reads one place."),
+    (Key::FaultNextPlaceOneLine, "只保留一行", "Keep one line"),
     (Key::FaultWhatNoIdentity, "与当前身份不符。", "Does not match the current identity."),
     (Key::FaultNextNoIdentity, "切换到对应身份,或改用当前身份的数据目录。", "Switch to the matching identity, or use the current identity's data folder."),
     (Key::FaultWhatPhraseWords, "助记词须为 12 个词。", "A recovery phrase must have 12 words."),
@@ -5033,6 +5232,8 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::Tail233, "{0}:无法连接:{1}", "{0}: could not connect: {1}"),
     (Key::Tail234, "{0}:TLS 握手失败:{1}", "{0}: TLS handshake failed: {1}"),
     (Key::Tail235, "{0}:节点证书校验失败:{1}", "{0}: node certificate did not verify: {1}"),
+    (Key::Tail236, "{0}:起不了后台线程(这一员没有开工):{1}", "{0}: could not start a background thread (this task did not start): {1}"),
+    (Key::Tail237, "二维码画出来之后读不回原文,不交出", "the QR code drawn does not read back to its text; not handed out"),
     (Key::V2PendingNote, "上链后才能授权,对方核验才会通过", "Once on chain, these can be granted and will pass verification."),
     (Key::V2WorksEmpty, "尚无存证,拖入文件开始存证", "No records yet. Drop a file to start."),
     (Key::V2GrantToOthers, "授权给他人", "Grant to someone"),
@@ -5239,6 +5440,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::CheckFromAddress, "来自 {0} · {1} 个文件 · 已验证", "From {0} · {1} files · verified"),
     (Key::CheckRefetch, "重新获取", "Fetch again"),
     (Key::CheckRejectedRow, "{0}:{1}", "{0}: {1}"),
+    (Key::CheckRejectedUnsaid, "读不成条目", "Not a readable entry"),
     (Key::CheckMissRow, "{0}读不成:{1}", "{0} could not be read: {1}"),
     (Key::ReaderNoContent, "未取得账本内容:提供记录包或发布地址", "No ledger content yet: provide a record package or publish address"),
     (Key::NotObtained, "未取得", "Not obtained"),
@@ -5265,6 +5467,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::TaskCheckTail, "与链上核对账本", "Checking the ledger against the chain"),
     (Key::TaskGate, "核对链上记录", "Checking the chain"),
     (Key::TaskReadNet, "读取只读网络", "Reading a read-only network"),
+    (Key::TaskBasis, "核主网络的登记合约", "Checking the main network's registry"),
     (Key::KitNotAnOriginalRow, "不是所选记录的原件,不随包", "Not an original of a selected record; left out of the package"),
     (Key::KitVetting, "正在核对…", "Checking…"),
     (Key::KitOriginalsRemoved, "已移除 {0} 件原件", "{0} originals removed"),
@@ -5318,6 +5521,19 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::NavDoingMore, "进行中:{0} 等 {1} 项", "In progress: {0} and others ({1})"),
     (Key::SaidAnchorKeyPlain, "签名密钥已存入本机密钥库", "Signing key stored in this machine's key store"),
     (Key::SaidAppearance, "外观:{0}", "Appearance: {0}"),
+    (Key::SetProxy, "代理", "Proxy"),
+    (Key::ProxySystem, "跟随系统代理", "System"),
+    (Key::ProxyOff, "关闭代理", "Off"),
+    (Key::ProxyManual, "自定义代理", "Custom proxy"),
+    (Key::ProxyHint, "http://主机:端口 或 socks5://主机:端口", "http://host:port or socks5://host:port"),
+    (Key::ProxyNowDirect, "此刻新连接:直连", "New connections now: straight to the node"),
+    (Key::ProxyNowVia, "此刻新连接:经 {0}", "New connections now: through {0}"),
+    (Key::ProxyNowAutoConfig, "此刻新连接:直连(系统设的是自动配置脚本，本应用不支持)", "New connections now: straight (the system uses an automatic configuration script, which this app does not support)"),
+    (Key::ProxyNowLoopback, "此刻新连接:直连(节点在本机，本机的节点不经代理)", "New connections now: straight (the node is on this machine, which is never reached through a proxy)"),
+    (Key::ProxyNowUnread, "此刻新连接:直连(系统的代理设置还没读出)", "New connections now: straight (the system's proxy settings have not been read yet)"),
+    (Key::SaidProxy, "代理:{0}", "Proxy: {0}"),
+    (Key::TailProxyShape, "这不是一处代理地址(要写成 http://主机:端口 或 socks5://主机:端口):{0}", "Not a proxy address (write http://host:port or socks5://host:port): {0}"),
+    (Key::TailProxyCredentials, "带用户名与口令的代理不支持:{0}", "A proxy that needs a user name and password is not supported: {0}"),
     (Key::SaidAttestedPlain, "已签认领", "Claim signed"),
     (Key::SaidBookedOn, "已加入地址簿", "Added to the address book"),
     (Key::SaidBookedOff, "已从地址簿移除", "Removed from the address book"),
@@ -5493,6 +5709,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::WizExitKeep, "继续核对", "Keep checking"),
     (Key::WizExitGo, "退出", "Exit"),
     (Key::GapBackupNever, "还没有备份", "Not backed up yet"),
+    (Key::GapBackupFailed, "上次整机备份失败,请重新备份", "The last whole-machine backup failed; back up again"),
     (Key::GapBackupBehind, "{0} 条未备份", "{0} not backed up"),
     (Key::IdKeyFilePassword, "密码,至少 8 位", "Password, at least 8 characters"),
     (Key::WizDoGenerate, "生成助记词", "Generate recovery words"),
@@ -5536,6 +5753,7 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::BadgeSingle, "单源", "Single source"),
     (Key::BadgeDown, "不通", "Unreachable"),
     (Key::BadgeFingerprint, "指纹不符", "Fingerprint mismatch"),
+    (Key::BadgeUnchecked, "未核:无节点", "Not checked: no node"),
     (Key::VerifyNotAddedSaid, "包写明的网络未添加,没有读链", "The kit's stated network is not added; the chain was not read"),
     (Key::ReadNetTitle, "只读网络", "Read-only networks"),
     (Key::ReadNetAdd, "添加", "Add"),
@@ -5548,27 +5766,78 @@ pub const TABLE: [(Key, &str, &str); 1817] = [
     (Key::VerifyAddNetwork, "请在设置中添加网络", "Add this network in Settings"),
     (Key::VerifyNotAdded, "未添加", "Not added"),
     (Key::VerifyResultFile, "结果档", "Result file"),
+    (Key::TailNotYetAt, "{0} 已有,{1} 还没有", "{0} has it; {1} does not have it yet"),
+    (Key::TailNodeBehind, "{0} 落后 {1} 个区块(最高到 {2})", "{0} is {1} blocks behind (the highest is at {2})"),
+    (Key::TailWrongChainNode, "{0}:属链 {1},已剔除", "{0}: serves chain {1}; left out"),
+    (Key::SetUnanswered, "未作答:{0}", "Did not answer: {0}"),
+    (Key::SetUnansweredCount, "{0} 处节点未作答", "{0} node(s) did not answer"),
+    (Key::SetWhatEachSaid, "各处原话", "What each said"),
+    (Key::TailUnreadKept, "{0}:读不成,原档未动;挪走后重做即新建", "{0}: unreadable, left as is; move it away and redo to make a new one"),
+    (Key::TailTicketVoid, "{0}:数据目录已切换,未写入", "{0}: the data folder changed; nothing written"),
+    (Key::SetOtherMachine, "这处数据由另一台机器在写,本机只读", "Another machine is writing to this data; read-only here"),
+    (Key::SetMarkUnread, "写者标本版读不了,本机只读", "Writer mark unreadable by this version; read-only here"),
+    (Key::SetTakeWriter, "改由本机写", "Write from this machine"),
+    (Key::TailOtherMachine, "{0}:写者标记的是另一台机器", "{0}: the writer mark names another machine"),
+    (Key::FaultWhatDoorShut, "命令行此时连不到桌面:桌面这一侧的入口开不了。", "The command line cannot reach the desktop now: the desktop could not open its entrance for it."),
+    (Key::FaultNextDoorShut, "原因见错误详情;数据目录路径过长时请移到更短的路径", "See the error details; if the data folder's path is too long, move it to a shorter one"),
+    (Key::FaultWhatDoorUnread, "命令行递来的请求读不出,没有照做。", "A request from the command line could not be read; nothing was done."),
+    (Key::FaultNextDoorUnread, "用与桌面同一版本的命令行再试一次。", "Try again with the command line of the same version as the desktop."),
+    (Key::FaultWhatInFlight, "同一类事正在进行,这一次没有开始。", "The same kind of work is already running; this one was not started."),
+    (Key::FaultNextInFlight, "等它完成后再试。", "Try again once it has finished."),
+    (Key::TailDoorNotForm, "不是这一版命令行的请求形", "not a request in this version's form"),
+    (Key::TailDoorTooLarge, "请求有 {0} 字节,超过上限", "the request is {0} bytes, over the limit"),
+    (Key::TailDoorNothingCame, "这一批没有写入任何条目", "nothing of the batch was written"),
+    (Key::SetCliAnchor, "命令行上链", "Putting on chain from the command line"),
+    (Key::CliAnchorSend, "自动发送", "Send automatically"),
+    (Key::CliAnchorQueue, "仅加入队列", "Queue only"),
+    (Key::SaidCliAnchor, "命令行上链:{0}", "Putting on chain from the command line: {0}"),
+    (Key::SaidSendAsked, "命令行提交了 {0} 条记录,已加入队列", "{0} records from the command line are queued"),
+    (Key::FaultWhatCliPathTaken, "命令行那一处已被别的安装占用,没有覆盖。", "Something else is already where the command line goes; it was not overwritten."),
+    (Key::FaultNextCliPathTaken, "先移除那一份(位置见错误详情),再打开开关", "Remove that copy first (see the error details), then turn this on"),
+    (Key::FaultWhatCliPathCancelled, "系统的管理员框取消了,什么也没改。", "The system's administrator dialog was cancelled; nothing was changed."),
+    (Key::FaultNextCliPathCancelled, "再拨一次开关,并输入管理员口令", "Flip the switch again and enter the administrator password"),
+    (Key::FaultWhatCliPathNotAllowed, "系统不许改命令行那一处,什么也没改。", "The system did not allow changing where the command line goes; nothing was changed."),
+    (Key::FaultNextCliPathNotAllowed, "原因见错误详情;请用管理员账户重试", "See the error details; try with an administrator account"),
+    (Key::FaultWhatCliPathUnsupported, "这样开的应用接不进终端。", "An app opened this way cannot be put in the terminal."),
+    (Key::FaultNextCliPathUnsupported, "请先把应用移入「应用程序」文件夹", "Move the app to the Applications folder first"),
+    (Key::FaultWhatBatchVoided, "这一批交易已作废:nonce 被其他交易占用,无一入块", "This batch lapsed: its nonce was used by another transaction; none was included"),
+    (Key::FaultNextBatchVoided, "条目已退回队列,可重新发送", "Its entries are back in the queue; send again"),
+    (Key::U3Unheld, "这一批已不在节点池,nonce 未用,可按现价重发", "No node holds this batch; its nonce is unused. Resend at the price now"),
+    (Key::U3ResendKey, "按现价重发", "Send again at the price now"),
+    (Key::U3UnheldNote, "以同一 nonce 重签重发,先入块的作数;一批至多重发 {0} 次", "Sent again at the same nonce; the first included counts. At most {0} resends per batch"),
+    (Key::TailCliPathTooLong, "PATH 会有 {0} 个字符,超过系统能存的", "the path would be {0} characters, more than the system keeps"),
+    (Key::SetCliPath, "启用命令行", "Enable command line"),
+    (Key::CliPathOnSay, "已接入终端", "In the terminal"),
+    (Key::CliPathTakenSay, "被其他安装占用:{0}", "Taken by another install: {0}"),
+    (Key::CliPathProvidedSay, "已由安装包提供", "Provided by the installed package"),
+    (Key::CliPathUnsupportedSay, "此安装方式不支持", "Not supported for this install"),
+    (Key::SaidCliPathOn, "命令行已接进终端", "The command line is in the terminal now"),
+    (Key::SaidCliPathOff, "命令行已从终端移除", "The command line is out of the terminal now"),
+    (Key::TaskCliPath, "把命令行接进终端", "Putting the command line in the terminal"),
 ];
 
-/// Take a sentence. The only word path in the interface.
+/// The string for `k` in the current language.
 pub fn t(k: Key) -> &'static str {
     let row = TABLE.iter().find(|(key, _, _)| *key == k);
     match (row, lang()) {
         (Some((_, zh, _)), Lang::Zh) => zh,
         (Some((_, _, en)), Lang::En) => en,
-        // Not in the table: the closed type plus the "exactly one row per key" self-check makes this
-        // unreachable, and even here it does not give an empty string silently (an empty string on the face
-        // looks like "this cell has nothing").
+        // Unreachable given the one-row-per-key check; "?" rather than an empty string, which would look like
+        // a deliberately blank field.
         (None, _) => "?",
     }
 }
 
-fn put(s: &str, at: usize, with: &str) -> String {
-    s.replace(&format!("{{{at}}}"), with)
+/// The string in both languages, regardless of the current one (the command line picks by system locale).
+pub fn both(k: Key) -> (&'static str, &'static str) {
+    match TABLE.iter().find(|(key, _, _)| *key == k) {
+        Some((_, zh, en)) => (zh, en),
+        None => ("?", "?"),
+    }
 }
 
-/// A sentence with slots: one pass over the template replaces `{n}` with slot n; inserted text is not read as
-/// a template again (paths and typed strings may happen to contain `{1}`).
+/// Fill a template: one pass replaces `{n}` with `args[n]`. Inserted text is never scanned again, since paths
+/// and typed strings may contain `{1}`.
 pub fn filln(k: Key, args: &[&str]) -> String {
     let tpl = t(k);
     let mut out = String::with_capacity(tpl.len() + 16);
@@ -5591,23 +5860,23 @@ pub fn filln(k: Key, args: &[&str]) -> String {
     out
 }
 
-/// A sentence with one slot.
+/// [`filln`] with one argument.
 pub fn fill1(k: Key, a: &str) -> String {
-    put(t(k), 0, a)
+    filln(k, &[a])
 }
 
-/// A sentence with two slots.
+/// [`filln`] with two arguments.
 pub fn fill2(k: Key, a: &str, b: &str) -> String {
-    put(&put(t(k), 0, a), 1, b)
+    filln(k, &[a, b])
 }
 
-/// A sentence with three slots.
+/// [`filln`] with three arguments.
 pub fn fill3(k: Key, a: &str, b: &str, c: &str) -> String {
-    put(&put(&put(t(k), 0, a), 1, b), 2, c)
+    filln(k, &[a, b, c])
 }
 
-/// Key set equality and table shape, computed now: each key has exactly one row, neither language is empty,
-/// and no two keys share the same words in one language. Returns the mismatches; empty means complete.
+/// Check the table: each key has exactly one row, neither language is empty, both languages use the same
+/// `{n}` slots, and no two keys share the same text in one language. Returns the problems; empty means OK.
 pub fn trouble() -> Vec<String> {
     let mut bad = Vec::new();
     if TABLE.len() != Key::ALL.len() {
@@ -5627,13 +5896,8 @@ pub fn trouble() -> Vec<String> {
             bad.push(format!("{k:?} 的英文是空的"));
         }
     }
-    // Slots have only one spelling: `{n}`.
-    //
-    // Slots are filled by `put`, replacing `{n}`. A row written with `{}` would not be found by `fill1`, and
-    // the screen would print the two braces literally (the delete card once showed "{} has entries" in both
-    // languages): a slot that can never be filled, posing as a filled sentence, and neither the key
-    // equality nor the non-empty check catches it. So braces may only be `{n}`, and
-    // both languages' slot sets must match slot for slot (a language missing a slot is missing something).
+    // Braces may only be `{n}`: `filln` would leave a `{}` unfilled and the UI would print it literally. Both
+    // languages must use the same set of slots.
     for (k, zh, en) in TABLE {
         let slots = |text: &str| -> Result<Vec<usize>, String> {
             let mut out: Vec<usize> = Vec::new();

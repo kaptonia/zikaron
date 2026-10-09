@@ -1,15 +1,11 @@
 //! Anchor reconciliation. No audit conclusion is reached here.
 //!
-//! The shape of basis and fragment belongs to the anchoring crate (`scan::fragment`), the assembly of the
-//! audit input to its `input::assemble`, and the fifteen-item report with its four labels to the core's
-//! `audit`. This layer does two parameter jobs: build the pile from the ledger and find the root; then it
-//! passes the label the core returns through unchanged.
+//! The basis and fragment shapes belong to the anchoring crate (`scan::fragment`), assembling the audit input
+//! to its `input::assemble`, and the fifteen-item report with its labels to the core's `audit`. This layer
+//! only builds the pile from the ledger, finds the root, and passes the core's label through unchanged.
 //!
-//! ─── Releasing the pen ───
-//!
-//! "Only an audit returning COMPLETE releases the pen" depends on [`Verdict::complete`], and that field only
-//! checks whether the core's label is its own [`complete`]. The shell does not lean toward green: other
-//! labels are passed through unchanged and the pen stays held.
+//! Only an audit returning COMPLETE releases the pen: [`Verdict::complete`] is true only when the core's
+//! label equals [`complete`]. Every other label is passed through unchanged and the pen stays held.
 
 use crate::chainx::Endpoint;
 use crate::fault::{Fault, Known};
@@ -21,21 +17,20 @@ use zikaron_anchor::input;
 use zikaron_anchor::rpc;
 use zikaron_anchor::scan::{self, Scanned};
 
-/// The label that releases the pen. Its spelling is taken from the core's closed type (the labels of law §8.7
-/// are the law's words and live only in the base).
+/// The label that releases the pen, spelled by the core's closed type (labels are defined only in the core).
 ///
-/// A local string constant would not turn red when the law changed a letter; the shell would silently never
+/// A local string constant would not break if the core changed a letter, and the shell would silently never
 /// release the pen again.
 pub fn complete() -> &'static str {
     zikaron::tokens::Label::Complete.as_str()
 }
 
-/// Whether this pass's chain reading is whole (decided here only): endpoints were asked (the offline path
-/// asks none), every endpoint asked answered, and the core's label is readable and says "the data is all
-/// here" (`COMPLETE` or `GAPS`). `GAPS` means some ledger entry is unanchored or missing, which is the
-/// ledger's matter; the reading itself is whole. `UNAVAILABLE`, `BROKEN_CHAIN` and an unreadable label are
-/// not whole. The places that decide from "this entry is not in the last pass's anchor set" (re-queueing the
-/// root) accept only a whole reading: in an incomplete one, "absent" does not mean unanchored.
+/// Whether this pass's chain reading is whole (decided only here): endpoints were asked (the offline path asks
+/// none), every endpoint answered, and the core's label is readable and says the data is all here
+/// (`COMPLETE` or `GAPS`). `GAPS` means some ledger entry is unanchored or missing, which concerns the ledger;
+/// the reading itself is whole. `UNAVAILABLE`, `BROKEN_CHAIN` and an unreadable label are not whole.
+/// Decisions based on "this entry is not in the last anchor set" (re-queueing the root) accept only a whole
+/// reading: in an incomplete one, absent does not mean unanchored.
 pub fn whole(label: &str, asked: usize, unanswered: &[String]) -> bool {
     use zikaron::tokens::Label;
     (label == Label::Complete.as_str() || label == Label::Gaps.as_str()) && asked > 0 && unanswered.is_empty()
@@ -48,7 +43,7 @@ pub struct Verdict {
     pub label: String,
     /// The only condition for releasing the pen: the label is COMPLETE.
     pub complete: bool,
-    /// The report itself, for the face to expand.
+    /// The report itself, for the UI to expand.
     pub report: Value,
     /// How many ledger entries this pass reconciled.
     pub entries: usize,
@@ -57,11 +52,10 @@ pub struct Verdict {
     pub unanswered: Vec<String>,
     /// How many endpoints were asked (zero offline).
     pub asked: usize,
-    /// Only one place answered a load-bearing read: flagged explicitly.
+    /// Only one endpoint answered a load-bearing read; flagged explicitly.
     pub single_source: bool,
-    /// The fragment this pass used, unchanged. The depth reading must be computed on the same basis, so it
-    /// travels with the reading; the face cannot derive it from the report (the report has no anchor set or
-    /// evidence set).
+    /// The fragment this pass used, unchanged. Depth must be computed on the same basis, so the fragment
+    /// travels with the reading; it cannot be derived from the report (which has no anchor or evidence set).
     pub fragment: Value,
     /// Whose ledger this pass reconciled: the author of the genesis entry in those bytes. The reading travels
     /// bound to its owner, so no consumer can show one ledger under another person's name (see
@@ -84,9 +78,9 @@ impl Verdict {
     }
 }
 
-/// The report's sixteen members (law §8.7 items 1 to 15; item 1 takes two). Keys come from the core's closed
-/// type: if the core renames or removes one, this table stops compiling; if the core adds one and this table
-/// does not, the self-check suite's count catches it.
+/// The report's sixteen members (fifteen items; the first has two keys). Keys come from the core's closed type:
+/// if the core renames or removes one, this table stops compiling; if the core adds one, the self-check's
+/// count catches it.
 pub const ITEMS: [Key; 16] = [
     Key::Root,
     Key::Basis,
@@ -106,7 +100,7 @@ pub const ITEMS: [Key; 16] = [
     Key::LabelKey,
 ];
 
-/// One report item laid out for the face. `count` exists only for the table items.
+/// One report item laid out for display. `count` exists only for table items.
 pub struct Item {
     pub key: &'static str,
     pub count: Option<usize>,
@@ -114,8 +108,8 @@ pub struct Item {
     pub said: String,
 }
 
-/// Lay the report out as sixteen items. An unreadable item says so, never zero: "the core did not give this
-/// item" and "this item is an empty table" differ on the face.
+/// Lays the report out as sixteen items. A missing item gets no count rather than zero, so "the core did not
+/// give this item" and "this item is an empty table" stay distinguishable.
 pub fn items(report: &Value) -> Vec<Item> {
     ITEMS
         .into_iter()
@@ -133,8 +127,7 @@ pub fn items(report: &Value) -> Vec<Item> {
         .collect()
 }
 
-/// One item's table from the report (used when the face lists MISSING / UNPROVEN / VOID / EXCLUDED row by
-/// row).
+/// One item's table from the report (used when listing MISSING / UNPROVEN / VOID / EXCLUDED row by row).
 pub fn rows_of(report: &Value, k: Key) -> Vec<Value> {
     match member(report, k.as_str()) {
         Some(Value::Arr(a)) => a.clone(),
@@ -149,7 +142,7 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// Law §9.4's basis with its three members, no more and no fewer, all three tables empty.
+/// An empty basis: exactly its three members, all three tables empty.
 fn empty_basis() -> Value {
     Value::Obj(vec![
         ("adoptionChains".to_string(), Value::Arr(Vec::new())),
@@ -185,7 +178,7 @@ pub fn root_of(items: &[Vec<u8>]) -> Result<String, Fault> {
 /// The ledger in a pile of bytes that contains this entry. A pile may mix several ledgers (a grant file
 /// carries the whole chain and the issuer's ledger), and the audit input takes only one (`root_of` requires
 /// exactly one genesis). Follow `prev` to the head; entries with the same head form one ledger. Returns the
-/// ledger that contains `want`; if none does, the one whose lineage has `author` (the kit crate then judges
+/// ledger that contains `want`; if none does, the one whose lineage has `author` (the kit crate then reports
 /// "not in the ledger"); with neither, `None`.
 pub fn ledger_of(items: &[Vec<u8>], want: &str, author: &str) -> Option<Vec<Vec<u8>>> {
     let entries: Vec<zikaron::entry::Entry> = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).collect();
@@ -215,9 +208,9 @@ pub fn ledger_of(items: &[Vec<u8>], want: &str, author: &str) -> Option<Vec<Vec<
     books.into_iter().find(|(_, v)| senders_of(v).iter().any(|a| a.eq_ignore_ascii_case(author))).map(|(_, v)| v)
 }
 
-/// Offline reconciliation: all three basis tables empty. Taken when the chain is unreachable, and its label
-/// comes from the core, never guessed here: "chain unread" and "not on chain" are different, and the core's
-/// labels tell them apart.
+/// Offline reconciliation: all three basis tables empty. Used when the chain is unreachable; the label comes
+/// from the core, never guessed here, since "chain not read" and "not on chain" differ and the core's labels
+/// tell them apart.
 pub fn offline(home: &Home) -> Result<Verdict, Fault> {
     let ledger = home.ledger()?;
     let pile = ledger
@@ -225,18 +218,18 @@ pub fn offline(home: &Home) -> Result<Verdict, Fault> {
     ask(&pile.items, &Scanned { anchors: Vec::new(), evidence: Vec::new(), basis: empty_basis() })
 }
 
-/// Offline reconciliation of a stack of entries (nothing written; used to reconcile a fetched ledger before
-/// it lands).
+/// Offline reconciliation of a set of entries (nothing written; used to reconcile a fetched ledger before it
+/// lands).
 pub fn offline_items(items: &[Vec<u8>]) -> Result<Verdict, Fault> {
     ask(items, &Scanned { anchors: Vec::new(), evidence: Vec::new(), basis: empty_basis() })
 }
 
-/// Build the audit input from a scan result and the ledger, and have the core produce the report.
+/// Builds the audit input from a scan result and the ledger, and has the core produce the report.
 pub fn ask(items: &[Vec<u8>], scanned: &Scanned) -> Result<Verdict, Fault> {
     ask_from(items, &scan::fragment(scanned), Vec::new(), 0, false)
 }
 
-/// As above, with the fragment given by the caller (the online path has already converged the endpoints).
+/// Like [`ask`], with the fragment given by the caller (the online path has already reconciled the endpoints).
 pub fn ask_from(
     items: &[Vec<u8>],
     fragment: &Value,
@@ -264,14 +257,14 @@ pub fn ask_from(
     })
 }
 
-/// An audit input, for the places that take it to the kit crate.
+/// An audit input, for the places that pass it to the kit crate.
 ///
-/// The depth reading and the six checks both take an audit input or audit outcome, and assembling the input
-/// has one owner ([`zikaron_anchor::input::assemble`]); this layer does not assemble a separate one for each.
+/// The depth reading and the six checks both take an audit input or outcome, and only
+/// [`zikaron_anchor::input::assemble`] assembles one; this layer never builds its own.
 ///
-/// The input is judged as the law reads it: one whose canonical bytes the law's reader refuses (a number a node
-/// answered past the canonical integer ceiling, for one) is not an audit input, so it is refused by name and
-/// nothing (no label, no first-anchor time) is read off it in memory that the bytes would not give.
+/// The input is validated as the core reads it: one whose canonical bytes the core's reader refuses (for
+/// example a number a node returned past the canonical integer ceiling) is not an audit input, so it is refused
+/// by name and nothing (no label, no first-anchor time) is derived from it that the bytes would not give.
 pub fn input_of(items: &[Vec<u8>], fragment: &Value) -> Result<Value, Fault> {
     let root = root_of(items)?;
     let input = input::assemble(fragment, &root, &pile_hex(items), &[])
@@ -285,17 +278,17 @@ pub fn input_of(items: &[Vec<u8>], fragment: &Value) -> Result<Value, Fault> {
 /// The same input handed to the core for the audit outcome (the report plus ledger, findings, anchor set and
 /// lineage).
 ///
-/// The kit crate's depth reading and chain check need exactly this. The shell recomputes nothing; this layer
-/// only passes the input along.
+/// The kit crate's depth reading and chain check need exactly this. Nothing is recomputed here; the input is
+/// only passed along.
 pub fn outcome_of(items: &[Vec<u8>], fragment: &Value) -> Result<zikaron::audit::Outcome, Fault> {
     let input = input_of(items, fragment)?;
     zikaron::audit::audit_full(&input)
         .ok_or_else(|| Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail081).to_string()))
 }
 
-/// **Each entry's first-anchor block time**: the earliest block timestamp among the counted
-/// anchors that reach it (kit law §8.2, the same reading as the depth "first anchored").
-/// `None` when the fragment does not audit; entries no anchor reaches are left out.
+/// **Each entry's first-anchor block time**: the earliest block timestamp among the counted anchors that reach
+/// it (the kit format's rule, the same as the depth reading's "first anchored"). `None` when the fragment does
+/// not audit; entries no anchor reaches are left out.
 pub fn first_anchored(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String, u64)>> {
     let outcome = outcome_of(items, fragment).ok()?;
     let lines = zikaron_kit::reading::Lines::of(&outcome.ledger);
@@ -303,8 +296,8 @@ pub fn first_anchored(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String
     Some(bounds.iter().enumerate().filter_map(|(i, t)| t.map(|t| (lines.id(i).to_string(), t))).collect())
 }
 
-/// The earliest counted anchor that reaches a ledger entry, whole: the same reading as [`first_anchored`]'s
-/// time (kit law §8.2 bounds), with which anchor gave it.
+/// The earliest counted anchor that reaches a ledger entry, in full: the same rule as [`first_anchored`]'s
+/// time, plus which anchor gave it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirstAnchor {
     pub chain_id: u64,
@@ -318,7 +311,7 @@ pub struct FirstAnchor {
     pub registry: Option<String>,
 }
 
-/// **Each entry's first anchor, whole**: per entry, among the counted anchors whose time is that entry's
+/// **Each entry's first anchor, in full**: per entry, among the counted anchors whose time is that entry's
 /// bound and that reach it, the one with the smallest (chain id, block, transaction). `None` when the fragment
 /// does not audit; entries no anchor reaches are left out.
 pub fn first_anchors(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String, FirstAnchor)>> {
@@ -333,7 +326,7 @@ pub fn first_anchors(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String,
         Some(Value::Str(s)) => Some(s.clone()),
         _ => None,
     };
-    // The fragment's counted rows by a sender of this lineage: what `counted` was trimmed from.
+    // The fragment's counted rows from a sender of this lineage (the set `counted` was trimmed from).
     let rows: Vec<FirstAnchor> = match fragment.member("anchors") {
         Some(Value::Arr(a)) => a
             .iter()
@@ -369,7 +362,7 @@ pub fn first_anchors(items: &[Vec<u8>], fragment: &Value) -> Option<Vec<(String,
     Some(out)
 }
 
-/// Name the registry of each first anchor from a scan's side reading (several: the smallest address).
+/// Names the registry of each first anchor from a scan's side reading (if several, the lowest address).
 pub fn name_registry(first: &mut FirstAnchor, emitters: &zikaron_anchor::scan::Emitters) {
     let h32 = |s: &str| -> Option<[u8; 32]> { zikaron::hexfmt::decode(s)?.try_into().ok() };
     let (Some(tx), Some(hash)) = (h32(&first.tx), h32(&first.hash)) else { return };
@@ -385,9 +378,8 @@ pub fn empty_fragment() -> Value {
 
 // ───────────────────────── Basis and the online pass ─────────────────────────
 
-/// The cells of a basis declaration (law §9.4). Built by the face: the person fills in chain id, endpoints
-/// and scan window on the settings page; the senders are computed from this ledger itself (see
-/// [`senders_of`]).
+/// The fields of a basis declaration. Filled from the settings page (chain id, endpoints, scan window); the
+/// senders are computed from this ledger itself (see [`senders_of`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ground {
     pub chain: u64,
@@ -400,9 +392,9 @@ pub struct Ground {
 
 /// The senders this ledger declares: the author of every entry in the pile, plus every succession's `to`.
 ///
-/// This is a superset: law §8.1 discards anchor records outside the whole set's lineage and lists them in
-/// DISCARDED, so declaring wider only scans more, never counts more. Sorting and deduplicating is required by
-/// §9.4 (one scan, one assembly).
+/// This is a superset: the audit discards anchor records outside the whole set's lineage and lists them as
+/// DISCARDED, so declaring wider only scans more, never counts more. Sorting and deduplicating is required
+/// (one scan, one assembly).
 pub fn senders_of(items: &[Vec<u8>]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for b in items {
@@ -421,7 +413,7 @@ pub fn senders_of(items: &[Vec<u8>]) -> Vec<String> {
     out
 }
 
-/// Lay out a basis (law §9.4's three tables, with member order set by the canonical byte rules).
+/// Lays out a basis (three tables, member order set by the canonical byte rules).
 pub fn basis_of(g: &Ground) -> Value {
     let window = Value::Obj(vec![
         ("chainId".to_string(), Value::Int(g.chain)),
@@ -452,33 +444,23 @@ fn rounds(eps: &[Endpoint]) -> usize {
     n
 }
 
-/// Which chains had only one place answer this pass (this decides the single-source flag).
+/// Which chains had only one endpoint answer this pass (this sets the single-source flag).
 ///
 /// It counts endpoints that answered, not endpoints configured: with two configured and the second down, the
-/// reading still has one source, and counting configured ones would show "several sources agree", saying
-/// "both places say so" for "unknown". Each chain is computed from the urls that actually answered for it.
+/// reading still has one source, and counting configured ones would wrongly claim that several sources agree.
+/// Each chain is computed from the URLs that actually answered for it.
 fn thin_from(answered: &[(u64, String)], chains: &[u64]) -> Vec<u64> {
-    chains
-        .iter()
-        .copied()
-        .filter(|c| {
-            let mut urls: Vec<&String> =
-                answered.iter().filter(|(x, _)| x == c).map(|(_, u)| u).collect();
-            urls.sort();
-            urls.dedup();
-            urls.len() < 2
-        })
-        .collect()
+    zikaron_anchor::endpoints::thin_chains(answered, chains)
 }
 
 fn nth_for(eps: &[Endpoint], chain: u64, k: usize) -> Option<String> {
-    let mine: Vec<&String> = eps.iter().filter(|e| e.chain == chain).map(|e| &e.url).collect();
+    let mine: Vec<&str> = eps.iter().filter(|e| e.chain == chain).map(|e| e.url.for_transport()).collect();
     mine.get(k.min(mine.len().saturating_sub(1))).map(|u| (*u).to_string())
 }
 
-/// Whether a scan uses this machine's record of chain facts already checked (`checkedx`). Every scan of this
-/// app does, except the grant check page's: that page has zero permissions (no key, no disk, no sending), so it
-/// reads and writes no local file and asks every log about, as a scan always did.
+/// Whether a scan uses this machine's record of already-checked chain facts (`checkedx`). Every scan does,
+/// except the grant check page's: that page has no privileges (no key, no disk, no sending), so it reads and
+/// writes no local file and asks about every log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Facts {
     /// Read the record; an agreed scan adds what its endpoints read alike.
@@ -496,17 +478,18 @@ impl Facts {
     }
 }
 
-/// Scan once, no audit. The succession desk asks "how many anchors has this address sent", not for a report.
+/// Scans once without an audit. The succession desk asks how many anchors an address has sent, not for a
+/// report.
 ///
 /// Returns one scan's reading. The scan is still the anchoring crate's `scan::run`, and the basis is still
-/// accepted by the core.
+/// validated by the core.
 pub struct Scanned1 {
     /// How many anchor records this pass found.
     pub anchors: usize,
     /// How many endpoints were asked.
     pub asked: usize,
-    /// This pass's fragment, unchanged. The report built from it gives the anchor lights a real source;
-    /// without it, every row read back could only say "recorded, not anchored", a claim never verified.
+    /// This pass's fragment, unchanged. The report built from it gives the anchor status lights a real source;
+    /// without it every row read back could only say "recorded, not anchored", which was never verified.
     pub fragment: zikaron::json::Value,
 }
 
@@ -514,7 +497,7 @@ pub fn scan_once(eps: &[Endpoint], g: &Ground) -> Result<Scanned1, Fault> {
     scan_once_noting(eps, g).map(|(s, _)| s)
 }
 
-/// [`scan_once`], with which registry each record came from (the scan's side reading; the same questions).
+/// Like [`scan_once`], also noting which registry each record came from (the scan's side reading).
 pub fn scan_once_noting(eps: &[Endpoint], g: &Ground) -> Result<(Scanned1, scan::Emitters), Fault> {
     scan_first(eps, &zikaron::json::canon_bytes(&basis_of(g)))
 }
@@ -540,7 +523,8 @@ pub fn scan_first(eps: &[Endpoint], basis_bytes: &[u8]) -> Result<(Scanned1, sca
         .iter_mut()
         .map(|(c, h)| (*c, &mut **h as &mut dyn rpc::Endpoint))
         .collect();
-    // One endpoint per chain: the facts on record spare questions; nothing this single source reads is added.
+    // One endpoint per chain: already-checked facts save questions, but nothing this single source reads is
+    // added to the record.
     match scan::run_knowing(basis_bytes, &[], &mut handed, &Facts::Local.known()) {
         Ok(Ok((s, emitters, _))) => Ok((Scanned1 { anchors: s.anchors.len(), asked, fragment: scan::fragment(&s) }, emitters)),
         Ok(Err(_)) => Err(Fault::known(Known::AuditInput, crate::lang::t(crate::lang::Key::Tail083).to_string())),
@@ -548,22 +532,22 @@ pub fn scan_first(eps: &[Endpoint], basis_bytes: &[u8]) -> Result<(Scanned1, sca
     }
 }
 
-/// A scan converged by the endpoint rule. Each round scans every chain at its k-th endpoint, and rounds are
+/// A scan reconciled by the endpoint rule. Each round scans every chain at its k-th endpoint, and rounds are
 /// compared by the endpoint rule (`agree_over`); the single-source flag comes from the endpoints that
-/// actually answered. No home, no ledger: this touches only the chain, so the check page (zero permissions)
-/// and the self-audit clock share it; each assembles its own ledger half.
+/// actually answered. No home, no ledger: this touches only the chain, so the check page (no privileges) and
+/// the periodic self-audit share it, each assembling its own ledger half.
 pub struct Agreed {
-    /// The converged fragment, unchanged.
+    /// The reconciled fragment, unchanged.
     pub fragment: Value,
     pub unanswered: Vec<String>,
     /// How many endpoints were asked.
     pub asked: usize,
-    /// The single-source flag: given by the endpoint rule; this layer does not count.
+    /// The single-source flag, given by the endpoint rule; this layer does not count.
     pub single_source: bool,
 }
 
-/// The two answers of a scan: a basis, or the law check saying this is not a basis (that no-label result is
-/// passed through unchanged).
+/// The two outcomes of a scan: a basis, or the core's validation saying this is not a basis (that no-label
+/// result is passed through unchanged).
 pub enum Scan {
     Basis(Agreed),
     NoLabel { report: Value, unanswered: Vec<String>, asked: usize },
@@ -573,7 +557,7 @@ pub fn scan_agreed(eps: &[Endpoint], g: &Ground) -> Result<Scan, Fault> {
     scan_agreed_with(eps, g, Facts::Local)
 }
 
-/// [`scan_agreed`], saying whether this machine's record of checked facts is used ([`Facts`]).
+/// [`scan_agreed`], choosing whether this machine's record of checked facts is used ([`Facts`]).
 pub fn scan_agreed_with(eps: &[Endpoint], g: &Ground, facts: Facts) -> Result<Scan, Fault> {
     scan_agreed_bytes_with(eps, &zikaron::json::canon_bytes(&basis_of(g)), facts)
 }
@@ -584,10 +568,10 @@ pub fn scan_agreed_bytes(eps: &[Endpoint], basis_bytes: &[u8]) -> Result<Scan, F
     scan_agreed_bytes_with(eps, basis_bytes, Facts::Local)
 }
 
-/// [`scan_agreed_bytes`], saying whether this machine's record of checked facts is used ([`Facts`]). With
-/// [`Facts::Local`], once the endpoint rule agreed, the facts every run read alike on a chain more than one
-/// place answered are added to the record (`checkedx::agreed`); a failure to add them costs only questions next
-/// time, never this scan's answer.
+/// [`scan_agreed_bytes`], choosing whether this machine's record of checked facts is used ([`Facts`]). With
+/// [`Facts::Local`], once the endpoints agree, the facts every run read identically on a chain where more than
+/// one endpoint answered are added to the record (`checkedx::agreed`); failing to add them only costs extra
+/// questions next time, never this scan's answer.
 pub fn scan_agreed_bytes_with(eps: &[Endpoint], basis_bytes: &[u8], facts: Facts) -> Result<Scan, Fault> {
     if eps.is_empty() {
         return Err(Fault::known(Known::NoEndpoint, crate::lang::t(crate::lang::Key::Tail084).to_string()));
@@ -609,14 +593,14 @@ pub fn scan_agreed_bytes_with(eps: &[Endpoint], basis_bytes: &[u8], facts: Facts
     }))
 }
 
-/// What the rounds of one agreed scan brought back, before they are converged.
+/// What the rounds of one agreed scan returned, before they are reconciled.
 struct Rounds {
     runs: Vec<(String, Value)>,
-    /// Which place each run asked on each chain (chain id and url), in run order.
+    /// Which endpoint each run asked on each chain (chain id and url), in run order.
     places: Vec<Vec<(u64, String)>>,
     unanswered: Vec<String>,
     refused: Vec<zikaron_anchor::scan::Refusal>,
-    /// The places that actually answered (chain id and url); the single-source flag counts them.
+    /// The endpoints that actually answered (chain id and url); the single-source flag counts them.
     answered: Vec<(u64, String)>,
     asked: usize,
     chains: Vec<u64>,
@@ -625,7 +609,7 @@ struct Rounds {
 }
 
 impl Rounds {
-    /// Converge by the endpoint rule: no round answering is the scan's refusal, rounds that differ are a
+    /// Reconciles by the endpoint rule: no round answering is the scan's refusal; rounds that differ are a
     /// disagreement.
     fn converge(self) -> Result<(zikaron_anchor::endpoints::Reading, Vec<String>, usize), Fault> {
         if self.runs.is_empty() {
@@ -634,9 +618,9 @@ impl Rounds {
         let thin = thin_from(&self.answered, &self.chains);
         let empty = answered_empty(&self.runs, &self.places);
         let reading = zikaron_anchor::endpoints::agree_over(self.runs, thin).map_err(|d| {
-            // Still a disagreement (no majority, no first-come); when one place answered nothing where
-            // another answered records, the sentence names that place: it lacks the history since the start
-            // block (a node that keeps only recent logs answers older windows empty).
+            // Still a disagreement (no majority, no first-come wins); if one endpoint returned nothing where
+            // another returned records, the message names it: it lacks history back to the start block (a node
+            // that keeps only recent logs answers older windows empty).
             let said = if empty.is_empty() {
                 crate::lang::filln(crate::lang::Key::Tail086, &[&(d.sources.len()).to_string(), &(d.sources.join(" ")).to_string()])
             } else {
@@ -648,8 +632,8 @@ impl Rounds {
     }
 }
 
-/// The places that answered a chain with no record (no anchor, no evidence) while another place answered the
-/// same chain with some: each by its url, once, in run order.
+/// The endpoints that answered a chain with no records (no anchor, no evidence) while another endpoint answered
+/// the same chain with some: each by its URL, once, in run order.
 fn answered_empty(runs: &[(String, Value)], places: &[Vec<(u64, String)>]) -> Vec<String> {
     let count = |v: &Value, chain: u64| -> usize {
         ["anchors", "evidence"]
@@ -672,8 +656,8 @@ fn answered_empty(runs: &[(String, Value)], places: &[Vec<(u64, String)>]) -> Ve
     out
 }
 
-/// Each round scans every chain at its k-th endpoint. The law check saying this is not a basis comes back as
-/// the no-label scan, passed through unchanged.
+/// Each round scans every chain at its k-th endpoint. If the core's validation says this is not a basis, the
+/// no-label scan comes back unchanged.
 fn rounds_over(eps: &[Endpoint], basis_bytes: &[u8], known: &scan::Known) -> Result<Rounds, Scan> {
     let mut chains: Vec<u64> = eps.iter().map(|e| e.chain).collect();
     chains.sort_unstable();
@@ -683,12 +667,17 @@ fn rounds_over(eps: &[Endpoint], basis_bytes: &[u8], known: &scan::Known) -> Res
     let mut places: Vec<Vec<(u64, String)>> = Vec::new();
     let mut unanswered: Vec<String> = Vec::new();
     let mut refused: Vec<zikaron_anchor::scan::Refusal> = Vec::new();
-    // The places that actually answered this pass (chain id and url); the single-source flag counts them.
+    // The endpoints that actually answered this pass (chain id and url); the single-source flag counts them.
     let mut answered: Vec<(u64, String)> = Vec::new();
     let mut asked = 0usize;
     let mut sightings: Vec<(Vec<u64>, scan::Sightings)> = Vec::new();
+    // Open every round's nodes in order; the rounds then run concurrently (`zikaron_anchor::endpoints::each`)
+    // and results are taken in round order, so the scan's result never depends on which answered first.
+    type Round = (Vec<String>, Vec<(u64, String)>, Vec<(u64, Box<dyn rpc::Endpoint + Send>)>);
+    let mut jobs: Vec<Round> = Vec::new();
     for k in 0..rounds(eps) {
-        let mut https: Vec<(u64, Box<dyn rpc::Endpoint>)> = Vec::new();
+        let mut said: Vec<String> = Vec::new();
+        let mut https: Vec<(u64, Box<dyn rpc::Endpoint + Send>)> = Vec::new();
         let mut used: Vec<(u64, String)> = Vec::new();
         for c in &chains {
             let Some(url) = nth_for(eps, *c, k) else { continue };
@@ -697,26 +686,39 @@ fn rounds_over(eps: &[Endpoint], basis_bytes: &[u8], known: &scan::Known) -> Res
                     used.push((*c, url));
                     https.push((*c, h));
                 }
-                None => unanswered.push(crate::lang::filln(crate::lang::Key::Tail085, &[&(c).to_string(), &(url).to_string()])),
+                None => said.push(format!("{c}={}", crate::chainx::address_said(&url))),
             }
         }
-        if https.is_empty() {
-            continue;
-        }
-        let names: Vec<String> = https.iter().map(|(c, _)| format!("{c}#{k}")).collect();
-        asked += https.len();
-        let mut handed: Vec<(u64, &mut dyn rpc::Endpoint)> = https
-            .iter_mut()
-            .map(|(c, h)| (*c, &mut **h as &mut dyn rpc::Endpoint))
-            .collect();
-        // Every round reads the same record: one round's fresh facts never spare another round a question.
-        match scan::run_knowing(basis_bytes, &[], &mut handed, known) {
-            // The law check says this is not a basis: the no-label result is passed through unchanged, never
-            // wrapped as a successful scan.
+        jobs.push((said, used, https));
+    }
+    let lost_chain = chains.first().copied().unwrap_or(0);
+    let done = zikaron_anchor::endpoints::each(
+        jobs,
+        |(said, used, mut https)| {
+            if https.is_empty() {
+                return (said, used, None);
+            }
+            let mut handed: Vec<(u64, &mut dyn rpc::Endpoint)> = https
+                .iter_mut()
+                .map(|(c, h)| (*c, &mut **h as &mut dyn rpc::Endpoint))
+                .collect();
+            // Every round reads the same record: one round's new facts never spare another round a question.
+            let got = scan::run_knowing(basis_bytes, &[], &mut handed, known);
+            (said, used, Some(got))
+        },
+        || (Vec::new(), Vec::new(), Some(Err(zikaron_anchor::scan::Refusal::Unanswered { chain: lost_chain, what: "the scan stopped short".into() }))),
+    );
+    for (k, (said, used, got)) in done.into_iter().enumerate() {
+        unanswered.extend(said);
+        let Some(got) = got else { continue };
+        let names: Vec<String> = used.iter().map(|(c, _)| format!("{c}#{k}")).collect();
+        asked += used.len();
+        match got {
+            // The core's validation says this is not a basis: pass the no-label result through unchanged,
+            // never wrapped as a successful scan.
             Ok(Err(no_label)) => return Err(Scan::NoLabel { report: no_label, unanswered, asked }),
             Ok(Ok((s, _, seen))) => {
-                // This round actually answered, so these urls count as sources (the single-source flag
-                // counts them).
+                // This round actually answered, so its URLs count as sources for the single-source flag.
                 answered.extend(used.iter().cloned());
                 sightings.push((used.iter().map(|(c, _)| *c).collect(), seen));
                 places.push(used.clone());

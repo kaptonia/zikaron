@@ -113,10 +113,12 @@ pub fn line_then<R>(ui: &mut egui::Ui, text: &mut String, hint: &str, mono: bool
     then(ui, tail, |ui, room| crate::input::field(ui, text, hint, room, crate::input::Look { mono, ..Default::default() }))
 }
 
-/// The last part of a path (a file or folder name), without a trailing separator.
+/// The last part of a path (a file or folder name), without a trailing separator. Both separators count,
+/// `/` and `\`, whichever system the path was written on (a path a Windows machine wrote, read here, names
+/// its file the same); a path that is only separators, or empty, gives the empty string.
 pub fn file_name(s: &str) -> String {
-    let t = s.trim().trim_end_matches('/');
-    t.rsplit('/').next().unwrap_or(t).to_string()
+    let t = s.trim().trim_end_matches(['/', '\\']);
+    t.rsplit(['/', '\\']).next().unwrap_or(t).to_string()
 }
 
 /// Cut to at most `max` characters with "…" in the middle (sentences that carry an id).

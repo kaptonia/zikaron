@@ -1,5 +1,5 @@
-//! base64url (RFC 4648 §5), unpadded and canonical: the unused bits of the last character are zero (kit law
-//! §1). The one place it is encoded and decoded.
+//! base64url (RFC 4648 §5), unpadded and canonical: the unused bits of the last character are zero (kit spec
+//! §1). The only encoder and decoder in the crate.
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 

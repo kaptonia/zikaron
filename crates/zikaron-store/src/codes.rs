@@ -1,6 +1,5 @@
-//! Refusal codes: a closed set with one byte spelling each ([`Code::as_str`]).
-//!
-//! Callers branch on these codes, so each member is spelled in one place only.
+//! Refusal codes: a closed set, each with one string spelling ([`Code::as_str`]). Callers branch on these
+//! codes, so each is spelled in one place only.
 
 /// Why a call was refused. Closed, so callers can match every case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,9 +40,8 @@ impl Code {
     }
 }
 
-/// A refusal: the code plus what a person needs to act on it (which files, how large).
-///
-/// A cap refusal always carries `size` and `cap`; an unaccounted refusal always carries `names`.
+/// A refusal: the code plus what a user needs to act on it (which files, how large). A cap refusal always
+/// carries `size` and `cap`; an unaccounted refusal always carries `names`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Trouble {
     pub code: Code,
@@ -53,17 +51,26 @@ pub struct Trouble {
     pub size: Option<usize>,
     /// The cap when over it.
     pub cap: Option<usize>,
+    /// The OS message when a disk operation failed ([`Code::Io`]): operation, path and OS text (`zikaron_os`
+    /// names the operation and path). `None` for every other code.
+    pub said: Option<String>,
 }
 
 impl Trouble {
     pub fn of(code: Code) -> Self {
-        Trouble { code, names: Vec::new(), size: None, cap: None }
+        Trouble { code, names: Vec::new(), size: None, cap: None, said: None }
     }
     pub fn named(code: Code, name: impl Into<String>) -> Self {
-        Trouble { code, names: vec![name.into()], size: None, cap: None }
+        Trouble { code, names: vec![name.into()], size: None, cap: None, said: None }
     }
     pub fn too_large(name: impl Into<String>, size: usize, cap: usize) -> Self {
-        Trouble { code: Code::TooLarge, names: vec![name.into()], size: Some(size), cap: Some(cap) }
+        Trouble { code: Code::TooLarge, names: vec![name.into()], size: Some(size), cap: Some(cap), said: None }
+    }
+    /// A disk operation failed: [`Code::Io`] with the OS message. `what` names the operation and path when the
+    /// error does not already (errors from `zikaron_os` do).
+    pub fn io(what: &str, e: &std::io::Error) -> Self {
+        let said = if what.is_empty() { e.to_string() } else { format!("{what}: {e}") };
+        Trouble { code: Code::Io, names: Vec::new(), size: None, cap: None, said: Some(said) }
     }
 }
 
@@ -72,8 +79,10 @@ impl Trouble {
 pub enum Why {
     /// Neither an entry name nor this crate's temporary-file name.
     ForeignName,
-    /// This crate's temporary-file name: a write that has not landed yet or was cut off.
+    /// This crate's temporary-file name: a write still in progress or interrupted.
     InFlight,
+    /// A file the OS writes beside this crate's names (`layout::SYSTEM_SIDE`).
+    SystemSide,
     /// Not a regular file.
     NotAFile,
     /// Not UTF-8; every name this crate writes is UTF-8, so this one is foreign.
@@ -89,6 +98,7 @@ impl Why {
         match self {
             Why::ForeignName => "FOREIGN_NAME",
             Why::InFlight => "IN_FLIGHT",
+            Why::SystemSide => "SYSTEM_SIDE",
             Why::NotAFile => "NOT_A_FILE",
             Why::NonUtf8Name => "NON_UTF8_NAME",
             Why::TooLarge => "TOO_LARGE",

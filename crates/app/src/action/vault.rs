@@ -1,27 +1,26 @@
 use super::*;
 
-/// Import a grant document: take (the payload is decoded by the kit crate), admit (the core's thirteen steps
-/// plus two shape gates), store (into the vault, refused when present). A payload with several grants imports
-/// them all; if any is refused, none are imported this pass (half a vault is worse than none).
+/// Imports a grant document: decode the payload (via the kit crate), admit each entry (the core's checks plus
+/// two shape checks), and store it in the vault. A payload with several grants imports them all; if any is
+/// refused, none are imported (half a vault is worse than none).
 ///
-/// Admit all first, then store all. Items already in the vault with identical bytes are skipped (a chain's
-/// root is usually already in the vault, and a relicense payload brings the root along); items present with
-/// different bytes are refused by name before the first is stored. Storing one by one would fail at once on
-/// `ALREADY_HELD` when the root was present, the chain's new hop would never land, and the face would only
-/// say "already in the vault"; the other way round, the new one would land first and the old would then fail,
-/// changing the vault while the face reported failure.
+/// All entries are admitted before any is stored. Entries already in the vault with identical bytes are
+/// skipped (a chain's root is usually there already, and a relicense payload brings it along); entries present
+/// with different bytes are refused by name before anything is stored. Storing one by one would stop at
+/// `ALREADY_HELD` on the existing root and never store the new hop, or store the new one and then fail,
+/// changing the vault while reporting failure.
 pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String>, String), crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // The grant file form: opened and verified before taking (in `payloadx::take_full`); the chain comes from
-    // the grant code inside it.
+    // A grant file is opened and verified before taking (`payloadx::take_full`); the chain comes from the grant
+    // code inside it.
     let taken = crate::payloadx::take_full(typed)?;
     let all = taken.hops;
     let mut fresh: Vec<&Vec<u8>> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    // The grant this pass is for: the chain's last hop (the code and the grant file carry the chain from the
-    // root down); the hops above it are its upstreams, taken along.
+    // The grant this import is for is the chain's last hop (codes and grant files carry the chain from the root
+    // down); the hops above it are its upstreams, taken along.
     let mut end = String::new();
     for b in &all {
         let e = crate::vaultx::admit(b)?;
@@ -38,10 +37,9 @@ pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String
         }
         fresh.push(b);
     }
-    // A copy of the grant file is kept in the vault (the issuer ledger and terms documents it carries are
-    // material at the "vault" level for checks and re-checks). It is kept before storing: if it cannot be
-    // kept the whole pass is refused, so the vault never holds a grant "from a grant file whose material was
-    // not kept".
+    // Keep a copy of the grant file in the vault (the issuer ledger and terms documents it carries are
+    // vault-level material for checks and re-checks). It is kept before storing: if it cannot be kept the
+    // whole import is refused, so the vault never holds a grant whose grant file material was lost.
     if let Some((p, o)) = taken.file.as_ref() {
         let bytes = std::fs::read(p).map_err(|x| crate::fault::classify(&x, &p.display().to_string()))?;
         crate::grantfilex::keep(home, &bytes, &o.kit_id)?;
@@ -52,23 +50,21 @@ pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String
             skipped.first().cloned().unwrap_or_default(),
         ));
     }
-    // Stage everything aside first and move each into place only when all are staged: if the disk fills up at
-    // the second, the first does not remain either (half a vault is worse than none).
+    // Stage everything aside and move entries into place only once all are staged, so a disk filling up at the
+    // second leaves no first behind.
     let ids = crate::vaultx::store_all(home, &fresh)?;
-    // After storing, the vault must be listable (the disk read runs as a separate background task, not in the
-    // frame); a failed listing only records a trouble.
+    // Relist the vault after storing (in a separate background task); a failed listing is only reported.
     relist_held(shell);
     Ok((ids, end))
 }
 
-/// Import an existing grant directory: every file in it goes through `import_grant`, the one reading of what
-/// a grant is (an entry file, a grant file, a grant code; admit before storing; failures are not stored, each
-/// named); those already in the vault with identical bytes are skipped. When none were taken and there were
-/// refusals, the last refusal is reported. A folder with no file at all is refused by name
-/// (`GRANT_DIR_EMPTY`): never "no file" for a folder that has files.
+/// Imports a directory of grants: every file goes through `import_grant`, the single definition of what a
+/// grant is (an entry file, a grant file or a grant code, admitted before storing; each failure named). Files
+/// already in the vault with identical bytes are skipped. A folder with no files is refused by name
+/// (`GRANT_DIR_EMPTY`).
 ///
-/// The system's side files (`home::is_side_file`: `.DS_Store`, `._*` and the like) are not the person's
-/// files: not tried, not refusals, and they do not turn a full import into a partial one.
+/// System side files (`home::is_side_file`: `.DS_Store`, `._*` and the like) are ignored: not tried, not
+/// counted as refusals, and they never turn a full import into a partial one.
 pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<String>, Vec<crate::fault::Fault>), crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let d = dir.trim();
@@ -82,9 +78,8 @@ pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<Stri
     if files.is_empty() {
         return Err(Fault::known(Known::GrantDirEmpty, d.to_string()));
     }
-    // Every file has an outcome: taken, already in the vault (skipped), not taken (with reason). Recording
-    // only the last refusal and reporting success when any one was taken would make the person think the
-    // whole directory went in.
+    // Every file gets an outcome: taken, already in the vault (skipped), or refused with a reason, so a partial
+    // import is never reported as the whole directory going in.
     let mut ids = Vec::new();
     let mut refused = Vec::new();
     for p in files {
@@ -97,7 +92,7 @@ pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<Stri
     Ok((ids, refused))
 }
 
-/// List the vault. Runs on a background thread.
+/// Lists the vault on a background thread.
 pub(super) fn list_held(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
     let root = shell
         .home
@@ -116,7 +111,7 @@ pub(super) fn set_upstream(shell: &mut Shell, grant: &str, dir: &str) -> Result<
     if !zikaron::hexfmt::is_hex32(&g) {
         return Err(crate::fault::Fault::known(crate::fault::Known::ContentShape, g));
     }
-    // Empty removes that entry; non-empty is made absolute before saving (`home::kept`).
+    // Empty removes the entry; otherwise the path is made absolute before saving (`home::kept`).
     let d = if dir.trim().is_empty() { String::new() } else { crate::home::kept(dir)?.display().to_string() };
     shell.commit_settings(|s| {
         s.upstreams.retain(|(x, _)| *x != g);
@@ -127,8 +122,8 @@ pub(super) fn set_upstream(shell: &mut Shell, grant: &str, dir: &str) -> Result<
     Ok(g)
 }
 
-/// Name a held grant and its issuer for this machine only. The grant's name is kept by grant id, the
-/// issuer's by the issuer's address, so every grant from that issuer shows it. An empty name changes nothing.
+/// Names a held grant and its issuer, on this machine only. The grant's name is keyed by grant id and the
+/// issuer's by address, so every grant from that issuer shows it. An empty name changes nothing.
 pub(super) fn note_held(shell: &mut Shell, grant: &str, note: &str, issuer_note: &str) -> Result<String, crate::fault::Fault> {
     let g = crate::lastread::grant_form(grant);
     if !zikaron::hexfmt::is_hex32(&g) {
@@ -159,9 +154,11 @@ pub(super) fn note_held(shell: &mut Shell, grant: &str, note: &str, issuer_note:
     Ok(g)
 }
 
-/// Re-check the whole vault. Runs on a background thread. For each item: upstream bytes read per the
-/// bookkeeping, the basis scanned to the chain head along that ledger's lineage, six checks to the kit crate,
-/// label to the core, now from the chain.
+/// Re-checks the whole vault on a background thread. For each item, upstream bytes are looked up from the
+/// recorded places; then the chain is read across networks as on the check page (`widex`: the main network if
+/// configured and every read-only network, each chain separately), with one scan per upstream lineage shared
+/// by every grant of that lineage (`vaultx::review_all`). The six checks come from the kit crate, the label
+/// from the core, and "now" from the chain. A network that could not be read is named on each card it affects.
 pub(super) fn review(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
@@ -169,41 +166,40 @@ pub(super) fn review(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> 
     let picked = crate::vaultx::held(home)?;
     let ground = ground_bare(shell);
     let eps = shell.endpoints.clone();
-    // Upstream bytes are resolved level by level as on the check page (`supplyx`: this machine, vault, record
-    // bundle, publish address); a level that cannot be read goes onto the card by name.
+    let nets = read_nets_now()?;
+    // Upstream bytes are looked up level by level as on the check page (`supplyx`: this machine, vault, record
+    // bundle, publish address); a level that cannot be read is named on the card.
     let shelf = shelf_of(shell, "");
     let chain = shell.settings.chain_id;
     Ok(shell.tasks.spawn(Kind::Review, move || {
         crate::task::stage_at(Kind::Review, 0);
         let now = chain.and_then(|c| crate::chainx::head_time(&eps, c).ok()).map(|(t, _, _)| t);
-        let mut cards = Vec::new();
         crate::task::stage_at(Kind::Review, 1);
+        let mut items = Vec::with_capacity(picked.len());
+        let mut from = Vec::with_capacity(picked.len());
         for (i, h) in picked.iter().enumerate() {
             crate::task::count(Kind::Review, i as u64, picked.len() as u64);
             let found = crate::supplyx::find(&shelf, crate::supplyx::Want::Hop(&h.bytes), 0);
             let up: Vec<Vec<u8>> = found.supply.as_ref().map(|s| s.items.clone()).unwrap_or_default();
-            // Fragment: scanned only with upstream bytes and a reachable chain; otherwise an empty fragment
-            // (those checks honestly answer UNKNOWN).
-            let (fragment, anchors) = match (&ground, up.is_empty(), eps.is_empty()) {
-                (Ok(g), false, false) => {
-                    let who = crate::readerx::who(&h.author)?;
-                    match to_head(&eps, g.clone()).and_then(|g| {
-                        crate::auditx::scan_once(&eps, &crate::readerx::basis_for(&g, &who, &up))
-                    }) {
-                        Ok(sc) => (sc.fragment, sc.anchors),
-                        Err(_) => (crate::auditx::empty_fragment(), 0),
-                    }
-                }
-                _ => (crate::auditx::empty_fragment(), 0),
-            };
-            let mut card = crate::vaultx::review(h, &up, &fragment, now, anchors);
-            card.from = found.supply.as_ref().map(|s| (s.level, s.place.clone()));
+            from.push((found.supply.as_ref().map(|s| (s.level, s.place.clone())), found.misses.first().map(|(_, f)| f.evidence())));
+            items.push((h.clone(), up));
+        }
+        // A chain to read: the main network with its nodes, or any read-only network. Otherwise every card is
+        // checked against an empty fragment, so its chain checks read as unknown.
+        let main = ground.as_ref().ok().filter(|_| !eps.is_empty()).map(|g| (&eps[..], g));
+        let mut scan = |senders: &[String]| -> Result<crate::vaultx::LineageRead, String> {
+            let w = crate::widex::scan(main, &nets, senders, crate::widex::Ask::First).map_err(|f| f.evidence())?;
+            Ok(crate::vaultx::LineageRead { fragment: crate::widex::with_unread_windows(&w.fragment, &w.missed, senders), anchors: w.anchors, missed: w.missed })
+        };
+        let read: Option<&mut dyn FnMut(&[String]) -> Result<crate::vaultx::LineageRead, String>> = if main.is_some() || !nets.is_empty() { Some(&mut scan) } else { None };
+        let mut cards = crate::vaultx::review_all(&items, now, read);
+        for (card, ((level, miss), (_, up))) in cards.iter_mut().zip(from.into_iter().zip(items.iter())) {
+            card.from = level;
             if card.said.is_empty() && up.is_empty() {
-                if let Some((_, f)) = found.misses.first() {
-                    card.said = f.evidence();
+                if let Some(said) = miss {
+                    card.said = said;
                 }
             }
-            cards.push(card);
         }
         Ok(Done::Reviewed { cards, now })
     }))

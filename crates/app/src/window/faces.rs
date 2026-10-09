@@ -37,8 +37,8 @@ impl Win {
         c.why.say().map(|k| fill1(k, &width::file_name(&c.at.display().to_string())))
     }
 
-    /// Whether the location cell is well formed: the same decision as the action layer (`home::landing`);
-    /// each location's main key is enabled by it.
+    /// Whether the location field is well formed: the same decision as the action layer (`home::landing`); each
+    /// location's main button is enabled by it.
     pub(super) fn landing_ok(given: &str) -> bool {
         crate::home::landing(given).is_ok()
     }
@@ -46,10 +46,9 @@ impl Win {
     /// The shared location row: "save to" on the left (132), the chosen folder's name, "choose folder…" on
     /// the right; the whole path is on hover. Choosing writes into `slot`; cancelling changes nothing.
     pub(super) fn place_row(ui: &mut egui::Ui, label: Key, slot: &mut String) {
-        if path_row(ui, t(label), slot, t(Key::PickFolder), t(Key::PickNone)) {
-            if let Some(p) = crate::platform::choose_path(crate::platform::Pick::Folder) {
-                *slot = p;
-            }
+        let asked = path_row(ui, t(label), slot, t(Key::PickFolder), t(Key::PickNone));
+        if let Some(p) = path_answer(ui.ctx(), ui.id().with(("zikaron-place-row", label as u32)), asked, crate::platform::Pick::Folder) {
+            *slot = p;
         }
     }
 
@@ -62,7 +61,7 @@ impl Win {
     /// What the wizard's network step stands for now: the current identity's network when it has chosen one of
     /// this build's choices (the step decides that identity's network), else this machine's last choice.
     pub(super) fn wiz_network_chosen(&self) -> Option<String> {
-        let row = self.shell.identities.as_ref().and_then(|r| r.now()).and_then(|(row, _)| row.network.clone());
+        let row = self.shell.identities.as_ref().and_then(|r| r.now()).and_then(|(row, _)| row.network.as_ref().map(|c| c.name().to_string()));
         row.filter(|n| crate::deploy::is_choice(n)).or_else(|| self.shell.machine.network.clone())
     }
 }
@@ -144,7 +143,7 @@ pub(super) fn head_tail(a: &str) -> String {
     format!("{}\u{2026}{}", &a[..6], &a[a.len() - 4..])
 }
 
-/// A network row's name on the face (the table row's name; "custom" is its own sentence).
+/// A network row's name in the UI (the table row's name; "custom" has its own text).
 pub(super) fn network_label(name: &str) -> String {
     match crate::deploy::named(name) {
         Some(d) => t(d.label).to_string(),
@@ -152,12 +151,29 @@ pub(super) fn network_label(name: &str) -> String {
     }
 }
 
-/// An appearance's name on the face.
+/// An appearance's name in the UI.
 pub(super) fn appearance_label(a: &str) -> &'static str {
     match a {
         "dark" => t(Key::AppearanceDark),
         "system" => t(Key::ZoneSystem),
         _ => t(Key::AppearanceLight),
+    }
+}
+
+/// How the command line's anchoring works, as the settings row and its toast name it.
+pub(super) fn cli_anchor_label(c: crate::machine::CliAnchor) -> Key {
+    match c {
+        crate::machine::CliAnchor::Send => Key::CliAnchorSend,
+        crate::machine::CliAnchor::Queue => Key::CliAnchorQueue,
+    }
+}
+
+/// The proxy choice for display: follow the system, none, or the address itself.
+pub(super) fn proxy_label(c: &str) -> String {
+    match c {
+        crate::machine::proxy::SYSTEM => t(Key::ProxySystem).to_string(),
+        crate::machine::proxy::NONE => t(Key::ProxyOff).to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -276,7 +292,7 @@ pub(super) fn id_seat_key(r: crate::roles::Role) -> Key {
     }
 }
 
-/// Titles of the two seat rows ("recorder seat", "user seat").
+/// Titles of the two seat rows (author and grantee).
 pub(super) fn id_seat_row_key(r: crate::roles::Role) -> Key {
     match r {
         crate::roles::Role::Author => Key::IdSeatRowAuthor,
@@ -301,8 +317,8 @@ pub fn run() -> i32 {
 /// The line standard error gets when the window takes arguments (the misuse exit, code 2).
 pub const ARGS_LINE: &str = "E_ARGS the window takes no arguments";
 
-/// The window program was given arguments: said once without a window (the line standard error always
-/// carried, and the sentence for a person), and the misuse exit code. The window is not opened.
+/// The window program was given arguments: report it once without a window (the standard-error line plus
+/// the message for a person) and return the misuse exit code. The window is not opened.
 pub fn refuse_arguments() -> i32 {
     speak_this_machines_language();
     without_window(ARGS_LINE, t(Key::SaidNoWindowArgs).to_string());
@@ -341,6 +357,7 @@ fn fresh_win(shell: Shell, typed: Typed, ux: Ux) -> Win {
         clash_key: String::new(),
         faults_told: 0,
         ux,
+        asker: crate::platform::ask_path,
     }
 }
 
@@ -357,6 +374,7 @@ pub fn run_at(start: Start) -> i32 {
                 height: 256,
             }))
             .with_inner_size([W, H])
+            .with_min_inner_size([MIN_W, MIN_H])
             // The side rail reaches the top and the window buttons float over it; no separate title bar.
             .with_fullsize_content_view(true)
             .with_title_shown(false)
@@ -381,13 +399,17 @@ pub fn run_at(start: Start) -> i32 {
         opts,
         Box::new(|cc| {
             let dressed = skin::dress(&cc.egui_ctx);
-            // Settle the machine directory once; if settling fails the window still opens, and the refusal is
-            // told (never silent).
+            // Settle the machine directory once; if settling fails the window still opens, and the error is shown
+            // (never silent).
             let settled = crate::home::settle_machine();
             let mut shell = Shell::boot(dressed);
             if let Err(f) = settled {
                 shell.faults.push(f);
             }
+            // A request on the command-line channel wakes a frame (even when minimized or covered: the frame then
+            // drains, and the channel's turn handles the request).
+            let wake = cc.egui_ctx.clone();
+            shell.door_waker = Some(std::sync::Arc::new(move || wake.request_repaint()));
             // The product builds its own preconditions: local data is sealed and the vault starts locked, so the
             // home opens, its lock is taken, the key is asked for and the home measured right after unlocking
             // (`Shell::after_unlock`). A vault already open here (only the test hooks start that way) opens it now.
@@ -415,7 +437,7 @@ pub fn run_at(start: Start) -> i32 {
     ) {
         Ok(()) => 0,
         Err(e) => {
-            // The line exactly as before (in the language set so far); the sentence in this machine's.
+            // The standard-error line in the language set so far; the message in this machine's language.
             let why = e.to_string();
             let line = fill1(Key::SaidWindowFailed, &why);
             speak_this_machines_language();
@@ -425,18 +447,18 @@ pub fn run_at(start: Start) -> i32 {
     }
 }
 
-/// The put-on-chain sheet after its key was pressed, frame by frame without a window (no wall clock: each
+/// The anchoring sheet after its button was pressed, frame by frame without a window (no wall clock: each
 /// frame's time is given here): the caller starts the anchoring task as it likes (held, released, failing) and
-/// asks after each frame whether the sheet is still open. The sheet's own rule is measured: it stays open until
-/// that task has landed, well or not, and closes on the landing itself.
+/// asks after each frame whether the sheet is still open. This measures the sheet's own rule: it stays open
+/// until that task has landed, successfully or not, and closes on the landing itself.
 pub struct SendProbe {
     win: Win,
     t: f64,
 }
 
 impl SendProbe {
-    /// The sheet for the first `count` entries with its key pressed now (the press's stamp taken from the
-    /// anchoring task's landings, as the key does).
+    /// The sheet for the first `count` entries with its button pressed now (the press's stamp taken from the
+    /// anchoring task's landings, as the button does).
     pub fn pressed(shell: Shell, count: usize) -> SendProbe {
         let mut ux = Ux::default();
         ux.wizard_asked = true;
@@ -463,7 +485,7 @@ impl SendProbe {
     }
 }
 
-/// Draw one face in a few windowless frames and measure its layout at a `width × height` viewport (no window,
+/// Draw one page in a few windowless frames and measure its layout at a `width × height` viewport (no window,
 /// no wall clock: frame time is given here). The caller prepares the shell and gets it back unchanged. The
 /// first-run wizard and passcode gate are not opened here (this measures the page layer).
 pub fn probe_face(ctx: &egui::Context, shell: Shell, place: Place, width: f32, height: f32) -> (Shell, FaceReading) {
@@ -564,8 +586,8 @@ pub fn probe_face(ctx: &egui::Context, shell: Shell, place: Place, width: f32, h
     )
 }
 
-/// Walk a list face's history: settle, open the first row, go back (⌘[),
-/// go forward (⌘]). After each: the route drawn and whether back and forward were shown.
+/// Walk a list page's history: settle, open the first row, go back (⌘[), go forward (⌘]). After each: the
+/// route drawn and whether back and forward were shown.
 pub fn probe_history(ctx: &egui::Context, shell: Shell, place: Place, width: f32, height: f32) -> (Shell, Vec<(String, bool, bool)>) {
     let role = shell.settings.role;
     let mut ux = Ux::default();
@@ -609,6 +631,99 @@ pub fn probe_history(ctx: &egui::Context, shell: Shell, place: Place, width: f32
         run(&mut win, vec![key(egui::Key::CloseBracket)]);
         settle(&mut win, &mut run);
         out.push(said());
+    }
+    (win.shell, out)
+}
+
+/// One frame of a file-dialog walk ([`probe_paths`]): which places ask (by name) and with what, which take
+/// what landed for them, then one frame of the window.
+pub struct PathFrame {
+    pub ask: Vec<(&'static str, crate::platform::Pick)>,
+    pub take: Vec<&'static str>,
+    /// Before this frame the person answers the open dialog (`answer` is called, then the walk waits for the
+    /// dialog's wait to end, never for a time).
+    pub answer: bool,
+}
+
+/// What a file-dialog walk read after each frame: what each taking place got, the troubles the shell holds,
+/// and whether a dialog is out.
+pub struct PathRead {
+    pub took: Vec<(&'static str, Option<String>)>,
+    pub faults: Vec<crate::fault::Fault>,
+    pub open: bool,
+}
+
+/// Walk the file dialog the way the places use it, in windowless frames, with `asker` in place of the system's
+/// dialog: each frame, the places in `ask` ask (as pressing their "choose…" button would), the window draws
+/// (it opens the dialog at the end of the frame), and the places in `take` take what landed for them (as they
+/// do the next frame they are drawn). The places are named; each name is its own key.
+pub fn probe_paths(ctx: &egui::Context, shell: Shell, asker: crate::platform::Asker, answer: &mut dyn FnMut(), frames: Vec<PathFrame>) -> (Shell, Vec<PathRead>) {
+    let mut ux = Ux::default();
+    ux.wizard_asked = true;
+    let mut win = fresh_win(shell, Typed::default(), ux);
+    win.asker = asker;
+    win.faults_told = usize::MAX;
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(W, H));
+    let site = |n: &str| egui::Id::new(("zikaron-probe-path", n));
+    let mut t = 0.0;
+    let mut out = Vec::new();
+    for f in frames {
+        if f.answer {
+            answer();
+            while win.shell.tasks.in_flight(crate::task::Kind::Path) && !win.shell.tasks.finished_in_flight(crate::task::Kind::Path) {
+                std::thread::yield_now();
+            }
+        }
+        t += 0.1;
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
+        let mut took = Vec::new();
+        let _ = ctx.run(input, |c| {
+            for (n, kind) in &f.ask {
+                let _ = path_answer(c, site(n), true, *kind);
+            }
+            win.draw(c);
+        });
+        // Taken the next frame they are drawn, as the places do (the answer landed at this frame's start).
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t + 0.05), ..Default::default() };
+        t += 0.05;
+        let _ = ctx.run(input, |c| {
+            win.draw(c);
+            for n in &f.take {
+                took.push((*n, path_answer(c, site(n), false, crate::platform::Pick::File)));
+            }
+        });
+        out.push(PathRead { took, faults: win.shell.faults.clone(), open: win.shell.tasks.in_flight(crate::task::Kind::Path) });
+    }
+    (win.shell, out)
+}
+
+/// Drive the window shell's own input over `place` in windowless frames, after a few empty ones to settle:
+/// each step is one frame, `dt` seconds after the one before, with its events. After each step: the route
+/// drawn and the window commands sent in that frame (`Debug` words of egui's viewport commands).
+pub fn probe_shell_input(ctx: &egui::Context, shell: Shell, place: Place, steps: Vec<(f64, Vec<egui::Event>)>, width: f32, height: f32) -> (Shell, Vec<(String, Vec<String>)>) {
+    let role = shell.settings.role;
+    let mut ux = Ux::default();
+    let (stack, h) = crate::nav::history_of(place, role);
+    ux.stack = stack;
+    ux.hist.insert(stack, h);
+    ux.wizard_asked = true;
+    let mut win = fresh_win(shell, Typed::default(), ux);
+    win.faults_told = usize::MAX;
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+    let mut t = 0.0;
+    let mut run = |win: &mut Win, events: Vec<egui::Event>, dt: f64| -> Vec<String> {
+        t += dt;
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), events, modifiers: egui::Modifiers::NONE, ..Default::default() };
+        let out = ctx.run(input, |c| win.draw(c));
+        out.viewport_output.values().flat_map(|v| v.commands.iter().map(|c| format!("{c:?}"))).collect()
+    };
+    for _ in 0..5 {
+        run(&mut win, Vec::new(), 0.1);
+    }
+    let mut out = Vec::new();
+    for (dt, events) in steps {
+        let sent = run(&mut win, events, dt);
+        out.push((zikaron_ui::probe::route_drawn(ctx), sent));
     }
     (win.shell, out)
 }
@@ -727,8 +842,8 @@ fn check_points(o: &egui::FullOutput) -> usize {
     most
 }
 
-/// The wizard open at `from`, settled; then turned to `to` the way its "next" key turns it (`ux.wizard`), and
-/// read every 20 ms for `frames` frames.
+/// The wizard open at `from`, settled; then turned to `to` the way its "next" button turns it (`ux.wizard`),
+/// and read every 20 ms for `frames` frames.
 pub fn probe_wizard_walk(ctx: &egui::Context, shell: Shell, place: Place, from: crate::nav::Step, to: crate::nav::Step, frames: usize, width: f32, height: f32) -> (Shell, Vec<WizFrame>) {
     let role = shell.settings.role;
     let mut ux = Ux::default();
@@ -759,7 +874,7 @@ pub fn probe_wizard_walk(ctx: &egui::Context, shell: Shell, place: Place, from: 
 }
 
 /// The wizard on the ledger step with its confirmation sheet up; then "create" pressed the way the sheet's
-/// key presses it, and read every 20 ms for `frames` frames: how far the drawn check has gone.
+/// button presses it, and read every 20 ms for `frames` frames: how far the drawn check has gone.
 pub fn probe_wizard_genesis(ctx: &egui::Context, shell: Shell, place: Place, frames: usize, width: f32, height: f32) -> (Shell, Vec<usize>) {
     let role = shell.settings.role;
     let mut ux = Ux::default();
@@ -795,7 +910,7 @@ pub fn probe_wizard_genesis(ctx: &egui::Context, shell: Shell, place: Place, fra
     (win.shell, out)
 }
 
-/// The wizard on the ledger step; its confirmation sheet opened, then closed the way its "back" key closes
+/// The wizard on the ledger step; its confirmation sheet opened, then closed the way its "back" button closes
 /// it. Every 20 ms from opening: the opacity (0–255) of the sheet's own note `said` in that frame, as drawn
 /// (0 when not drawn).
 pub fn probe_sheet_leave(ctx: &egui::Context, shell: Shell, place: Place, said: &str, open_frames: usize, close_frames: usize, width: f32, height: f32) -> (Shell, Vec<u8>, Vec<u8>) {
@@ -877,7 +992,7 @@ pub fn probe_title_swap(ctx: &egui::Context, shell: Shell, from: Place, to: Plac
     let (now, _) = run(&mut win, 0.1);
     win.go(to, now);
     let mut frames = Vec::new();
-    // Every 20 ms through the old crossfade's whole length (90 ms out, 120 ms in) and past it.
+    // Every 20 ms, covering a full crossfade (90 ms out, 120 ms in) and beyond.
     for _ in 0..15 {
         let (_, out) = run(&mut win, 0.02);
         let band: Vec<String> = texts_of(&out).into_iter().filter(|d| d.rect.top() < tk::TOOLBAR_H && d.rect.left() > tk::RAIL_W && d.text.trim().len() > 0).map(|d| d.text).collect();
@@ -958,7 +1073,7 @@ pub struct WizardExit {
 }
 
 /// Open the wizard at `step` over `place`, then press Esc in a few windowless frames. With new words in hand
-/// (made first), Esc asks; this then leaves the way the ask's leave key does.
+/// (made first), Esc asks first; this then leaves the way the prompt's leave button does.
 pub fn probe_wizard_exit(ctx: &egui::Context, shell: Shell, place: Place, step: crate::nav::Step, width: f32, height: f32) -> (Shell, WizardExit) {
     let role = shell.settings.role;
     let mut ux = Ux::default();
@@ -985,7 +1100,7 @@ pub fn probe_wizard_exit(ctx: &egui::Context, shell: Shell, place: Place, step: 
     }
     let opened = win.ux.wizard.is_some();
     let offered = win.wizard_exit_shown();
-    let wiz_from = win.ux.wiz_from.map(|(r, s, p)| format!("{}:{s:?}:{p:?}", r.as_str())).unwrap_or_default();
+    let wiz_from = win.ux.wiz_from.as_ref().map(|(r, s, p, _)| format!("{}:{s:?}:{p:?}", r.as_str())).unwrap_or_default();
     let had_words = win.shell.new_words.is_some();
     let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
     let _ = run(&mut win, vec![esc]);
@@ -1060,9 +1175,9 @@ pub(super) fn invalid_key(why: crate::retractx::Invalid) -> Key {
     }
 }
 
-/// The face of a ledger entry row: kind label, summary, whether struck through. Delete entries say which
-/// record they delete (or why they are invalid); deleted records are struck through. Summaries speak in
-/// names, numbers and dates, never in addresses or digests.
+/// The display of a ledger entry row: kind label, summary, whether struck through. Delete entries say which
+/// record they delete (or why they are invalid); deleted records are struck through. Summaries use names,
+/// numbers and dates, never addresses or digests.
 pub(super) fn row_face(rows: &[crate::ledgerx::Row], reading: &crate::retractx::Reading, r: &crate::ledgerx::Row) -> (&'static str, String, bool) {
     if crate::retractx::is_retraction(r) {
         let said = match reading.invalid.get(&r.id) {

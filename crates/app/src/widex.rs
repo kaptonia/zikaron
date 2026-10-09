@@ -1,27 +1,21 @@
 //! The read side across networks: the main network and every read-only network (`readnets`), for the paths
 //! that read someone else's material (the verify page, others' ledgers, the grant check, due diligence).
 //!
-//! ─── One basis, merged per chain ───
+//! Every network names a chain, a registry and a start block. Networks on one chain form one window: their
+//! registries are the union, the start block the smallest, and the window ends at that chain's current head.
+//! Each chain is read on its own, so one chain that cannot be read leaves the others standing: it is named
+//! and left out, and the pass's basis is exactly the chains that were read.
 //!
-//! Every network names a chain, a registry and a start block. Networks on one chain are one window: their
-//! registries are the union, the start block the smallest, and the window ends at that chain's head now. Each
-//! chain is read on its own, so one chain that cannot be read leaves the others standing: it is named and left
-//! out of this pass's basis, and the pass's basis is exactly the chains that were read.
+//! Fingerprint gate (read-only networks only): a read-only network's registry is an address the person typed,
+//! often taken from what a kit's author said. A contract at that address that is not the pinned build could
+//! emit "any sender anchored any hash". So before a read-only network is read, its nodes are asked for the
+//! code at the registry: its keccak must equal the pinned build's ([`crate::pinned::CODE_HASH`]) on every node
+//! that answers. Otherwise the network is marked "fingerprint mismatch", unused this pass, and no anchor is
+//! taken from it. It is asked every time; no answer is cached. The main network and paths that read only it
+//! ask nothing more: this gate admits read-only networks to the read side and changes nothing the law reads.
 //!
-//! ─── The fingerprint gate (read-only networks only) ───
-//!
-//! A read-only network's registry is an address the person typed, often from what a kit's author said. A
-//! contract at that address that is not the pinned build can emit "any sender anchored any hash". So before a
-//! read-only network is read, its nodes are asked the code at the registry: the keccak of that code must be
-//! the pinned build's ([`crate::pinned::CODE_HASH`]) on every node that answers. Otherwise the network is
-//! "fingerprint mismatch", unused this pass, and not one anchor is taken from it. It is asked every time; no
-//! answer is kept. The main network and the paths that read only it ask nothing more: this gate admits
-//! read-only networks to the read side and changes nothing the law reads.
-//!
-//! ─── Nothing changes while the table is empty ───
-//!
-//! The callers come here only when the read-only table holds a network. With an empty table each path asks
-//! what it asked before, in the same order, from the same basis bytes.
+//! Callers come here only when the read-only table holds a network. With an empty table each path asks
+//! exactly what a single-network read asks, in the same order, from the same basis bytes.
 
 use crate::auditx::{Ground, Scan};
 use crate::chainx::Endpoint;
@@ -32,7 +26,7 @@ use crate::readnets::Net;
 use zikaron::json::Value;
 use zikaron_anchor::scan::Emitters;
 
-/// How a read-only network read. Closed: the four marks its row shows.
+/// How a read-only network read: the four marks its row shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reading {
     /// Every node that answered gave the pinned code, and more than one answered.
@@ -51,7 +45,7 @@ impl Reading {
         matches!(self, Reading::Agreed(_) | Reading::Single)
     }
 
-    /// The reading's code as files carry it (the result file's `missed`). One literal per reading, one home.
+    /// The reading's code as written to files (the result file's `missed`).
     pub fn code(self) -> &'static str {
         match self {
             Reading::Agreed(_) => "agreed",
@@ -61,7 +55,7 @@ impl Reading {
         }
     }
 
-    /// The mark's words.
+    /// The mark's text.
     pub fn key(self) -> Key {
         match self {
             Reading::Agreed(_) => Key::BadgeAgreed,
@@ -75,26 +69,65 @@ impl Reading {
 /// The fingerprint gate for one read-only network. Each node is asked its chain id, then the code at the
 /// registry; a node that does not answer, or answers for another chain, does not count.
 pub fn gate(net: &Net) -> Reading {
-    let pinned = crate::pinned::CODE_HASH;
+    gate_said(net).0
+}
+
+/// [`gate`], also returning why no node counted when none did (`Down`): the error of the first problem that
+/// reached a node (classified by `chainx::said_fault`), else UNREACHABLE, with every node's message in its
+/// tail. A node counts only when it serves the chain and returns the code at the registry as hex.
+pub fn gate_said(net: &Net) -> (Reading, Option<Fault>) {
+    gate_said_against(net, crate::pinned::CODE_HASH)
+}
+
+/// [`gate_said`] against a given code hash (`0x` and 64 lowercase hex digits): the product passes its pin;
+/// tests pass the hash of a code of their own, so every form of the gate is reached without the pinned build.
+pub fn gate_said_against(net: &Net, pinned: &str) -> (Reading, Option<Fault>) {
     let mut same = 0usize;
+    let (mut first, mut words): (Option<Fault>, Vec<String>) = (None, Vec::new());
     for url in &net.nodes {
-        let Some(mut ep) = crate::chainx::endpoint_at(url) else { continue };
-        let Ok(served) = ep.call("eth_chainId", &Value::Arr(Vec::new())) else { continue };
+        let Some(mut ep) = crate::chainx::endpoint_at(url) else {
+            words.push(format!("{}: not a node address", zikaron_net::sayable(url)));
+            continue;
+        };
+        // Both questions use patience (`zikaron_anchor::patience::ask`, as every read does): a node that
+        // rate-limits once is waited out, not counted as down.
+        let served = match zikaron_anchor::patience::ask(ep.as_mut(), "eth_chainId", &Value::Arr(Vec::new())) {
+            Ok(s) => s,
+            Err(t) => {
+                first.get_or_insert(crate::chainx::said_fault(url, &t));
+                words.push(crate::chainx::trouble_said(url, &t));
+                continue;
+            }
+        };
         if !zikaron_anchor::scan::endpoint_serves(&served, net.chain_id) {
+            words.push(format!("{}: eth_chainId {}", zikaron_net::sayable(url), served.as_str().unwrap_or("?")));
             continue;
         }
         let params = Value::Arr(vec![Value::Str(net.registry.hex()), Value::Str("latest".to_string())]);
-        let Ok(code) = ep.call("eth_getCode", &params) else { continue };
-        let Some(bytes) = code.as_str().and_then(zikaron::hexfmt::decode) else { continue };
+        let code = match zikaron_anchor::patience::ask(ep.as_mut(), "eth_getCode", &params) {
+            Ok(c) => c,
+            Err(t) => {
+                first.get_or_insert(crate::chainx::said_fault(url, &t));
+                words.push(crate::chainx::trouble_said(url, &t));
+                continue;
+            }
+        };
+        let Some(bytes) = code.as_str().and_then(zikaron::hexfmt::decode) else {
+            words.push(format!("{}: eth_getCode answered no code", zikaron_net::sayable(url)));
+            continue;
+        };
         if zikaron::hexfmt::encode(&zikaron::cryptox::keccak256(&bytes)) != pinned {
-            return Reading::Fingerprint;
+            return (Reading::Fingerprint, None);
         }
         same += 1;
     }
     match same {
-        0 => Reading::Down,
-        1 => Reading::Single,
-        n => Reading::Agreed(n),
+        0 => {
+            let k = first.and_then(|f| f.which()).unwrap_or(Known::Unreachable);
+            (Reading::Down, Some(Fault::known(k, words.join(" · "))))
+        }
+        1 => (Reading::Single, None),
+        n => (Reading::Agreed(n), None),
     }
 }
 
@@ -105,7 +138,7 @@ pub struct Missed {
     pub registry: Address,
     /// The start block of the network not read.
     pub from_block: u64,
-    /// Its name on the face.
+    /// Its name in the UI.
     pub name: String,
     /// `Down` or `Fingerprint`.
     pub reading: Reading,
@@ -126,9 +159,9 @@ pub struct Wide {
     pub missed: Vec<Missed>,
 }
 
-/// How each chain's window is asked: at its first node (as `auditx::scan_once`), or at every node to
-/// agreement (as `auditx::scan_agreed`). Asking to agreement is the grant check page's, which has zero
-/// permissions: it scans without this machine's record of checked facts (`auditx::Facts::Bare`).
+/// How each chain's window is asked: at its first node (as `auditx::scan_once`), or at every node until they
+/// agree (as `auditx::scan_agreed`). Agreement is used by the grant check page, which is read-only and scans
+/// without this machine's record of checked facts (`auditx::Facts::Bare`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
     First,
@@ -145,8 +178,8 @@ struct Window {
     from: Vec<(Address, String, u64)>,
 }
 
-/// One chain's window as a basis (law §9.4's three tables), the member order the canonical byte rules set. With
-/// one registry it is `auditx::basis_of`'s bytes.
+/// One chain's window as a basis (law §9.4's three tables), in the member order the canonical byte rules
+/// require. With one registry it equals `auditx::basis_of`'s bytes.
 fn basis_of(w: &Window, to_block: u64, senders: &[String]) -> Value {
     let window = Value::Obj(vec![
         ("chainId".to_string(), Value::Int(w.chain_id)),
@@ -200,9 +233,9 @@ fn windows(main: Option<(&[Endpoint], &Ground)>, nets: &[Net], missed: &mut Vec<
         add(g.chain, g.registry, g.from_block, mine, crate::readnets::chain_name(g.chain, None));
     }
     for n in nets {
-        // A read-only network that is the main network itself (one table for the machine, a main network per
-        // home: a duplicate can stand after a home change) joins the main window when the gate admits it, and is
-        // never named missed: the main network reads that registry already.
+        // A read-only network that is the main network itself (the read-only table is per machine, the main
+        // network per home, so a duplicate can remain after a home change) joins the main window when the gate
+        // admits it, and is never reported as missed: the main network already reads that registry.
         let is_main = main.map(|(_, g)| n.is(g.chain, &g.registry)).unwrap_or(false);
         let reading = gate(n);
         if is_main && !reading.admits() {
@@ -373,9 +406,9 @@ pub fn listed(at: Option<&crate::kitsindex::AnchoredOn>, main: Option<&Ground>, 
     main.map(|g| g.chain == a.chain_id && g.registry == reg).unwrap_or(false) || nets.iter().any(|n| n.is(a.chain_id, &reg))
 }
 
-/// A basis to carry the senders a path computes when the main network is not configured: the first read-only
-/// network's cells. The paths read its `senders`; the grant check also names its chain, registry and start
-/// block in the basis it shows (the main network's when configured, else that first read-only network's).
+/// A basis carrying the senders a path computes when the main network is not configured: the first read-only
+/// network's fields. The paths read its `senders`; the grant check also shows its chain, registry and start
+/// block in the basis it displays (the main network's when configured, else that first read-only network's).
 pub fn carrier(main: Option<&Ground>, nets: &[Net]) -> Ground {
     match (main, nets.first()) {
         (Some(g), _) => g.clone(),

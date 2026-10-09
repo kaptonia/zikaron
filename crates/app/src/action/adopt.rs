@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) fn verify_anchors(shell: &mut Shell, rows: &str) -> Result<Spawned, crate::fault::Fault> {
-    // Clear the previous reading first: if this pass is refused midway (bad text, no node configured), the
-    // hand must not keep "all passed" from other text.
+    // Clear the previous result first, so a refusal partway through (bad text, no node configured) cannot
+    // leave an earlier "all passed" on screen.
     shell.proofs = None;
     let parsed = crate::adoptx::rows_of(rows)?;
     let eps = shell.endpoints.clone();
@@ -32,7 +32,7 @@ pub(super) fn verify_anchors(shell: &mut Shell, rows: &str) -> Result<Spawned, c
     }))
 }
 
-/// Step three of co-signing: local verification. Only when it passes may the two cells go into the body.
+/// Co-signing, step three: verify the co-signature locally. Only a passing co-signature goes into the body.
 pub(super) fn cosign(
     shell: &mut Shell,
     rows: &str,
@@ -43,8 +43,8 @@ pub(super) fn cosign(
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // The preimage includes prev, so this asks for "the one signed against the current head". A changed head
-    // no longer matches.
+    // The preimage includes `prev`, so the co-signature must be made against the current head; once the head
+    // changes it no longer matches.
     let head = crate::ledgerx::head(home)?.ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoGenesis, crate::lang::t(crate::lang::Key::Tail050).to_string())
     })?;
@@ -62,9 +62,15 @@ pub(super) fn adopt_anchors(
     attestation: &str,
 ) -> Result<(String, bool, Enqueued), crate::fault::Fault> {
     let parsed = crate::adoptx::rows_of(rows)?;
-    // A failed co-signature does not refuse the entry (law §6.6): verified only when both cells are given; a
-    // failure is said at once, and the person can record again without the co-signature.
-    let both = !attestor.trim().is_empty() && !attestation.trim().is_empty();
+    // A co-signature is both fields or neither; this one check serves the page and the command line alike.
+    // A half-filled one is refused by naming the missing field. With both, it is verified; a failure is
+    // reported at once, and clearing both still lets the person record the entry without it.
+    let both = match (attestor.trim().is_empty(), attestation.trim().is_empty()) {
+        (true, true) => false,
+        (false, false) => true,
+        (false, true) => return Err(crate::fault::Fault::known(crate::fault::Known::FieldMissing, "attestation".to_string())),
+        (true, false) => return Err(crate::fault::Fault::known(crate::fault::Known::FieldMissing, "attestor".to_string())),
+    };
     if both {
         cosign(shell, rows, attestor, attestation)?;
     }
@@ -93,11 +99,10 @@ pub(super) fn adopt_anchors(
     Ok((id, both, n))
 }
 
-/// List the anchors a key sent. For this key (`address` empty) read the fragment already fetched by the audit
-/// when the home opened, listing only those outside the ledger; for another key scan the chain once (basis
-/// from this home's chain, registry contract and start block, with only that key as sender). Both paths check
-/// each row by the three questions (this key by this ledger's lineage, another key by itself); rows in the
-/// ledger do not ask the chain, with state "already in ledger".
+/// Lists the anchors a key sent. For this key (`address` empty) it uses the fragment the audit fetched when
+/// the home opened and lists only anchors not yet in the ledger; for another key it scans the chain once, using
+/// this home's chain, registry contract and start block with that key as the only sender. Each row not in the
+/// ledger is verified on chain (this key against this ledger's lineage, another key against itself).
 pub(super) fn list_key_anchors(shell: &mut Shell, address: &str) -> Result<Spawned, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     shell.key_anchors = None;
@@ -138,8 +143,8 @@ pub(super) fn list_key_anchors(shell: &mut Shell, address: &str) -> Result<Spawn
     }))
 }
 
-/// Read a claim text (the side signing a claim for someone else). Once read it is placed on the shell; with a
-/// network configured the background asks each anchor's block number, otherwise not.
+/// Reads a claim text (when signing a claim for someone else) and places it on the shell. With a network
+/// configured, each anchor's block number is fetched in the background.
 pub(super) fn read_claim(shell: &mut Shell, text: &str) -> Result<Option<Spawned>, crate::fault::Fault> {
     shell.claim = None;
     shell.attested = None;
@@ -156,9 +161,8 @@ pub(super) fn read_claim(shell: &mut Shell, text: &str) -> Result<Option<Spawned
     })))
 }
 
-/// Sign a claim for someone else: the passcode gate has already been passed in `apply`; this seat's key signs
-/// the text's preimage (`sign::sign_adoption`, law §6.6's domain), returning (signer, signature). What is
-/// signed is exactly the bytes in the text; this desk changes not one character.
+/// Signs a claim for someone else and returns (signer, signature). The passcode gate has already been passed
+/// in `apply`. This desk's key signs the claim's preimage (`sign::sign_adoption`) exactly as given in the text.
 pub(super) fn attest_for(shell: &mut Shell, text: &str) -> Result<(String, String), crate::fault::Fault> {
     let claim = crate::adoptx::claim_of(text)?;
     let missing = || crate::fault::Fault::known(crate::fault::Known::KeychainMissing, crate::lang::t(crate::lang::Key::SetNoKey).to_string());

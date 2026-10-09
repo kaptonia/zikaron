@@ -1,20 +1,18 @@
 use super::*;
 
-/// Everything an export of a record bundle can be refused for without reading the chain: that it could be
-/// recorded, a home, the folder the person gave and the holder it lands under. Asked before the exit gate
-/// starts and again by the export where the gate landed; the judgment lives only here. Answers where the
-/// bundle lands.
+/// Everything a record bundle export can be refused for without reading the chain: whether settings can be
+/// saved, a home, the folder given and the holder it lands under. Checked before the exit gate starts and
+/// again by the export after it passes; this is the only place that decides. Returns where the bundle lands.
 pub(super) fn mirror_plan(shell: &Shell, to: &str) -> Result<std::path::PathBuf, crate::fault::Fault> {
-    // Ask whether it can be recorded first, then export. The requirement for a landed export includes recording
-    // the place and time; in the reverse order, the whole bundle would be written first and then fail at
-    // recording, leaving the person a bundle nobody remembers while the face said failure (on disk but not on
-    // record is exactly the silent failure form).
+    // Check that settings can be saved before exporting: a finished export records its place and time, and in
+    // the other order a whole bundle could be written and then fail to be recorded, leaving an untracked
+    // bundle on disk while the UI reported failure.
     shell.may_save_settings()?;
     shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // Holder: the current identity's current seat address in the register; without a register, the address of
-    // the key available now.
+    // Holder: the address of the current identity's current seat in the register; without a register, the
+    // address of the key available now.
     let seat = shell.settings.role;
     let holder = crate::register::now_row_listed()
         .ok()
@@ -26,27 +24,26 @@ pub(super) fn mirror_plan(shell: &Shell, to: &str) -> Result<std::path::PathBuf,
     crate::mirror::bundle_in(&crate::home::landing(to)?, &holder, seat)
 }
 
-/// `to` is the folder the person chose; the bundle lands where `mirror::bundle_in` assembles it for the
-/// current identity and seat.
+/// Exports the record bundle. `to` is the folder the person chose; the bundle lands where `mirror::bundle_in`
+/// places it for the current identity and seat.
 pub(super) fn export_mirror(shell: &mut Shell, to: &str, pass: &crate::exitgate::Pass) -> Result<(String, usize, usize, bool), crate::fault::Fault> {
     let target = mirror_plan(shell, to)?;
     // The exit gate passed in the background just before this runs (`gate_first`).
     let home = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
     let made = crate::mirror::export(pass, home, &target, now_secs())?;
-    // Recorded only once landed. What is recorded is this action's reading: where it landed and when.
+    // Record the export only once it has landed: where and when.
     let record = crate::settings::MirrorRecord { path: made.root.display().to_string(), at: now_secs() };
     shell.commit_settings(|s| s.mirror = Some(record))?;
-    // Measure again after exporting: the mirror slot cell is then computed in the background (no disk in the
-    // frame); without remeasuring, that cell would keep showing the reading from before the export.
+    // Re-measure after exporting so the bundle status is recomputed in the background; otherwise it would keep
+    // showing the state from before the export.
     if let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) {
         shell.tasks.spawn(Kind::Archive, move || measure(&root));
     }
     Ok((made.root.display().to_string(), made.entries, made.added, made.topped_up))
 }
 
-/// Relist after the vault changed. With one of the same kind in flight, record "dirty" and list again when it
-/// lands (otherwise the in-flight pass returns the list from before the change, nobody lists again, and a
-/// newly added item never appears on the face).
+/// Relists the vault after it changed. If a listing is already in flight, mark it dirty and list again when it
+/// lands; otherwise the in-flight listing would return the old contents and a new item would never appear.
 pub(super) fn relist_held(shell: &mut Shell) {
     shell.held = None;
     shell.cards = None;
@@ -58,7 +55,7 @@ pub(super) fn relist_held(shell: &mut Shell) {
     }
 }
 
-/// Reconcile once. Runs on a background thread.
+/// Reconciles once, on a background thread.
 pub(super) fn reconcile(root: &std::path::Path) -> Result<Done, crate::fault::Fault> {
     crate::task::stage_at(crate::task::Kind::Reconcile, 0);
     let home = crate::home::Home::open(root)?;
@@ -66,8 +63,7 @@ pub(super) fn reconcile(root: &std::path::Path) -> Result<Done, crate::fault::Fa
     Ok(Done::Reconciled { label: v.label, complete: v.complete, entries: v.entries })
 }
 
-/// Query the chain once. Runs on a background thread: network work in particular may never happen in the
-/// frame.
+/// Queries the chain once, on a background thread (network work never runs on the UI thread).
 pub(super) fn read_chain(eps: &[crate::chainx::Endpoint], who: &crate::key::Address, chain: Option<u64>) -> Result<Done, crate::fault::Fault> {
     crate::task::stage_at(crate::task::Kind::Chain, 0);
     // The basis chain's balance: the configured chain, or the first endpoint's when none is set.
@@ -75,13 +71,14 @@ pub(super) fn read_chain(eps: &[crate::chainx::Endpoint], who: &crate::key::Addr
         return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, String::new()));
     };
     let (wei, reading) = crate::chainx::balance(eps, chain, who)?;
-    // Having talked to a node, record the chain's current time (asked only when the balance answered, so an
-    // unreachable node is not waited on again).
+    // Record the chain's current time; asked only after the balance answered, so an unreachable node is not
+    // waited on twice.
     let head_time = crate::chainx::head_time(eps, chain).ok().map(|x| x.0);
     Ok(Done::Chain {
         gas_wei: Some(wei),
         sources: reading.sources,
         single_source: reading.single_source,
+        unanswered: reading.unanswered,
         head_time,
     })
 }
@@ -89,63 +86,56 @@ pub(super) fn read_chain(eps: &[crate::chainx::Endpoint], who: &crate::key::Addr
 pub(super) fn set_endpoints(shell: &mut Shell, specs: &str) -> Result<usize, crate::fault::Fault> {
     let mut eps = Vec::new();
     for one in specs.split_whitespace() {
-        let e = crate::chainx::Endpoint::parse(one).ok_or_else(|| {
-            crate::fault::Fault::known(
-                crate::fault::Known::SettingsShape,
-                crate::lang::filln(crate::lang::Key::Tail008, &[&format!("{:?}", one)]),
-            )
-        })?;
+        let e = crate::chainx::Endpoint::typed(one).map_err(|said| crate::fault::Fault::known(crate::fault::Known::SettingsShape, said))?;
         eps.push(e);
     }
     let specs: Vec<String> = eps.iter().map(|e| e.spec()).collect();
-    // The person configured nodes themselves: this home's network no longer comes from a choice (that face
-    // line goes dark).
+    // The person configured nodes by hand, so this home's network no longer comes from a preset choice.
     shell.commit_settings(|s| {
         s.endpoints = specs;
         s.network = None;
     })?;
     endpoints_changed(shell, eps);
-    // The seat's nodes are set either way; the identity's record failing to take them is a trouble said by
-    // name.
+    // The seat's nodes are set either way; failing to record them on the identity is reported by name.
     if let Err(f) = remember_custom(shell) {
         shell.faults.push(f);
     }
+    // A custom basis saved earlier (or checked against other nodes) is now checked against these nodes, as
+    // when the basis is saved.
+    super::audit::check_basis_after_nodes(shell);
     Ok(shell.endpoints.len())
 }
 
-/// After endpoints change, the shell's related cells are voided in one place (the person editing nodes and
-/// taking a known deployment row go through here alike).
+/// Resets the shell's endpoint-dependent state in one place, whether the person edited nodes or picked a
+/// known deployment.
 pub(super) fn endpoints_changed(shell: &mut Shell, eps: Vec<crate::chainx::Endpoint>) {
     shell.endpoints = eps;
-    // The "chain read" time and the network sentence speak of the replaced nodes: void them and wait for the
-    // new nodes to answer once.
+    // The "chain read" time and the network status describe the replaced nodes: clear them until the new
+    // nodes answer.
     shell.chain_read_at = None;
     shell.status = None;
-    // The last self-audit report is voided too (as with a source change): it came from the replaced nodes,
-    // and the green lights and the "anchored" question (the third precondition of `queue_entry`) read it.
-    // Keeping it would show the old nodes' words after the person changed nodes. Clearing it makes the next
-    // frame audit again (`audit_stale` counts no report as due).
+    // Clear the last self-audit report too (as on a source change): it came from the replaced nodes, and the
+    // status lights and the "already anchored" check in `queue_entry` read it. The next frame audits again
+    // (`audit_stale` treats a missing report as due).
     shell.audit = None;
     shell.audit_asked = None;
-    // New nodes answer the tail question afresh (a marked home checks again: `tail_if_due` below).
+    // New nodes answer the tail question afresh (`tail_if_due` below).
     shell.tail_asked = None;
-    // The last pass's "anchored" set (the verdict cache) keeps only rows of the current chain (after a
-    // network change, old chain rows do not pass for "last verified").
+    // The cached "anchored" set keeps only rows for the current chain, so after a network change old rows do
+    // not count as last verified.
     let chain = shell.settings.chain_id;
     if let Some(r) = shell.remembered.as_mut() {
         r.rows.retain(|(_, (c, _))| Some(*c) == chain);
     }
-    // The table's green lights were lit by that report: with the report voided, the table is reread too (the
-    // same exit as audit landing).
+    // The table's status lights came from that report, so reread the table too (as when an audit lands).
     shell.stale_rows();
     tail_if_due(shell);
 }
 
-/// A home takes a network only through this function: a known row as [`adopt_deployment`]; one filled in by
-/// hand as recorded (its chain, registry, start block and nodes), the home's network cell then "custom". Two
-/// callers: a writer opening a home without a network whose identity has one (`open_home_at`), and the wizard's
-/// network step choosing a row (`choose_network`, through [`adopt_deployment`]). It saves once and records
-/// which choice it came from (the face line lights by it).
+/// The only way a home takes a network: a known deployment via [`adopt_deployment`], or a hand-filled one
+/// stored as given (chain, registry, start block, nodes) with the home's network set to "custom". Called when
+/// a writer opens a home without a network whose identity has one (`open_home_at`), and by the wizard's
+/// network step (`choose_network`). Saves once and records which choice it came from.
 pub(super) fn adopt_network(shell: &mut Shell, n: crate::deploy::Network) -> Result<(), crate::fault::Fault> {
     match n {
         crate::deploy::Network::Known(d) => adopt_deployment(shell, d),
@@ -165,9 +155,9 @@ pub(super) fn adopt_network(shell: &mut Shell, n: crate::deploy::Network) -> Res
     }
 }
 
-/// The open home is left without a network (the wizard chose "custom" for it): no chain, no registry, no
-/// nodes, the start block back to zero, no record of a choice. Reading the chain and putting on chain then
-/// refuse by the names of a home with no network, until it is filled in settings.
+/// Leaves the open home without a network (the wizard chose "custom"): no chain, registry or nodes, start
+/// block zero, no recorded choice. Chain reads and anchoring are refused as for a home with no network until
+/// it is filled in settings.
 pub(super) fn clear_network(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
     shell.commit_settings(|s| {
         s.chain_id = None;
@@ -180,10 +170,10 @@ pub(super) fn clear_network(shell: &mut Shell) -> Result<(), crate::fault::Fault
     Ok(())
 }
 
-/// After a seat configures its network by hand, for an identity that chose "custom": once the seat has the
-/// whole of it (chain, registry, nodes), it is recorded on that identity's row, so the identity's other seat
-/// takes the same network. An identity that chose a row, a home no identity owns, or a network not yet whole
-/// records nothing (the seat's own settings stay the seat's).
+/// For an identity that chose "custom": once a seat has configured the whole network by hand (chain,
+/// registry, nodes), record it on the identity's row so the identity's other seat gets the same network.
+/// Nothing is recorded for an identity that chose a known row, a home no identity owns, or an incomplete
+/// network.
 pub(super) fn remember_custom(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
     let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return Ok(()) };
     let s = &shell.settings;

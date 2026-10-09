@@ -1,28 +1,27 @@
-//! Others' ledger reader. "Anchors seen, bytes not seen" is an honest state, not a failure.
+//! Reader for other people's ledgers. "Anchors seen, bytes not seen" is a valid state, not a failure.
 //!
 //! ─── No indexer ───
 //!
-//! Type an address and scan its anchors by the endpoint rule. The address book is purely local and never
-//! becomes a directory: this layer neither discovers nor enumerates addresses and asks no one "who is there";
-//! the book holds only what the person pasted in.
+//! The user types an address and its anchors are scanned via the configured endpoints. The address book is
+//! purely local: this module never discovers or enumerates addresses; the book holds only what the user
+//! pasted in.
 //!
-//! ─── This desk does not guess the bytes ───
+//! ─── No guessing the bytes ───
 //!
-//! The chain has only anchor hashes, no bytes. Bytes come from two places: the counterpart's public storage,
-//! or a disclosure kit they give. With neither, the face says "anchors seen, bytes not seen": how many
-//! anchors were found is stated plainly, while audit label, timeline and grant history have no reading (not
-//! empty, not green).
+//! The chain holds only anchor hashes. Entry bytes come from the other party's public storage or from a
+//! disclosure kit they provide. Without them the UI says "anchors seen, bytes not seen": the anchor count is
+//! shown, while audit label, timeline and grant history show no result (not empty, not green).
 //!
-//! ─── With bytes, judging is still not in this layer ───
+//! ─── Validation stays in the core ───
 //!
-//! The label comes from the core's `audit`, entries are accepted by the core's thirteen steps, and grant
-//! history comes from the grant ledger's table reading. This layer lays the root, the fragment and the bytes out as an
-//! audit input and hands it over.
+//! The label comes from the core's `audit`, entries are validated by the core's `entry::check`, and grant
+//! history comes from the grant table reader. This module only assembles the root, chain data and bytes into
+//! an audit input.
 
 use crate::fault::{Fault, Known};
 use zikaron::json::Value;
 
-/// One read's result.
+/// The result of reading one ledger.
 pub struct Book {
     /// The typed address (lowercase).
     pub who: String,
@@ -32,35 +31,34 @@ pub struct Book {
     pub asked: usize,
     /// How many entries' bytes were obtained. Zero means "anchors seen, bytes not seen".
     pub entries: usize,
-    /// With bytes, the core's label; without, an empty string (no reading then).
+    /// The core's audit label with bytes; empty without (no result).
     pub label: String,
     /// Timeline: rows in descending seq (only with bytes).
     pub timeline: Vec<crate::ledgerx::Row>,
     /// Grant history (only with bytes).
     pub grants: Vec<crate::grantx::Row>,
-    /// Block time of the latest anchor (the largest in the fragment this pass scanned; none without anchors).
-    /// "Last anchored" reads it.
+    /// Block time of the latest anchor in the scanned chain data (`None` without anchors), shown as "last
+    /// anchored".
     pub latest: Option<u64>,
 }
 
 impl Book {
-    /// Anchors seen, bytes not seen. A state, not a failure.
+    /// Anchors seen, bytes not seen: a valid state, not a failure.
     pub fn only_anchors(&self) -> bool {
         self.entries == 0
     }
 }
 
-/// Recognize an address. Unrecognized is refused by name, never scanning with an arbitrary string.
+/// Parse an address. Invalid input is an error; nothing is ever scanned with an arbitrary string.
 pub fn who(typed: &str) -> Result<crate::key::Address, Fault> {
     crate::key::Address::parse(typed)
         .ok_or_else(|| Fault::known(Known::AddressShape, typed.trim().to_string()))
 }
 
-/// Read bytes from a disclosure kit or a directory. As many entries as can be read are reported; what cannot
-/// be read as an entry does not count.
+/// Read entry bytes from a disclosure kit or directory. Every valid entry found is returned; anything else is
+/// skipped. Errors with `NO_BYTES` when none is found.
 ///
-/// Uses the store crate's names (the `.entry` form comes from `layout`), so "which files are entries" is not
-/// decided here.
+/// Which files are entries is decided by the store crate's naming (`layout`), not here.
 pub fn bytes_from(dir: &std::path::Path) -> Result<Vec<Vec<u8>>, Fault> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -95,13 +93,12 @@ pub fn bytes_from(dir: &std::path::Path) -> Result<Vec<Vec<u8>>, Fault> {
     Ok(out)
 }
 
-/// The basis this pass scans. Senders come from that ledger's own lineage (the genesis key, plus every key
-/// handed over by its successions); with not one byte in hand only the entered address can be scanned, and
-/// the page then says exactly "anchors seen, bytes not seen".
+/// The scan basis. Senders come from the ledger's own lineage (the genesis key plus every key handed over by
+/// its successions); with no bytes only the entered address can be scanned, and the page says "anchors seen,
+/// bytes not seen".
 ///
-/// With senders fixed as `[entered address]`, a ledger that went through succession would have none of the
-/// new key's anchors scanned, while the page top would still print that number as "all of this person's
-/// anchors on chain".
+/// Scanning only the entered address would miss the new key's anchors after a succession, while the page
+/// would still present the count as all of this person's anchors.
 pub fn basis_for(
     ground: &crate::auditx::Ground,
     who: &crate::key::Address,
@@ -113,6 +110,7 @@ pub fn basis_for(
     g
 }
 
+/// Scan and read one ledger on the main network.
 pub fn read(
     eps: &[crate::chainx::Endpoint],
     ground: &crate::auditx::Ground,
@@ -124,8 +122,8 @@ pub fn read(
     read_scanned(&scanned, who, bytes)
 }
 
-/// [`read`] across networks: the main network and every read-only network (`widex`), each chain on its own.
-/// Returns the networks not read beside the ledger.
+/// [`read`] across networks: the main network and every read-only network (`widex`), each chain separately.
+/// Also returns the networks that could not be read.
 pub fn read_wide(
     eps: &[crate::chainx::Endpoint],
     ground: &crate::auditx::Ground,
@@ -139,9 +137,9 @@ pub fn read_wide(
     Ok((book, missed))
 }
 
-/// A pass that left a network out cannot say an entry no read chain reaches is not on chain: its anchor may be
-/// on the network not read. So with any network missed, every timeline row lit "not on chain" (`Landed`) reads
-/// "chain not read" (`ChainUnread`). A pass that read every network is left as it is.
+/// If any network could not be read, an entry with no anchor on the networks read may still be anchored on
+/// the missing one, so every timeline row marked "not on chain" (`Landed`) becomes "chain not read"
+/// (`ChainUnread`). Unchanged when every network was read.
 pub fn unread_where_missed(book: &mut Book, missed: &[crate::widex::Missed]) {
     if missed.is_empty() {
         return;
@@ -151,7 +149,7 @@ pub fn unread_where_missed(book: &mut Book, missed: &[crate::widex::Missed]) {
     }
 }
 
-/// One scan across networks, as one scan's reading (the diligence desk reads its fragment too).
+/// One scan across networks, returned as a single scan result (the diligence view also uses its chain data).
 pub fn scan_wide(
     eps: &[crate::chainx::Endpoint],
     ground: &crate::auditx::Ground,
@@ -164,18 +162,16 @@ pub fn scan_wide(
     Ok((crate::auditx::Scanned1 { anchors: w.anchors, asked: w.asked, fragment: w.fragment }, w.missed))
 }
 
-/// The after-scan half: read one scan's reading plus a stack of bytes as a ledger.
+/// The post-scan half: read a scan result plus entry bytes as a ledger.
 ///
-/// Kept apart from [`read`] so the diligence desk can ask for depth with the same scan's fragment: the
-/// basis the quantities refer to and the anchor count at the page top must come from the same pass (the
-/// fragment is scanned once and read by both).
+/// Separate from [`read`] so the diligence view can compute depth from the same scan's chain data: its
+/// figures and the anchor count at the top of the page must come from the same scan.
 pub fn read_scanned(
     scanned: &crate::auditx::Scanned1,
     who: &crate::key::Address,
     bytes: &[Vec<u8>],
 ) -> Result<Book, Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
+    // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::D1);
     let (anchors, asked) = (scanned.anchors, scanned.asked);
     let latest = crate::vaultx::latest_anchor_of(&scanned.fragment);
@@ -191,19 +187,15 @@ pub fn read_scanned(
             latest,
         });
     }
-    // With bytes: the core produces the report; timeline and grant history are read like this seat's two
-    // tables.
+    // With bytes: the core produces the report; timeline and grant history are built as for one's own ledger.
     //
-    // The fragment is the one just scanned, not an empty one. Under an empty fragment the report's anchor set
-    // is always empty, so every row below would print "recorded, not anchored", a claim never verified (while
-    // the page top honestly says how many anchors were found).
+    // Audit against the chain data just scanned, not an empty one: with empty chain data the anchor set is
+    // always empty and every row would wrongly show "recorded, not anchored".
     let v = crate::auditx::ask_from(bytes, &scanned.fragment, Vec::new(), asked, true)?;
-    // These bytes must really be their ledger. The directory cell is chosen by the person; pointing it at a
-    // third person's disclosure kit would show that ledger under the entered address (timeline, label and
-    // grant history all someone else's). This closes the "identity and bytes parted" form: the report carries
-    // whom it is about, and this compares once. The check is against the ledger's lineage (the genesis key
-    // plus every key handed over by successions, the same algorithm as self-audit), not only the genesis key:
-    // a ledger that went through succession must be readable when the new key reads its own ledger.
+    // The bytes must belong to the entered address. The user picks the directory, and pointing it at a third
+    // party's kit would show someone else's ledger under this address. The check uses the ledger's lineage
+    // (genesis key plus every key handed over by successions, as in self-audit), so a ledger is still
+    // recognized after a succession.
     let line = crate::auditx::senders_of(bytes);
     if !line.iter().any(|a| a.eq_ignore_ascii_case(&who.hex())) {
         return Err(Fault::known(
@@ -266,13 +258,11 @@ pub fn read_scanned(
                 grantee: g("grantee"),
                 work: g("work"),
                 terms: g("terms"),
-                // The window is read from the entry (the same reading as this seat's register): a fixed
-                // `None` would make every grant on others' ledgers show "no reading", and the diligence
-                // desk's double-sale check would treat "no window" as "forever", turning every live grant
-                // red.
+                // Read the window from the entry, as for one's own grants: `None` would show "no result" for
+                // every grant, and the diligence double-sale check would treat "no window" as "forever",
+                // flagging every live grant red.
                 window: crate::grantx::window_of(&e.body),
-                // On someone else's ledger this machine's exclusive flag never counts: it is this machine's
-                // bookkeeping, not theirs.
+                // This machine's exclusivity flag is local bookkeeping and never applies to others' ledgers.
                 exclusive: false,
                 exclusive_from: crate::termsx::Exclusive::No,
                 doc: None,
