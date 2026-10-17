@@ -5289,7 +5289,8 @@ fn alone_in(module: &str, test: &str) -> bool {
 }
 
 /// Every test the family's component registry names (`family-components.json`, each `tests[]` path and name)
-/// is a function in that file now: a renamed or removed test is found here, not by a reader of the registry.
+/// is a function in that file now: a renamed or removed test is found here, not by a reader of the registry. A
+/// test the file's `marked!` macro makes is there by its `name: …;` line in that macro's call.
 #[test]
 fn every_registered_test_names_a_function_that_is_there() {
     use zikaron::json::Value;
@@ -5308,7 +5309,12 @@ fn every_registered_test_names_a_function_that_is_there() {
             seen += 1;
             let code = std::fs::read_to_string(root.join(path)).map(|x| code_only(&x)).unwrap_or_default();
             let there = code.match_indices(&format!("fn {name}")).any(|(i, m)| code[i + m.len()..].starts_with(['(', '<']));
-            if !there {
+            let made = code.match_indices("marked! {").any(|(i, m)| {
+                let call = &code[i + m.len()..];
+                let call = &call[..call.find("\n}").unwrap_or(call.len())];
+                call.lines().any(|l| l.trim_start().strip_prefix(name.as_str()).is_some_and(|r| r.starts_with(':')))
+            });
+            if !there && !made {
                 missing.push(format!("{path} {name}"));
             }
         }
