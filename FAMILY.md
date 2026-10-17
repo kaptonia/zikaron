@@ -71,7 +71,7 @@ Files the components' files declare or reach that are in no component's home, ea
 - `structure-pins` 4: pins follow the sealed layer, the write locks, the queue that follows the chain and the handoff rules; pins follow the sender's crate; no button word ends in an ellipsis; every scroll area goes through the kit's one way in; nothing laid in a row of `then` opens a layout of its own.
 - `sealed-layer` 2: new: the desktop and the command line through one implementation, with the command line's switches and their one judgement (`machine::turn`), the read-only mark (`unfetched`) and the nodes of a home's ground read in one place; the command line opens a home's queue to send it.
 - `one-file` 1: new.
-- Registry corrected after release (2026-10-17): each home is closed over what its files declare and reach (module declarations, same-crate paths, crate roots and manifests), 24 files added to homes and the rest named under In no component; 240 tests that pin the components' behaviour (the ten `a_marker_for_*` tests `marked!` makes among them) are registered; no behaviour changed, so no version moved.
+- Registry corrected after release (2026-10-17): each home is closed over what its files declare and reach (module declarations, same-crate paths, crate roots and manifests), 24 files added to homes and the rest named under In no component; 242 tests that pin the components' behaviour (the ten `a_marker_for_*` tests `marked!` makes among them) are registered; no behaviour changed, so no version moved.
 
 ## Changes in 0.1.2
 

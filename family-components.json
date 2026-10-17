@@ -1477,6 +1477,14 @@
     {
      "path": "crates/zikaron-cli/tests/rerun.rs",
      "name": "no_home_sends_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/wizard_way_out.rs",
+     "name": "the_way_out_appears_once_a_passcode_and_an_identity_are_here"
+    },
+    {
+     "path": "crates/app/tests/checks_more/wizard_way_out.rs",
+     "name": "the_ledger_page_offers_to_set_up_a_ledger_only_without_one"
     }
    ],
    "nameZh": "发送、nonce、收据、费率与 gas"
