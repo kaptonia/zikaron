@@ -289,7 +289,7 @@ fn a_menu_in_a_sheet_closed_by_a_press_outside_works_when_opened_again() {
             |ui, _| {
                 let r = ui.allocate_exact_size(vec2(120.0, 34.0), egui::Sense::hover()).0;
                 anchor.set(Some(r));
-                *picked = menu::show_from(ui.ctx(), Some(ui.layer_id()), id, r, true, 160.0, &rows());
+                *picked = menu::show_from(ui.ctx(), Some(ui.layer_id()), id, r, ui.clip_rect(), true, 160.0, &rows());
             },
             |_, _| (),
         );
@@ -772,7 +772,7 @@ fn a_card_with_room_on_neither_side_stays_inside_the_window() {
     f.run(0.1, vec![], |ctx| {
         for top in [300.0, 500.0] {
             let anchor = Rect::from_min_size(pos2(40.0, top), vec2(100.0, 34.0));
-            got.push((top, layer::drop_card(ctx, anchor, vec2(200.0, 600.0), true).rect));
+            got.push((top, layer::drop_card(ctx, anchor, ctx.content_rect(), vec2(200.0, 600.0), true).rect));
         }
     });
     for (top, r) in got {
@@ -874,4 +874,116 @@ fn a_banner_wraps_a_long_sentence_and_never_cuts_it() {
     assert!(!text.contains('\u{2026}'), "no ellipsis");
     assert!(rows > 1, "wrapped onto more than one row: {rows} {rect:?}");
     assert!(rect.max.x <= 360.0 + 16.0 + 8.0, "within the banner's width: {rect:?}");
+}
+
+/// A floating card stays inside the room its anchor is drawn in: a wide menu opened leftward from a key at the
+/// left edge of a page's content area (its clip, right of a rail) is held inside that area, never drawn over the
+/// rail beside it; the same key with the whole window to draw in may reach further left.
+#[test]
+fn a_floating_card_stays_inside_its_anchors_room() {
+    let lefts = |content_left: f32| -> Vec<f32> {
+        let mut f = Frames::new();
+        let content = Rect::from_min_max(pos2(content_left, 0.0), pos2(SCREEN.x, SCREEN.y));
+        let draw = |ctx: &egui::Context, out_key: &mut Rect| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                let mut room = ui.new_child(egui::UiBuilder::new().max_rect(content));
+                room.set_clip_rect(content);
+                room.add_space(40.0);
+                room.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    let _ = menu::menu_key(ui, "wide", "选", false, 420.0, &rows());
+                    *out_key = ui.min_rect();
+                });
+            });
+        };
+        let mut key = Rect::NOTHING;
+        let _ = f.run(0.1, vec![], |ctx| draw(ctx, &mut key));
+        let at = pos2(key.left() + 12.0, key.center().y);
+        let _ = f.run(0.1, press_at(at), |ctx| draw(ctx, &mut key));
+        let mut out = f.run(0.1, vec![], |ctx| draw(ctx, &mut key));
+        for _ in 0..4 {
+            out = f.run(0.1, vec![], |ctx| draw(ctx, &mut key));
+        }
+        texts(&out).into_iter().filter(|(t, _)| ["一", "二", "三"].contains(&t.as_str())).map(|(_, r)| r.left()).collect()
+    };
+    let rail = 260.0;
+    let held = lefts(rail);
+    assert_eq!(held.len(), 3, "the rows are drawn: {held:?}");
+    assert!(held.iter().all(|x| *x >= rail + 8.0), "inside the content area, off the rail: {held:?}");
+    let free = lefts(0.0);
+    assert_eq!(free.len(), 3, "the rows are drawn: {free:?}");
+    assert!(free.iter().all(|x| *x >= 8.0), "inside the window: {free:?}");
+}
+
+/// A row with nothing under its title is one line, centred: the wizard's radio row is as high as its title's
+/// line and its padding, the title's middle on the row's middle; a large settings row with no note centres its
+/// title too. With a line under it, the title moves up to make room.
+#[test]
+fn a_row_with_no_line_under_its_title_centres_the_title() {
+    use zikaron_ui::{card, tokens::Type};
+    let mut f = Frames::new();
+    let mut rows: Vec<Rect> = Vec::new();
+    let draw = |ctx: &egui::Context, rows: &mut Vec<Rect>| {
+        rows.clear();
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.set_width(520.0);
+            rows.push(full::radio_row(ui, egui::Id::new("r-bare"), false, "Lone title", None, "").rect);
+            rows.push(full::radio_row(ui, egui::Id::new("r-two"), false, "Two line title", None, "a line under it").rect);
+            card::form(ui, |ui, f| {
+                rows.push(f.big(ui, None, "Big lone title", "", None).rect);
+            });
+        });
+    };
+    let mut out = f.run(0.1, vec![], |ctx| draw(ctx, &mut rows));
+    for _ in 0..2 {
+        out = f.run(0.1, vec![], |ctx| draw(ctx, &mut rows));
+    }
+    // Read where the row put each title (the anchor it laid the text at), never the drawn glyphs' own height: that
+    // follows the system's font, which differs from machine to machine.
+    let drawn = texts(&out);
+    let at = |t: &str| drawn.iter().find(|(x, _)| x == t).map(|(_, r)| *r).unwrap_or_else(|| panic!("{t} drawn"));
+    let line = Type::Strong.line();
+    assert!((rows[0].height() - (24.0 + line)).abs() < 0.5, "one line high: {:?}", rows[0]);
+    // A choice row lays its title from the top of the lines it has: alone, one line centred in the row.
+    assert!((at("Lone title").top() + line / 2.0 - rows[0].center().y).abs() < 0.5, "centred: {:?} in {:?}", at("Lone title"), rows[0]);
+    assert!(at("Two line title").top() + line / 2.0 < rows[1].center().y - 4.0, "with a line under it, the title sits above the middle");
+    // A large row lays a lone title on its middle.
+    assert!((at("Big lone title").center().y - rows[2].center().y).abs() < 0.5, "a large row's lone title centred: {:?} in {:?}", at("Big lone title"), rows[2]);
+}
+
+/// A passcode row takes focus and keys only when it lies on top (`layer::on_top`): with a sheet over it, a press
+/// on the sheet's words (no control there) and the characters typed after it never land in the row beneath;
+/// with nothing over it, the row takes them.
+#[test]
+fn a_passcode_row_under_a_sheet_takes_no_keys() {
+    use zikaron_ui::{pin, secret::Secret};
+    let typed = |sheet: bool| -> usize {
+        let mut f = Frames::new();
+        let mut value = Secret::default();
+        let mut words = Rect::NOTHING;
+        let draw = |ctx: &egui::Context, value: &mut Secret, words: &mut Rect| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.add_space(200.0);
+                let _ = pin::pin_row(ui, "u-pin", value, 8, None, true, false);
+            });
+            if sheet {
+                let mut n = 0;
+                let _ = sheet::show(ctx, sheet::Spec::new("u-pin-sheet", 360.0), &mut n, |ui, _| {
+                    *words = ui.label("卡上的一句话").rect;
+                }, |_, _| ());
+            }
+        };
+        for _ in 0..4 {
+            let _ = f.run(0.1, vec![], |ctx| draw(ctx, &mut value, &mut words));
+        }
+        if sheet {
+            let _ = f.run(0.1, press_at(words.center()), |ctx| draw(ctx, &mut value, &mut words));
+            let _ = f.run(0.1, vec![], |ctx| draw(ctx, &mut value, &mut words));
+        }
+        let _ = f.run(0.1, vec![Event::Text("123".into())], |ctx| draw(ctx, &mut value, &mut words));
+        let _ = f.run(0.1, vec![], |ctx| draw(ctx, &mut value, &mut words));
+        value.chars()
+    };
+    assert_eq!(typed(false), 3, "with nothing over it the row takes what is typed");
+    assert_eq!(typed(true), 0, "under the sheet the row takes nothing");
 }

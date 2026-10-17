@@ -67,7 +67,7 @@ pub(super) fn check_clash(
             let home = shell.home.as_ref().ok_or_else(|| {
                 crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
             })?;
-            crate::grantx::table(home, &shell.settings.exclusive)?
+            crate::grantx::table(home)?
         }
     };
     // Clear the old result first, so invalid window fields cannot leave the previous count on screen.

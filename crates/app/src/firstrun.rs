@@ -9,6 +9,15 @@
 //! Someone else's directory may contain a README or other programs' files. Detection uses the store crate's
 //! lenient read: entries are checked one by one by the core, and anything that cannot be read as an entry is
 //! reported with its reason, never treated as absent.
+//!
+//! A ledger mirror (a folder with the mirror manifest, as "Export ledger mirror…" writes it, this version's or
+//! an earlier one's) is adopted too: its entries are read through the mirror's own check ([`mirrored`]), and
+//! one entry that fails it refuses the whole mirror.
+//!
+//! One ledger, one root: what is adopted holds exactly one genesis entry, so the home that takes it has its root as
+//! after creating its ledger; entries with no root, or with two, are refused whole before anything is written. One
+//! home keeps one ledger: a home that already has a root adopts only that same ledger again (what it holds already
+//! is skipped); another ledger is refused whole.
 
 use crate::auditx;
 use crate::fault::{Fault, Known};
@@ -36,8 +45,21 @@ impl Sighting {
     }
 }
 
+/// The entries of a ledger mirror, when `dir` is one (it holds the mirror manifest): each checked against the
+/// manifest's size and digest, by the core, and against its own name (`mirror::verify`); one that fails refuses
+/// the whole mirror, named. `None` when `dir` is not a mirror.
+pub fn mirrored(dir: &std::path::Path) -> Result<Option<Vec<Vec<u8>>>, Fault> {
+    if !dir.join(zikaron_glue::mirror::MANIFEST).is_file() {
+        return Ok(None);
+    }
+    Ok(Some(crate::mirror::verify(dir)?.into_iter().map(|(_, b)| b).collect()))
+}
+
 /// Inspects a directory and re-verifies it entry by entry. Not one byte of that directory changes.
 pub fn look(dir: &std::path::Path) -> Result<Sighting, Fault> {
+    if let Some(items) = mirrored(dir)? {
+        return Ok(Sighting { entries: items.len(), checked: items.len(), skipped: Vec::new(), refused: Vec::new() });
+    }
     let ledger = LedgerDir::open(dir).map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?;
     let survey = ledger
         .survey()
@@ -84,7 +106,7 @@ pub struct Adopted {
 }
 
 /// Adopts a directory: after inspection, appends every entry, sealed, to this home's ledger, leaving the
-/// original directory unchanged; then runs self-audit once and passes the label through unchanged. A home with
+/// original directory unchanged (a home that already has a root takes only its own ledger's entries); then runs self-audit once and passes the label through unchanged. A home with
 /// the not-fetched mark (an imported key) opens for writing afterwards like any other: once its tail is
 /// checked against the chain (`action::check_tail`, started by the action layer after adopting).
 pub fn adopt(dir: &std::path::Path, into: &Home) -> Result<Adopted, Fault> {
@@ -95,13 +117,42 @@ pub fn adopt(dir: &std::path::Path, into: &Home) -> Result<Adopted, Fault> {
             crate::lang::filln(crate::lang::Key::Tail111, &[&(seen.entries).to_string(), &(seen.checked).to_string(), &(seen.refused.len()).to_string()]),
         ));
     }
-    let ledger = LedgerDir::open(dir).map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?;
-    let survey = ledger
-        .survey()
-        .map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?;
+    let items = match mirrored(dir)? {
+        Some(items) => items,
+        None => {
+            let ledger = LedgerDir::open(dir).map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?;
+            ledger.survey().map_err(|t| Fault::known(Known::Ledger, format!("{t:?}")))?.items
+        }
+    };
+    // One ledger, one root: what is adopted holds exactly one genesis entry (none is some of a ledger's entries, two
+    // are two ledgers), so a home that takes it has a root, as after creating its ledger. Refused whole before
+    // anything is written.
+    let mut roots: Vec<String> = items.iter().filter_map(|b| k1::check(b).ok()).filter(|e| e.seq == 0).map(|e| e.id_hex()).collect();
+    roots.sort();
+    roots.dedup();
+    let whole = roots.len() == 1;
+    if !whole {
+        return Err(Fault::known(Known::NotAdoptable, format!("roots {} · {}", roots.len(), roots.join(" ")))
+            .worded(Some(crate::lang::Key::AdoptOneRoot), Some(crate::lang::Key::AdoptOneRootNext)));
+    }
+    let theirs = roots.first().cloned().unwrap_or_default();
+    // One home, one ledger: a home that already has a root takes only entries of that same ledger (the same again,
+    // or what it lacks); a ledger with another root is refused whole before anything is written.
+    let ours = into.ledger()?.pile()?.items.iter().filter_map(|b| k1::check(b).ok()).find(|e| e.seq == 0).map(|e| e.id_hex());
+    if let Some(ours) = ours {
+        if theirs != ours {
+            return Err(Fault::known(Known::AlreadyRooted, format!("{ours} · {theirs}"))
+                .worded(Some(crate::lang::Key::AdoptOtherRoot), Some(crate::lang::Key::AdoptOtherRootNext)));
+        }
+    }
+    // A ledger handed off to another place is not written here, adopted entries included (`zikaron_seal::pens`).
+    let root = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).find(|e| e.seq == 0).map(|e| e.id);
+    if let Some(root) = root {
+        zikaron_seal::pens::may_write(&crate::home::machine_dir()?, &root)?;
+    }
     let book = into.ledger()?;
     let mut linked = 0;
-    for b in &survey.items {
+    for b in &items {
         let name = bare_id(b);
         let entry = EntryName::parse(&name)
             .ok_or_else(|| Fault::known(Known::Ledger, crate::lang::filln(crate::lang::Key::Tail012, &[&(name).to_string()])))?;
@@ -109,6 +160,11 @@ pub fn adopt(dir: &std::path::Path, into: &Home) -> Result<Adopted, Fault> {
         // refused by name, overwriting nothing (`local::Ledger::append`).
         book.append(&entry, b)?;
         linked += 1;
+    }
+    // The adopted ledger goes on this machine's blind list (`zikaron_seal::adopted`), so the command line refuses
+    // to write its folder from now on; the folder itself is not touched.
+    if let Some(root) = root {
+        zikaron_seal::adopted::mark(&crate::home::machine_dir()?, &root)?;
     }
     let v = auditx::offline(into)?;
     Ok(Adopted {
@@ -211,14 +267,6 @@ impl Shade {
             Shade::Red => "red",
         }
     }
-}
-
-/// A true first run: this machine has no passcode and no identity yet (nothing to go back to). The wizard
-/// asks this once, as it opens, to decide whether it offers a way out for the whole run.
-pub fn fresh_machine(shell: &crate::shell::Shell) -> bool {
-    let pin = !shell.vault.absent();
-    let identity = shell.identities.as_ref().map(|r| !r.rows.is_empty()).unwrap_or(false);
-    !pin && !identity
 }
 
 /// Colour of the whole-machine backup point (the setup check's last point, the wizard's sixth step). Pure:

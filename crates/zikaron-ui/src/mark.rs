@@ -103,14 +103,22 @@ pub fn mark(ui: &mut egui::Ui, m: Mark) -> egui::Response {
     resp
 }
 
-/// A mark and a line of text, 8 apart (10 in check lists), centered on the text's first line.
+/// A mark and a line of text, 8 apart, centered across.
 pub fn mark_line(ui: &mut egui::Ui, m: Mark, s: &str, t: Type, colour: Color32) -> egui::Response {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = tokens::S2;
+    mark_words(ui, m, s, t, colour, tokens::S2)
+}
+
+/// A mark and words `gap` beside it, centered across, in one cell of the caller's layout (`width::cell`); the
+/// words wrap at the room the caller has.
+pub fn mark_words(ui: &mut egui::Ui, m: Mark, s: &str, t: Type, colour: Color32, gap: f32) -> egui::Response {
+    let words = paint::wrapped(ui, s, t.font(), colour, t.line(), ui.available_width() - tokens::MARK - gap);
+    let size = vec2(tokens::MARK + gap + words.size().x, words.size().y.max(tokens::MARK));
+    crate::width::cell(ui, size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = gap;
         mark(ui, m);
-        paint::text(ui, s, t, colour);
+        ui.add(egui::Label::new(words));
     })
-    .response
+    .1
 }
 
 #[derive(Clone, Copy)]

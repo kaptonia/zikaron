@@ -37,11 +37,6 @@ fn eth_digits(wei: u128, up: bool) -> String {
     format!("{}.{}", scaled / scale, frac)
 }
 
-/// Hours and minutes of a wall-clock second in the chosen zone (the rail's "last synced" line; display only).
-pub(super) fn hm_zone(secs: u64) -> String {
-    crate::when::when(secs).chars().skip(11).take(5).collect()
-}
-
 pub(super) fn wall_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

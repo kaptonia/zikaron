@@ -403,11 +403,10 @@ pub(super) fn gap_note(g: &crate::checkx::Gap) -> Key {
     }
 }
 
-/// Where exclusivity comes from, in plain words (recorded at signing, the former list, or none).
+/// Whether a grant is exclusive, in plain words (recorded at signing, or not).
 pub(super) fn exclusive_key(x: crate::termsx::Exclusive) -> Key {
     match x {
         crate::termsx::Exclusive::Signed => Key::ExclusiveSigned,
-        crate::termsx::Exclusive::Legacy => Key::ExclusiveLegacy,
         crate::termsx::Exclusive::No => Key::ExclusiveNo,
     }
 }

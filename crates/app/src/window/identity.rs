@@ -39,7 +39,7 @@ impl Win {
         let trouble = self.ux.id_trouble.clone();
         let show_trouble = |ui: &mut egui::Ui| {
             if let Some(f) = &trouble {
-                states::err_box(ui, "id-trouble", f.human(), f.next(), t(Key::U3RawError), &f.raw());
+                states::err_box(ui, "id-trouble", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
             }
         };
         // While a passcode task runs in the background, the sheet says it is verifying and its keys wait.
@@ -336,7 +336,7 @@ impl Win {
                         if others {
                             to_primary = key::key(ui, t(Key::PrimaryGoSet), Role::Secondary, true).clicked();
                         } else {
-                            to_new = key::key(ui, t(Key::IdDoNew), Role::Secondary, true).clicked();
+                            to_new = key::key(ui, t(Key::IdNewTitle), Role::Secondary, true).clicked();
                         }
                         close = key::key(ui, t(Key::IdDoClose), Role::Secondary, true).clicked();
                     },
@@ -397,7 +397,7 @@ impl Win {
                             go = Some(Action::SetPrimary { id: id.clone(), pin: std::mem::take(&mut me.ux.id_pin) });
                         }
                         if need_file {
-                            export = key::key(ui, t(Key::IdDoBackup), Role::Secondary, true).clicked();
+                            export = key::key(ui, t(Key::IdDoBackupGo), Role::Secondary, true).clicked();
                         }
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, !rekeying).clicked();
                         busy_note(ui);

@@ -141,7 +141,12 @@ impl LedgerDir {
             let Some(tmp) = layout::path_of(&self.root, &tmp_name) else {
                 return Err(Trouble::of(Code::BadName));
             };
-            match fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            // Owner-only from creation (`zikaron_os::owner_only`): no moment when another account could read the
+            // entry being written; the landed file is this one, linked or moved, so it keeps the mode.
+            let mut o = zikaron_os::Options::new();
+            o.write(true).create_new(true);
+            zikaron_os::owner_only(&mut o);
+            match o.open(&tmp) {
                 Ok(mut f) => {
                     if let Err(e) = f.write_all(bytes).map_err(|e| said_of("write", &tmp, &e)).and_then(|()| f.sync_all().map_err(|e| said_of("file sync", &tmp, &e))) {
                         let _ = fs::remove_file(&tmp);

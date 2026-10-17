@@ -19,6 +19,11 @@
 //! - [`shell`] app state
 //! - [`window`] the only app module that uses egui
 
+// `unsafe` lives in the platform pieces alone (`zikaron-os`, and this crate's `platform` module, its one
+// place with `extern` blocks): everywhere else here it does not compile. `deny` rather than `forbid`, because
+// `forbid` cannot be lifted for that one module.
+#![deny(unsafe_code)]
+
 pub mod action;
 pub mod anchorx;
 pub mod about;
@@ -51,6 +56,7 @@ pub mod lang;
 pub mod lastread;
 pub mod ledgerx;
 pub mod keybox;
+#[allow(unsafe_code)]
 pub mod platform;
 pub mod kitx;
 pub mod kitsindex;
@@ -68,8 +74,10 @@ pub mod payloadx;
 pub mod pinned;
 pub mod places;
 pub mod probe;
+pub mod proxycells;
 pub mod qr;
 pub mod queue;
+pub mod sendx;
 pub mod readerx;
 pub mod readnets;
 pub mod recordsx;

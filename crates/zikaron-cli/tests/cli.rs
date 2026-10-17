@@ -245,7 +245,7 @@ fn the_kit_never_lands_unless_the_kit_law_says_it_is_a_kit() {
         run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code,
         0
     );
-    let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "pack", "--note", ""]);
+    let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "pack", "--note", "", "--as", "folder"]);
     assert_eq!(r.code, 0);
     assert!(String::from_utf8_lossy(&r.out).contains("\"state\":\"KIT_OK\""));
     assert!(w.join("pack/manifest.json").is_file());
@@ -349,9 +349,9 @@ fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
 }
 
 #[test]
-fn the_twenty_two_verbs_are_twenty_two_and_each_one_answers() {
+fn the_verbs_are_counted_and_each_one_answers() {
     let names = zikaron_cli::verbs::VERBS;
-    assert_eq!(names.len(), 22);
+    assert_eq!(names.len(), 25);
     let text = src("verbs.rs");
     for v in names {
         assert!(text.contains(&format!("\"{v}\" =>")), "{v} 没有分发的落点");
@@ -359,7 +359,7 @@ fn the_twenty_two_verbs_are_twenty_two_and_each_one_answers() {
     let mut sorted = names.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), 22, "二十二个名字里有重的");
+    assert_eq!(sorted.len(), 25, "二十五个名字里有重的");
 }
 
 #[test]
@@ -772,7 +772,7 @@ fn the_cli_schema_lists_every_flag_the_code_knows() {
     real.dedup();
     assert_eq!(real.len(), m, "码里的旗名闭表有重名");
     assert_eq!(listed, real, "§八 与旗名闭表对不上");
-    assert_eq!(listed.len(), 56, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
+    assert_eq!(listed.len(), 59, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
 }
 
 // init: one ledger, one root.
@@ -1029,4 +1029,32 @@ fn a_disk_failure_says_the_systems_words_in_detail() {
     assert_eq!(k.code, 1, "{said}");
     assert!(said.contains("\"detail\":\"E_IO: ") && said.contains("\"path\":"), "{said}");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
+}
+
+/// The line for people when the core refuses an entry's body is in the system's language throughout, the flags
+/// that give the member included: an English system shows no Chinese in it, a Chinese one shows the Chinese words.
+#[test]
+fn a_refused_body_is_said_in_the_systems_language_flags_and_all() {
+    let w = scratch("bodyline");
+    assert_eq!(run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "start"]).code, 0);
+    let said = |lang: &str| -> (i32, String, String) {
+        let o = Command::new(BIN)
+            .args(["history", "--ledger", "b", "--key", A_KEY, "--content", &format!("0x{}", "aa".repeat(32))])
+            .current_dir(&w)
+            .env(zikaron_os::HOME_VAR, own_home())
+            .env_remove("LC_ALL")
+            .env_remove("LC_MESSAGES")
+            .env_remove("LANGUAGE")
+            .env("LANG", lang)
+            .output()
+            .expect("runs");
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or_default().to_string())
+    };
+    let (en_code, en_out, en) = said("en_US.UTF-8");
+    let (zh_code, zh_out, zh) = said("zh_CN.UTF-8");
+    assert_eq!((en_code, zh_code), (1, 1));
+    assert_eq!(en_out, zh_out, "stdout is the same in either language");
+    assert_eq!(en, "mode: missing or malformed; given by --mark and --toolchain (or --file)");
+    assert!(!en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "no Chinese on an English system: {en}");
+    assert_eq!(zh, "mode: 缺或不成形,由 --mark 与 --toolchain(或 --file) 给");
 }

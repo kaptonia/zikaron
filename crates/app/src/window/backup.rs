@@ -61,12 +61,16 @@ impl Win {
         let trouble = self.ux.bk_trouble.clone().or(failed);
         let show_trouble = |ui: &mut egui::Ui| {
             if let Some(f) = &trouble {
-                states::err_box(ui, "bk-trouble", f.human(), f.next(), t(Key::U3RawError), &f.raw());
+                states::err_box(ui, "bk-trouble", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
             }
         };
         let (mut close, mut first_pin) = (false, false);
         let mut go: Option<Action> = None;
         let esc;
+        // The export and mirror cards show the home's reading: measured again once the ledger moved.
+        if matches!(which, Bk::Export | Bk::Mirror) && self.shell.take_measure_due() {
+            self.auto(Action::Measure, now);
+        }
         match which {
             Bk::Export => {
                 let pin_full = self.ux.bk_pin.chars() == len;

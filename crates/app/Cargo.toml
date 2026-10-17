@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "MIT"
 
@@ -27,21 +27,22 @@ zikaron-net = { path = "../zikaron-net" }
 zikaron-glue = { path = "../zikaron-glue" }
 # The operating system's four (entropy, owner-only files, syncing, replacing rename): one place per system.
 zikaron-os = { path = "../zikaron-os" }
+# The sealed layer (envelope, names key, key vault, sealed ledger), one implementation with the command line: the
+# app keeps only its wiring (where the machine directory is, its fault table and words, its trace marks).
+zikaron-seal = { path = "../zikaron-seal" }
+# The sender, one with the command line: reading the chain, the exit gate, the queue's lock and steps, sending a
+# batch and its receipt wait. The app keeps only its wiring (`sendx`, `chainx`, `exitgate`, `queue`, the queue
+# actions): its words for the sender's codes, its home under this machine's seal, its key's signing port.
+zikaron-send = { path = "../zikaron-send" }
 # Third party: the egui family. On the app side only the `window` module touches it.
 eframe = { version = "0.33", default-features = false, features = ["glow"] }
-# Third-party cryptography: on the app side only the `cryptx` module touches these.
-scrypt = { version = "0.11", default-features = false }
-aes = "0.8"
-ctr = "0.9"
+# Third-party cryptography: on the app side only the `cryptx` module touches these (phrases and private-key
+# derivation). scrypt, AES-128-CTR, HKDF, HMAC-SHA256 and XChaCha20-Poly1305 are the sealed layer's (`zikaron-seal`).
 bip39 = { version = "2", default-features = false, features = ["alloc"] }
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha2 = "0.10"
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
-# Local data sealing: XChaCha20-Poly1305 for every sealed file and the backup body, HKDF-SHA256 to derive the
-# local data key from the master key. Also confined to `cryptx`.
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-hkdf = "0.12"
 
 # H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
 # portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.

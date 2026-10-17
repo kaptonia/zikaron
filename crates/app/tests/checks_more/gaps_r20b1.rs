@@ -146,7 +146,7 @@ fn an_empty_entry_file_is_named_by_the_strict_read() {
     let _ = std::fs::remove_dir_all(&base);
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    answers!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_));
+    super::seated(&mut shell, &base);
     answers!(apply(&mut shell, Action::OpenHome { root: base.display().to_string() }), Applied::Homed { .. });
     answers!(apply(&mut shell, Action::Genesis { statement: "a ledger".into() }), Applied::Genesised { .. });
     let home = shell.home.as_ref().expect("a home");

@@ -58,6 +58,7 @@ mod member {
     pub const NETWORK: &str = "network";
     pub const ZH: &str = "zh";
     pub const EN: &str = "en";
+    pub const NAMES: &str = "names";
 }
 
 /// A CLI request: the verb, the named home, and each parsed flag with its value in the order given (a repeated
@@ -121,6 +122,9 @@ pub enum Reply {
     /// Sent and void: no node knows it and its nonce was used by another transaction, so it will never be
     /// included; its entries return to the queue (the batch's last transaction).
     Voided { tx: String },
+    /// Nothing was sent: the chain already holds anchors of these hashes from this key (`names`), the earliest in
+    /// transaction `tx` at block `block`.
+    OnChain { names: Vec<String>, tx: String, block: u64 },
     /// A record package was written.
     Kit { kit_id: String, path: String, entries: u64, files: u64, dropped: Vec<String> },
     /// Nothing was sent: the entries wait in the queue for the user to send them from the desktop.
@@ -142,6 +146,7 @@ mod kind {
     pub const NOT_YET: &str = "notYet";
     pub const UNHEARD: &str = "unheard";
     pub const VOIDED: &str = "voided";
+    pub const ON_CHAIN: &str = "onChain";
     pub const KIT: &str = "kit";
     pub const QUEUED: &str = "queued";
     pub const ON_DESKTOP: &str = "onDesktop";
@@ -185,6 +190,12 @@ impl Reply {
                 put(member::REPLY, s(kind::VOIDED));
                 put(member::TX, s(tx));
             }
+            Reply::OnChain { names, tx, block } => {
+                put(member::REPLY, s(kind::ON_CHAIN));
+                put(member::NAMES, Value::Arr(names.iter().map(|x| s(x)).collect()));
+                put(member::TX, s(tx));
+                put(member::BLOCK, Value::Int(*block));
+            }
             Reply::Kit { kit_id, path, entries, files, dropped } => {
                 put(member::REPLY, s(kind::KIT));
                 put(member::KIT_ID, s(kit_id));
@@ -227,6 +238,11 @@ impl Reply {
             kind::NOT_YET => Reply::NotYet { tx: s(member::TX)?, waited: n(member::WAITED)? },
             kind::UNHEARD => Reply::Unheard { tx: s(member::TX)?, detail: s(member::DETAIL)? },
             kind::VOIDED => Reply::Voided { tx: s(member::TX)? },
+            kind::ON_CHAIN => Reply::OnChain {
+                names: v.member(member::NAMES)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                tx: s(member::TX)?,
+                block: n(member::BLOCK)?,
+            },
             kind::KIT => Reply::Kit {
                 kit_id: s(member::KIT_ID)?,
                 path: s(member::PATH)?,
@@ -316,6 +332,7 @@ mod tests {
             Reply::NotYet { tx: "t".into(), waited: 30 },
             Reply::Unheard { tx: "t".into(), detail: "no node".into() },
             Reply::Voided { tx: "t".into() },
+            Reply::OnChain { names: vec!["h1".into(), "h2".into()], tx: "t".into(), block: 7 },
             Reply::Kit { kit_id: "k".into(), path: "/o".into(), entries: 2, files: 0, dropped: vec![".DS_Store".into()] },
             Reply::Queued { count: 4 },
             Reply::OnDesktop,

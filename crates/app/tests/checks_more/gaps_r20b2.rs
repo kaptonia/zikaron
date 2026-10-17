@@ -4,7 +4,7 @@
 //! shell use (`vault_open`); each test runs alone in its own process.
 
 use super::vault_open;
-use app::action::{apply, Action, Applied};
+use app::action::{apply, apply_settled, Action, Applied};
 
 fn settled(shell: &mut app::shell::Shell, k: app::task::Kind) {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -15,15 +15,14 @@ fn settled(shell: &mut app::shell::Shell, k: app::task::Kind) {
     shell.drain();
 }
 
-/// One import, landed: the code it was refused with (empty when it landed).
+/// One import, landed: the code it was refused with (empty when it landed). Read from the import's own answer
+/// (`apply_settled` waits for it), never from the trouble list, where other work the landing starts (the home it
+/// enters) puts what it finds.
 fn import(shell: &mut app::shell::Shell, form: app::action::ImportForm, label: &str) -> String {
-    let before = shell.faults.len();
-    let started = apply(shell, Action::ImportIdentity { form, seat: app::roles::Role::Author, label: label.into(), network: app::deploy::CUSTOM.into() });
-    if let Applied::Trouble(f) = started {
-        return f.which().map(|k| k.as_str().to_string()).unwrap_or_default();
+    match apply_settled(shell, Action::ImportIdentity { form, seat: app::roles::Role::Author, label: label.into(), network: app::deploy::CUSTOM.into() }) {
+        Applied::Trouble(f) => f.which().map(|k| k.as_str().to_string()).unwrap_or_default(),
+        _ => String::new(),
     }
-    settled(shell, app::task::Kind::Vault);
-    shell.faults[before.min(shell.faults.len())..].last().and_then(|f| f.which()).map(|k| k.as_str().to_string()).unwrap_or_default()
 }
 
 fn rows() -> Vec<(String, String)> {
@@ -177,7 +176,7 @@ fn the_bar_says_a_mark_that_does_not_read_as_such() {
 fn the_backup_lamp_has_four_colours() {
     use app::firstrun::{backup_point, Shade};
     use app::watchx::{Item, Light, Say};
-    let b = |count: u64| app::machine::Backed { at: 1, path: String::new(), count, indexed: false };
+    let b = |count: u64| app::machine::Backed { at: 1, path: String::new(), count };
     let (two, four) = (b(2), b(4));
     let lamp = |backup: (Option<&app::machine::Backed>, Option<u64>, Option<u64>)| {
         let t = app::watchx::author(None, 0, None, backup, None, None);
@@ -224,7 +223,7 @@ fn the_english_first_layer_has_no_cjk() {
     for k in app::fault::Known::ALL {
         let f = app::fault::Fault::known(k, "节点答:读不成");
         assert!(!cjk(f.human()), "{k:?}: first sentence {:?}", f.human());
-        assert!(!cjk(app::lang::t(k.next())), "{k:?}: next sentence");
+        assert!(!k.next().is_some_and(|n| cjk(app::lang::t(n))), "{k:?}: next sentence");
         let r = app::verifyx::Rejected::of_fault("x.zk1", &f);
         assert!(!cjk(&r.human()), "{k:?}: refused file {:?}", r.human());
     }

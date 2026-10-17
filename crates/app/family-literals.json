@@ -52,7 +52,11 @@
   {"role": "name", "literal": ".zikaron-desk", "at": "zikaron_os::machine::POINTER", "says": "the pointer file, in the folder the system keeps this app's data in, that names the machine folder (a contact path: the command line and other programs find the machine folder through it)"},
   {"role": "name", "literal": "kits/index.json", "at": "app::kitsindex::DIR/FILE", "says": "the index of exported record packages in the machine folder (a contact path)"},
   {"role": "name", "literal": "kits/verified", "at": "app::kitsindex::DIR/verifiedx::DIR", "says": "the folder of record package verification results in the machine folder (a contact path)"},
-  {"role": "name", "literal": "manifest.json", "at": "zikaron_glue::names::MANIFEST", "says": "a record package's manifest file name (a contact path)"}
+  {"role": "name", "literal": "manifest.json", "at": "zikaron_glue::names::MANIFEST", "says": "a record package's manifest file name (a contact path)"},
+  {"role": "name", "literal": "zkit", "at": "zikaron_glue::container::EXT_KIT", "says": "the extension of a record package in one file"},
+  {"role": "name", "literal": "zkhand", "at": "zikaron_glue::container::EXT_HAND", "says": "the extension of a ledger handoff file"},
+  {"role": "name", "literal": "zikaron-handoff.txt", "at": "zikaron_glue::names::HANDOFF_NOTE", "says": "a ledger handoff's note in a handoff file's files room (a contact path: the other place's command line reads it)"},
+  {"role": "name", "literal": "handed-pens", "at": "zikaron_seal::pens::FILE", "says": "the list of ledgers this machine handed off or took, in the machine folder (a contact path: the command line and the desktop read it before writing)"}
  ],
  "pairs": [
   {"literal": "zikaron/1", "roles": ["spec-value", "signing-domain"]},

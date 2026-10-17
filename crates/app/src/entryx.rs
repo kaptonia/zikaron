@@ -40,6 +40,8 @@ pub const HISTORY: &str = "history";
 pub struct Sealed {
     pub bytes: Vec<u8>,
     pub id: String,
+    /// The sequence number written into it.
+    pub seq: u64,
 }
 
 /// Builds the envelope, signs it and runs the core's entry check. A `prev` of `None` writes `null` (the
@@ -78,7 +80,7 @@ pub fn seal(
     let bytes = json::canon_bytes(&Value::Obj(members));
     k1::check(&bytes).map_err(Fault::entry_refused)?;
     let id = zikaron::hexfmt::encode(&k1::entry_id(&bytes));
-    Ok(Sealed { bytes, id })
+    Ok(Sealed { bytes, id, seq })
 }
 
 /// Genesis: `seq` 0, `prev` `null`, one line of prose in the body (law §6.1).

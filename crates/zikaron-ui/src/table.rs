@@ -125,6 +125,18 @@ pub fn widths(cols: &[Column], inner: f32) -> Vec<f32> {
         .collect()
 }
 
+/// A row's ground takes its corners from where the row stands: the first row under a head meets the head's rule
+/// with its top corners square (round ones would leave notches against the line); every other corner is the
+/// control's.
+pub fn ground_corners(head: bool, row: usize) -> egui::CornerRadius {
+    let round = Radius::Ctl.egui();
+    if head && row == 0 {
+        egui::CornerRadius { nw: 0, ne: 0, ..round }
+    } else {
+        round
+    }
+}
+
 /// A list card with an optional head, the rows, and an empty line when there are none.
 pub fn table(ui: &mut egui::Ui, id_salt: &str, cols: &[Column], head: bool, rows: &[Row], empty: &str) -> Hit {
     let id = ui.id().with(("zikaron-table", id_salt));
@@ -194,7 +206,7 @@ pub fn table(ui: &mut egui::Ui, id_salt: &str, cols: &[Column], head: bool, rows
                 None
             };
             if let Some(g) = ground {
-                p.rect_filled(r, Radius::Ctl.egui(), g);
+                p.rect_filled(r, ground_corners(head, i), g);
             }
             if i > 0 && hovered != Some(i) && hovered != Some(i - 1) && !row.on && !rows[i - 1].on {
                 p.hline((r.left() + tokens::ROW_INSET)..=(r.right() - tokens::ROW_INSET), r.top(), egui::Stroke::new(1.0_f32, c(C::Line2)));

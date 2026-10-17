@@ -160,10 +160,10 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
     let home = crate::home::Home::open_or_create(root)?;
     // Re-entering the home whose writer lock is already held: reuse it instead of opening a second descriptor
     // and judging itself a reader.
-    let lock = if crate::lock::holds_writer(shell.lock.as_ref(), &home) { None } else { Some(crate::lock::take(&home)?) };
+    let lock = if crate::lock::holds_writer(shell.lock.as_ref(), &home) { None } else { Some(crate::lock::take_as(&home, shell.machine.cli_alone.is_some())?) };
     let mode = lock.as_ref().map(|l| l.mode()).unwrap_or(crate::lock::Mode::Writer);
     // Check the label (local data format, version 2) against the identity and seat it is opened as; a writer
-    // gives a home created by an older version its label now.
+    // gives a home without one its label now.
     crate::local::check_label(home.root(), opened_as(home.root()).as_ref().map(|(i, s)| (i.as_str(), *s)), mode.writable())?;
     // Steps that can fail come before the shell is touched, so unreadable settings or an unwritable pointer
     // leave it unchanged. Loading the new settings before writing the pointer would, if the pointer write
@@ -190,19 +190,16 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
     if let Some(f) = shell.lock.as_ref().and_then(|l| l.mark_trouble()).cloned() {
         shell.trouble(f);
     }
-    // Three writes a writer makes on opening, which a reader never does (a reader's home belongs to another
+    // The writes a writer makes on opening, which a reader never does (a reader's home belongs to another
     // writer), nor does viewing old data (`view_old`). Failures here return no error: the shell already stands
     // in the new home with its lock, so an error would wrongly say opening failed. Each failure is recorded as
     // a trouble instead.
     let old_data = shell.home.as_ref().map(|h| shell.aside.iter().any(|a| crate::home::same_place(&a.path, h.root()))).unwrap_or(false);
     if mode.writable() && !old_data {
-        // Nodes exactly matching a set a known row shipped earlier are replaced with its current nodes, once.
-        if let Err(f) = renew_shipped_nodes(shell) {
-            shell.trouble(f);
-        }
-        // Identities created before identities chose a network get this machine's row recorded, once.
-        if let Err(f) = record_machine_network(shell) {
-            shell.trouble(f);
+        // A temporary file a write left when it was cut (a power loss mid-write) is removed now: the writer holds
+        // the lock, so none is in flight, and strict reads after this meet only the home's own names.
+        if let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) {
+            crate::home::sweep_temps(&root);
         }
         // A home without a network takes the network of the identity that owns it (both seats of an identity
         // share one); a home that has one is never changed. A home no identity owns, or an identity that chose
@@ -224,44 +221,6 @@ pub(super) fn open_home_at(shell: &mut Shell, root: &str, pointer: bool) -> Resu
     // For a transaction the queue file records as submitted, resume waiting for its receipt without resending.
     resume(shell);
     Ok(mode)
-}
-
-/// If the open home's nodes are a set a known row shipped earlier (`deploy::shipped_before`), replaces them with
-/// that row's current nodes and saves once; other settings stay. Nodes that differ in any character or order
-/// were set by a person and are left alone.
-fn renew_shipped_nodes(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
-    let Some(d) = crate::deploy::shipped_before(&shell.settings.endpoints) else { return Ok(()) };
-    let eps: Vec<crate::chainx::Endpoint> = d.endpoint_specs().iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
-    shell.commit_settings(|s| s.endpoints = eps.iter().map(|e| e.spec()).collect())?;
-    endpoints_changed(shell, eps);
-    Ok(())
-}
-
-/// Identity rows created before identities chose a network record none; their homes took the deployment this
-/// machine chose when first opened. Records that deployment on each such row, once
-/// (`identity::backfill_network` only fills a row with none), so a seat not yet opened takes it like any
-/// identity's, and a later choice on this machine changes no row. Nothing is recorded if the machine chose
-/// none or "custom", or for a row whose homes already hold another chain (that would split its two seats
-/// across two chains).
-fn record_machine_network(shell: &Shell) -> Result<(), crate::fault::Fault> {
-    let Some(d) = shell.machine.network.as_deref().and_then(crate::deploy::named) else { return Ok(()) };
-    crate::register::change_listed(|reg| {
-        crate::identity::backfill_network(reg, d, |row| row.seats().into_iter().filter_map(|s| row.home(s)).all(|h| holds_no_other_chain(&h, d)));
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// True for a home that does not exist yet, or whose settings name no chain or this deployment's chain and
-/// registry. A home whose settings cannot be read counts as holding another chain.
-fn holds_no_other_chain(at: &std::path::Path, d: &crate::deploy::Deployment) -> bool {
-    if !at.exists() {
-        return true;
-    }
-    match crate::home::Home::open(at).and_then(|h| crate::settings::Settings::read(&h)) {
-        Ok(s) => s.chain_id.is_none() || (s.chain_id == Some(d.chain_id) && s.registry == Some(d.registry_address())),
-        Err(_) => false,
-    }
 }
 
 /// If the open home has no network (no chain, registry or nodes) and an identity on this machine owns it, it
@@ -351,7 +310,7 @@ pub(super) fn migrate_landed(shell: &mut Shell, old: &std::path::Path, root: &st
     let moved = crate::home::Home::open(root)?;
     let root = moved.root().display().to_string();
     // The old place is left untouched; the person deletes it after moving. The lock moves to the new home.
-    let lock = crate::lock::take(&moved)?;
+    let lock = crate::lock::take_as(&moved, shell.machine.cli_alone.is_some())?;
     // Identity homes are recorded in the register: repoint the entry from the old place to the new one
     // (signing key ownership and the next startup both read it). The register is the last fallible step
     // before the shell is touched: if an earlier step fails, register and shell still point to the old place;

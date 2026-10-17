@@ -1,9 +1,9 @@
 //! Locating the machine directory, shared by the app (which writes there) and the CLI (which finds the app's IPC
 //! endpoint there, `crate::door`).
 //!
-//! Lookup order: the pointer file in the app's machine-data folder (one absolute path line), then the legacy
-//! machine directory on machines not yet migrated, then the default. The app may override all of these (its
-//! test hooks); that layer is the app's own and never read here.
+//! Lookup order: the pointer file in the app's machine-data folder (one absolute path line), then the default.
+//! The app may override both (its test hooks); that layer is the app's own and never read here. No other place
+//! is looked at: a folder an earlier version kept elsewhere is not this version's machine directory.
 
 use std::path::{Path, PathBuf};
 
@@ -13,17 +13,12 @@ pub const APP_DIR: &str = ".zikaron-desk.d";
 /// The pointer file's name, beside the default machine directory and outside it.
 pub const POINTER: &str = ".zikaron-desk";
 
-/// The legacy machine directory written by older versions, under the user's home directory.
-pub const LEGACY_DIR: [&str; 3] = ["Library", "Application Support", "ZIKARON"];
-
 /// Which source the machine directory came from. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layer {
     /// The pointer file.
     Pointer,
-    /// No pointer, and the legacy machine directory exists.
-    Legacy,
-    /// Neither: the default.
+    /// No pointer: the default.
     Default,
 }
 
@@ -62,10 +57,6 @@ pub fn of(user_home: &Path) -> Result<(PathBuf, Layer), Unread> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(Unread::Pointer(ptr, e)),
     }
-    let legacy = LEGACY_DIR.iter().fold(user_home.to_path_buf(), |p, s| p.join(s));
-    if legacy.is_dir() {
-        return Ok((legacy, Layer::Legacy));
-    }
     Ok((crate::app_data_dir(user_home).join(APP_DIR), Layer::Default))
 }
 
@@ -85,16 +76,17 @@ mod tests {
         d
     }
 
-    /// Each source in turn: the default when nothing exists, the legacy directory when present, the pointer over
-    /// both; a malformed pointer is refused by name, never replaced by the default.
+    /// Each source in turn: the default when nothing exists, and still the default beside the folder an earlier
+    /// version kept (never read); the pointer over it; a malformed pointer is refused by name, never replaced by
+    /// the default.
     #[test]
     fn the_machine_directory_is_read_level_by_level() {
         let u = scratch("levels");
         assert_eq!(of(&u).expect("default").1, Layer::Default);
         assert_eq!(of(&u).expect("default").0, crate::app_data_dir(&u).join(APP_DIR));
-        let legacy = LEGACY_DIR.iter().fold(u.clone(), |p, s| p.join(s));
-        std::fs::create_dir_all(&legacy).expect("legacy");
-        assert_eq!(of(&u).expect("legacy"), (legacy.clone(), Layer::Legacy));
+        let earlier = ["Library", "Application Support", "ZIKARON"].iter().fold(u.clone(), |p, s| p.join(s));
+        std::fs::create_dir_all(&earlier).expect("an earlier version's folder");
+        assert_eq!(of(&u).expect("default"), (crate::app_data_dir(&u).join(APP_DIR), Layer::Default), "not read");
         let there = u.join("elsewhere");
         std::fs::create_dir_all(pointer_dir(&u)).expect("pointer dir");
         std::fs::write(pointer_dir(&u).join(POINTER), format!("{}\n", there.display())).expect("pointer");

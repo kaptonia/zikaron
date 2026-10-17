@@ -119,7 +119,7 @@ fn nonce_shape(m: &str, _: usize) -> Result<W, Trouble> {
     })
 }
 fn silent(_: &str, _: usize) -> Result<W, Trouble> {
-    Err(Trouble::Transport("connection refused".into()))
+    Err(Trouble::Transport(zikaron_anchor::rpc::Broke::Said("connection refused".into())))
 }
 
 /// Where the transactions sent before stand, one line per form: a receipt (in the block, nothing new signed),

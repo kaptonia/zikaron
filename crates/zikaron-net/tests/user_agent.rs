@@ -98,7 +98,7 @@ fn every_request_carries_the_products_name_and_nothing_more() {
     assert!(fetched.is_ok(), "get: {:?}", fetched.err());
 
     let (proxy, connects) = connect_proxy(node);
-    set_choice(Choice::Manual(Proxy { kind: Kind::Http, host: "127.0.0.1".into(), port: proxy }));
+    set_choice(Choice::Manual(Proxy { kind: Kind::Http, host: "127.0.0.1".into(), port: proxy, auth: None }));
     let through = post_json(&parse(&format!("http://node.invalid:{node}/rpc")).expect("address"), b"{}", &limits(), Ask::Once);
     set_choice(Choice::Off);
     assert!(through.is_ok(), "through: {:?}", through.err());

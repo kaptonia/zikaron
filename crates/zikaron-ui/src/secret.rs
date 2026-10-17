@@ -13,7 +13,7 @@
 //!
 //! The input control edits this block through [`egui::TextBuffer`] without first copying into a `String`.
 //! Copies egui makes within a frame (undo stack, previous text) are outside this type: the undo stack is
-//! cleared every frame by the input control (`input::secret_edit`), and the previous-text copy is a temporary
+//! cleared every frame by the input control (`input::secret_field`), and the previous-text copy is a temporary
 //! inside egui's frame.
 
 /// Most bytes one secret holds. Eight passcode cells, twelve words (a whole phrase pasted into one cell is
@@ -135,38 +135,20 @@ fn byte_at(s: &str, ch: usize) -> usize {
     s.char_indices().nth(ch).map(|(b, _)| b).unwrap_or(s.len())
 }
 
-/// After shrinking, zero `[new length, old length)` (within capacity, so nothing moves).
+/// After shrinking, zero `[new length, old length)` (within capacity, so nothing moves): the platform piece's
+/// one wipe (`zikaron_os::wipe_string_tail`).
 fn wipe_tail(s: &mut String, old: usize) {
-    let new = s.len();
-    // SAFETY: only zeros are written, only within capacity and past the length, and the length stays `new`;
-    // zero bytes are valid UTF-8.
-    let v = unsafe { s.as_mut_vec() };
-    let p = v.as_mut_ptr();
-    for i in new..old.min(v.capacity()) {
-        unsafe { std::ptr::write_volatile(p.add(i), 0) };
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    zikaron_os::wipe_string_tail(s, old);
 }
 
-/// Wipe plain text held in hand. Everything that held plain-text bytes calls this.
-pub fn wipe(b: &mut [u8]) {
-    for x in b.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-}
+/// Wipe plain text held in hand. Everything that held plain-text bytes calls this: the platform piece's one
+/// wipe (`zikaron_os::wipe`).
+pub use zikaron_os::wipe;
 
 impl Drop for Secret {
     fn drop(&mut self) {
         // Zero the whole allocation, including unused capacity (where deleted characters used to be).
-        let v = unsafe { self.buf.as_mut_vec() };
-        let cap = v.capacity();
-        let p = v.as_mut_ptr();
-        for i in 0..cap {
-            unsafe { std::ptr::write_volatile(p.add(i), 0) };
-        }
-        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-        unsafe { v.set_len(0) };
+        zikaron_os::wipe_string(&mut self.buf);
     }
 }
 
@@ -186,7 +168,7 @@ impl From<&str> for Secret {
 impl From<String> for Secret {
     fn from(mut s: String) -> Self {
         let out = Secret::of(&s);
-        wipe(unsafe { s.as_mut_vec() });
+        zikaron_os::wipe_string(&mut s);
         out
     }
 }

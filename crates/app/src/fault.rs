@@ -105,6 +105,14 @@ pub enum Known {
     NodeRefused,
     /// One of the four TLS layers failed (the layer is in the evidence tail).
     NodeTls,
+    /// The leg to the proxy failed (not reached, refused the tunnel): the node was never reached (the proxy and
+    /// its failure are in the evidence tail).
+    ProxyUnreachable,
+    /// The proxy asks for a user name and password and none were given (HTTP 407, SOCKS5 asking for them, a
+    /// SOCKS4 user id not confirmed): the node was never reached.
+    ProxyCredentialsMissing,
+    /// The proxy refused the user name and password (or SOCKS4 user id) given: the node was never reached.
+    ProxyCredentialsRefused,
     /// This call's total deadline passed.
     NodeTimeout,
     /// The node's answer passed its end.
@@ -255,6 +263,10 @@ pub enum Known {
     GrantFileKit,
     /// The single-file container has the wrong shape (magic, truncation, order, bounds).
     GrantFileBad,
+    /// A record package in one file that does not read as one (the layout's code in the evidence).
+    KitFileBad,
+    /// A record package asked for in a form that is not one of the two (`file`, `folder`; the word in the evidence).
+    KitFormWord,
     /// Fetched file by file from the manifest and handed to the same kit verification.
     RemoteKit,
     /// The remote answered a status other than 200.
@@ -281,9 +293,6 @@ pub enum Known {
     /// A sealed local file does not open with this machine's local data key (sealed under another master
     /// key, or altered).
     LocalSeal,
-    /// Migrating plain local files: a sealed copy did not open back to the same bytes; migration stopped and
-    /// no plain file was deleted.
-    MigrateMismatch,
     /// The recovery secret belongs to a secondary identity: only the primary identity recovers the passcode.
     RecoveryNotPrimary,
     /// The primary identity cannot be deleted directly.
@@ -348,6 +357,29 @@ pub enum Known {
     /// A sent batch is void: none of its transactions was included, no node holds any of them, and its nonce
     /// was used on chain by another transaction. Its entries are back in the queue.
     BatchVoided,
+    /// The command line's credential has expired (it is removed on the way out).
+    CredentialExpired,
+    /// No command-line credential on this machine (the switch is off, or it was removed).
+    CredentialMissing,
+    /// A credential file not in its shape, or one that does not open.
+    CredentialShape,
+    /// The desktop holds this home's writer lock: the command line does not write beside it.
+    HomeHeld,
+    /// Writing alone is on: the switch for writing through the desktop does not flip until it is off.
+    CliAloneOn,
+    /// A new master key took effect: the command line's credential no longer opens anything, so it was removed
+    /// and writing alone turned off (said once, after the change).
+    CliAloneDropped,
+    /// The home's writer mark names another machine (or does not read): the command line does not write it.
+    HomeOtherMachine,
+    /// The command line holds the home's writer lock while writing alone: this desktop write is not done.
+    CliWriting,
+    /// This ledger was handed off to another place (a ledger handoff, `zikaron_seal::pens`) and no handoff after it
+    /// has come back: it is not written here.
+    HandedOff,
+    /// The chain already holds anchors of this batch from this key: nothing was signed or sent (the sender asks
+    /// before signing, `zikaron_send::batch::on_chain`).
+    OnChain,
 }
 
 impl Known {
@@ -355,13 +387,16 @@ impl Known {
     /// line, not notices. It covers the transport families `chainx::said_fault` dispatches and the node
     /// refusals a read can meet; a member added to that dispatch but not here would be missed by the status
     /// line.
-    pub const NETWORK: [Known; 14] = [
+    pub const NETWORK: [Known; 17] = [
         Known::Unreachable,
         Known::NoEndpoint,
         Known::Disagree,
         Known::ScanRefused,
         Known::ChainShape,
         Known::NodeTls,
+        Known::ProxyUnreachable,
+        Known::ProxyCredentialsMissing,
+        Known::ProxyCredentialsRefused,
         Known::NodeTimeout,
         Known::AnswerTooLong,
         Known::AnswerNotJson,
@@ -372,7 +407,7 @@ impl Known {
         Known::NodeRefused,
     ];
 
-    pub const ALL: [Known; 163] = [
+    pub const ALL: [Known; 177] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
@@ -419,6 +454,9 @@ impl Known {
         Known::WrongChain,
         Known::NodeRefused,
         Known::NodeTls,
+        Known::ProxyUnreachable,
+        Known::ProxyCredentialsMissing,
+        Known::ProxyCredentialsRefused,
         Known::NodeTimeout,
         Known::AnswerTooLong,
         Known::AnswerNotJson,
@@ -498,6 +536,8 @@ impl Known {
         Known::TermsMismatch,
         Known::GrantFileKit,
         Known::GrantFileBad,
+        Known::KitFileBad,
+        Known::KitFormWord,
         Known::RemoteKit,
         Known::RemoteStatus,
         Known::RemoteRedirect,
@@ -510,7 +550,6 @@ impl Known {
         Known::TraceFull,
         Known::ClaimShape,
         Known::LocalSeal,
-        Known::MigrateMismatch,
         Known::RecoveryNotPrimary,
         Known::PrimaryDelete,
         Known::PrimaryNoKeyFile,
@@ -536,6 +575,16 @@ impl Known {
         Known::CliPathNotAllowed,
         Known::CliPathUnsupported,
         Known::BatchVoided,
+        Known::CredentialExpired,
+        Known::CredentialMissing,
+        Known::CredentialShape,
+        Known::HomeHeld,
+        Known::CliAloneOn,
+        Known::CliAloneDropped,
+        Known::HomeOtherMachine,
+        Known::CliWriting,
+        Known::HandedOff,
+        Known::OnChain,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -586,6 +635,9 @@ impl Known {
             Known::WrongChain => "WRONG_CHAIN",
             Known::NodeRefused => "NODE_REFUSED",
             Known::NodeTls => "NODE_TLS",
+            Known::ProxyUnreachable => "PROXY_UNREACHABLE",
+            Known::ProxyCredentialsMissing => "PROXY_CREDENTIALS_MISSING",
+            Known::ProxyCredentialsRefused => "PROXY_CREDENTIALS_REFUSED",
             Known::NodeTimeout => "NODE_TIMEOUT",
             Known::AnswerTooLong => "ANSWER_TOO_LONG",
             Known::AnswerNotJson => "ANSWER_NOT_JSON",
@@ -665,6 +717,8 @@ impl Known {
             Known::TermsMismatch => "TERMS_MISMATCH",
             Known::GrantFileKit => "GRANT_FILE_KIT",
             Known::GrantFileBad => "GRANT_FILE",
+            Known::KitFileBad => "KIT_FILE",
+            Known::KitFormWord => "KIT_FORM",
             Known::RemoteKit => "REMOTE_KIT",
             Known::RemoteStatus => "REMOTE_STATUS",
             Known::RemoteRedirect => "REMOTE_REDIRECT",
@@ -677,7 +731,6 @@ impl Known {
             Known::TraceFull => "TRACE_FULL",
             Known::ClaimShape => "CLAIM_SHAPE",
             Known::LocalSeal => "LOCAL_SEAL",
-            Known::MigrateMismatch => "MIGRATE_MISMATCH",
             Known::RecoveryNotPrimary => "RECOVERY_NOT_PRIMARY",
             Known::PrimaryDelete => "PRIMARY_DELETE",
             Known::PrimaryNoKeyFile => "PRIMARY_NO_KEYFILE",
@@ -703,6 +756,16 @@ impl Known {
             Known::CliPathNotAllowed => "CLI_PATH_NOT_ALLOWED",
             Known::CliPathUnsupported => "CLI_PATH_UNSUPPORTED",
             Known::BatchVoided => "BATCH_VOIDED",
+            Known::CredentialExpired => "CREDENTIAL_EXPIRED",
+            Known::CredentialMissing => "CREDENTIAL_MISSING",
+            Known::CredentialShape => "CREDENTIAL_SHAPE",
+            Known::HomeHeld => "HOME_HELD",
+            Known::CliAloneOn => "CLI_ALONE_ON",
+            Known::CliAloneDropped => "CLI_ALONE_DROPPED",
+            Known::HomeOtherMachine => "HOME_OTHER_MACHINE",
+            Known::CliWriting => "CLI_WRITING",
+            Known::HandedOff => "HANDED_OFF",
+            Known::OnChain => "ON_CHAIN",
         }
     }
 }
@@ -761,6 +824,9 @@ impl Known {
             Known::WrongChain => L::FaultWhatWrongChain,
             Known::NodeRefused => L::FaultWhatNodeRefused,
             Known::NodeTls => L::FaultWhatNodeTls,
+            Known::ProxyUnreachable => L::FaultWhatProxyUnreachable,
+            Known::ProxyCredentialsMissing => L::FaultWhatProxyCredentialsMissing,
+            Known::ProxyCredentialsRefused => L::FaultWhatProxyCredentialsRefused,
             Known::NodeTimeout => L::FaultWhatNodeTimeout,
             Known::AnswerTooLong => L::FaultWhatAnswerTooLong,
             Known::AnswerNotJson => L::FaultWhatAnswerNotJson,
@@ -840,6 +906,8 @@ impl Known {
             Known::TermsMismatch => L::FaultWhatTermsMismatch,
             Known::GrantFileKit => L::FaultWhatGrantFileKit,
             Known::GrantFileBad => L::FaultWhatGrantFileBad,
+            Known::KitFileBad => L::FaultWhatKitFileBad,
+            Known::KitFormWord => L::FaultWhatKitFormWord,
             Known::RemoteKit => L::FaultWhatRemoteKit,
             Known::RemoteStatus => L::FaultWhatRemoteStatus,
             Known::RemoteRedirect => L::FaultWhatRemoteRedirect,
@@ -852,7 +920,6 @@ impl Known {
             Known::TraceFull => L::FaultWhatTraceFull,
             Known::ClaimShape => L::FaultWhatClaimShape,
             Known::LocalSeal => L::FaultWhatLocalSeal,
-            Known::MigrateMismatch => L::FaultWhatMigrateMismatch,
             Known::RecoveryNotPrimary => L::FaultWhatRecoveryNotPrimary,
             Known::PrimaryDelete => L::FaultWhatPrimaryDelete,
             Known::PrimaryNoKeyFile => L::FaultWhatPrimaryNoKeyFile,
@@ -878,175 +945,200 @@ impl Known {
             Known::CliPathNotAllowed => L::FaultWhatCliPathNotAllowed,
             Known::CliPathUnsupported => L::FaultWhatCliPathUnsupported,
             Known::BatchVoided => L::FaultWhatBatchVoided,
+            Known::CredentialExpired => L::FaultWhatCredentialExpired,
+            Known::CredentialMissing => L::FaultWhatCredentialMissing,
+            Known::CredentialShape => L::FaultWhatCredentialShape,
+            Known::HomeHeld => L::FaultWhatHomeHeld,
+            Known::CliAloneOn => L::SetCliDesktopGrey,
+            Known::CliAloneDropped => L::FaultWhatCliAloneDropped,
+            Known::HomeOtherMachine => L::FaultWhatHomeOtherMachine,
+            Known::CliWriting => L::FaultWhatCliWriting,
+            Known::HandedOff => L::FaultWhatHandedOff,
+            Known::OnChain => L::FaultWhatOnChain,
         }
     }
 
-    pub fn next(self) -> crate::lang::Key {
+    /// The sentence saying what to do next; `None` when there is nothing to do (the refusal says it all).
+    pub fn next(self) -> Option<crate::lang::Key> {
         use crate::lang::Key as L;
         match self {
-            Known::FontMissing => L::FaultNextFontMissing,
-            Known::FileMissing => L::FaultNextFileMissing,
-            Known::Denied => L::FaultNextDenied,
-            Known::KeychainMissing => L::FaultNextKeychainMissing,
-            Known::Entropy => L::FaultNextEntropy,
-            Known::KeyMalformed => L::FaultNextKeyMalformed,
-            Known::SignFailed => L::FaultNextSignFailed,
-            Known::KeystoreParams => L::FaultNextKeystoreParams,
-            Known::KeystoreShape => L::FaultNextKeystoreShape,
-            Known::BadPassword => L::FaultNextBadPassword,
-            Known::Ledger => L::FaultNextLedger,
-            Known::NoHomeDir => L::FaultNextNoHomeDir,
-            Known::SettingsShape => L::FaultNextSettingsShape,
-            Known::AddressShape => L::FaultNextAddressShape,
-            Known::AddressMismatch => L::FaultNextAddressMismatch,
-            Known::Occupied => L::FaultNextOccupied,
-            Known::CopyMismatch => L::FaultNextCopyMismatch,
-            Known::Landing => L::FaultNextLanding,
-            Known::ReadOnly => L::FaultNextReadOnly,
-            Known::MirrorShape => L::FaultNextMirrorShape,
-            Known::MirrorEntry => L::FaultNextMirrorEntry,
-            Known::MirrorOther => L::FaultNextMirrorOther,
-            Known::Locked => L::FaultNextLocked,
-            Known::LockedOut => L::FaultNextLockedOut,
-            Known::PinWrong => L::FaultNextPinWrong,
-            Known::PinShape => L::FaultNextPinShape,
-            Known::PinSet => L::FaultNextPinSet,
-            Known::KeyboxMissing => L::FaultNextKeyboxMissing,
-            Known::KeyboxShape => L::FaultNextKeyboxShape,
-            Known::KeyboxSlot => L::FaultNextKeyboxSlot,
-            Known::KeyboxNotEmpty => L::FaultNextKeyboxNotEmpty,
-            Known::KeyboxLocked => L::FaultNextKeyboxLocked,
-            Known::KdfBelowFloor => L::FaultNextKdfBelowFloor,
-            Known::MachineShape => L::FaultNextMachineShape,
-            Known::InsufficientFunds => L::FaultNextInsufficientFunds,
-            Known::NonceUsed => L::FaultNextNonceUsed,
-            Known::AlreadyPending => L::FaultNextAlreadyPending,
-            Known::Underpriced => L::FaultNextUnderpriced,
-            Known::GasTooLow => L::FaultNextGasTooLow,
-            Known::ContractRefused => L::FaultNextContractRefused,
-            Known::RateLimited => L::FaultNextRateLimited,
-            Known::MethodMissing => L::FaultNextMethodMissing,
-            Known::NodeAuth => L::FaultNextNodeAuth,
-            Known::WrongChain => L::FaultNextWrongChain,
-            Known::NodeRefused => L::FaultNextNodeRefused,
-            Known::NodeTls => L::FaultNextNodeTls,
-            Known::NodeTimeout => L::FaultNextNodeTimeout,
-            Known::AnswerTooLong => L::FaultNextAnswerTooLong,
-            Known::AnswerNotJson => L::FaultNextAnswerNotJson,
-            Known::SeatUnseated => L::FaultNextSeatUnseated,
-            Known::SeatDomain => L::FaultNextSeatDomain,
-            Known::BackupNotLanded => L::FaultNextBackupNotLanded,
-            Known::RecoveryNoMatch => L::FaultNextRecoveryNoMatch,
-            Known::PathRelative => L::FaultNextPathRelative,
-            Known::NoEndpoint => L::FaultNextNoEndpoint,
-            Known::Unreachable => L::FaultNextUnreachable,
-            Known::Disagree => L::FaultNextDisagree,
-            Known::ChainShape => L::FaultNextChainShape,
-            Known::PenHeld => L::FaultNextPenHeld,
-            Known::LedgerNotFetched => L::FaultNextLedgerNotFetched,
-            Known::NewerElsewhere => L::FaultNextNewerElsewhere,
-            Known::EntryRefused => L::FaultNextEntryRefused,
-            Known::NoGenesis => L::FaultNextNoGenesis,
-            Known::ForkedRoot => L::FaultNextForkedRoot,
-            Known::AuditInput => L::FaultNextAuditInput,
-            Known::NotAdoptable => L::FaultNextNotAdoptable,
-            Known::AlreadyRooted => L::FaultNextAlreadyRooted,
-            Known::RestorePartial => L::FaultNextRestorePartial,
-            Known::CannotLay => L::FaultNextCannotLay,
-            Known::NotAHome => L::FaultNextNotAHome,
-            Known::NoHome => L::FaultNextNoHome,
-            Known::KeyNotStored => L::FaultNextKeyNotStored,
-            Known::GitShape => L::FaultNextGitShape,
-            Known::NotARepo => L::FaultNextNotARepo,
-            Known::RefMissing => L::FaultNextRefMissing,
-            Known::ObjectMissing => L::FaultNextObjectMissing,
-            Known::Broken => L::FaultNextBroken,
-            Known::ContentShape => L::FaultNextContentShape,
-            Known::QueueShape => L::FaultNextQueueShape,
-            Known::QueueEmpty => L::FaultNextQueueEmpty,
-            Known::NoRegistry => L::FaultNextNoRegistry,
-            Known::NoChainId => L::FaultNextNoChainId,
-            Known::GasRefused => L::FaultNextGasRefused,
-            Known::GasNotShown => L::FaultNextGasNotShown,
-            Known::SendFailed => L::FaultNextSendFailed,
-            Known::NotAudited => L::FaultNextNotAudited,
-            Known::SubjectMissing => L::FaultNextSubjectMissing,
-            Known::DirEmpty => L::FaultNextDirEmpty,
-            Known::ScanRefused => L::FaultNextScanRefused,
-            Known::FieldMissing => L::FaultNextFieldMissing,
-            Known::StepSkipped => L::FaultNextStepSkipped,
-            Known::KitRefused => L::FaultNextKitRefused,
-            Known::Conflict => L::FaultNextConflict,
-            Known::CosignRefused => L::FaultNextCosignRefused,
-            Known::HandedOver => L::FaultNextHandedOver,
-            Known::NoBytes => L::FaultNextNoBytes,
-            Known::WorkerPanicked => L::FaultNextWorkerPanicked,
-            Known::OutcomeLost => L::FaultNextOutcomeLost,
-            Known::NotHisBook => L::FaultNextNotHisBook,
-            Known::NotThisLedger => L::FaultNextNotThisLedger,
-            Known::NotAGrant => L::FaultNextNotAGrant,
-            Known::AlreadyHeld => L::FaultNextAlreadyHeld,
-            Known::GrantNotHeld => L::FaultNextGrantNotHeld,
-            Known::GrantDirEmpty => L::FaultNextGrantDirEmpty,
-            Known::AlreadyAnchored => L::FaultNextAlreadyAnchored,
-            Known::PayloadRefused => L::FaultNextPayloadRefused,
-            Known::ChainIncomplete => L::FaultNextChainIncomplete,
-            Known::IdentityExists => L::FaultNextIdentityExists,
-            Known::IdentityHereAs => L::FaultNextIdentityHereAs,
-            Known::IdentityNameTaken => L::FaultNextIdentityNameTaken,
-            Known::PlaceOneLine => L::FaultNextPlaceOneLine,
-            Known::NoIdentity => L::FaultNextNoIdentity,
-            Known::PhraseWords => L::FaultNextPhraseWords,
-            Known::PhraseInvalid => L::FaultNextPhraseInvalid,
-            Known::PhraseConfirm => L::FaultNextPhraseConfirm,
-            Known::NoWords => L::FaultNextNoWords,
-            Known::DeleteUnbacked => L::FaultNextDeleteUnbacked,
-            Known::PasswordsDiffer => L::FaultNextPasswordsDiffer,
-            Known::PasswordShort => L::FaultNextPasswordShort,
-            Known::PasswordLong => L::FaultNextPasswordLong,
-            Known::IdentitiesShape => L::FaultNextIdentitiesShape,
-            Known::PublishNoKit => L::FaultNextPublishNoKit,
-            Known::TermsMismatch => L::FaultNextTermsMismatch,
-            Known::GrantFileKit => L::FaultNextGrantFileKit,
-            Known::GrantFileBad => L::FaultNextGrantFileBad,
-            Known::RemoteKit => L::FaultNextRemoteKit,
-            Known::RemoteStatus => L::FaultNextRemoteStatus,
-            Known::RemoteRedirect => L::FaultNextRemoteRedirect,
-            Known::RemoteTooLarge => L::FaultNextRemoteTooLarge,
-            Known::RemoteTimeout => L::FaultNextRemoteTimeout,
-            Known::RemoteUnreachable => L::FaultNextRemoteUnreachable,
-            Known::RemoteCert => L::FaultNextRemoteCert,
-            Known::RemoteNotHttps => L::FaultNextRemoteNotHttps,
-            Known::NotAnOriginal => L::FaultNextNotAnOriginal,
-            Known::TraceFull => L::FaultNextTraceFull,
-            Known::ClaimShape => L::FaultNextClaimShape,
-            Known::LocalSeal => L::FaultNextLocalSeal,
-            Known::MigrateMismatch => L::FaultNextMigrateMismatch,
-            Known::RecoveryNotPrimary => L::FaultNextRecoveryNotPrimary,
-            Known::PrimaryDelete => L::FaultNextPrimaryDelete,
-            Known::PrimaryNoKeyFile => L::FaultNextPrimaryNoKeyFile,
-            Known::PrimaryAlready => L::FaultNextPrimaryAlready,
-            Known::BackupPassword => L::FaultNextBackupPassword,
-            Known::BackupNotOurs => L::FaultNextBackupNotOurs,
-            Known::BackupTooNew => L::FaultNextBackupTooNew,
-            Known::BackupShape => L::FaultNextBackupShape,
-            Known::Rekeying => L::FaultNextRekeying,
-            Known::BackupNoIdentity => L::FaultNextBackupNoIdentity,
-            Known::HomeUnreachable => L::FaultNextHomeUnreachable,
-            Known::BusyForRekey => L::FaultNextBusyForRekey,
-            Known::DialogUnavailable => L::FaultNextDialogUnavailable,
-            Known::LocalSetAside => L::FaultNextLocalSetAside,
-            Known::EntriesUnreadable => L::FaultNextEntriesUnreadable,
-            Known::NetworkListed => L::FaultNextNetworkListed,
-            Known::InsideHome => L::FaultNextInsideHome,
-            Known::DoorShut => L::FaultNextDoorShut,
-            Known::DoorUnread => L::FaultNextDoorUnread,
-            Known::InFlight => L::FaultNextInFlight,
-            Known::CliPathTaken => L::FaultNextCliPathTaken,
-            Known::CliPathCancelled => L::FaultNextCliPathCancelled,
-            Known::CliPathNotAllowed => L::FaultNextCliPathNotAllowed,
-            Known::CliPathUnsupported => L::FaultNextCliPathUnsupported,
-            Known::BatchVoided => L::FaultNextBatchVoided,
+            Known::FontMissing => Some(L::FaultNextFontMissing),
+            Known::FileMissing => Some(L::FaultNextFileMissing),
+            Known::Denied => Some(L::FaultNextDenied),
+            Known::KeychainMissing => Some(L::FaultNextKeychainMissing),
+            Known::Entropy => Some(L::FaultNextEntropy),
+            Known::KeyMalformed => Some(L::FaultNextKeyMalformed),
+            Known::SignFailed => Some(L::FaultNextSignFailed),
+            Known::KeystoreParams => Some(L::FaultNextKeystoreParams),
+            Known::KeystoreShape => Some(L::FaultNextKeystoreShape),
+            Known::BadPassword => Some(L::FaultNextBadPassword),
+            Known::Ledger => Some(L::FaultNextLedger),
+            Known::NoHomeDir => Some(L::FaultNextNoHomeDir),
+            Known::SettingsShape => Some(L::FaultNextSettingsShape),
+            Known::AddressShape => Some(L::FaultNextAddressShape),
+            Known::AddressMismatch => Some(L::FaultNextAddressMismatch),
+            Known::Occupied => Some(L::FaultNextOccupied),
+            Known::CopyMismatch => Some(L::FaultNextCopyMismatch),
+            Known::Landing => Some(L::FaultNextLanding),
+            Known::ReadOnly => Some(L::FaultNextReadOnly),
+            Known::MirrorShape => Some(L::FaultNextMirrorShape),
+            Known::MirrorEntry => Some(L::FaultNextMirrorEntry),
+            Known::MirrorOther => Some(L::FaultNextMirrorOther),
+            Known::Locked => Some(L::FaultNextLocked),
+            Known::LockedOut => Some(L::FaultNextLockedOut),
+            Known::PinWrong => Some(L::FaultNextPinWrong),
+            Known::PinShape => Some(L::FaultNextPinShape),
+            Known::PinSet => Some(L::FaultNextPinSet),
+            Known::KeyboxMissing => Some(L::FaultNextKeyboxMissing),
+            Known::KeyboxShape => Some(L::FaultNextKeyboxShape),
+            Known::KeyboxSlot => Some(L::FaultNextKeyboxSlot),
+            Known::KeyboxNotEmpty => Some(L::FaultNextKeyboxNotEmpty),
+            Known::KeyboxLocked => Some(L::FaultNextKeyboxLocked),
+            Known::KdfBelowFloor => Some(L::FaultNextKdfBelowFloor),
+            Known::MachineShape => Some(L::FaultNextMachineShape),
+            Known::InsufficientFunds => Some(L::FaultNextInsufficientFunds),
+            Known::NonceUsed => Some(L::FaultNextNonceUsed),
+            Known::AlreadyPending => Some(L::FaultNextAlreadyPending),
+            Known::Underpriced => Some(L::FaultNextUnderpriced),
+            Known::GasTooLow => Some(L::FaultNextGasTooLow),
+            Known::ContractRefused => Some(L::FaultNextContractRefused),
+            Known::RateLimited => Some(L::FaultNextRateLimited),
+            Known::MethodMissing => Some(L::FaultNextMethodMissing),
+            Known::NodeAuth => Some(L::FaultNextNodeAuth),
+            Known::WrongChain => Some(L::FaultNextWrongChain),
+            Known::NodeRefused => Some(L::FaultNextNodeRefused),
+            Known::NodeTls => Some(L::FaultNextNodeTls),
+            Known::ProxyUnreachable => Some(L::FaultNextProxyUnreachable),
+            Known::ProxyCredentialsMissing => Some(L::FaultNextProxyCredentialsMissing),
+            Known::ProxyCredentialsRefused => Some(L::FaultNextProxyCredentialsRefused),
+            Known::NodeTimeout => Some(L::FaultNextNodeTimeout),
+            Known::AnswerTooLong => Some(L::FaultNextAnswerTooLong),
+            Known::AnswerNotJson => Some(L::FaultNextAnswerNotJson),
+            Known::SeatUnseated => Some(L::FaultNextSeatUnseated),
+            Known::SeatDomain => Some(L::FaultNextSeatDomain),
+            Known::BackupNotLanded => Some(L::FaultNextBackupNotLanded),
+            Known::RecoveryNoMatch => Some(L::FaultNextRecoveryNoMatch),
+            Known::PathRelative => Some(L::FaultNextPathRelative),
+            Known::NoEndpoint => Some(L::FaultNextNoEndpoint),
+            Known::Unreachable => Some(L::FaultNextUnreachable),
+            Known::Disagree => Some(L::FaultNextDisagree),
+            Known::ChainShape => Some(L::FaultNextChainShape),
+            Known::PenHeld => Some(L::FaultNextPenHeld),
+            Known::LedgerNotFetched => Some(L::FaultNextLedgerNotFetched),
+            Known::NewerElsewhere => Some(L::FaultNextNewerElsewhere),
+            Known::EntryRefused => Some(L::FaultNextEntryRefused),
+            Known::NoGenesis => Some(L::FaultNextNoGenesis),
+            Known::ForkedRoot => Some(L::FaultNextForkedRoot),
+            Known::AuditInput => Some(L::FaultNextAuditInput),
+            Known::NotAdoptable => Some(L::FaultNextNotAdoptable),
+            Known::AlreadyRooted => Some(L::FaultNextAlreadyRooted),
+            Known::RestorePartial => Some(L::FaultNextRestorePartial),
+            Known::CannotLay => Some(L::FaultNextCannotLay),
+            Known::NotAHome => Some(L::FaultNextNotAHome),
+            Known::NoHome => Some(L::FaultNextNoHome),
+            Known::KeyNotStored => Some(L::FaultNextKeyNotStored),
+            Known::GitShape => Some(L::FaultNextGitShape),
+            Known::NotARepo => Some(L::FaultNextNotARepo),
+            Known::RefMissing => Some(L::FaultNextRefMissing),
+            Known::ObjectMissing => Some(L::FaultNextObjectMissing),
+            Known::Broken => Some(L::FaultNextBroken),
+            Known::ContentShape => Some(L::FaultNextContentShape),
+            Known::QueueShape => Some(L::FaultNextQueueShape),
+            Known::QueueEmpty => Some(L::FaultNextQueueEmpty),
+            Known::NoRegistry => Some(L::FaultNextNoRegistry),
+            Known::NoChainId => Some(L::FaultNextNoChainId),
+            Known::GasRefused => Some(L::FaultNextGasRefused),
+            Known::GasNotShown => Some(L::FaultNextGasNotShown),
+            Known::SendFailed => Some(L::FaultNextSendFailed),
+            Known::NotAudited => Some(L::FaultNextNotAudited),
+            Known::SubjectMissing => Some(L::FaultNextSubjectMissing),
+            Known::DirEmpty => Some(L::FaultNextDirEmpty),
+            Known::ScanRefused => Some(L::FaultNextScanRefused),
+            Known::FieldMissing => Some(L::FaultNextFieldMissing),
+            Known::StepSkipped => Some(L::FaultNextStepSkipped),
+            Known::KitRefused => Some(L::FaultNextKitRefused),
+            Known::Conflict => Some(L::FaultNextConflict),
+            Known::CosignRefused => Some(L::FaultNextCosignRefused),
+            Known::HandedOver => Some(L::FaultNextHandedOver),
+            Known::NoBytes => Some(L::FaultNextNoBytes),
+            Known::WorkerPanicked => Some(L::FaultNextWorkerPanicked),
+            Known::OutcomeLost => Some(L::FaultNextOutcomeLost),
+            Known::NotHisBook => Some(L::FaultNextNotHisBook),
+            Known::NotThisLedger => Some(L::FaultNextNotThisLedger),
+            Known::NotAGrant => Some(L::FaultNextNotAGrant),
+            Known::AlreadyHeld => Some(L::FaultNextAlreadyHeld),
+            Known::GrantNotHeld => Some(L::FaultNextGrantNotHeld),
+            Known::GrantDirEmpty => Some(L::FaultNextGrantDirEmpty),
+            Known::AlreadyAnchored => Some(L::FaultNextAlreadyAnchored),
+            Known::PayloadRefused => Some(L::FaultNextPayloadRefused),
+            Known::ChainIncomplete => Some(L::FaultNextChainIncomplete),
+            Known::IdentityExists => Some(L::FaultNextIdentityExists),
+            Known::IdentityHereAs => Some(L::FaultNextIdentityHereAs),
+            Known::IdentityNameTaken => Some(L::FaultNextIdentityNameTaken),
+            Known::PlaceOneLine => Some(L::FaultNextPlaceOneLine),
+            Known::NoIdentity => Some(L::FaultNextNoIdentity),
+            Known::PhraseWords => Some(L::FaultNextPhraseWords),
+            Known::PhraseInvalid => Some(L::FaultNextPhraseInvalid),
+            Known::PhraseConfirm => Some(L::FaultNextPhraseConfirm),
+            Known::NoWords => Some(L::FaultNextNoWords),
+            Known::DeleteUnbacked => Some(L::FaultNextDeleteUnbacked),
+            Known::PasswordsDiffer => Some(L::FaultNextPasswordsDiffer),
+            Known::PasswordShort => Some(L::FaultNextPasswordShort),
+            Known::PasswordLong => Some(L::FaultNextPasswordLong),
+            Known::IdentitiesShape => Some(L::FaultNextIdentitiesShape),
+            Known::PublishNoKit => Some(L::FaultNextPublishNoKit),
+            Known::TermsMismatch => Some(L::FaultNextTermsMismatch),
+            Known::GrantFileKit => Some(L::FaultNextGrantFileKit),
+            Known::GrantFileBad => Some(L::FaultNextGrantFileBad),
+            Known::KitFileBad => Some(L::FaultNextKitFileBad),
+            Known::KitFormWord => Some(L::FaultNextKitFormWord),
+            Known::RemoteKit => Some(L::FaultNextRemoteKit),
+            Known::RemoteStatus => Some(L::FaultNextRemoteStatus),
+            Known::RemoteRedirect => Some(L::FaultNextRemoteRedirect),
+            Known::RemoteTooLarge => Some(L::FaultNextRemoteTooLarge),
+            Known::RemoteTimeout => Some(L::FaultNextRemoteTimeout),
+            Known::RemoteUnreachable => Some(L::FaultNextRemoteUnreachable),
+            Known::RemoteCert => Some(L::FaultNextRemoteCert),
+            Known::RemoteNotHttps => Some(L::FaultNextRemoteNotHttps),
+            Known::NotAnOriginal => Some(L::FaultNextNotAnOriginal),
+            Known::TraceFull => Some(L::FaultNextTraceFull),
+            Known::ClaimShape => Some(L::FaultNextClaimShape),
+            Known::LocalSeal => Some(L::FaultNextLocalSeal),
+            Known::RecoveryNotPrimary => Some(L::FaultNextRecoveryNotPrimary),
+            Known::PrimaryDelete => Some(L::FaultNextPrimaryDelete),
+            Known::PrimaryNoKeyFile => Some(L::FaultNextPrimaryNoKeyFile),
+            Known::PrimaryAlready => Some(L::FaultNextPrimaryAlready),
+            Known::BackupPassword => Some(L::FaultNextBackupPassword),
+            Known::BackupNotOurs => Some(L::FaultNextBackupNotOurs),
+            Known::BackupTooNew => Some(L::FaultNextBackupTooNew),
+            Known::BackupShape => Some(L::FaultNextBackupShape),
+            Known::Rekeying => Some(L::FaultNextRekeying),
+            Known::BackupNoIdentity => Some(L::FaultNextBackupNoIdentity),
+            Known::HomeUnreachable => Some(L::FaultNextHomeUnreachable),
+            Known::BusyForRekey => Some(L::FaultNextBusyForRekey),
+            Known::DialogUnavailable => Some(L::FaultNextDialogUnavailable),
+            Known::LocalSetAside => Some(L::FaultNextLocalSetAside),
+            Known::EntriesUnreadable => Some(L::FaultNextEntriesUnreadable),
+            Known::NetworkListed => Some(L::FaultNextNetworkListed),
+            Known::InsideHome => Some(L::FaultNextInsideHome),
+            Known::DoorShut => Some(L::FaultNextDoorShut),
+            Known::DoorUnread => Some(L::FaultNextDoorUnread),
+            Known::InFlight => Some(L::FaultNextInFlight),
+            Known::CliPathTaken => Some(L::FaultNextCliPathTaken),
+            Known::CliPathCancelled => Some(L::FaultNextCliPathCancelled),
+            Known::CliPathNotAllowed => Some(L::FaultNextCliPathNotAllowed),
+            Known::CliPathUnsupported => Some(L::FaultNextCliPathUnsupported),
+            Known::BatchVoided => Some(L::FaultNextBatchVoided),
+            Known::CredentialExpired => Some(L::FaultNextCredentialExpired),
+            Known::CredentialMissing => Some(L::FaultNextCredentialMissing),
+            Known::CredentialShape => Some(L::FaultNextCredentialShape),
+            Known::HomeHeld => Some(L::FaultNextHomeHeld),
+            Known::CliAloneOn => Some(L::FaultNextCliAloneOn),
+            Known::CliAloneDropped => None,
+            Known::HomeOtherMachine => Some(L::FaultNextHomeOtherMachine),
+            Known::CliWriting => Some(L::FaultNextCliWriting),
+            Known::HandedOff => Some(L::FaultNextHandedOff),
+            Known::OnChain => Some(L::FaultNextOnChain),
         }
     }
 }
@@ -1100,6 +1192,9 @@ pub fn translate(k: Known) -> &'static str {
         Known::WrongChain => "节点的链号与所选网络不符",
         Known::NodeRefused => "节点拒了,原话在证据尾里",
         Known::NodeTls => "与节点的安全连接没建成(哪一层在证据尾里)",
+        Known::ProxyUnreachable => "经代理没连上(代理与它的原因在证据尾里)",
+        Known::ProxyCredentialsMissing => "代理要用户名与密码,没有给(代理与它的原话在证据尾里)",
+        Known::ProxyCredentialsRefused => "代理不收所给的用户名与密码(代理与它的原话在证据尾里)",
         Known::NodeTimeout => "节点在时限里没把话说完",
         Known::AnswerTooLong => "节点的答越过了字节上限",
         Known::AnswerNotJson => "节点的答不是 JSON",
@@ -1179,6 +1274,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::TermsMismatch => "条款文件与所填摘要对不上",
         Known::GrantFileKit => "授权文件没过包验",
         Known::GrantFileBad => "授权文件拆不开",
+        Known::KitFileBad => "单文件记录包拆不开",
+        Known::KitFormWord => "记录包的形只认 file 或 folder",
         Known::RemoteKit => "取回的记录包没过包验",
         Known::RemoteStatus => "发布地址上没有这一份",
         Known::RemoteRedirect => "发布地址转向别处",
@@ -1191,7 +1288,6 @@ pub fn translate(k: Known) -> &'static str {
         Known::TraceFull => "痕迹档到了上限,此后停写",
         Known::ClaimShape => "认领的字读不成",
         Known::LocalSeal => "本机数据里有一份档解不开",
-        Known::MigrateMismatch => "旧版明文档转封后比对不一致,迁移已停",
         Known::RecoveryNotPrimary => "这是次要身份的助记词或密钥文件",
         Known::PrimaryDelete => "主身份不能直接删除",
         Known::PrimaryNoKeyFile => "这个身份还没导出过密钥文件",
@@ -1217,6 +1313,16 @@ pub fn translate(k: Known) -> &'static str {
         Known::CliPathNotAllowed => "系统不许动命令行那一处",
         Known::CliPathUnsupported => "这样开的应用接不进终端的命令路径",
         Known::BatchVoided => "这一批交易作废了:没有一笔入块、没有节点还持有、nonce 已被别的交易用掉;条目已回到排队",
+        Known::CredentialExpired => "命令行凭据已过期,已删去",
+        Known::CredentialMissing => "这台机器上没有命令行凭据",
+        Known::CredentialShape => "命令行凭据读不出,或开不了",
+        Known::HomeHeld => "桌面正持着这一处数据的写者锁",
+        Known::CliAloneOn => "纯命令行写入开着,经桌面写入不可拨",
+        Known::CliAloneDropped => "主钥换了,命令行凭据失效,纯命令行写入已关",
+        Known::HomeOtherMachine => "另一台机器是这一处数据的写者",
+        Known::CliWriting => "命令行正在写入这本账,这一步没有做",
+        Known::HandedOff => "这本账已交接到另一处,收回之前不在这里写",
+        Known::OnChain => "这一批里有锚链上已有:一笔也不签不发",
     }
 }
 
@@ -1240,6 +1346,15 @@ pub struct Fault {
     place: Option<String>,
     /// For a remote answer refused by its status, that status number (the tail says it in words).
     status: Option<u16>,
+    /// For a connection that failed after going without the system's configuration script, that script's trouble:
+    /// the next-step sentence then says it and the way out ([`Fault::without_script`]).
+    script: Option<zikaron_net::PacTrouble>,
+    /// For the sender's "already on chain" refusal, its evidence as values (the hashes held, the earliest one's
+    /// transaction and block; the tail says the same in words): the door hands them over as they are.
+    on_chain: Option<(Vec<String>, String, u64)>,
+    /// For a send refused after its batch was landed in flight (no node answered the broadcast, its bytes may be in a
+    /// pool): that batch's transaction, awaited by its hash. The batch is out, never answered as nothing sent.
+    out: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1269,6 +1384,9 @@ impl Fault {
             landing: None,
             place: None,
             status: None,
+            script: None,
+            on_chain: None,
+            out: None,
         }
     }
 
@@ -1306,6 +1424,20 @@ impl Fault {
     }
 
     /// The same fault, carrying the remote status number it was refused for.
+    /// A connection that failed after it went without the system's configuration script (`x`, its trouble): the
+    /// next-step sentence says the script's trouble and the way out instead of the network's.
+    pub fn without_script(mut self, x: zikaron_net::PacTrouble) -> Fault {
+        self.script = Some(x);
+        self
+    }
+
+    /// The same known refusal with another evidence tail (every node's words for one attempt): what it says and its
+    /// next step stay this one's.
+    pub fn retold(mut self, tail: impl Into<String>) -> Fault {
+        self.tail = tail.into();
+        self
+    }
+
     pub fn with_status(mut self, status: u16) -> Fault {
         self.status = Some(status);
         self
@@ -1314,6 +1446,22 @@ impl Fault {
     /// The remote status number this fault was refused for (`None` for every other fault).
     pub fn status(&self) -> Option<u16> {
         self.status
+    }
+
+    /// The sender's "already on chain" evidence as values: the hashes held, the earliest one's transaction and
+    /// block (`None` for every other fault).
+    pub fn on_chain(&self) -> Option<&(Vec<String>, String, u64)> {
+        self.on_chain.as_ref()
+    }
+
+    /// The transaction of a batch this send left in flight before it failed (`None` for every other fault).
+    pub fn out(&self) -> Option<&str> {
+        self.out.as_deref()
+    }
+
+    /// The same fault, for a send whose batch is out (in flight, awaited by `tx`) though the broadcast failed.
+    pub fn sent_out(self, tx: String) -> Fault {
+        Fault { out: Some(tx), ..self }
     }
 
     /// The place a person named that could not be read (`None` for every other fault).
@@ -1354,7 +1502,7 @@ impl Fault {
     /// Unknown: passed through unchanged; the sentence on screen is the underlying one.
     pub fn unknown(tail: impl Into<String>) -> Fault {
         let tail = tail.into();
-        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None }
+        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None, script: None, on_chain: None, out: None }
     }
 
     pub fn class(&self) -> Class {
@@ -1399,11 +1547,19 @@ impl Fault {
 
     /// What to do next (the second sentence). The unknown branch has no table sentence and points to the raw
     /// error.
-    pub fn next(&self) -> &'static str {
+    pub fn next(&self) -> String {
+        use crate::lang::{fill1, t, Key};
+        if let Some(x) = self.script {
+            return match x {
+                zikaron_net::PacTrouble::RemoteHttp => t(Key::PacNextRemoteHttp).to_string(),
+                zikaron_net::PacTrouble::Unfetched => t(Key::PacNextUnfetched).to_string(),
+                other => fill1(Key::PacNextFailed, other.code()),
+            };
+        }
         match self.which() {
-            Some(_) if self.then.is_some() => crate::lang::t(self.then.unwrap_or(crate::lang::Key::FaultNextUnknown)),
-            Some(k) => crate::lang::t(k.next()),
-            None => crate::lang::t(crate::lang::Key::FaultNextUnknown),
+            Some(_) if self.then.is_some() => t(self.then.unwrap_or(Key::FaultNextUnknown)).to_string(),
+            Some(k) => k.next().map(t).unwrap_or("").to_string(),
+            None => t(Key::FaultNextUnknown).to_string(),
         }
     }
 
@@ -1480,13 +1636,15 @@ pub fn entry_token_say(t: zikaron::tokens::Token) -> crate::lang::Key {
     }
 }
 
-/// Scan refusals to plain words (five members). Exhaustive, as above.
+/// Scan refusals to plain words (five members; a window too wide for the node's span says what to do). Exhaustive,
+/// as above.
 pub fn scan_refusal_say(r: &zikaron_anchor::scan::Refusal) -> crate::lang::Key {
     use crate::lang::Key as L;
     use zikaron_anchor::scan::Refusal as R;
     match r {
         R::ChainIdMismatch { .. } => L::TokScanChainId,
         R::NoEndpoint(_) => L::TokScanNoEndpoint,
+        R::Unanswered { asked: zikaron_anchor::scan::Asked::TooWide { .. }, .. } => L::TokScanTooWide,
         R::Unanswered { .. } => L::TokScanUnanswered,
         R::TxNotItself(_) => L::TokScanTxNotItself,
         R::Malformed(_) => L::TokScanMalformed,
@@ -1517,5 +1675,139 @@ pub fn classify(e: &std::io::Error, subject: &str) -> Fault {
         ErrorKind::NotFound => Fault::known(Known::FileMissing, tail),
         ErrorKind::PermissionDenied => Fault::known(Known::Denied, tail),
         _ => Fault::unknown(tail),
+    }
+}
+
+/// The sealed layer's code as this fault table's member (`None`: a system error with no code of its own, said as
+/// unknown). Exhaustive: a code the sealed layer adds does not compile until it is said here.
+pub fn known_of_sealed(c: zikaron_seal::Code) -> Option<Known> {
+    use zikaron_seal::Code as C;
+    Some(match c {
+        C::FileMissing => Known::FileMissing,
+        C::Denied => Known::Denied,
+        C::Unknown => return None,
+        C::Locked => Known::Locked,
+        C::LockedOut => Known::LockedOut,
+        C::KeyboxMissing => Known::KeyboxMissing,
+        C::KeyboxShape => Known::KeyboxShape,
+        C::KeyboxSlot => Known::KeyboxSlot,
+        C::KeyboxLocked => Known::KeyboxLocked,
+        C::KeyboxNotEmpty => Known::KeyboxNotEmpty,
+        C::KdfBelowFloor => Known::KdfBelowFloor,
+        C::KeystoreParams => Known::KeystoreParams,
+        C::KeyMalformed => Known::KeyMalformed,
+        C::PinSet => Known::PinSet,
+        C::PinShape => Known::PinShape,
+        C::PinWrong => Known::PinWrong,
+        C::RecoveryNoMatch => Known::RecoveryNoMatch,
+        C::RecoveryNotPrimary => Known::RecoveryNotPrimary,
+        C::LocalSeal => Known::LocalSeal,
+        C::Ledger => Known::Ledger,
+        C::ContentShape => Known::ContentShape,
+        C::SettingsShape => Known::SettingsShape,
+        C::QueueShape => Known::QueueShape,
+        C::MachineShape => Known::MachineShape,
+        C::IdentitiesShape => Known::IdentitiesShape,
+        C::CredentialExpired => Known::CredentialExpired,
+        C::CredentialMissing => Known::CredentialMissing,
+        C::CredentialShape => Known::CredentialShape,
+        C::HomeHeld => Known::HomeHeld,
+        C::HomeOtherMachine => Known::HomeOtherMachine,
+        C::HandedOff => Known::HandedOff,
+    })
+}
+
+/// A refusal of the sealed layer (`zikaron-seal`) as one of this table's faults, its evidence unchanged.
+impl From<zikaron_seal::Trouble> for Fault {
+    fn from(t: zikaron_seal::Trouble) -> Fault {
+        match known_of_sealed(t.code) {
+            Some(k) => Fault::known(k, t.tail),
+            None => Fault::unknown(t.tail),
+        }
+    }
+}
+
+/// The sender's code as this fault table's member. Exhaustive: a code the sender adds does not compile until it is
+/// said here.
+pub fn known_of_sent(c: zikaron_send::Code) -> Known {
+    use zikaron_send::Code as C;
+    match c {
+        C::NoEndpoint => Known::NoEndpoint,
+        C::SettingsShape => Known::SettingsShape,
+        C::Unreachable => Known::Unreachable,
+        C::Disagree => Known::Disagree,
+        C::ChainShape => Known::ChainShape,
+        C::WrongChain => Known::WrongChain,
+        C::InsufficientFunds => Known::InsufficientFunds,
+        C::NonceUsed => Known::NonceUsed,
+        C::AlreadyPending => Known::AlreadyPending,
+        C::Underpriced => Known::Underpriced,
+        C::GasTooLow => Known::GasTooLow,
+        C::ContractRefused => Known::ContractRefused,
+        C::RateLimited => Known::RateLimited,
+        C::MethodMissing => Known::MethodMissing,
+        C::NodeAuth => Known::NodeAuth,
+        C::NodeRefused => Known::NodeRefused,
+        C::NodeTls => Known::NodeTls,
+        C::NodeTimeout => Known::NodeTimeout,
+        C::AnswerTooLong => Known::AnswerTooLong,
+        C::AnswerNotJson => Known::AnswerNotJson,
+        C::ProxyUnreachable => Known::ProxyUnreachable,
+        C::ProxyCredentialsMissing => Known::ProxyCredentialsMissing,
+        C::ProxyCredentialsRefused => Known::ProxyCredentialsRefused,
+        C::GasRefused => Known::GasRefused,
+        C::KeyMalformed => Known::KeyMalformed,
+        C::AddressMismatch => Known::AddressMismatch,
+        C::ContentShape => Known::ContentShape,
+        C::QueueEmpty => Known::QueueEmpty,
+        C::AuditInput => Known::AuditInput,
+        C::ScanRefused => Known::ScanRefused,
+        C::NoChainId => Known::NoChainId,
+        C::NoRegistry => Known::NoRegistry,
+        C::OnChain => Known::OnChain,
+        C::Broken => Known::Broken,
+        C::HandedOff => Known::HandedOff,
+        C::NotFetched => Known::LedgerNotFetched,
+        C::NewerElsewhere => Known::NewerElsewhere,
+    }
+}
+
+/// A refusal of the sender (`zikaron-send`) as one of this table's faults, its evidence said in this desktop's
+/// words (`chainx::said_of`): a scan's refusal with its first refusal's sentence, a connection made without the
+/// system's proxy script with that script's trouble.
+impl From<zikaron_send::Trouble> for Fault {
+    fn from(t: zikaron_send::Trouble) -> Fault {
+        let f = match (&t.code, &t.why) {
+            (zikaron_send::Code::ScanRefused, zikaron_send::Why::Scan { refused, .. }) => Fault::scan_refused(crate::chainx::said_of(&t.why), refused),
+            (zikaron_send::Code::OnChain, zikaron_send::Why::OnChain { names, tx, block }) => {
+                Fault { on_chain: Some((names.clone(), tx.clone(), *block)), ..Fault::known(Known::OnChain, crate::chainx::said_of(&t.why)) }
+            }
+            _ => Fault::known(known_of_sent(t.code), crate::chainx::said_of(&t.why)),
+        };
+        match t.script {
+            Some(x) => f.without_script(x),
+            None => f,
+        }
+    }
+}
+
+/// So the sealed layer can read its own refusals back from a fault (`envelope::Unread::of`).
+impl zikaron_seal::Coded for Fault {
+    fn sealed_code(&self) -> Option<zikaron_seal::Code> {
+        use zikaron_seal::Code as C;
+        let k = self.which()?;
+        [
+            C::FileMissing, C::Denied, C::Locked, C::LockedOut, C::KeyboxMissing, C::KeyboxShape, C::KeyboxSlot, C::KeyboxLocked,
+            C::KeyboxNotEmpty, C::KdfBelowFloor, C::KeystoreParams, C::KeyMalformed, C::PinSet, C::PinShape, C::PinWrong,
+            C::RecoveryNoMatch, C::RecoveryNotPrimary, C::LocalSeal, C::Ledger, C::ContentShape, C::SettingsShape, C::QueueShape,
+            C::MachineShape, C::IdentitiesShape, C::CredentialExpired, C::CredentialMissing, C::CredentialShape, C::HomeHeld, C::HomeOtherMachine,
+            C::HandedOff,
+        ]
+        .into_iter()
+        .find(|c| known_of_sealed(*c) == Some(k))
+    }
+
+    fn sealed_tail(&self) -> &str {
+        self.tail()
     }
 }

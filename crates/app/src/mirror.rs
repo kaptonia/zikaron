@@ -51,14 +51,14 @@ pub struct Row {
 pub struct Sheet {
     pub kind: String,
     pub version: u64,
-    /// Which ledger this bundle belongs to (the genesis author; one ledger, one root, law §4.2). Empty
-    /// in bundles from older versions.
+    /// Which ledger this bundle belongs to (the genesis author; one ledger, one root, law §4.2); empty for a
+    /// bundle without a ledger.
     pub root: String,
     pub rows: Vec<Row>,
-    /// Vault files (relative path, digest, size); empty in bundles from older versions.
+    /// Vault files (relative path, digest, size).
     pub held: Vec<Row>,
-    /// The owning identity's id, for bundles without a ledger. Bundles with a ledger are recognized by root and
-    /// leave this empty; bundles from older versions also lack it and are still treated as the user's own.
+    /// The owning identity's id, for a bundle without a ledger (required there); a bundle with a ledger is
+    /// recognized by its root and leaves this empty.
     pub owner: String,
 }
 
@@ -79,16 +79,11 @@ pub fn bundle_in(folder: &std::path::Path, holder: &str, seat: crate::roles::Rol
     Ok(folder.join(STEM).join(who).join(seat.as_str()))
 }
 
-/// The chosen folder a bundle is in: three levels up in the current layout (`<seat>`, `<address>`,
-/// `ZIKARON-backup`), one level up in the old one. Used to show the backup folder in settings.
+/// The chosen folder a bundle is in: three levels up (`<seat>`, `<address>`, `ZIKARON-backup`). Used to show the
+/// backup folder in settings.
 pub fn folder_of(bundle: &std::path::Path) -> std::path::PathBuf {
     let up = |p: &std::path::Path| p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
-    let stem_at = up(&up(bundle));
-    if stem_at.file_name().map(|n| n == STEM).unwrap_or(false) {
-        up(&stem_at)
-    } else {
-        up(bundle)
-    }
+    up(&up(&up(bundle)))
 }
 
 
@@ -105,21 +100,6 @@ pub enum Belongs {
     Junk { why: String },
 }
 
-/// A bundle's root: from the manifest when present (current bundles always write it), otherwise computed from
-/// the entries as for the ledger (`auditx::root_of`).
-///
-/// A bundle with no entries has no root (empty string): grantees often have no ledger but still need their
-/// vault backed up.
-fn bundle_root(bundle: &std::path::Path, sheet: &Sheet) -> Result<String, Fault> {
-    if !sheet.root.is_empty() {
-        return Ok(sheet.root.clone());
-    }
-    if sheet.rows.is_empty() {
-        return Ok(String::new());
-    }
-    let items: Vec<Vec<u8>> = verify(bundle)?.into_iter().map(|(_, b)| b).collect();
-    crate::auditx::root_of(&items)
-}
 
 /// Classify what is at `bundle`: missing or empty is `Empty`; a valid manifest with this ledger's root is
 /// `Ours`; another root is `Other`; anything else (unreadable or malformed manifest) is `Junk`, so the UI can
@@ -139,20 +119,17 @@ pub fn belongs(bundle: &std::path::Path, our_root: &str) -> Belongs {
     if let Some(why) = sheet.shape_trouble() {
         return Belongs::Junk { why };
     }
-    match bundle_root(bundle, &sheet) {
+    match sheet.root.as_str() {
         // Neither side has a root (no ledger), so compare owners: vault-only bundles of two people in one
         // folder look identical. Treating another's as ours would rewrite its manifest from this vault on
         // top-up, silently dropping the other person's files from the manifest (unrecoverable at restore).
-        Ok(root) if root.is_empty() && our_root.is_empty() => match (sheet.owner.as_str(), our_owner()) {
-            // Bundles from older versions lack `owner` and are still treated as ours.
-            ("", _) => Belongs::Ours { entries: sheet.rows.len() },
-            (had, Some(now)) if had.eq_ignore_ascii_case(&now) => Belongs::Ours { entries: sheet.rows.len() },
+        "" if our_root.is_empty() => match our_owner() {
+            Some(now) if sheet.owner.eq_ignore_ascii_case(&now) => Belongs::Ours { entries: sheet.rows.len() },
             // This is an identity, not a ledger root; the prefix makes that clear in the UI.
-            (had, _) => Belongs::Other { root: format!("身份 {had}") },
+            _ => Belongs::Other { root: format!("身份 {}", sheet.owner) },
         },
-        Ok(root) if root.eq_ignore_ascii_case(our_root) => Belongs::Ours { entries: sheet.rows.len() },
-        Ok(root) => Belongs::Other { root },
-        Err(f) => Belongs::Junk { why: f.said().to_string() },
+        root if root.eq_ignore_ascii_case(our_root) => Belongs::Ours { entries: sheet.rows.len() },
+        root => Belongs::Other { root: root.to_string() },
     }
 }
 
@@ -251,8 +228,9 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
         ]));
     }
     // Bundles with a root are recognized by it and leave `owner` empty; without a root, record this identity
-    // so two people's bundles in one folder never overwrite each other.
-    let owner = if root.is_empty() { our_owner().unwrap_or_default() } else { String::new() };
+    // so two people's bundles in one folder never overwrite each other (no current identity: refused by name,
+    // never a bundle no one owns).
+    let owner = if root.is_empty() { our_owner().ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))? } else { String::new() };
     let mut sheet_fields = vec![
         ("entries".into(), Value::Arr(rows)),
         ("held".into(), Value::Arr(held_rows)),
@@ -285,6 +263,17 @@ pub fn export(_pass: &crate::exitgate::Pass, home: &Home, out: &std::path::Path,
 pub fn inspect(bundle: &std::path::Path) -> Result<Sheet, Fault> {
     let p = bundle.join(MANIFEST);
     let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
+    // Every member this version writes is required (`owner` where there is no root): a manifest missing one is
+    // refused by name, never read with a member taken as empty.
+    if let Ok(v) = zikaron::json::parse(&bytes) {
+        let has = |k: &str| matches!(&v, zikaron::json::Value::Obj(m) if m.iter().any(|(n, _)| n == k));
+        let rootless = matches!(v.member("root"), Some(zikaron::json::Value::Str(r)) if r.is_empty());
+        for k in ["entries", "held", "kind", "root", "version"].into_iter().chain(rootless.then_some("owner")) {
+            if !has(k) {
+                return Err(Fault::known(Known::MirrorShape, format!("{MANIFEST}: {k}")));
+            }
+        }
+    }
     // Parsed by the same function the command line uses (`zikaron_glue::mirror::sheet`).
     let s = zikaron_glue::mirror::sheet(&bytes)
         .map_err(|t| Fault::known(Known::MirrorShape, crate::lang::filln(crate::lang::Key::Tail185, &[&(MANIFEST).to_string(), &format!("{:?}", t)])))?;

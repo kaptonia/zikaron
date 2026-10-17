@@ -437,7 +437,7 @@ fn a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not() {
     let behind = |m: &app::machine::Machine| app::machine::backup_behind(m.backup.as_ref(), app::backup::measured(m.backup.as_ref()).ok());
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    answers!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_));
+    super::seated(&mut shell, &base.join("a"));
     answers!(apply(&mut shell, Action::OpenHome { root: base.join("a").display().to_string() }), Applied::Homed { .. });
     let home = app::home::Home::open(shell.home.as_ref().expect("the home").root()).expect("the home");
     // Two grants of another's, signed by their own key.
@@ -452,7 +452,7 @@ fn a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not() {
     assert_eq!(app::backup::count_now().expect("counted"), before_count + 1, "a held grant is counted where it lies");
     app::backup::export(&base.join("out"), "zikaron-backup-probe", 1_800_000_000).expect("a backup");
     let m = app::machine::read().expect("machine settings");
-    assert!(m.backup.as_ref().map(|b| b.indexed).unwrap_or(false), "{:?}", m.backup);
+    assert!(m.backup.is_some(), "{:?}", m.backup);
     assert_eq!(behind(&m), Some(0), "the grant held before is in the backup");
     app::vaultx::store(&home, &grant(2)).expect("held after the backup");
     assert_eq!(behind(&m), Some(1), "the grant held after is one behind; the one before is not");

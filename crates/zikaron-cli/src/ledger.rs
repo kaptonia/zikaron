@@ -205,17 +205,29 @@ pub enum ReadRefused {
     Mirror(String),
     /// A file of the bundle or package that does not read (its path).
     Unreadable(String),
+    /// A record package in one file that does not read as one (the layout's code and subject).
+    File(zikaron_glue::container::Bad),
+    /// A home the desktop keeps sealed, refused on the way in (the credential, another machine's mark, a file
+    /// that does not open: the sealed layer's code).
+    Sealed(zikaron_seal::Trouble),
 }
 
 /// What a read-only verb reads at `path` (`audit`, and through it `check-grant`, `chain-check`, `depth`;
 /// `show --entry`): a mirror bundle by its manifest, read by the names the app writes it with
-/// (`zikaron_glue::mirror`: each listed entry from the entries room); a record package (a disclosure kit)
-/// once the kit core verifies it (`kitdir::verify_kit`), the entries in its entries room; anything else as a
-/// ledger directory, strictly. Whether each entry is an entry is the core's call, in the audit. Writing verbs
-/// and `init` never come here: they read ledger directories only.
-pub fn read_any(path: &str) -> Result<Vec<Vec<u8>>, ReadRefused> {
+/// (`zikaron_glue::mirror`: each listed entry from the entries room); a record package (a disclosure kit), a
+/// folder or one file (read out first, `zikaron_glue::read::unpack`), once the kit core verifies it
+/// (`kitdir::verify_kit`), the entries in its entries room; the ledger of a home the desktop keeps sealed, with
+/// this machine's credential (`sealed::read`, at `now`); anything else as a ledger directory, strictly. Whether
+/// each entry is an entry is the core's call, in the audit. Writing verbs and `init` never come here.
+pub fn read_any(path: &str, now: u64) -> Result<Vec<Vec<u8>>, ReadRefused> {
     crate::seam();
-    let dir = std::path::Path::new(path);
+    let at = std::path::Path::new(path);
+    if crate::sealed::is_home(path) {
+        return crate::sealed::read(path, now).map(|r| r.items).map_err(ReadRefused::Sealed);
+    }
+    // A package in one file is read out into a folder first (removed when this returns).
+    let unpacked = if zikaron_glue::container::is_container_at(at) { Some(zikaron_glue::read::unpack(at).map_err(ReadRefused::File)?) } else { None };
+    let dir = unpacked.as_ref().map(|u| u.dir.as_path()).unwrap_or(at);
     if zikaron_glue::mirror::is_bundle(dir) {
         return zikaron_glue::mirror::entries(dir).map_err(|t| match t {
             zikaron_glue::mirror::ReadTrouble::Unreadable(p) => ReadRefused::Unreadable(p),

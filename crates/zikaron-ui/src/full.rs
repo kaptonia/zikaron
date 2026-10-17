@@ -37,17 +37,25 @@ pub fn centered_w(rect: Rect, width: f32) -> f32 {
     width.min(rect.width() - 32.0).max(0.0)
 }
 
+/// The room right of a scrolling column its bar lies in: the bars float over what scrolls and take no width
+/// (`skin`), so a column flush with its scroll area's edge would have its right edge under the bar.
+pub fn bar_room(ui: &egui::Ui) -> f32 {
+    let s = &ui.spacing().scroll;
+    s.bar_width + s.bar_inner_margin + s.bar_outer_margin
+}
+
 /// A column of `width` centered in `rect` (vertically too, by the height it had last frame), `drop` points
-/// lower while it settles. Taller than the room, it scrolls.
+/// lower while it settles. Taller than the room, it scrolls, its bar in the room right of the column
+/// ([`bar_room`]), never over it.
 pub fn centered<R>(ui: &mut egui::Ui, id_salt: &str, rect: Rect, width: f32, drop: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let id = egui::Id::new(("zikaron-centered", id_salt));
     let h = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
     let w = centered_w(rect, width);
     let top = (rect.center().y - h / 2.0).max(rect.top() + 24.0) + drop;
-    let col = Rect::from_min_size(pos2(rect.center().x - w / 2.0, rect.top()), vec2(w, rect.height()));
+    let col = Rect::from_min_size(pos2(rect.center().x - w / 2.0, rect.top()), vec2(w + bar_room(ui), rect.height()));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(egui::Align::Min)));
     child.set_clip_rect(rect);
-    let out = egui::ScrollArea::vertical().id_salt(id.with("scroll")).max_height(rect.height()).auto_shrink([false, true]).show(&mut child, |ui| {
+    let out = crate::scroll::page(&mut child, egui::ScrollArea::vertical().id_salt(id.with("scroll")).max_height(rect.height()).auto_shrink([false, true]), |ui| {
         ui.add_space((top - rect.top()).max(0.0));
         let r = ui.vertical(|ui| {
             ui.set_width(w);
@@ -138,7 +146,11 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     let mut job = egui::text::LayoutJob::single_section(sub.to_string(), egui::TextFormat { font_id: crate::tokens::Type::Small.font(), color: c(C::Ink2), line_height: Some(crate::tokens::Type::Small.line()), ..Default::default() });
     job.wrap.max_width = (w - text_x - 14.0).max(1.0);
     let sub_g = ui.fonts_mut(|f| f.layout_job(job));
-    let h = 12.0 + crate::tokens::Type::Strong.line() + 2.0 + sub_g.size().y.max(crate::tokens::Type::Small.line()) + 12.0;
+    // The row's height and the title's place follow the lines there are: with no line under it, one line,
+    // centred; otherwise the title and the line's own rows.
+    let two = !sub.is_empty();
+    let lines_h = crate::tokens::Type::Strong.line() + if two { 2.0 + sub_g.size().y.max(crate::tokens::Type::Small.line()) } else { 0.0 };
+    let h = 12.0 + lines_h + 12.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
     let lit = motion::flag(ui.ctx(), id.with("on"), on, tokens::FAST);
     let dot = motion::to(ui.ctx(), id.with("dot"), if on { 1.0 } else { 0.0 }, tokens::FAST, Curve::Spring);
@@ -152,7 +164,7 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
         p.circle_filled(rc, 4.5 * dot, c(C::Accent));
     }
     let x = rect.left() + text_x;
-    let ty = rect.top() + 12.0;
+    let ty = rect.center().y - lines_h / 2.0;
     let tr = p.text(pos2(x, ty), egui::Align2::LEFT_TOP, title, crate::tokens::Type::Strong.font(), c(C::Ink));
     if let Some(s) = pill {
         let pw = crate::mark::pill_w(ui, s, false);
@@ -160,6 +172,8 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pr));
         crate::mark::pill(&mut child, s, crate::palette::Tone::Ok);
     }
-    p.galley(pos2(x, ty + crate::tokens::Type::Strong.line() + 2.0), sub_g, c(C::Ink2));
+    if two {
+        p.galley(pos2(x, ty + crate::tokens::Type::Strong.line() + 2.0), sub_g, c(C::Ink2));
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

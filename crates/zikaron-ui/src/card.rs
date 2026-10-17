@@ -108,19 +108,22 @@ pub fn flat_title(ui: &mut egui::Ui, s: &str) {
 
 /// A group title above a card: 14 semibold in the second ink, 4 in from the card's edge, 10 above the card.
 pub fn group_title(ui: &mut egui::Ui, s: &str) {
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(s).font(egui::FontId::new(14.0, crate::fonts::strong())).color(c(C::Ink2)).line_height(Some(Type::Note.line())));
-    });
+    indented(ui, paint::wrapped(ui, s, egui::FontId::new(14.0, crate::fonts::strong()), c(C::Ink2), Type::Note.line(), ui.available_width() - 4.0));
     ui.add_space((10.0 - ui.spacing().item_spacing.y).max(0.0));
 }
 
 /// A footnote under a card: 13 in the second ink, 4 in, 10 below the card.
 pub fn group_foot(ui: &mut egui::Ui, s: &str) {
     ui.add_space((10.0 - ui.spacing().item_spacing.y).max(0.0));
-    ui.horizontal(|ui| {
+    indented(ui, paint::wrapped(ui, s, Type::Small.font(), c(C::Ink2), Type::Small.line(), ui.available_width() - 4.0));
+}
+
+/// Words 4 in, in one cell of the caller's layout (`width::cell`).
+fn indented(ui: &mut egui::Ui, words: std::sync::Arc<egui::Galley>) {
+    let size = vec2(4.0 + words.size().x, words.size().y);
+    crate::width::cell(ui, size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(4.0);
-        paint::text(ui, s, Type::Small, c(C::Ink2));
+        ui.add(egui::Label::new(words));
     });
 }
 
@@ -454,9 +457,15 @@ impl Form {
             }
         }
         let room = (rx - x).max(0.0);
-        let ty = rect.center().y - (Type::Row.line() + 3.0 + Type::Small.line()) / 2.0;
-        paint::at(&p, ui, pos2(x, ty), egui::Align2::LEFT_TOP, title, Type::Row, c(C::Ink), room);
-        paint::at(&p, ui, pos2(x, ty + Type::Row.line() + 3.0), egui::Align2::LEFT_TOP, note, Type::Small, c(C::Ink2), room);
+        // The words are centred on the lines there are: the title alone with no note, the title and its note
+        // otherwise.
+        if note.is_empty() {
+            paint::at(&p, ui, pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, title, Type::Row, c(C::Ink), room);
+        } else {
+            let ty = rect.center().y - (Type::Row.line() + 3.0 + Type::Small.line()) / 2.0;
+            paint::at(&p, ui, pos2(x, ty), egui::Align2::LEFT_TOP, title, Type::Row, c(C::Ink), room);
+            paint::at(&p, ui, pos2(x, ty + Type::Row.line() + 3.0), egui::Align2::LEFT_TOP, note, Type::Small, c(C::Ink2), room);
+        }
         self.bottom = rect.bottom();
         if nav {
             crate::probe::row(ui.ctx(), rect);

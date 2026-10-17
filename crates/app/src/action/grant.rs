@@ -8,7 +8,6 @@ pub(super) fn draft_grant(
 ) -> Result<(String, Enqueued), crate::fault::Fault> {
     // Double-sale gate: if an existing grant on the same record has an overlapping window and the local
     // exclusive flag, do not sign. The collisions are kept in `clash` for the UI to list.
-    let flags = shell.settings.exclusive.clone();
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
@@ -21,7 +20,7 @@ pub(super) fn draft_grant(
             crate::lang::t(crate::lang::Key::Tail231).to_string(),
         ));
     }
-    let rows = crate::grantx::table(home, &flags)?;
+    let rows = crate::grantx::table(home)?;
     let window = window_of(&d.from, &d.to)?;
     let clash = crate::grantx::conflicts(&rows, &d.work, window);
     if !clash.is_empty() {

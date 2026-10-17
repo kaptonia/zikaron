@@ -1,0 +1,18 @@
+[package]
+name = "zikaron-send"
+version = "0.1.3"
+edition = "2024"
+license = "MIT"
+
+# The sender, one for every road that puts a home's anchors on chain: it reads the chain, passes the exit gate,
+# keeps the queue's steps and broadcasts, answering a closed code and its evidence; each end gives its own key
+# (a signing port) and says the codes in its own words. It stands on the anchoring crate (the chain) and the
+# sealed layer (the queue's model), and on the core, the one transport, the glue and the platform piece their own
+# surfaces name; no window and no third-party crate.
+[dependencies]
+zikaron = { path = "../zikaron" }
+zikaron-net = { path = "../zikaron-net" }
+zikaron-glue = { path = "../zikaron-glue" }
+zikaron-os = { path = "../zikaron-os" }
+zikaron-anchor = { path = "../zikaron-anchor" }
+zikaron-seal = { path = "../zikaron-seal" }

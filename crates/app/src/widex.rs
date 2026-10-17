@@ -123,8 +123,11 @@ pub fn gate_said_against(net: &Net, pinned: &str) -> (Reading, Option<Fault>) {
     }
     match same {
         0 => {
-            let k = first.and_then(|f| f.which()).unwrap_or(Known::Unreachable);
-            (Reading::Down, Some(Fault::known(k, words.join(" · "))))
+            let f = match first.filter(|f| f.which().is_some()) {
+                Some(f) => f.retold(words.join(" · ")),
+                None => Fault::known(Known::Unreachable, words.join(" · ")),
+            };
+            (Reading::Down, Some(f))
         }
         1 => (Reading::Single, None),
         n => (Reading::Agreed(n), None),

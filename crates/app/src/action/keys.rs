@@ -1,26 +1,5 @@
 use super::*;
 
-pub(super) fn make_anchor_key(shell: &mut Shell) -> Result<Address, crate::fault::Fault> {
-    let s = crate::key::generate()?;
-    let a = s
-        .address()
-        .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string()))?;
-    crate::key::install(crate::register::account_now()?.as_deref(), &s)?;
-    // Load the key back and compare: the claim is that the key vault holds this key, so ask the vault rather
-    // than trusting the store call's success or the freshly generated key.
-    match crate::key::load(crate::register::account_now()?.as_deref())? {
-        Some(back) if back.address() == Some(a) => {}
-        _ => {
-            return Err(crate::fault::Fault::known(
-                crate::fault::Known::KeyNotStored,
-                crate::places::key_account().to_string(),
-            ))
-        }
-    }
-    shell.anchor = Some(a);
-    Ok(a)
-}
-
 /// Changes the time zone only if the change can be saved. If not (no home, read-only), it is refused by name:
 /// a change shown but not saved would silently revert at the next start.
 pub(super) fn set_zone(shell: &mut Shell, zone: crate::when::Zone) -> Result<crate::when::Zone, crate::fault::Fault> {
@@ -30,16 +9,20 @@ pub(super) fn set_zone(shell: &mut Shell, zone: crate::when::Zone) -> Result<cra
     Ok(zone)
 }
 
+/// The language is a machine preference: the passcode gate and the first-run wizard are drawn before any home's
+/// sealed settings can be read, so the choice is kept in this machine's settings first, and a change that cannot
+/// be kept there is refused by name. An open home's settings take it too, since they speak first
+/// (`Shell::speaks`): an open home that cannot be written (another window writes it) refuses the change, as a
+/// change shown but not kept would come back at the next start. Without a home, the machine's choice is the one.
 pub(super) fn set_lang(shell: &mut Shell, lang: crate::lang::Lang) -> Result<crate::lang::Lang, crate::fault::Fault> {
-    shell.may_save_settings()?;
-    shell.commit_settings(|s| s.lang = Some(lang))?;
-    crate::lang::set(lang);
-    // The passcode gate is shown before the home's sealed settings can be read, so the choice is also kept on
-    // this machine. A failure here is reported; the gate just keeps its previous language.
-    match crate::machine::update(|m| m.lang = Some(lang)) {
-        Ok(m) => shell.machine = m,
-        Err(f) => shell.faults.push(f),
+    if shell.home.is_some() {
+        shell.may_save_settings()?;
     }
+    shell.machine = crate::machine::update(|m| m.lang = Some(lang))?;
+    if shell.home.is_some() {
+        shell.commit_settings(|s| s.lang = Some(lang))?;
+    }
+    crate::lang::set(lang);
     Ok(lang)
 }
 
@@ -51,6 +34,13 @@ pub(super) fn seat_word(r: crate::roles::Role) -> crate::lang::Key {
     }
 }
 
+/// The register's current identity and seat. Without a register (or with no current row) there is no
+/// identity, so nothing that makes or takes a key goes on: refused by name, naming the register.
+pub(super) fn listed_now() -> Result<(crate::identity::Row, crate::roles::Role), crate::fault::Fault> {
+    crate::register::now_row_listed()?
+        .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoIdentity, crate::places::registry_file()))
+}
+
 /// Returns the signing key, only for the owner of the open home and only for a seat allowed this domain.
 ///
 /// The key follows the register's current identity while the open home is chosen separately, so the two can
@@ -58,7 +48,7 @@ pub(super) fn seat_word(r: crate::roles::Role) -> crate::lang::Key {
 /// Signing then would append an entry with the wrong author, and the append-only ledger would read as broken
 /// from then on. So with a register, the key is handed out only when the open home is the one registered for
 /// the current identity's current seat; otherwise it is refused by name before anything is written. Without a
-/// register (machines not yet upgraded, a test's temporary home) the key at the account base is used.
+/// register there is no identity, and no key: refused by name.
 pub(super) fn signing_key(shell: &Shell, u: crate::sign::Use) -> Result<crate::key::Secret, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     // Check seat × domain against the closed table first: only `sign::seat_may` decides, and the refusal
@@ -71,7 +61,8 @@ pub(super) fn signing_key(shell: &Shell, u: crate::sign::Use) -> Result<crate::k
             crate::lang::filln(crate::lang::Key::TailSeatDomain, &[u.as_str(), crate::lang::t(seat_word(go))]),
         ));
     }
-    if let (Some((row, seat)), Some(home)) = (crate::register::now_row_listed()?, shell.home.as_ref()) {
+    let (row, seat) = listed_now()?;
+    if let Some(home) = shell.home.as_ref() {
         // An empty seat has no home, so no home belongs to it: a mismatch is refused by name before anything
         // is written.
         let owns = row
@@ -86,28 +77,17 @@ pub(super) fn signing_key(shell: &Shell, u: crate::sign::Use) -> Result<crate::k
 }
 
 pub(super) fn switch_role(shell: &mut Shell) -> Result<crate::roles::Role, crate::fault::Fault> {
-    use crate::identity::Slot;
     // The register's current identity has one slot per key: switching seat switches the derived key and that
     // seat's home.
     if let Some((row, seat)) = crate::register::now_row_listed()? {
-        {
-            let (id, slot, other) = (row.id.clone(), row.slot(), seat.other());
-            if slot == Slot::Own {
-                let row = crate::register::change(other, |reg| crate::identity::switch(reg, &id, other))?;
-                enter(shell, &row, other)?;
-                return Ok(shell.settings.role);
-            }
-            // An existing-key slot: only the view changes, and the register's current seat follows.
-            shell.commit_settings(|s| s.role = s.role.other())?;
-            let seat = shell.settings.role;
-            crate::register::change(seat, |reg| crate::identity::switch(reg, &id, seat))?;
-            shell.seat_identities(Some(crate::register::view(seat)?));
-            return Ok(shell.settings.role);
-        }
+        let (id, other) = (row.id.clone(), seat.other());
+        let row = crate::register::change(|reg| crate::identity::switch(reg, &id, other))?;
+        enter(shell, &row, other)?;
+        return Ok(shell.settings.role);
     }
     shell.commit_settings(|s| s.role = s.role.other())?;
-    // Without a register the identity reads as the existing slot key and the current seat follows settings,
-    // so readings switch along and no old seat stays on screen.
-    shell.seat_identities(Some(crate::register::view(shell.settings.role)?));
+    // Without a register there is no identity; the seat follows settings, so readings switch along and no old
+    // seat stays on screen.
+    shell.seat_identities(Some(crate::register::view()?));
     Ok(shell.settings.role)
 }

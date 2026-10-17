@@ -2,7 +2,7 @@
 
 ZIKARON Desk is a desktop application for your own machine. It records your works or files in an append-only ledger, anchors that ledger to Ethereum (or the layer-2 network you choose), and lets you issue grants from it. Whoever receives a grant can verify it independently, on any machine.
 
-This manual describes version 0.1.2. Words that appear in the interface are quoted exactly as the window shows them.
+This manual describes version 0.1.3. Words that appear in the interface are quoted exactly as the window shows them.
 
 ---
 
@@ -42,7 +42,7 @@ A recovery-phrase identity derives its two keys at `m/44'/60'/0'/0/0` (Recorder)
 
 A User can also write a **sublicense** in their own ledger, passing an upstream grant on to someone else.
 
-**Record kit.** A folder exported from a ledger. It holds the chosen entries, the original files and the on-chain proofs, so someone else can verify them offline.
+**Record kit.** One file (`.zkit`) or a folder exported from a ledger. It holds the chosen entries, the original files and the on-chain proofs, so someone else can verify them offline.
 
 **Local encryption.** All local data is encrypted under one master key, and the master key is opened by an 8-character passcode. While the app is locked, none of the local data can be read.
 
@@ -52,21 +52,29 @@ A User can also write a **sublicense** in their own ledger, passing an upstream 
 
 ## 2 · Installation
 
-Version 0.1.2 comes as packages for macOS with Apple silicon and for x86_64 Linux, and as a zip for x86_64 Windows. Every package carries the third-party licences (on macOS in `ZIKARON.app/Contents/Resources/THIRD-PARTY-LICENSES.txt`, on Linux in `/usr/share/doc/zikaron-desk/THIRD-PARTY-LICENSES.txt`, on Windows in the unpacked folder); in the app they are under "About".
+Version 0.1.3 comes as packages for macOS with Apple silicon and for x86_64 Linux, and as a zip for x86_64 Windows. Every package carries the third-party licences (on macOS in `ZIKARON.app/Contents/Resources/THIRD-PARTY-LICENSES.txt`, on Linux in `/usr/share/doc/zikaron-desk/THIRD-PARTY-LICENSES.txt`, on Windows in the unpacked folder); in the app they are under "About".
 
-**Upgrading from 0.1.1.** Install the new version; existing data folders and the machine folder open as before. Encrypted local files written by 0.1.2 cannot be read by 0.1.1, so do not open the same data with 0.1.1 after upgrading.
+**Upgrading from an earlier version.** This version reads only the encrypted form it writes itself. A file an earlier version left in an older form is not read: it is named as not encrypted in this version's form and left as it is. That holds for the machine folder any earlier version wrote (key store, identity registry, settings), so this version starts from an empty machine folder; ledgers kept by 0.1.0 and 0.1.1 also hold their entries in an older form. To bring a Recorder's ledger across:
+
+1. In 0.1.2, "Export ledger mirror" (see "Ledger mirror") to a folder outside the machine folder, then quit.
+2. Move the earlier version's machine folder aside, together with its pointer file (Appendix B says where both are), so that this version finds neither. Data folders kept inside the machine folder move with it; the mirror is what comes across.
+3. Start this version: it begins with an empty machine folder. Set a passcode, then import the identity with the same recovery phrase.
+4. When the wizard reaches "Create the ledger", do not create a new ledger: click "Adopt existing ledger folder", choose the mirror's `author` folder and press "Adopt in place" (see "Step 4 · Create the ledger" in section 3). Every entry is checked again, and the ledger is then checked against this key's records on chain; once adopted, the step is done and the wizard goes on. A home that already has its own ledger does not take another.
+5. Run the ledger check on the Ledger page and see it come back "OK".
+
+Encrypted local files written by this version cannot be read by earlier versions.
 
 **macOS**
 
-- `ZIKARON-0.1.2-macos-arm64.dmg`: open it and drag `ZIKARON.app` to Applications. The `zikaron` command line is inside the app bundle at `ZIKARON.app/Contents/MacOS/zikaron`; to type `zikaron` in a terminal, turn on "Enable command line" in Settings > Local data (see "Data folder"): it places a link in `/usr/local/bin` pointing at the command line inside the app bundle, and when needed macOS shows its own administrator password dialog. An app run straight from the dmg cannot do this and says "Move the app to the Applications folder first".
-- `ZIKARON-0.1.2-macos-arm64.pkg`: an installer that puts the app in `/Applications` and the command line at `/usr/local/bin/zikaron`, so `zikaron` works in a terminal right after installing and "Enable command line" is not needed (with the pkg's command line already in that place, the switch shows "Taken by another install").
+- `ZIKARON-0.1.3-macos-arm64.dmg`: open it and drag `ZIKARON.app` to Applications. The `zikaron` command line is inside the app bundle at `ZIKARON.app/Contents/MacOS/zikaron`; to type `zikaron` in a terminal, turn on "Enable the zikaron command" in Settings > Command line (see "Command line"): it places a link in `/usr/local/bin` pointing at the command line inside the app bundle, and when needed macOS shows its own administrator password dialog. An app run straight from the dmg cannot do this and says "Move the app to the Applications folder first".
+- `ZIKARON-0.1.3-macos-arm64.pkg`: an installer that puts the app in `/Applications` and the command line at `/usr/local/bin/zikaron`, so `zikaron` works in a terminal right after installing and "Enable the zikaron command" is not needed (with the pkg's command line already in that place, the switch shows "Taken by another install").
 - macOS 11 or later is required.
 - The app is signed with a self-signed certificate (Kaptonia) and is not notarized by Apple. Files downloaded in a browser carry macOS's quarantine flag, and macOS refuses to open them; on recent macOS, "Open Anyway" in System Settings > Privacy & Security does not always work either. Check the SHA-256 with `shasum -a 256 <file>` first, then remove the quarantine flag in Terminal:
 
   - With the dmg: before opening the dmg, run the command below, then open the dmg and drag `ZIKARON.app` to Applications:
 
     ```
-    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.2-macos-arm64.dmg
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.3-macos-arm64.dmg
     ```
 
     If you have already dragged the app in, run this instead:
@@ -78,29 +86,29 @@ Version 0.1.2 comes as packages for macOS with Apple silicon and for x86_64 Linu
   - With the pkg: run the command below, then double-click the pkg to install:
 
     ```
-    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.2-macos-arm64.pkg
+    xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.3-macos-arm64.pkg
     ```
 
   Change the paths to wherever you downloaded the files.
 
 **Linux**
 
-- `zikaron-desk_0.1.2_amd64.deb`: for Debian, Ubuntu and their derivatives. Install it with `sudo apt install ./zikaron-desk_0.1.2_amd64.deb`; the window program is `zikaron-desk` (also in the applications menu) and the command line is `zikaron`, both in `/usr/bin`, so `zikaron` works in a terminal right after installing ("Enable command line" in Settings > Local data shows "Provided by the installed package").
-- `ZIKARON-0.1.2-x86_64.AppImage`: no installation; make it executable with `chmod +x` and run it. Running it opens the window program; the `zikaron` command line inside is not exposed, and "Enable command line" is not available in an AppImage ("Not supported for this install"), so install the `.deb` for the command line. It uses FUSE; on a system without FUSE, run it with `--appimage-extract-and-run`.
+- `zikaron-desk_0.1.3_amd64.deb`: for Debian, Ubuntu and their derivatives. Install it with `sudo apt install ./zikaron-desk_0.1.3_amd64.deb`; the window program is `zikaron-desk` (also in the applications menu) and the command line is `zikaron`, both in `/usr/bin`, so `zikaron` works in a terminal right after installing ("Enable the zikaron command" in Settings > Command line shows "Provided by the installed package").
+- `ZIKARON-0.1.3-x86_64.AppImage`: no installation; make it executable with `chmod +x` and run it. Running it opens the window program; the `zikaron` command line inside is not exposed, and "Enable the zikaron command" is not available in an AppImage ("Not supported for this install"), so install the `.deb` for the command line. It uses FUSE; on a system without FUSE, run it with `--appimage-extract-and-run`.
 - Both need glibc 2.31 or later (Ubuntu 20.04, Debian 11 and later). The packages are not signed; check the SHA-256 with `sha256sum <file>` first.
-- For other architectures or distributions, build from source as described under "Build from source" in the repository's README. In an app built from source, "Enable command line" places a link named `zikaron` in `~/.local/bin`, which must be on your `PATH`. On x86_64 Linux, `packaging/linux/build.sh` makes a `.deb` and an AppImage; on aarch64 it makes only the `.deb`, and the AppImage step stops with an error because no AppImage runtime is pinned for that architecture.
+- For other architectures or distributions, build from source as described under "Build from source" in the repository's README. In an app built from source, "Enable the zikaron command" places a link named `zikaron` in `~/.local/bin`, which must be on your `PATH`. On x86_64 Linux, `packaging/linux/build.sh` makes a `.deb` and an AppImage; on aarch64 it makes only the `.deb`, and the AppImage step stops with an error because no AppImage runtime is pinned for that architecture.
 - File dialogs go through the desktop portal, so install `xdg-desktop-portal` and a backend such as `xdg-desktop-portal-gtk`. Without a portal, clicking to choose a file says "The system file dialog can't open on this machine."; drag the file into the window instead.
 - Dropping files on the window needs X11: when there is an X display (including XWayland on a Wayland desktop) the window runs on X11; in a pure Wayland session with no X display it runs on Wayland and does not receive dropped files.
-- On Linux, a drop zone that takes either a file or a folder (such as New record) opens a dialog that picks files only; to give a folder, drag the folder in. "Choose folder…" picks folders as usual.
+- On Linux, a drop zone that takes either a file or a folder (such as New record) opens a dialog that picks files only; to give a folder, drag the folder in. "Choose folder" picks folders as usual.
 
 **Windows**
 
-- `ZIKARON-0.1.2-windows-x86_64.zip`: for Windows 10 and 11 on x86_64. Nothing to install: unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder. The programs carry their own runtime; nothing else is needed.
+- `ZIKARON-0.1.3-windows-x86_64.zip`: for Windows 10 and 11 on x86_64. Nothing to install: unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder. The programs carry their own runtime; nothing else is needed.
 - `zikaron.exe` is a command line and runs in a terminal: in its folder, hold Shift, right-click an empty spot and choose "Open in Terminal" ("Open PowerShell window here" on Windows 10), then type `.\zikaron.exe` with a verb and its flags. Double-clicked in Explorer, it opens a window, prints its usage and closes at once, which looks like a crash but is not one.
 - Check the SHA-256 first in PowerShell with `Get-FileHash <file> -Algorithm SHA256`.
 - The programs are not signed. On first start Windows says "Windows protected your PC"; click "More info", then "Run anyway". On Windows 11 with Smart App Control on, unsigned programs are blocked outright: there is no "Run anyway" and no way to allow this one program; to use it, first turn Smart App Control off in Windows Security › App & browser control › Smart App Control settings.
 - To upgrade, replace the folder with the new version's. Machine data is not in the unpacked folder but in `%LOCALAPPDATA%\ZIKARON\` (see Appendix B); deleting the unpacked folder does not delete it.
-- No Start menu entry or desktop shortcut is added. To type `zikaron` in any terminal, turn on "Enable command line" in Settings > Local data, which adds the command line's folder to this user's `PATH` (no administrator rights needed); terminals opened after that find `zikaron`. If you move the unpacked folder elsewhere, the switch shows off; turn it on again to add the new place. Replacing the folder in place, as when upgrading, needs nothing.
+- No Start menu entry or desktop shortcut is added. To type `zikaron` in any terminal, turn on "Enable the zikaron command" in Settings > Command line, which adds the command line's folder to this user's `PATH` (no administrator rights needed); terminals opened after that find `zikaron`. If you move the unpacked folder elsewhere, the switch shows off; turn it on again to add the new place. Replacing the folder in place, as when upgrading, needs nothing.
 - On Windows, as on Linux, a drop zone that takes either a file or a folder opens a dialog that picks files only; to give a folder, drag the folder in.
 
 The window program takes no arguments: started with any, it opens no window and only says why. To work with a file, open the window and drop the file on it; for the command line, use `zikaron`. If the window cannot open (usually the graphics driver does not support the OpenGL it needs, or it runs in a virtual machine or remote desktop without 3D acceleration), it says why as well; on Windows, started by double-clicking in Explorer, it says so in a system dialog.
@@ -131,12 +139,14 @@ Without a passcode, the wizard stays on step 1. With a passcode but no identity,
 **Bottom buttons**
 
 - On the left: "Back", and "Later" on steps that may be skipped. On the last step this key reads "Do it later" and closes the wizard with the same message as "Finish".
+- "Back" goes to the page before: from the check of the copied words to the same twelve words (the check boxes emptied), and from a step's first page to the step before.
+- At the bottom left of the sidebar, just above "Exit setup", "中文" | "English" switches the interface language from the first step on. The choice is kept on this machine and used on the passcode gate too (the gate does not switch it).
 - On the right: the step's own action key until the step is done (step 1 has none; filling the boxes submits), then a blue "Next". The last step has "Finish", which shows "First run complete; remaining items are in Settings > About".
 
-**Leaving the wizard.** "Exit setup" at the bottom of the step list, or Esc, returns you to where you were before the wizard opened. Finished steps stay finished. At the next start the wizard opens again only if the passcode or identity is still missing, or a Recorder's ledger has not been created; for the other unfinished steps, use "Run wizard again" in Settings > About.
+**Leaving the wizard.** "Exit setup" at the bottom left of the sidebar (the language switch just above it), or Esc, returns you to where you were before the wizard opened. It is there once this machine has a passcode and an identity: on the first start it appears as soon as both are set, and the same after a restart; before that there is nowhere to go back to. Leaving at "Create the ledger" keeps the identity and creates no ledger. Finished steps stay finished. At the next start the wizard opens again only if the passcode or identity is still missing, or a Recorder's ledger has not been created; for the other unfinished steps, use "Run wizard again" in Settings > About.
 
 - If fresh recovery words have not been checked yet, it asks "Exit setup?" first: "These words haven't been checked; exiting discards them." "Exit" discards the words and leaves; "Keep checking" or Esc stays in the wizard.
-- A true first run (no passcode and no identity) has no way out.
+- While the passcode or the identity is still missing (on a true first run, both are), there is no way out and Esc does not leave.
 
 **Other ways to open it**
 
@@ -144,8 +154,8 @@ Without a passcode, the wizard stays on step 1. With a passcode but no identity,
 |---|---|
 | "Run wizard again" in Settings > About | The first unfinished step; step 1 if all are done. Disabled while the current role has no identity |
 | "Go set one" in Settings > Identity key | Step 1 |
-| "Create key…" on the "Sublicense" page (when there is no signing key yet) | Step 2 |
-| "Set up ledger…" on the "Sublicense" page (when there is no ledger yet) | Step 4 |
+| "Create key" on the "Sublicense" page (when there is no signing key yet) | Step 2 |
+| "Create the ledger" on the "Sublicense" page (when there is no ledger yet) | Step 4 |
 
 Whenever there is no passcode yet, it opens at step 1.
 
@@ -170,11 +180,11 @@ You may first type a name in "Label" (optional, just for you to recognise it). T
 3. Write them down in order on paper and press "I have written them down". It only works after the words have been shown, and it covers them again.
 4. Under "Enter these three words from your written copy.", fill in the three words it asks for ("Word N") and press "Confirm and create". If they match, the identity is created.
 
-**Import an existing key**: press "Import an existing key…". See "Import key" under "Identity and keys". Imported here, it is the machine's first identity and becomes primary; a private key then exports its key file on the same form (the key file password twice and where to save it), and a forgotten passcode is recovered with that file.
+**Import an existing key**: press "Import an existing key". See "Import key" under "Identity and keys". Imported here, it is the machine's first identity and becomes primary; a private key then exports its key file on the same form (the key file password twice and where to save it), and a forgotten passcode is recovered with that file.
 
 An imported key may have written a ledger elsewhere, so it cannot write at first: once a network is chosen in step 3, the app checks this key's records on chain against the ledger here. If the chain holds no record of this key (a new key, say) or every record is in the ledger, writing opens; if the chain holds records the ledger lacks, see "Fetching the ledger" under "Storage".
 
-**Restore from a backup**: press "Restore from backup…", choose a whole-machine backup file, enter the "Backup password" and press "Recover". Identities, keys, ledgers and settings all come back, re-encrypted under the passcode you just set, and the wizard closes.
+**Restore from a backup**: press "Restore from backup", choose a whole-machine backup file, enter the "Backup password" and press "Recover". Identities, keys, ledgers and settings all come back, re-encrypted under the passcode you just set, and the wizard closes.
 
 The first identity created on a machine is its primary identity.
 
@@ -185,9 +195,9 @@ There are two choices:
 - "Ethereum mainnet", marked "Recommended", with "Uses public nodes" under it; selected by default until the current identity or this machine has chosen a network.
 - "Custom": "Left empty: fill in the chain, contract and nodes in Settings, Network (a preset can fill them)".
 
-Pressing "Next" makes the choice. What you choose here is the network of the identity made in step 2, and both its roles (recorder and user) use it: with mainnet, the current role's data folder gets the chain id, registry contract, start block and two public nodes at once, and the other role's data folder gets the same the first time it opens; with "Custom", a network a preset filled into the current data folder is cleared (one filled in by hand is left alone), and reading the chain or anchoring says no network is configured until you open "Edit nodes…" in Settings > Network, fill it in by hand or pick a preset, and save. The machine also remembers this choice: the wizard and "New identity…" select it first next time.
+Pressing "Next" makes the choice. What you choose here is the network of the identity made in step 2, and both its roles (recorder and user) use it: with mainnet, the current role's data folder gets the chain id, registry contract, start block and two public nodes at once, and the other role's data folder gets the same the first time it opens; with "Custom", a network a preset filled into the current data folder is cleared (one filled in by hand is left alone), and reading the chain or anchoring says no network is configured until you open "Edit nodes" in Settings > Network, fill it in by hand or pick a preset, and save. The machine also remembers this choice: the wizard and "New identity" select it first next time.
 
-Sepolia testnet, Arbitrum One and OP Mainnet are not listed here. To use one, choose "Custom", then open "Edit nodes…" in Settings > Network and pick it under "Preset" (see Appendix A). The one exception: if the current identity or this machine has already chosen one of them (for example, restored from such a backup), it appears between "Ethereum mainnet" and "Custom".
+Sepolia testnet, Arbitrum One and OP Mainnet are not listed here. To use one, choose "Custom", then open "Edit nodes" in Settings > Network and pick it under "Preset" (see Appendix A). The one exception: if the current identity or this machine has already chosen one of them (for example, restored from such a backup), it appears between "Ethereum mainnet" and "Custom".
 
 Anchoring on mainnet costs real ETH in gas.
 
@@ -198,6 +208,13 @@ An identity imported in step 2 creates its ledger once it has been checked again
 1. Describe what the ledger is for in "Ledger description (optional)".
 2. Press "Create the ledger". A confirmation card shows "Ledger description" and "Cost" ("Free (local only)"), with the note "Cannot be changed after creation". The ledger's location is under "Details".
 3. Press "Create the ledger" on the card to write it.
+
+**Adopting an existing ledger folder.** With a ledger already at hand (a ledger folder, or a mirror "Export ledger mirror" wrote), there is no need to create one: "Adopt existing ledger folder", beside "Create the ledger" (there while this data folder has no ledger), opens a card of the same name. The card says to choose a ledger folder, or the folder an earlier version's "Export ledger mirror" wrote: its entries are checked one by one and sealed into this data folder, and the folder itself is not changed.
+
+1. Choose that folder under "Ledger folder".
+2. Press "Adopt in place" (it can be pressed once a folder is chosen). "Cancel" or Esc closes the card and adopts nothing.
+
+This is the same adoption as "Adopt existing ledger folder", then "Adopt in place" under "Advanced options" in Settings > Local data, with the same rules and the same words when it is refused (see "Data folder" under "Storage"). Once adopted, this data folder has its root entry and the step is done just as after creating the ledger: the right-hand key becomes "Next", and adding gas comes next. For an imported identity, the adopted ledger is then checked against this key's records on chain (see "Fetching the ledger").
 
 #### Step 5 · Add gas
 
@@ -212,7 +229,7 @@ Reading the balance needs nodes. If you chose "Custom" in step 3, set up nodes i
 
 The page reads "One backup file restores everything; with only the recovery words, only data readable on chain comes back."
 
-Press "Export backup…" and fill it in as described under "Whole-machine backup" in "Storage". Once the export succeeds, the step is done.
+Press "Export backup" and fill it in as described under "Whole-machine backup" in "Storage". Once the export succeeds, the step is done.
 
 ---
 
@@ -226,14 +243,14 @@ The sidebar is on the left and the page is on the right. Across the top of the p
 
 1. **Identity chip**: shows the current identity's name ("Unnamed" if it has none) and its kind ("No identity yet" when there is none). Click it to open the identity menu:
    - The title "Switch identity" sits on top; under it each identity takes two lines: its name, then its kind, with "Primary" after the primary one and "In use" after the current one, which sits in a blue frame. Click another identity to switch to it and land on Home.
-   - After the identities: "New identity…", "Import key…" and "Identity key" (the Identity key page in Settings).
+   - After the identities: "New identity", "Import key" and "Identity key" (the Identity key page in Settings).
 2. **Role switch**: the segmented control "Recorder" | "User". Switching replaces the whole sidebar with that role's pages, lands on Home and shows "Switched to …".
 3. **Pages**:
 
    | Recorder | User |
    |---|---|
    | Home | Home |
-   | **Entries**: Records, Grant | **Grant**: My grants |
+   | **Entry**: Records, Grant | **Grant**: My grants |
    | **Look up**: Verify, Ledger, Alerts | **Look up**: Verify, Alerts |
 
    - The number next to "Alerts" counts the amber and red rows on the Alerts page.
@@ -344,7 +361,7 @@ Results appear as a small card at the top centre of the page. Only one shows at 
 - As a Recorder, it opens "New record".
 - As a User, it goes to "Verify record" and checks it straight away.
 
-**Choosing a path.** Where a folder or file is needed, one line shows the chosen path ("None selected" if nothing is chosen yet), with "Choose a file…" or "Choose folder…" beside it. Output locations are chosen with "Choose folder…" too: record kits, grant files, credentials and snapshots default to the `kits` folder in the data folder; backups and mirrors default to the location used last time (the first time you choose); key files have no default and need a folder chosen first.
+**Choosing a path.** Where a folder or file is needed, one line shows the chosen path ("None selected" if nothing is chosen yet), with "Choose a file" or "Choose folder" beside it. Output locations are chosen with "Choose folder" too: record kits, grant files, credentials and snapshots default to the `kits` folder in the data folder; backups and mirrors default to the location used last time (the first time you choose); key files have no default and need a folder chosen first.
 
 ---
 
@@ -385,17 +402,18 @@ On the passcode gate, press "Forgot passcode" to reach "Recover". Only the **pri
 - **The primary is a recovery-phrase identity**: the card reads "Enter the primary identity's recovery words to reset the passcode." Fill in the 12 words.
   - You can paste the whole phrase into any box; it spreads out from that box onward.
   - Every box shows dots, and a word not on the word list is marked red.
-- **The primary is an imported local-key identity**: the card reads "Use the primary identity's key file to reset the passcode." Press "Choose a file…" to pick the key file exported from the primary identity, and enter the "File password". A wrong password gives "Incorrect password."; a file that is not a key file, or whose encryption parameters are out of bounds, is refused before any decryption work starts ("The keystore file format is not recognised.", "The keystore file has invalid encryption parameters.").
+  - Below the boxes, the fold "Recover with a key file" takes a key file exported from either role of the primary identity ("Export key file" in Settings > Identity key), with its "Password", instead of the words: "Or use a key file exported from the primary identity."
+- **The primary is an imported local-key identity**: the card reads "Use the primary identity's key file to reset the passcode." Press "Choose a file" to pick the key file exported from the primary identity, and enter the "File password". A wrong password gives "Incorrect password."; a file that is not a key file, or whose encryption parameters are out of bounds, is refused before any decryption work starts ("The keystore file format is not recognised.", "The keystore file has invalid encryption parameters.").
 
 Then set a new passcode, entering it twice ("Set a passcode", then "Enter it again"). On success the wrong-try count is cleared, the old passcode no longer works, and the toast reads "Recovered, passcode reset".
 
 - A secondary identity's words or key file are refused: "This belongs to a secondary identity." and "Only the primary identity recovers the passcode; use the primary's, or restore from a backup."
-- If the key store has not yet recorded which identity is primary, both ways are offered: the twelve boxes, and below them the fold "Recover with a key file" (key file and "Password"). The primary is recorded at this unlock.
+- Without a primary identity (no identity on this machine yet) there is nothing to recover with; a machine locked out like this offers to reset the empty key store instead.
 - "Cancel" returns to the passcode card. Once the gate is "Locked" there is no "Cancel": only recovery remains.
 
 #### 5.4 Restoring from a backup at the gate
 
-At the bottom of the recovery card is "Restore from backup…":
+At the bottom of the recovery card is "Restore from backup":
 
 1. Choose a whole-machine backup file, enter the "Backup password" and press "Recover".
 2. "Replace this machine with the backup?" shows the backup's name and contents, with the note "The backup will replace this machine's identities and data; anything here that isn't in the backup will be lost." Press "Replace".
@@ -433,8 +451,8 @@ If a passcode was set but no identity was ever created, and then 5 wrong tries l
    3. Drop in the terms file and choose a validity period.
    4. Press "Add to ledger", then again on the confirmation card.
    5. Put it on chain as in step 3.
-5. **Hand it over.** On the grant's detail page, press "Copy grant code" or "Export grant file…" and send it to the grantee. The grant file carries your ledger, so they can run the full check.
-6. **Day to day.** Watch the Alerts page. To take a grant back, press "Revoke grant…" on its detail page.
+5. **Hand it over.** On the grant's detail page, press "Copy grant code" or "Export grant file" and send it to the grantee. The grant file carries your ledger, so they can run the full check.
+6. **Day to day.** Watch the Alerts page. To take a grant back, press "Revoke grant" on its detail page.
 
 ---
 
@@ -444,7 +462,7 @@ If a passcode was set but no identity was ever created, and then 5 wrong tries l
 
 When the chain holds records of this ledger that this machine lacks, a red card "Ledger needs fetching" comes first: "N records on chain are not on this machine. Until fetched, nothing can be written, anchored or exported." Its "Fetch ledger" opens Settings > Local data.
 
-**Top left: the drop zone** "Drop a record to register it". Drop one item or click to choose one, and "New record" opens.
+**Top left: the drop zone** "Drop files to record them". Drop one item or click to choose one, and "New record" opens.
 
 **Top right: the "Pending" card** shows how many entries are queued. It has three states:
 
@@ -472,9 +490,9 @@ When the chain holds records of this ledger that this machine lacks, a red card 
 
 The "All" segment, top to bottom:
 
-- The drop zone "New record".
+- The drop zone "Drop files to record them"; dropping or choosing opens "New record".
 - The search field "Find by record name or content fingerprint", with "Start date" and "End date" beside it filtering by first anchor block time. To see whether a file is in this ledger, type its SHA-256 into the search field.
-- The record table, with the columns "Entries", "On-chain state", "First anchor block time" and "Entry number", newest first. Deleted records are struck through. With no records yet it reads "No records yet. Drop a file to start."
+- The record table, with the columns "Entry", "On-chain state", "First anchor block time" and "Entry number", newest first. Deleted records are struck through. With no records yet it reads "No records yet. Drop a file to start."
 
 #### New record
 
@@ -532,11 +550,11 @@ Click a row in the record table. The title is the record's name, with "#N · Rec
 
 - Still in the pending queue and not yet sent: "Put on chain now" and "Export record kit", with the hint "Put it on chain before granting it".
 - Otherwise: "Grant to someone" and "Export record kit". "Grant to someone" works only once the state is "Confirmed"; until then the hint reads "Put it on chain before granting it", or "Waiting for this check" when only the previous session's check confirmed it.
-- At the bottom: "Delete record…".
+- At the bottom: "Delete record".
 
 #### Deleting a record
 
-"Delete record…" opens the card "Delete this record?", with the note "The record will be marked as deleted. Grants already issued are not affected." Press "Delete".
+"Delete record" opens the card "Delete this record?", with the note "The record will be marked as deleted. Grants already issued are not affected." Press "Delete".
 
 - A "Deletion" entry pointing at the record is added to the ledger. The original entry is not changed by a single byte.
 - From then on the record is struck through, its page says "Deleted by entry #N. It can no longer be granted.", its page no longer offers the grant and export buttons, and New grant no longer offers it.
@@ -560,7 +578,8 @@ For the entry's format and how it is read, see Appendix C.
 
 - On top is the search field "Find by entry number or summary".
 - The table lists number, type, summary, the date each entry was queued and a state light. When empty it reads "Nothing pending".
-- Entries the command line hands to the desktop with "Queue only" (Settings > Network, "Putting on chain from the command line") join this queue, with the toast "N records from the command line are queued".
+- Entries the command line hands to the desktop with "Queue only" (Settings > Command line, "Putting on chain from the command line") join this queue, with the toast "N records from the command line are queued".
+- The queue follows the ledger and the chain: an entry the ledger check finds on chain already while it waits unsent in the queue (one the command line put on chain itself, say) leaves the queue, recorded as on chain, and is not sent again; an entry of the ledger that is neither on chain nor queued (one adopted in place, say) joins the queue after the next ledger check every node answered.
 - Below the table, while anything is queued or a batch has been sent, is the "This batch" card: "N entries · gas not estimated" before an estimate and "N entries · gas estimate …" (a gas amount) after, with "Put all on chain" and "Sync". After a batch has been sent, a "Last batch" line appears ("N put on chain · N removed"). If a submitted batch's chain has no node in the current settings, the page says "A batch was submitted and is waiting for its receipt. There is no node for chain N right now, so it cannot continue."
 - Click a row for its detail: "Summary", "Queued at", "Sent together" ("First N", or "Submitted, waiting for its receipt" once sent) and "First anchor block time"; the button "Put on chain now" appears only before it is sent.
 
@@ -571,20 +590,21 @@ For the entry's format and how it is read, see Appendix C.
 
 All entries in a batch travel in one transaction.
 
-**The gas cap** is worked out from the chain's actual fees: (base fee × 2 + tip) × the gas limit this transaction carries. The limit is one and a half times the gas the nodes estimate (rounded up), at most 200,000; an estimate above 200,000 is refused and nothing is sent. The base fee is read at the block every node has reached (the lowest height when nodes differ), and nodes are compared on the base fee alone. The tip is the median, over the 20 blocks up to that block, of each block's median paid tip (blocks whose median is zero are left out unless all are zero), at most 1 gwei; when the nodes give no answer, refuse, disagree or answer in another shape, it is 1 gwei. If the base fee cannot be read, the whole pair falls back (a 3 gwei cap and a 1 gwei tip; the limit still follows the estimate, so at most 0.0006 ETH): the cap on the confirmation card is then the fallback's, the card says "No base fee from the nodes; cap at the fallback", and the chain is asked again the next time the card opens. Nodes serving another chain are not read for fees, and the card names them. The gas estimate takes its block by the same rule (the lowest block every node has reached). Only this chain's nodes are asked. On the layer-two networks Arbitrum One and OP Mainnet the tip is likewise what the chain actually paid, usually far below 1 gwei, so what is set aside and what is paid are a small fraction of mainnet's.
+**The gas cap** is worked out from the chain's actual fees: (base fee × 2 + tip) × the gas limit this transaction carries. The limit is one and a half times the gas the nodes estimate (rounded up), at most 200,000; an estimate above 200,000 is refused and nothing is sent. The base fee is read at the block every node has reached (the lowest height when nodes differ), and nodes are compared on the base fee alone. The tip is the median, over the 20 blocks up to that block, of each block's median paid tip (blocks whose median is zero are left out unless all are zero), at most 1 gwei; when the nodes give no answer, refuse, disagree or answer in another shape, it is 1 gwei. If the base fee cannot be read, the whole pair falls back (a 3 gwei cap and a 1 gwei tip; the limit still follows the estimate, so at most 0.0006 ETH): the cap on the confirmation card is then the fallback's, the card says "No base fee from the nodes; cap at the fallback", and the chain is asked again the next time the card opens. Nodes serving another chain are not read for fees, and the card names them. The gas estimate takes its block by the same rule (the lowest block every node has reached); when the nodes estimate different amounts, the largest any node gives is taken, and above 200,000 it is still refused. Only this chain's nodes are asked. On the layer-two networks Arbitrum One and OP Mainnet the tip is likewise what the chain actually paid, usually far below 1 gwei, so what is set aside and what is paid are a small fraction of mainnet's.
 
 **Checks before sending**
 
 - If the balance cannot cover the cap, nothing is sent. The message is "Insufficient balance." and "Needs N ETH, have N ETH.", with "Copy address" so you can top it up.
 - The balance is asked of every node at the lowest block they have all reached; if the balances differ or the nodes' heights are too far apart, nothing is sent and the message is "Nodes returned different results.". A node that gives no balance is never read as zero.
 - If the estimate fails, the card becomes "Cannot estimate gas" and gives the reason; "Retry" tries again.
-- Nothing can be sent while the ledger is locked or its chain is broken. Before sending, the chain is read again; if it holds records this machine lacks, sending is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
+- Nothing can be sent while the ledger is locked. Nothing is sent either while this data folder is read-only (an imported identity whose ledger is not fetched yet, or a chain holding anchors the ledger lacks), while the ledger's own entries break its chain, or once the ledger has been handed off to another place. Before sending, the chain is read again; if it holds records this machine lacks, sending is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
+- Before signing, the chain is asked whether it already holds an anchor of any hash in the batch from this key. If one is there, nothing is sent: "Some records in this batch are already on chain; nothing was sent this time." and "Wait for the ledger's self-audit to read the ones already on chain and take them off the queue, then send the rest."; when no node can say, nothing is sent either, never on a guess.
 
 **After sending**
 
 - In a block within 30 seconds: the toast reads "Put N on chain".
 - Not yet in a block after that: the toast reads "Submitted N, waiting for confirmation", and the app asks for the receipt again every 15 seconds.
-- If you quit and reopen the app, it keeps waiting for that transaction's receipt and never sends it twice.
+- A batch is recorded in the queue as submitted (with its transaction hash and nonce; its detail reads "Submitted, waiting for its receipt") once it is signed and before it is broadcast. So if you quit and reopen the app, or a send stops half way, the app goes on asking for that transaction's receipt by its hash; it never signs it again or sends it twice.
 - If the receipt shows the transaction failed: "The transaction was sent but failed on chain." The entries stay in the queue and can be sent again.
 - When a batch is still not included at the end of a wait and the price now (the base fee at the chain head) has risen above the cap it went out with, **"Resend with higher fees"** appears on the ledger status line at the top of the Ledger page. Its card "Resend this batch with higher fees" lists "Entry count", "Cap it went out with", "Price now" and "Cap of the resend"; confirming signs the batch again at the same nonce with the fees worked out now, each fee at least 10% above what it went out with (nodes take a replacement only then). The old and the new transaction are both watched and the first included counts. A press while a receipt check is running waits for it ("Sending after this receipt check…"). If the fees have risen above the cap shown on the card in the meantime, the resend is refused; open the card again to see the new figure. A batch is resent at most 3 times; after that the status line reads "Resent 3 times; no further raises" and the app keeps waiting for it.
 - When no node holds the batch any more (most likely dropped from the pools) and its nonce is still unused, the status line reads "No node holds this batch; its nonce is unused. Resend at the price now", and **"Send again at the price now"** opens a card of the same name ("Entry count", "Price now", "Cap of the resend") that sends it once more at the same nonce, at the price now and a fresh gas estimate. The 3-resend limit applies here too.
@@ -596,6 +616,8 @@ All entries in a batch travel in one transaction.
 - The node's limits or setup: "The node is rate-limiting requests.", "This node does not accept transactions.", "This node requires credentials.", "The node is on a different network."
 - Connection problems: "Cannot reach any node.", "The node did not answer in time.", "The node's answer was too long.", "The node's answer could not be read.", "Could not open a secure connection to the node."
 - Anything else: "The node rejected the transaction.", with the node's own words under details.
+
+**The command line sends this queue too.** The command line through the desktop (`anchor --home`) and with its credential (`anchor --ledger`) sends this data folder's pending queue as well, through the same sender as "Put all on chain" and past the same checks (see "One sender" in section 12). While "With a credential" is on, the desktop and the command line take this data folder's writer lock in turn: a batch waiting for its receipt holds no lock, so the other side may write, and may send the rest of the queue, meanwhile; it finds that batch in flight and leaves it alone, never sending it again.
 
 **On-chain states** (the same on every page):
 
@@ -624,8 +646,10 @@ The switch applies to every kind of write: records, grants, revocations and so o
 
 "Ledger" in the sidebar. On the right of the toolbar:
 
-- The "More" menu: "Import existing records…", "Change key or hand over…", "Add note…" and "Sign a claim for someone…".
-- The segmented control "All", "Pending" and "Grant". "Pending" lists every entry that is not yet confirmed.
+- The "More" menu: "Import existing records", "Key handover", "Add note" and "Sign a claim for someone".
+- The segmented control "All", "Unconfirmed" and "Grant". "Unconfirmed" lists every entry the chain has not yet confirmed: those in the queue (queued, sent and awaiting the receipt, reverted, refused), those included but not yet counted by a ledger check, and those recorded without being queued. It is a wider set than "Pending" on Records, which counts the queue.
+
+When a Recorder has no ledger here yet, a blue "Create the ledger" is under the table; it opens the wizard at that step. It is not there once there is a ledger.
 
 **The ledger status line** at the top of the page: "Ledger status · OK/Problems · N total". Before the first check it reads "Never checked", or "Never checked: no network set yet" when nodes, chain ID or registry contract are missing.
 
@@ -643,13 +667,13 @@ Below it is the search field "Find by number, type or summary", with "Start date
 
 **Entry detail.** Click a row:
 
-- A record shows "Entries" (its name), "On-chain state" and "First anchor block time", with the buttons "Export record kit" and "Use for grant" (only when confirmed); a deleted record has neither.
+- A record shows "Entry" (its name), "On-chain state" and "First anchor block time", with the buttons "Export record kit" and "Use for grant" (only when confirmed); a deleted record has neither.
 - A grant: see "Grant detail" under "Grant list".
 - Other entries show "Summary", "On-chain state" and "First anchor block time".
 - Buttons any entry may have:
   - Still queued: "Put on chain now".
   - Neither on chain nor queued: "Add to pending". An entry that has been on chain before cannot be queued again: "This entry is already on chain." and "No need to queue it again. The on-chain state comes from the last sync; sync again if unsure."
-  - Confirmed entries other than records: "Note…".
+  - Confirmed entries other than records: "Add note".
 - "Details": "Content fingerprint" (records only), "Entry ID", "Type", "Sequence", "Author", "Previous entry", "Size (bytes)" and "On-chain transaction".
 
 ### Ledger check
@@ -662,7 +686,7 @@ The ledger check compares every local entry with the anchors on chain. It runs:
 
 The check card is titled "Ledger check · Passed/Has gaps/Failed" and gives a light and a count for each item:
 
-- "On chain", "Not on chain yet"
+- "On chain", "Not on chain yet", "Deleted locally"
 - "Mismatched on chain", "Findings", "Excluded"
 - "Imports unproven", "Unrecognized types", "Malformed entries"
 - "Unavailable", "Unproven", "Void", "Discarded"
@@ -671,14 +695,15 @@ Below: "N entries · checked every N s". The raw result is under "Details". Befo
 
 - **When the ledger is "OK"**: there is a check result, the chain is not broken, and "Mismatched on chain", "Findings", "Imports unproven", "Malformed entries", "Unproven", "Void" and "Unrecognized types" (beyond the deletion entries) are all zero. Entries not yet on chain, "Excluded", "Unavailable" and "Discarded" do not make it "Problems".
 - A check counts deletion entries as unrecognized types. When that count equals exactly the number of deletion entries, the item shows as a green "N convention entries".
+- "Not on chain yet" is judged as the pending queue and Alerts judge it: an entry deleted before it was made public and its deletion entry (the pair deleted locally; see "Deleting a record" under "Record on chain") stay on this machine and are never put on chain, so they are not counted there; they get a line of their own right under it, "Deleted locally", in grey and never a warning. Until the ledger's entries have been read there is no such line, and "Not on chain yet" gives the check result's own count.
 - If the result is "Failed" (a broken chain), the whole ledger becomes read-only and the broken-chain bar appears at the top.
 
 #### Notes
 
-"Add note…", or "Note…" on an entry's detail page, opens "Add note to entry":
+"Add note" in the "More" menu, or "Add note" on an entry's detail page, opens "Add note to entry":
 
 1. Write the "Note text" (required).
-2. Press "Choose…" beside "Target entry", search the floating card (by number, type or summary, or by a range of first anchor dates) and pick the entry to annotate; or under "Advanced options" use "Or paste an entry id".
+2. Press "Select" beside "Target entry", search the floating card (by number, type or summary, or by a range of first anchor dates) and pick the entry to annotate; or under "Advanced options" use "Or paste an entry id".
 3. Press "Add note" to write it.
 
 A note is saved as a new entry; the original entry is not changed.
@@ -707,7 +732,7 @@ You can import without their signature; those anchors are then recorded as unpro
 
 Finally, press "Import N". This writes one adoption entry and queues it.
 
-**Signing a claim for someone.** When you hold the key someone else wants to claim, choose "Sign a claim for someone…" from "More":
+**Signing a claim for someone.** When you hold the key someone else wants to claim, choose "Sign a claim for someone" from "More":
 
 1. Paste in the text they sent. The card shows how many anchors; who is claiming and the head of their ledger are under "Details".
 2. Enter this machine's passcode to sign.
@@ -717,7 +742,7 @@ Text the app cannot read gives "This is not a claim text."
 
 ### Hand over ledger
 
-"Change key or hand over…" opens the card "Key handover", in two steps:
+"Key handover" opens the card "Key handover", in two steps:
 
 1. Fill in three fields and press "Hand over":
    - "New key address": checked as soon as it is complete. The new key must have no anchor proofs on chain. The reading shows "The new key has N anchor proofs"; you can only continue at zero.
@@ -734,7 +759,7 @@ The note says "The new key must have no ledger, and this cannot be undone." The 
 **The grant list**
 
 - Search: "Find by grantee, record or state", with "Start date" and "End date" beside it filtering by the block time the grant entry was anchored at.
-- The table columns are "Entries" (the record), "Validity", "Grant no." and "State", plus a light for the on-chain state.
+- The table columns are "Entry", "Validity", "Grant no." and "State", plus a light for the on-chain state.
 - The state is judged by chain time: "Active", "Expired", "Not yet active", "Revoked" or "Unknown".
 - With no grants it reads "No grants yet".
 
@@ -754,7 +779,7 @@ The form's fields:
   - "Waiting for this check"
   - "Deleted"
 - **"Terms file"** (required): drop the terms file in, or click to choose it.
-  - Once chosen, the file's name and size are shown; "Replace…" picks another.
+  - Once chosen, the file's name and size are shown; "Change" picks another.
   - The file's SHA-256 is filled into "Terms file fingerprint" under "Advanced options", marked "Filled from the terms file".
   - When the grant is signed, a copy of the terms file is kept in the data folder. It later goes to the grantee with the grant file and record kits, so they can recompute the fingerprint themselves.
 - **"Validity"**: "7 days", "30 days" (the default), "90 days" or "Custom".
@@ -771,7 +796,7 @@ Addresses and hashes in the grantee, terms file fingerprint and upstream fields 
 **Signing**
 
 1. Press "Add to ledger" (or "Send to chain now"); beside it the form says "Once signed, a grant can only be revoked". It works once the grantee, the record and the terms file fingerprint are all filled in, and, with a preset validity, once there is chain time.
-2. The confirmation card "Sign grant" shows "Entries" (the record), "Validity", "Terms file" (the file's name, or "Terms fingerprint typed by hand") and "Cost"; the grantee and the fingerprints are under "Details". The note says "After signing it can only be revoked".
+2. The confirmation card "Sign grant" shows "Entry", "Validity", "Terms file" (the file's name, or "Terms fingerprint typed by hand") and "Cost"; the grantee and the fingerprints are under "Details". The note says "After signing it can only be revoked".
 3. Press it again on the card to sign. The toast reads "Issued #N. N pending". Then put it on chain as described under "Pending queue".
 
 If the same record already has an exclusive grant with an overlapping period, signing is refused and the card "Exclusive grant conflict" lists the grants that clash; "Cancel" closes it.
@@ -790,8 +815,8 @@ Click a row in the grant list. The title is "#N · Grant".
 
 **"Basic information"**
 
-- "Entries" (the record), "Validity", "State", "On-chain state", "First anchor block time".
-- "Exclusive": "Yes · recorded on this machine only", "Yes · recorded on this machine only · no terms file" (an exclusive mark from an earlier version), or "No".
+- "Entry", "Validity", "State", "On-chain state", "First anchor block time".
+- "Exclusive": "Yes · recorded on this machine only" or "No".
 - "Attached terms file": the file name, or "No terms file".
 
 "Details" holds the grantee, the terms file fingerprint and the entry's machine values, plus "Show revocations", which lists "Revocation #N" for each revocation or says "No revocations".
@@ -799,18 +824,18 @@ Click a row in the grant list. The title is "#N · Grant".
 **Buttons**
 
 - **"Copy grant code"** puts the `zikaron-grant:…` code on the clipboard ("Grant code copied"). A relicensed grant's code carries every hop up to the root, the same text as in this grant's badge and grant file.
-- **"Export grant file…"** writes a `grant-<first ten hex characters of the grant's entry ID>.zkgrant` file to the "Saved to" location below the buttons (by default `kits` in the data folder), numbering it if the name is taken.
+- **"Export grant file"** writes a `grant-<first ten hex characters of the grant's entry ID>.zkgrant` file to the "Saved to" location below the buttons (by default `kits` in the data folder), numbering it if the name is taken.
   - The file holds the entries of every hop in the grant chain, the issuer's ledger, the terms files and the grant code.
   - It reads the chain once before exporting and refuses if the chain cannot be read, or if it holds records this machine lacks: "Ledger is not up to date" and "N records on chain are not on this machine".
   - The toast gives the location, how many hops, and how many terms files.
 - **"Put on chain now"** appears while the grant is still queued.
-- **"Revoke grant…"** at the bottom appears while the grant is not revoked.
+- **"Revoke grant"** at the bottom appears while the grant is not revoked.
 
 ### Revoke grant
 
-"Revoke grant…" opens the card "Revoke this grant":
+"Revoke grant" opens the card "Revoke this grant":
 
-- The card shows "Entries" (the record) and "Original validity". "Details" holds the grantee and a field "Ruling file fingerprint (optional)".
+- The card shows "Entry" and "Original validity". "Details" holds the grantee and a field "Ruling file fingerprint (optional)".
 - The note says "This cannot be undone. The grantee will be alerted".
 
 Press "Revoke" to write the revocation entry and queue it; the toast reads "Revoked #N. N pending". Once it is on chain, the grantee's revocation watch will find it.
@@ -821,7 +846,7 @@ Open it with "Export record kit" on a record's or entry's detail page; that entr
 
 **Entry range.** The "Entry range" line shows "All N" (choosing nothing means the whole ledger) or "N selected".
 
-- "Choose…" opens "Choose entries": a search field and "Start date" / "End date" on top, a switch on each entry so you can pick any set. "All" picks the entries the search and the dates keep; "Clear selection" clears them all; "Apply" takes the choice, "Cancel" drops it.
+- "Select" opens "Choose entries": a search field and "Start date" / "End date" on top, a switch on each entry so you can pick any set. "All" picks the entries the search and the dates keep; "Clear selection" clears them all; "Apply" takes the choice, "Cancel" drops it.
 - Revocations of the chosen grants, and the ledger's creation and handover entries, come along automatically; the receiver needs them to tell whose ledger this is.
 - If some chosen entries are not on chain yet, red text says "N selected entries are not on chain yet: the package holds no on-chain proof for them", with "Put on chain now" beside it.
 
@@ -837,12 +862,12 @@ Open it with "Export record kit" on a record's or entry's detail page; that entr
 - A row whose name cannot be rewritten is marked red "This file name cannot be converted. Rename the file.", and the kit cannot be exported until it is fixed.
 - Attachments must be originals of the chosen records; any other file is left out.
 
-**Other settings.** "Note" adds a note to the kit. "Saved to" defaults to `kits` in the data folder.
+**Other settings.** "Note" adds a note to the kit. "Saved to" defaults to `kits` in the data folder. "Export as a folder" is off by default: off, one `.zkit` file is exported; on, a folder (use a folder to publish the kit at an address).
 
 **Exporting.** Press "Verify and export":
 
 1. The app reads the chain once. If the chain holds records this machine lacks, export is refused: "Ledger is not up to date" and "N records on chain are not on this machine".
-2. It creates a folder `kit-<first eight characters of the earliest chosen record's fingerprint>` at the save location (plain `kit` if no record is chosen), numbering it if the name is taken.
+2. It writes a file `kit-<first eight characters of the earliest chosen record's fingerprint>.zkit` at the save location (a folder of that name with "Export as a folder" on; plain `kit` if no record is chosen), numbering it if the name is taken. The file is written item by item and has no size limit.
 3. The kit checks itself and is written only if it passes. The toast reads "Record kit exported to …", and the page shows "Record kit exported · N entries · N files", naming any file left out and why.
 
 If it cannot be written, the reason is given:
@@ -867,8 +892,8 @@ If it cannot be written, the reason is given:
 - "How recipients verify": the receiver drops the kit into Verify > Verify record.
 - "Readings and reference (not in the package)": "Calculate" computes three readings for the first chosen record: "First recorded", "Max depth" and "Continuity". They are shown on the page only and do not go into the kit.
 - "Record packages exported on this machine": one section for each kit this machine has exported from this ledger.
-  - Under "Details": "Location", "Record kit ID", and "Fetch address", the https address where the kit can be fetched online, saved with "Save address". Left empty, it is the publish address plus the kit's path.
-  - "Delete local copy" turns into "Confirm deleting the local copy (the ledger stays)"; pressing that deletes the local kit folder. The ledger is not touched.
+  - Under "Details": "Location", "Record kit ID", and "Fetch address", the https address where the kit can be fetched online, saved with "Save address". Left empty, a folder kit's is the publish address plus the kit's path; a kit in one file has none.
+  - "Delete local copy" turns into "Confirm deleting the local copy (the ledger stays)"; pressing that deletes the local kit (its file or folder). The ledger is not touched.
 
 ### Depth
 
@@ -889,7 +914,7 @@ The command line's `depth` verb uses the same calculation.
 **As a User** (choose "User" at the top of the sidebar):
 
 1. The first time the app opens, the wizard runs as a Recorder: set a passcode, create an identity, choose a network and create the ledger (free, local only). The rest can wait.
-2. Switch to "User" at the top of the sidebar. A User ledger is needed only to sublicense; when you get there, press "Set up ledger…" on the sublicense page.
+2. Switch to "User" at the top of the sidebar. A User ledger is needed only to sublicense; when you get there, press "Create the ledger" on the sublicense page.
 3. Paste the grant code you received into the "Verify a grant" card on Home, press "Start check" and read the result.
 4. Open "My grants", press "Add grant", paste the grant code or drop in the grant file, and press "Verify and add" to keep it.
 5. When you receive the work itself, open Verify > Verify grant, put in the grant, the file and the terms file, and press "Verify" once to check all three together.
@@ -981,8 +1006,8 @@ The other party verifies it by pasting the text into Verify > Verify grant.
 
 **Starting.** A grant that this session's re-verification has passed on all six checks has "Sublicense to others" on its detail page:
 
-1. A confirmation card "Sublicense" shows "Entries" (the record), "Issuer" and "Upstream validity", with the note "The sublicense ends when the upstream grant is revoked or expires."
-2. "Draft…" opens the sublicense page. Nothing is written at this point.
+1. A confirmation card "Sublicense" shows "Entry", "Issuer" and "Upstream validity", with the note "The sublicense ends when the upstream grant is revoked or expires."
+2. "Draft" opens the sublicense page. Nothing is written at this point.
 
 **The sublicense page.** The upper half shows the upstream grant; the lower half is the same form as "Draft a grant":
 
@@ -994,8 +1019,8 @@ The sublicense is written to your own (User) ledger and goes into your own pendi
 
 **What it needs.** Sublicensing needs a User signing key and ledger:
 
-- No key: the page says "No key has been created." Press "Create key…".
-- No ledger: the page says "No ledger yet." and "Open your ledger before sublicensing." Press "Set up ledger…".
+- No key: the page says "No key has been created." Press "Create key".
+- No ledger: the page says "No ledger yet." and "Open your ledger before sublicensing." Press "Create the ledger".
 
 ### Revocation watch
 
@@ -1023,7 +1048,7 @@ Verifying sends no transactions. Three things are written on this machine: chang
 
 Put in all three things, then press "Verify" once:
 
-1. **"Grant"**: paste a grant code, or press "Choose a file…" to pick a grant file.
+1. **"Grant"**: paste a grant code, or press "Choose a file" to pick a grant file.
 2. **"File" (optional)**: drop in or choose the work you received.
 3. **"Terms" (optional)**: drop in or choose the terms file.
 
@@ -1031,7 +1056,7 @@ Files you put in show their name and size; "Remove" takes them out.
 
 **"Advanced options"**
 
-- "Ledger folders (one per hop)": point each hop of the grant chain ("Hop 1", "Hop 2", …) at the issuer's ledger folder by hand with "Choose folder…"; "Add next hop…" adds a row.
+- "Ledger folders (one per hop)": point each hop of the grant chain ("Hop 1", "Hop 2", …) at the issuer's ledger folder by hand with "Choose folder"; "Add next hop" adds a row.
 - "Nodes (one per line, optional)", "Registry contract (optional)", "From block": filled in with the main network from Settings and open to change; they set the main network only.
 - "Check as of (seconds, optional)": empty means chain time.
 
@@ -1046,7 +1071,7 @@ Files you put in show their name and size; "Remove" takes them out.
 
 In the result card, below "Work", "Validity" and "First anchor block time", one line per hop, "Ledger source: …", names where it was found: "This machine", "Vault", "Record kit" or "Published address"; if nowhere, it shows "None".
 
-- "Replace…" or "Add…" opens an "Issuer ledger" box for that hop, where you give an https address, record kit, ledger folder or grant file yourself; then press "Start check". When the hop's ledger came from this machine and all six checks passed, there is nothing to replace and the link is not shown.
+- "Change" or "Add" opens an "Issuer ledger" box for that hop, where you give an https address, record kit, ledger folder or grant file yourself; then press "Start check". When the hop's ledger came from this machine and all six checks passed, there is nothing to replace and the link is not shown.
 - A ledger from a publish address shows "From https://… · N files · verified", with "Fetch again".
 - If a source cannot be read, the reason is given for each one: "… could not be read: …".
 
@@ -1097,7 +1122,7 @@ When you receive the work itself, put it into the "File" box on the Verify grant
 
 The "Verify record" tab under "Verify" in the sidebar (both roles).
 
-Drop a record kit folder, a grant file or a single record file onto "Drop a record kit or record file", or click to choose one. It is checked as soon as it is in; "Verify now" checks again. From a publish address, the top of the result card reads "From https://… · N files · verified", with "Fetch again".
+Drop a record kit (a `.zkit` file or a folder), a grant file or a single record file onto "Drop a record kit or record file", or click to choose one; a kit in one file is read out item by item and checked, with no size limit. It is checked as soon as it is in; "Verify now" checks again. From a publish address, the top of the result card reads "From https://… · N files · verified", with "Fetch again".
 
 **"Advanced options"**
 
@@ -1212,7 +1237,7 @@ A User does due diligence on the "Look up a ledger" page, which has more under "
 
 ## 11 · Settings
 
-"Settings" in the sidebar opens a list of seven sections; click one to open it. Both roles have the same sections.
+"Settings" in the sidebar opens a list of eight sections; click one to open it. Both roles have the same sections.
 
 | Section | Contains |
 |---|---|
@@ -1222,16 +1247,17 @@ A User does due diligence on the "Look up a ledger" page, which has more under "
 | "Network" | Nodes, registry contract and publish address |
 | "Notifications" | How often the ledger is checked, or grants re-verified |
 | "Local data" | Encryption, backup and data folder |
+| "Command line" | Terminal and AI agent automation |
 | "About" | Version and setup check |
 
 **Where settings are kept**
 
-- Appearance, auto-lock, the last language chosen and the record of the last whole-machine backup are kept on this machine. They apply to every identity and are used on the passcode gate too. The "Read-only networks", "Proxy" and "Putting on chain from the command line" are kept on this machine as well, shared by every identity. The network last chosen in the wizard is kept here too, but it only decides which choice a new identity starts on; each identity uses its own network.
+- Appearance and the last language chosen are kept on this machine. They apply to every identity and are used on the passcode gate too. Auto-lock, the record of the last whole-machine backup, the "Read-only networks", "Proxy", "Putting on chain from the command line" and the command line's two switches are kept on this machine as well, shared by every identity; all of them but the read-only networks are encrypted and read only once unlocked (see Appendix B). The network last chosen in the wizard is kept here too, but it only decides which choice a new identity starts on; each identity uses its own network.
 - Everything else is kept in the current data folder. Without a data folder, or when it is read-only, these cannot be changed: the page stays as it was and a toast gives the reason.
 
 #### 11.1 Language and time
 
-- **"Language"**: "中文" or "English". The passcode gate uses the language chosen last.
+- **"Language"**: "中文" or "English". The choice is kept on this machine (the passcode gate and the first-run wizard use it; the first-run wizard switches it too) and, with a data folder open, in that folder's settings; a data folder that can only be read refuses the change.
 - **"Time zone"**: "UTC" (the default) or "Follow the system".
   - Every time in the window is shown in it. The full form is `2026-09-24 23:46:12`; narrow places show only the date or `MM-DD HH:MM`.
   - If the system time zone cannot be read: "The system time zone could not be read; moments show in UTC".
@@ -1262,7 +1288,7 @@ If the current role's key cannot be found, an extra "Key address" row explains w
 **The "Primary" group** ("Only the primary identity can recover the passcode.")
 
 - The current identity is primary: it reads "This identity" and says whether the passcode is recovered with the recovery phrase or with the key file.
-- The current identity is not primary: it shows the primary's name, with "Set as primary…" below.
+- The current identity is not primary: it shows the primary's name, with "Set as primary" below.
   - On the "Set as primary" card, enter this machine's passcode and press "Set as primary".
   - The old primary becomes a secondary identity. Every key and all local data are re-encrypted under a new master key; the passcode stays the same. The change happens completely or not at all.
   - A local-key identity imported from a raw private key must export its key file before it can become primary.
@@ -1271,42 +1297,41 @@ If the current role's key cannot be found, an extra "Key address" row explains w
 **The "Passcode" group**
 
 - **"Passcode"** ("Entered at launch and to unlock"), then **"Auto-lock"** and, while auto-lock is on, **"Idle time"** (see 5.2).
-- **"Change passcode…"**: enter the current passcode, then the new one twice. The toast reads "Passcode updated". A wrong current passcode counts as a wrong try.
+- **"Change passcode"**: enter the current passcode, then the new one twice. The toast reads "Passcode updated". A wrong current passcode counts as a wrong try.
 - If the current passcode is digits only: "Your passcode is digits only. Adding letters is recommended."
 - With no passcode yet, the group reads "No passcode yet" and has only "Go set one".
 
 **The "Export" group**
 
-- **"Export key file…"**: a standard keystore file for use in other wallets. For a local-key identity that is primary, it is also how the passcode is recovered. Steps:
+- **"Export key file"**: a standard keystore file for use in other wallets. A key file exported from the primary identity (either role) also recovers the passcode at the gate. Steps:
   1. Enter this machine's passcode.
   2. Enter a file password in "Password, at least 8 characters" and again in "Confirm password". The strength reading is only a guide and never blocks you.
   3. Choose the folder under "Saved to" and press "Export key file".
   - The file can be read only by you. The app reads it back to check it; only then does it say "Key backed up to …" and update the backup status.
   - The row is unavailable while the current role has no signing key.
-- **"Show recovery phrase…"**: after you enter the passcode, the 12 words are shown. "Hide and close" clears them. A local-key identity has no recovery phrase: this row is unavailable, and the group notes "No recovery phrase for this identity. Back it up with a key file."
+- **"Show recovery phrase"**: after you enter the passcode, the 12 words are shown. "Hide and close" clears them. A local-key identity has no recovery phrase: this row is unavailable, and the group notes "No recovery phrase for this identity. Back it up with a key file."
 
 **The "Change identity" group** (its note reads "Record a handover first, or the new key cannot continue this ledger." for a Recorder and "After changing, existing grants are no longer yours." for a User)
 
-- **"Switch identity…"**: available when there is more than one identity. It lists every identity, the one in use marked "In use" and the primary one "Primary". Click a row to expand it and see both roles' full addresses; only "Switch" actually switches.
-- **"New identity…"**: an optional "Label", then under it "Network" for the network this identity uses, then generate, write down and check 12 words, as in wizard step 2.
+- **"Switch identity"**: available when there is more than one identity. It lists every identity, the one in use marked "In use" and the primary one "Primary". Click a row to expand it and see both roles' full addresses; only "Switch" actually switches.
+- **"New identity"**: an optional "Label", then under it "Network" for the network this identity uses, then generate, write down and check 12 words, as in wizard step 2.
   - "Network" lists each preset network of Appendix A, then "Custom"; the one this machine last chose in the wizard is selected first, Ethereum mainnet if it never chose.
   - The chosen network fills both roles' data folders of this identity; both roles use it.
-  - An identity made by an earlier version has no network recorded: the first time a data folder is opened after upgrading, the one this machine chose in the wizard is recorded for it (nothing is recorded if that was "Custom", if this machine never chose, or if the identity's data folders already hold another chain). From then on both roles use it, and a later choice on this machine does not change it.
   - With "Custom", this identity's data folders have no network, and reading the chain or anchoring says it is not configured, until it is filled in and saved in Settings > Network (by hand or from a preset). Saved in one role, the other role takes the same network when it opens; other identities are not affected.
-- **"Import key…"**: three tabs, "Recovery phrase", "Private key" and "Key file".
+- **"Import key"**: three tabs, "Recovery phrase", "Private key" and "Key file".
   - Recovery phrase: 12 boxes; the whole phrase can be pasted.
   - Private key: 64 hexadecimal digits, with or without 0x.
   - Key file: drop in the keystore file and enter the "Key file password".
   - For a private key or key file, choose "Import as which identity" ("Recorder" or "User"). The key fills only that role; the other stays empty.
   - On a machine with no identity yet, the imported one becomes primary. A private key then exports its key file as it is imported: the form adds "Password, at least 8 characters", "Confirm password" and "Saved to", and the identity is created only after the exported file is read back and checked. Left empty, it is refused with "This identity has not exported its key file.".
-  - An optional "Label", and "Network" as for "New identity…". Press "Import identity". Opened from the wizard, the form has no "Network": wizard step 3 decides it.
+  - An optional "Label", and "Network" as for "New identity". Press "Import identity". Opened from the wizard, the form has no "Network": wizard step 3 decides it.
   - Imported where identities already exist, it is secondary and cannot recover this machine's passcode. An identity already on this machine is not imported twice, but if its keys are missing, importing it puts them back.
   - An imported identity cannot write until its ledger has been checked against this key's records on chain (see "Fetching the ledger" under "Storage").
-- **"Rename…"**: change an identity's label. It only helps you tell identities apart and affects no verdict.
+- **"Rename"**: change an identity's label. It only helps you tell identities apart and affects no verdict.
 
 New and imported identities are secondary. The exception is a machine with no identity yet, where the first one created becomes primary.
 
-**Deleting an identity.** "Delete identity…" at the bottom:
+**Deleting an identity.** "Delete identity" at the bottom:
 
 - **The primary identity cannot be deleted directly.** First make another identity primary ("Set primary"). If it is the only identity, create or import another one first.
 - **Deleting a secondary identity**:
@@ -1331,7 +1356,7 @@ New and imported identities are secondary. The exception is a machine with no id
 - **"Network"**: where this data folder's network settings came from.
   - "Ethereum mainnet" or another preset's name: this data folder's four cells equal that row of Appendix A. When the identity later chooses another network, a data folder that already has one stays as it is.
   - "Custom": set by hand.
-  - An amber "No network set yet", with a line under it pointing to "Edit nodes…" to fill it in by hand or from a preset.
+  - An amber "No network set yet", with a line under it pointing to "Edit nodes" to fill it in by hand or from a preset.
 - **"Chain reading"**:
   - "N nodes agree"
   - "Only 1 node responded; no cross-check"
@@ -1342,11 +1367,9 @@ New and imported identities are secondary. The exception is a machine with no id
 
 **"Auto put on chain"**: a switch, off by default, kept separately for each data folder (see "Pending queue").
 
-**"Putting on chain from the command line"**: what happens when the command line puts records on chain through the desktop with `--home` (see section 12), one setting for every data folder on this machine: "Send automatically" (the default) sends at once, as "Put all on chain" does; "Queue only" leaves the request in the pending queue for you to send from the desktop, with the toast "N records from the command line are queued".
-
 **Buttons**
 
-- **"Edit nodes…"** opens the editor. A data folder with no network is filled in here and only here.
+- **"Edit nodes"** opens the editor. A data folder with no network is filled in here and only here.
   - "Preset": pick a preset network of Appendix A and the nodes, chain ID, registry contract and start block are filled in; "Custom" keeps what is typed. A preset only fills the cells: the two save keys below still make it take effect. The read-only networks' "Preset" is the same table.
   - Write nodes as `chain-id=node-url`, separated by spaces, and press "Save nodes".
   - Fill in "Chain ID", "Registry contract" and "Start block" and press "Save chain settings". Saving first asks the nodes for that registry's code: if it is not the build ZIKARON pins, nothing is saved and the message is "The registry … is not the pinned build; the chain settings were not saved". With no nodes yet the settings are saved unchecked, and the same check runs once nodes are set. The last check's reading stays beside the cells: "Agreed", "Single source", "Unreachable", "Fingerprint mismatch" or "Not checked: no node".
@@ -1357,13 +1380,21 @@ New and imported identities are secondary. The exception is a machine with no id
 
 **Node connections.** A node address starts with `https://` or `http://`. For https nodes, the certificate and host name are checked on every connection; if the certificate fails, the chain cannot be read. When a node refuses or a connection fails, the message names the cause (rate limit, credentials needed, wrong network, certificate, timeout and so on), with the node's own words under details. When a node's address resolves to several IP addresses, each is tried; every question has one overall deadline that covers connecting, sending and reading; a rate-limited node is asked again after waits from one table. An access key inside a node address (in its path or query) never appears in any message, detail or log.
 
-**"Proxy"**: how connections to nodes go out, one setting for every identity on this machine. "System" (the default) follows the system's proxy settings; a system set to an automatic configuration script (PAC) is not supported and connections go direct. "Off" always connects directly. "Custom proxy" takes `http://host:port` or `socks5://host:port`; press "Save". A proxy that needs a user name and password is not supported. Nodes on this machine (`localhost`, `127.0.0.1` and the like) are never reached through a proxy. With a VPN: a VPN that tunnels all traffic needs nothing here; one that only sets a system proxy works with "System"; if nodes still cannot be reached, enter the proxy address the VPN gives under "Custom proxy".
+**"Proxy"**: how connections to nodes go out, one setting for every identity on this machine. Nodes on this machine (`localhost`, `127.0.0.1` and the like) are never reached through a proxy.
+
+- **"System"** (the default): follows the system's proxy settings: first the automatic configuration script (PAC) at the address the system names, then the proxies and exceptions typed into the system. The system's "automatically detect proxy settings" (automatic discovery) is not read: the app never looks for `wpad` by name, and a system with only that switched on counts as one with nothing set (straight); to use a proxy such a network gives, enter its configuration script's address or the proxy in the system. The app fetches the script itself (never through a proxy; at most 1 MiB within 5 seconds): an `https://` address from anywhere (its certificate checked); an `http://` address only on this machine, a literal loopback address (`127.0.0.0/8`, `::1`) or the name `localhost`, judged as written with no lookup. An `http://` script on another machine is not fetched, nor one a redirect points to on the way; the way goes without it (`PAC_REMOTE_HTTP`), and the remedy is an `https://` address or the proxy entered under "Custom proxy", whose address is on the line `PROXY host:port` of the script opened in a browser, or the network's administrator can give it (so nobody on the network can hand in a script; a remote `http` configuration script used before upgrading is no longer used after). A `file:` script is not read. The app runs the script in an isolated JavaScript engine (QuickJS): only the standard PAC functions, no network, files, modules or timers, at most 2 seconds, 8 MiB of memory and 512 KiB of stack a run; name lookups the script asks for are answered outside it, at most 1 second each. The script sees a node's scheme, host and port, never its path (where an access key often is). The ways the script names are tried in turn until one connects; `SOCKS` tries SOCKS5, then SOCKS4. A script that cannot be used leaves the way without one; when that way does not connect either, the failure's next step says the script's trouble and the way out (nothing is said when it connects, and there is no status line for it): a remote http script, "Proxy script is on remote http; not used. Set a custom proxy."; not fetched, "Can't fetch the proxy script. Start your proxy app, or set a custom proxy."; any other, "Proxy script failed (code). Set a custom proxy.". The command line says the same on its error line, with `--proxy` as the way out. The codes: `PAC_UNFETCHED` (not fetched), `PAC_SCHEME` (not an http/https address), `PAC_REMOTE_HTTP` (an http address on another machine), `PAC_TOO_LARGE`, `PAC_FAILED` (an error, or it does not parse), `PAC_TIMEOUT` (ran too long), `PAC_MEMORY` (memory or stack ran out), `PAC_NO_FUNCTION` (neither `FindProxyForURL` nor `FindProxyForURLEx`), `PAC_ANSWER` (its answer does not read). Where each system is read: macOS, the network configuration; Windows, the current settings as the system answers them (the machine's when it sets one for every user); Linux, the desktop's stored settings first (KDE's `kioslaverc`; GNOME, Cinnamon and MATE's GSettings), then `https_proxy`, `http_proxy`, `all_proxy`, `no_proxy`.
+- **"Off"**: always connects directly.
+- **"Custom proxy"**: fill in its cells: the type (HTTP; HTTPS, with TLS to the proxy too, its certificate checked; SOCKS5; SOCKS4), host and port, and for a proxy that asks who you are, the user name and password (as they are: no `%40` or `%3A` for `@` or `:`; SOCKS4 has a "User ID" cell only); press "Save". The port takes a whole number from 1 to 65535; a cell that is wrong is framed red with its reason below, and "Save" cannot be pressed. A whole address copied from proxy software (`socks5://user:password@host:port`, or `host:port`) pasted into the host cell is split into the cells; an address typed into the host cell is split once the cell is left, never mid-way; a user name or password the address does not carry stays in its cell. The password is kept in the encrypted machine settings; once saved its cell stays empty and the page says "Password set". Saving with that cell empty and the same type, host, port and user name keeps it; change any of them and the password does not go along (it is never given to a proxy it was not given to), so type it again. Private (`10.x`, `172.16`–`172.31`, `192.168.x`), link-local (`169.254.x`, `fe80::`), this machine's and `.local` nodes never go through a custom proxy.
+- **A proxy that asks for credentials**: when a proxy asks for a user name and password and none were given, the message says so ("The proxy asks for a user name and password", `PROXY_CREDENTIALS_MISSING`); when it refuses the ones given, it says that (`PROXY_CREDENTIALS_REFUSED`); either way the next step points at the custom proxy's user name and password cells. Following the system with a system proxy that wants a password is the same: enter that proxy with its user name and password as a custom proxy. The command line answers `E_UNREACHABLE` with the same `token`, and says how `--proxy` carries credentials.
+
+With a VPN: a VPN that tunnels all traffic needs nothing here; one that only sets a system proxy (an automatic configuration script included) works with "System"; if nodes still cannot be reached, enter the proxy address the VPN gives under "Custom proxy".
 
 **"Published address".** The https address where you intend to put record kits online:
 
 - Only `https://` is accepted; anything else gives "Only https addresses are supported."
 - The app does not upload anything ("https only. Upload the record kit yourself."). Put the record kits on that static host yourself.
-- Enter the address and press "Save published address". Once an address is saved, "Record kit to compare" (filled in with the newest record kit in this data folder; choose another if you like) and "Check publication" appear. "Check publication" fetches the kit from the publish address file by file and compares it with your local copy:
+- Publishing takes a record kit as a folder (export it with "Export as a folder" on). Comparing a kit in one file says "A record package in one file is not published at an address; to publish, export it as a folder."
+- Enter the address and press "Save published address". Once an address is saved, "Record kit to compare" (filled in with the newest folder record kit in this data folder; choose another if you like) and "Check publication" appear. "Check publication" fetches the kit from the publish address file by file and compares it with your local copy:
   - "Published": "All N files match."
   - "Publication incomplete": "N files missing, M do not match.", listing the missing and mismatched files.
   - "Cannot reach the published address", with the reason.
@@ -1385,7 +1416,7 @@ New and imported identities are secondary. The exception is a machine with no id
 - Recorder: the "Ledger check" interval, "Every N seconds" or "Manual only". The default is 300 seconds.
 - User: the "Grant verification interval". The default is 600 seconds.
 
-"Change interval…" opens a field for a whole number of seconds; save it with "Save interval" (Recorder) or "Save review interval" (User). An interval of 0 turns the automatic run off and reads "Manual only".
+"Change interval" opens a field for a whole number of seconds; save it with "Save interval" (Recorder) or "Save review interval" (User). An interval of 0 turns the automatic run off and reads "Manual only".
 
 How alerts reach you is covered in section 10.
 
@@ -1405,14 +1436,14 @@ One backup file restores everything: every identity and key on this machine, all
 
 - "Last backup": the time, or "Never". When the last export was not written or did not read back, Alerts shows "The last whole-machine backup failed; back up again" and the "Whole-machine backup" lamp in the setup check turns red until an export succeeds. The lamp is green when up to date, amber when entries were added since, grey when there has never been a backup, and red after a failed one.
 - "Not backed up": how many ledger entries and received grants have been added since ("None" when nothing has; "—" before the first backup, or before usage has been measured).
-- "Export backup…":
+- "Export backup":
   1. Enter this machine's passcode.
   2. Choose a password in "Backup password, at least 8 characters" and repeat it in "Enter the backup password again".
   3. Choose where to save it and press "Export".
   - The file is named `zikaron-backup-YYYY-MM-DD.zikaron`. A second export on the same day gets a number; nothing is overwritten.
   - The app reads the file back and opens it to check it; only then does it say "Backup exported: …".
   - If you forget the backup password, the backup cannot be restored.
-- "Restore from backup…":
+- "Restore from backup":
   - Choose the backup file, enter the "Backup password" and this machine's passcode, and press "Recover".
   - The machine's identities, keys and data are replaced by the backup's. The passcode stays the same. Anything on this machine that is not in the backup is lost. The backup's read-only networks replace this machine's; a backup that carries none leaves them as they are.
   - The restore happens completely or not at all.
@@ -1442,7 +1473,7 @@ To fetch it from a whole-machine backup:
 
 Only on a Recorder's Local data page.
 
-"Export ledger mirror…":
+"Export ledger mirror":
 
 - Exports the ledger to a folder you choose, laid out as `ZIKARON-backup/<address>/author` (the address in lowercase, without `0x`).
 - If the folder already holds an older mirror of this identity, only the new entries are added.
@@ -1452,14 +1483,13 @@ Only on a Recorder's Local data page.
 
 Each role of each identity has its own data folder.
 
-- "Change data folder…": choose another folder and press "Open data folder". This lasts only until you quit; the next launch returns to this identity's own data folder.
+- "Change data folder": choose another folder and press "Open data folder". This lasts only until you quit; the next launch returns to this identity's own data folder.
   - Only a folder that is already a data folder (an older one missing a room counts) or an empty folder can be chosen (one holding only files the system leaves, such as `.DS_Store`, `Thumbs.db` or `desktop.ini`, counts as empty); an empty folder gets a data folder laid out in it.
   - Any other folder (a ledger folder made by the command line, a folder of documents) is refused: "This folder is neither a data folder nor empty.". Nothing is written there and the current data folder stays open. To take over a ledger made by the command line, use "Adopt in place" under "Advanced options" below.
   - A data folder that belongs to another identity or role, or was sealed on another machine, is also refused before anything is written there.
 - "Measure usage": counts the space used and the number of entries.
 - "Hide entries deleted on this machine" (Recorder): when on, the Records and Ledger lists leave out entries deleted before they went on chain, and their deletion entries (see "Deleting a record" under "Record on chain"); entries deleted after going on chain are still listed. It changes only what the lists show, is off by default, and is kept in this data folder.
-- **"Enable command line"**: when on ("In the terminal"), typing `zikaron` in any terminal runs the command line installed with the app: on macOS a link in `/usr/local/bin` (the folder is created if missing; the system asks for an administrator password in its own dialog), on Linux a link in `~/.local/bin`, on Windows the command line's folder added to this user's `PATH` (terminals opened afterwards see it). Turning it off removes only what the switch made. When the install already put the command line's folder on the command path (the `.deb` package on Linux; on Windows, the system-wide `Path`), it shows "Provided by the installed package"; anything else already in that place is never overwritten and shows "Taken by another install: …" (after a `.pkg` install `/usr/local/bin/zikaron` is the installed command line, so this is what it shows and nothing needs turning on); an app opened straight from its disk image or AppImage cannot be put in the terminal and shows "Not supported for this install", with the reason under "Details".
-- "Import grants folder…" (User): choose a folder and press "Import folder"; every file in the folder (grant files and grant entry files, whatever they are called) is verified and imported one by one; a file that is not a grant is refused by name and the rest are taken.
+- "Import grants folder" (User): choose a folder and press "Import folder"; every file in the folder (grant files and grant entry files, whatever they are called) is verified and imported one by one; a file that is not a grant is refused by name and the rest are taken.
   - Side files the system leaves do not count. A folder with no file at all says "This folder has no files in it."
 - The empty role of a local-key identity has no data folder, so these buttons are unavailable.
 
@@ -1471,7 +1501,7 @@ Each role of each identity has its own data folder.
   - If the chosen folder is not empty, the data goes into a new `ZIKARON` subfolder inside it.
   - The new place cannot be the current data folder itself or lie inside it (judged by the real path, symbolic links resolved): such a choice is refused with "The new location is inside the current data folder; nothing was copied."
   - The old location is left untouched; delete it yourself afterwards.
-- "Adopt existing ledger folder", then "Adopt in place": takes over an existing ledger folder, re-checking every entry before connecting it. For an imported identity, the ledger is then checked against this key's records on chain, and writing opens if it matches (see "Fetching the ledger").
+- "Adopt existing ledger folder", then "Adopt in place": takes over an existing ledger folder, re-checking every entry before connecting it. It also takes a bundle "Export ledger mirror" wrote (this version's or 0.1.2's), each entry checked against the mirror's own manifest; one that fails refuses the whole bundle. What is adopted must be one whole ledger, holding exactly one root entry (its "Create the ledger" entry): entries with none (some of a ledger's files without its first entry, say) or with two are refused whole and nothing is written; the refusal says the entries must hold exactly one root, and its next step reads "Choose the ledger's whole folder or a ledger mirror, not some of its entries.". When this home already has its own ledger, another ledger is refused whole and nothing is written ("This home already has its own ledger, and the one to adopt is another; nothing was adopted."); the same ledger adopted again is taken, what is already there skipped. For an imported identity, the ledger is then checked against this key's records on chain, and writing opens if it matches (see "Fetching the ledger"). The first-run wizard's "Create the ledger" step offers the same adoption (see section 3).
 - "Writing": "Writable", or "Paused: reconcile after restore".
 - "Last reconciled" and "Reconcile now": checks the local ledger offline and, if it passes, allows writing again.
 - "Check everything again": clears this machine's record of checked facts (see "How the chain is read" in 4.1); the next sync asks about every anchor again.
@@ -1480,9 +1510,28 @@ Each role of each identity has its own data folder.
 
 Only one window can write to a data folder. A window opened later can only read, and shows the read-only bar at the top.
 
+#### 11.7 Command line
+
+Settings > Command line: the `zikaron` command in the terminal, how the command line may work with the data this machine keeps sealed, and what happens when it puts records on chain. The two "Automation level" switches and "Putting on chain from the command line" are kept on this machine (in the encrypted machine settings), shared by every identity and every data folder; "Enable the zikaron command" changes this user's command path on this machine.
+
+**"Terminal"**
+
+- **"Enable the zikaron command"**: when on ("In the terminal"), typing `zikaron` in any terminal runs the command line installed with the app: on macOS a link in `/usr/local/bin` (the folder is created if missing; the system asks for an administrator password in its own dialog), on Linux a link in `~/.local/bin`, on Windows the command line's folder added to this user's `PATH` (terminals opened afterwards see it). Turning it off removes only what the switch made. When the install already put the command line's folder on the command path (the `.deb` package on Linux; on Windows, the system-wide `Path`), it shows "Provided by the installed package"; anything else already in that place is never overwritten and shows "Taken by another install: …" (after a `.pkg` install `/usr/local/bin/zikaron` is the installed command line, so this is what it shows and nothing needs turning on); an app opened straight from its disk image or AppImage cannot be put in the terminal and shows "Not supported for this install", with the reason under "Details".
+
+**"Automation level"**: two switches decide how the command line may write the data this machine keeps sealed and send its pending queue. The higher outranks the lower, so there is one way at any time.
+
+- "Through the desktop app" (on by default; the line under it reads "Works while the desktop is unlocked."): while the desktop is unlocked with this data folder open, the command line hands writes and putting on chain to it with `--home` (see "Through the desktop" in section 12); no passcode. Switching it says "The command line may work through the desktop app" or "The command line no longer works through the desktop app".
+- "With a credential" (off by default; the line under it reads "The command line writes and puts on chain with a credential; the desktop need not be open."): switching it on opens a card of the same name, which says "While putting on chain from the command line sends automatically, the command line can spend this identity's gas."; enter the passcode and a validity (days, hours and minutes, together a minute to a year; or "Does not expire" switched on) and press "Turn on". The command line then writes the sealed data and sends a data folder's pending queue itself, without `--home`, with a credential, whether the desktop is open or not (see "With a credential" in section 12). Turning it on says "With a credential is on, …" (followed by "Expires: …" or "Does not expire"); turning it off says "With a credential is off". The credential is kept in the machine folder, readable and writable by you only; turning the switch off removes it, its expiry removes it with a line saying so, and a new master key (another primary identity, a whole-machine restore) makes it worthless and turns the switch off, saying "The master key was replaced; “With a credential” is off."; changing the passcode leaves it working. While it is on, the line under the switch says when it expires.
+- While "With a credential" is on, "Through the desktop app" is greyed out and cannot be switched (the line under it reads "Cannot be switched while “With a credential” is on."), and the door is closed.
+- While "With a credential" is on, the desktop takes this data folder's writer lock only for each write to the ledger or the anchor queue and lets it go after; if the command line wrote meanwhile, the ledger, the queue and the settings are read again before the desktop writes. The desktop, unlocked meanwhile, looks at the ledger on disk once a second even when nobody touches it (it wakes once a second for this, asked where the self-audit and the other timers are asked), so entries the command line wrote show at once in the ledger, the pending count and the local data page; with "With a credential" off, or the desktop locked, it does not wake to look. A desktop write that meets the command line writing is not done and says "The command line is writing." and "Try again shortly, or turn off “With a credential”.", and its "Go to settings" comes to this page.
+
+**"Anchoring"**
+
+- **"Putting on chain from the command line"** (the line under it reads "Both ways follow this: through the desktop app and with a credential."): what happens when the command line puts records on chain. "Send automatically" (the default) sends everything the queue can send at once, as "Put all on chain" does; "Queue only" sends nothing and leaves the entries in the pending queue for you to send from the desktop, and the command line answers `E_QUEUED` (exit 3); on the way through the desktop, the desktop also shows the toast "N records from the command line are queued". Changing it says "Putting on chain from the command line: …".
+
 ### About
 
-- **"Version"**: `ZIKARON Desk 0.1.2`.
+- **"Version"**: `ZIKARON Desk 0.1.3`.
 - **"Setup check"**: a light for each item, with unfinished ones marked "To set up".
   - Recorder: "Signing key", "Passcode", "Gas", "Create the ledger", "Whole-machine backup".
   - User: "Signing key", "Passcode", "Node setup", "Ready", "Whole-machine backup".
@@ -1499,7 +1548,24 @@ The "Details" fold below "Run wizard again" on the About page: "Cores and signin
 
 The command line reads and writes the ledger folder you give it; with `--home`, the running desktop app does the work in its own data folder instead (see "Through the desktop" below).
 
-A ledger in ZIKARON Desk's own data folder is encrypted, and the command line has no passcode, so it refuses to read one: the first line of standard error is `E_UNREADABLE` followed by where the `--ledger` argument stands and its length (for example `#3 (40 bytes)`), the next line reads "Locked: this is local data ZIKARON Desk keeps sealed; the command line does not read it" (in Chinese on a Chinese system), and the exit code is 2. To work with the command line, export a "Ledger mirror" or a record kit: the `--ledger` of `audit` (and through it `check-grant`, `chain-check` and `depth`) and of `show --entry` can point straight at a mirror folder (the level holding `mirror.json`) or a record kit folder. A record kit is checked by the kit law first and refused with `E_KIT` if it fails. The verbs that write entries, and `init`, take ledger folders only.
+A ledger in ZIKARON Desk's own data folder is encrypted, and the command line has no passcode; while "With a credential" is on, the command line reads and writes the ledgers of the desktop's data folders, and sends their pending queues, with that credential (see "With a credential", "Putting on chain with a credential" and "Reading with a credential" below). Sealed entries taken out of their data folder (a `ledger` folder copied on its own) cannot be read: the first line of standard error is `E_UNREADABLE` followed by where the `--ledger` argument stands and its length (for example `#3 (40 bytes)`), the next line reads "Locked: this is local data ZIKARON Desk keeps sealed; the command line reads it only as the ledger of a home the desktop keeps, with the credential" (in Chinese on a Chinese system), and the exit code is 2. The `--ledger` of `audit` (and through it `check-grant`, `chain-check` and `depth`) and of `show --entry` can also point straight at a mirror folder (the level holding `mirror.json`) or a record kit (a `.zkit` file or a folder). A record kit is checked by the kit law first and refused with `E_KIT` if it fails. The verbs that write entries, and `init`, take ledger folders and the desktop's data folders only.
+
+**With a credential.** While "With a credential" is on in Settings > Command line, `history`, `grant`, `revoke`, `adopt`, `succeed`, `annotate` and `retract` with `--ledger` pointing at the `ledger` folder of one of the desktop's data folders write the sealed ledger directly with that credential: the signing key is the one the desktop's key store keeps for that data folder's identity and role (for a data folder of no role, the current identity and role's), so `--key` and `--key-file` are not taken (giving one is misuse); the write gate applies as ever (`E_WOULD_BREAK`), and the entry is queued for anchoring the way the desktop queues its own; a file written in with `history --file` is recorded in this machine's index of signed files as the desktop records the files it signs, so a record kit exported later carries the original. `anchor` with `--ledger` pointing there sends that data folder's pending queue with the same credential (see "Putting on chain with a credential" below). `init` is not taken there (such a data folder has its root entry already). For each write the command line takes the data folder's writer lock and lets it go after. A refusal writes nothing and exits 1: no credential (the switch is off) `E_CREDENTIAL_MISSING`; an expired one `E_CREDENTIAL_EXPIRED` (removed at the same time); one that does not read, does not open or is not this machine's key store's `E_CREDENTIAL_SHAPE`; the desktop writing the data folder at that moment `E_HOME_HELD` (try again shortly); the data folder's writer mark naming another machine (a data folder on a synced disk) `E_HOME_OTHER_MACHINE`; the data folder read-only or its ledger broken `E_READ_ONLY`, a ledger handed off `E_HANDED_OFF` (see the three write gates under "One sender" below). See section 12 of `CLI-SCHEMA.md`.
+
+**Putting on chain with a credential (`anchor --ledger`).** `anchor --ledger <the ledger folder of one of the desktop's data folders>` sends that data folder's pending queue with the credential, the desktop open or not: the chain, the registry contract and the nodes come from that data folder's settings, the proxy from this machine's, and the signing key is the one the desktop's key store keeps for its identity and role. `--key`, `--key-file`, `--endpoint`, `--form`, `--registry`, `--hash`, `--calldata` and `--proxy` are not taken (giving one is misuse, exit 2); `--wait-secs` is (90 seconds without it); a `--ledger` that is not a desktop data folder's ledger is misuse too. It follows "Putting on chain from the command line" in Settings > Command line: "Send automatically" sends everything the queue can send (in one transaction), waits for the receipt and settles it (the entries leave the queue with their block); "Queue only" sends nothing and answers `E_QUEUED` (exit 3). With nothing to send but a batch in flight (a sender stopped half way), it asks about that batch by its transaction hash; when no node's pool holds that batch any more, it is judged by its nonce, by the rule the direct `anchor` reruns by: its nonce used by another transaction, it lapses; still unused, "Send automatically" signs the batch again as recorded at that same nonce and sends it (past the same checks as a new batch, answered in the same shape), so at most one transaction at that nonce can be included, while "Queue only" sends nothing and answers `E_TX_NOT_YET`. With neither, it answers `E_SEND_REFUSED` with `token` `QUEUE_EMPTY`. The answers have the shape of the same `anchor` through the desktop: included, exit 0 with `blockNumber` and `tx`; reverted `E_TX_STATUS`; not in a block when the wait runs out `E_TX_NOT_YET` (exit 4; the batch stays in flight, and the desktop or the next `anchor --ledger` asks about it again); no node answering the receipt question `E_UNREACHABLE` with `tx`; lapsed `E_TX_VOID` (exit 1; its entries go back to the queue); already on chain `E_ON_CHAIN` (nothing sent this time; the entries every node reads on chain then leave the queue, recorded as on chain, and the next run sends the rest; one node saying so moves none); any other refusal before anything went out `E_SEND_REFUSED` (`token` the desktop's code, for example `INSUFFICIENT_FUNDS` for a short balance; `detail` its evidence: nodes, numbers in wei; exit 4 for the network family, 1 otherwise); opening the data folder is refused for the reasons of the paragraph above. A resend at a higher fee is pressed on the desktop only; the command line does not offer it.
+
+**One sender.** The desktop's pending queue, `anchor --home` through the desktop and `anchor --ledger` with the credential all send through one sender, judged alike:
+
+- Before signing, the chain is asked whether it already holds an anchor of these hashes from this key (read as a scan reads it); if one is there, nothing is sent: the desktop says "Some records in this batch are already on chain; nothing was sent this time.", code `ON_CHAIN`; the command line answers `E_ON_CHAIN` with `names`, `tx` and `blockNumber`. When no node can say, nothing is sent either.
+- A batch is recorded in the queue as submitted (with its transaction hash and nonce) once it is signed and before it is broadcast; a sender stopped half way and started again asks about it by its hash and never signs it again.
+- A batch in flight that no node's pool holds any more is judged by the sending account's nonce on chain, by the rule the direct `anchor` reruns by: its nonce used by another transaction, it lapses and its entries go back to the queue; still unused, the desktop offers "Send again at the price now" on the ledger's status line for you to press, and `anchor --ledger` at "Send automatically" signs it again as recorded at that nonce and sends it; at most one transaction at a nonce is ever included.
+- Entries already on chain leave the queue only by the ledger check's own judgement (what every node reads alike): the desktop's self-audit and a send with the credential both go by it; one node saying so moves none.
+- The writer lock: readying the batch and signing and sending it hold this data folder's writer lock; the receipt wait holds none, so the other side (the desktop or the command line) may write, and may send the rest of the queue, meanwhile: it finds that batch in flight, leaves it alone and sends only the rest; settling takes the lock again, reads the queue anew and changes only the entries still awaiting that batch. When the command line cannot take the lock back within sixty seconds it answers `E_HOME_HELD`, and the batch stays in flight for the desktop or the next `anchor --ledger` to settle.
+- Three write gates, asked alike before a send and before a write with the credential, and the first two before a handover with the credential (`hand-over`): this data folder under its read-only mark (an imported identity whose ledger is not fetched yet, `LEDGER_NOT_FETCHED`; the chain holding anchors the ledger lacks, `NEWER_ELSEWHERE`), the ledger's own entries breaking its chain (`BROKEN`), the ledger handed off (`HANDED_OFF`). A send answers `E_SEND_REFUSED` with that code in `token`; a write or a handover with the credential answers `E_READ_ONLY` with that code in `token` (a write to a ledger handed off still answers `E_HANDED_OFF`; a ledger handed off is handed over again as before, the same handoff file, see "Handing a ledger over" below). On a refusal not one byte is written and nothing is sent.
+
+**Reading with a credential.** The same credential opens for reading: `audit`, `check-grant`, `chain-check`, `depth`, `show --entry` and `kit-export` with `--ledger` pointing at the `ledger` folder of one of the desktop's data folders read that sealed ledger, opened the way a write opens it and refused for the same reasons (`E_CREDENTIAL_MISSING`, `E_CREDENTIAL_EXPIRED`, `E_CREDENTIAL_SHAPE`, `E_HOME_OTHER_MACHINE`); a read takes no writer lock, so the desktop writing at the same time is no refusal. `check-grant` read this way has the issuer's whole ledger, so whether the grant was revoked is answered. `kit-export` from such a data folder takes the chosen records' originals from the same place the desktop does (the files this machine signed, while still at their place with the bytes recorded, named as the desktop names them), carries the terms documents kept when the chosen grants were signed, as the desktop does, and ends the note with the desktop's "where it is anchored" line; the answer lists the originals taken in `originals` and those not taken (gone, no longer the bytes signed, or with a name that cannot be made legal in a package) in `leftOut`. With `--ledger` in place of `--basis`, `scan` takes the basis (chain, registry contract, start block, senders) from that data folder's settings and ledger, scanning up to the head its `--endpoint` says.
+
+**The folder after adoption.** A plain ledger the command line made itself, once the desktop has taken it in ("Import key", then "Adopt in place"), is written from then on through the desktop's sealed copy: writing the original folder again (`hand-over` and `take-over` included) is refused with `E_ADOPTED` (exit 1), nothing written, and a line on standard error says ZIKARON Desk has adopted the ledger and its folder is no longer written; to go on writing that ledger from the command line, turn on "With a credential" in Settings > Command line and give the `ledger` of the desktop's data folder instead. A folder moved or renamed is still recognised, and the refusal holds with the switch on or off; the original folder itself is never touched. The desktop keeps, in the machine folder, a random salt and a list of adopted ledgers, one line each, the SHA-256 of the salt followed by the ledger's root entry id: the list alone names no ledger, and only someone holding that ledger can find its line.
 
 **Audited before writing.** Before any entry-writing verb (`init` and `retract` included) writes, "this ledger plus this entry" goes to the core for an offline audit; if it would add a chain finding (the old key writing after a key change, a skipped sequence number, a second entry at one place, a link to the wrong entry), it is refused with `E_WOULD_BREAK`, `names` saying which, and not one byte is written. `--seq` and `--prev` given by hand pass the same gate.
 
@@ -1507,17 +1573,25 @@ A ledger in ZIKARON Desk's own data folder is encrypted, and the command line ha
 
 **`anchor` estimates before it sends.** After reading the fees it asks the node for a gas estimate of this very transaction (the app's own rule), and the transaction carries one and a half times the estimate, rounded up, at most 200,000. If the node refuses the estimate for a reason about this transaction (it would revert; the node's words are in `detail`), or the estimate is above 200,000, it is refused with `E_GAS_REFUSED` (exit 1) and nothing is sent; if the node refuses for its own reasons (a rate limit, an unsupported method, credentials needed, a wrong chain and the like) or does not answer, it says `E_UNREACHABLE` (exit 4) and nothing is sent either.
 
-**A rerun of `anchor` asks first.** Without `--home`, `anchor` keeps the nonce and hash of every transaction it signs for one anchoring (the same chain, key, recipient and data) in `cli-sent/` in the machine folder; it keeps no key and no node. When the same command runs again, it first asks the node where those transactions stand, by their hashes: one already included is answered as included and nothing is sent; one still in the node's pool is waited on; if none is held and their nonce is unused, it signs again at that same nonce, so at most one can ever be included; if their nonce was used by another transaction, it answers `E_TX_VOID` (exit 1) and sends nothing, and the next run starts afresh. Running the same command again after it succeeded therefore answers the earlier transaction and never pays twice.
+**`anchor` does not anchor again what the chain holds.** With `--form registry` and `--hash`, before signing it asks the node whether the registry already holds an anchor of those hashes from this key (reading the registry's `Anchored` logs as a scan reads them, from the registry's deployment block to the head; an unknown registry from block 0). Any one already on chain, put there by the desktop or by another machine, is answered `E_ON_CHAIN` (exit 1), `names` listing those hashes and `tx`, `blockNumber` the earliest such anchor, and nothing is sent; a node that cannot say is `E_UNREACHABLE` (exit 4), and nothing is sent either. `--form bare` and `--calldata` have no log to ask by and are sent as before. Sending a queue, through the desktop and with the credential, asks the same first (see "One sender" above).
 
-**Through the desktop (`--home`).** With `--home <the desktop's data folder>`, eleven verbs (`init`, `history`, `grant`, `revoke`, `adopt`, `attest`, `succeed`, `annotate`, `retract`, `anchor`, `kit-export`) are handed to the running ZIKARON Desk, unlocked and holding that data folder as its writer: the entry is written into the desktop's ledger with the desktop's identity and shows in its window at once; the command line holds no key and needs no passcode on this path. With `--home` a verb never takes `--ledger`, `--key`, `--root`, `--seq` or `--prev`; `history` takes `--file` and `--note`, and `anchor` takes no other flag. `attest` always answers `E_ON_DESKTOP` (exit 1): attesting asks for the passcode, which is given on the desktop only. `kit-export` takes `--entry`, `--note` and `--out`; attachments and proof bundles are chosen on the desktop. When the desktop is locked, has not opened that data folder or has quit, the answer is `E_DESKTOP` (exit 4); when the desktop refuses the action, it is `E_DESKTOP_REFUSED` with the desktop's own code in `token` (exit 4 for a network refusal, 1 otherwise). `anchor` follows "Putting on chain from the command line" in Settings > Network: "Send automatically" sends as the queue page's "Put all on chain" does; "Queue only" queues the records and answers `E_QUEUED` (exit 3). Which flags each verb takes with `--home` is in section 11 of `CLI-SCHEMA.md`.
+**A rerun of `anchor` asks first.** Sending directly (with `--key` or `--key-file`, without `--home` or `--ledger`), `anchor` keeps the nonce and hash of every transaction it signs for one anchoring (the same chain, key, recipient and data) in `cli-sent/` in the machine folder; it keeps no key and no node. When the same command runs again, it first asks the node where those transactions stand, by their hashes: one already included is answered as included and nothing is sent; one still in the node's pool is waited on; if none is held and their nonce is unused, it signs again at that same nonce, so at most one can ever be included; if their nonce was used by another transaction, it answers `E_TX_VOID` (exit 1) and sends nothing, and the next run starts afresh. Running the same command again after it succeeded therefore answers the earlier transaction and never pays twice.
+
+**Through the desktop (`--home`).** With `--home <the desktop's data folder>`, ten verbs (`init`, `history`, `grant`, `revoke`, `adopt`, `attest`, `annotate`, `retract`, `anchor`, `kit-export`) are handed to the running ZIKARON Desk, unlocked and holding that data folder as its writer: the entry is written into the desktop's ledger with the desktop's identity and shows in its window at once; the command line holds no key and needs no passcode on this path. With `--home` a verb never takes `--ledger`, `--key`, `--root`, `--seq` or `--prev`; `history` takes `--file` and `--note`, and `anchor` takes no other flag. `attest` always answers `E_ON_DESKTOP` (exit 1): attesting asks for the passcode, which is given on the desktop only. `succeed` with `--home` also always answers `E_ON_DESKTOP` (exit 1), and the desktop is not asked: handing the ledger to another key is final, so it is done on the desktop by hand only. `kit-export` takes `--entry`, `--note`, `--out` and `--as` (one file without it); attachments and proof bundles are chosen on the desktop. When the desktop is locked, has not opened that data folder or has quit, the answer is `E_DESKTOP` (exit 4); while "With a credential" is on the desktop keeps this door shut, and the answer is `E_DESKTOP` with `detail` `ALONE`: write without `--home`; when the desktop refuses a verb other than `anchor`, it is `E_DESKTOP_REFUSED` with the desktop's own code in `token` (exit 4 for a network refusal, 1 otherwise). `anchor` follows "Putting on chain from the command line" in Settings > Command line: "Send automatically" sends everything the queue can send, as the queue page's "Put all on chain" does, and answers in the shape of `anchor --ledger` (included, exit 0 with `blockNumber` and `tx`; `E_TX_STATUS`, `E_TX_NOT_YET`, `E_TX_VOID`, `E_UNREACHABLE` with `tx`); already on chain is `E_ON_CHAIN` (with `names`, `tx`, `blockNumber`); any other refusal before anything went out is `E_SEND_REFUSED` (`token` the desktop's code, `detail` its evidence; exit 4 for the network family, 1 otherwise); "Queue only" queues the records and answers `E_QUEUED` (exit 3). Which flags each verb takes with `--home` is in section 11 of `CLI-SCHEMA.md`.
+
+**A record kit is one file.** `kit-export` writes one file by default (`--as file`): the kit is laid out and checks itself first, then is written item by item into the `--out` file, with no size limit; `--as folder` writes a folder. The file has the grant file's format (its first line `zikaron-kit-file/1`); the desktop names it `.zkit`. Wherever a record kit is taken, a file and a folder are both taken.
+
+**Verifying a record kit.** `kit-verify --kit <record kit>` (a file or a folder) answers record by record by the same judge as the desktop's "Verify record": whether each record's original in the kit is the one it records (`original`: `match`, `mismatch` for another file, `missing` when the kit lacks it), and whether it is anchored (`anchored`: `anchored` with the first anchoring's block time `firstAt`, `notAnchored`, `unread`). The chain is read from `--fragment` (a `scan` reading); without it every record is `unread`, never "not anchored". Every record matching and anchored is exit 0; an original that is not the one recorded is `E_RECORDS`, exit 1; otherwise (a record not anchored, the chain not read, an original missing) `E_RECORDS`, exit 3. A kit that fails the kit law is refused with `E_KIT`.
+
+**Handing a ledger over.** A ledger can go back and forth between two places: say a plain ledger folder of the command line on a remote machine, and a data folder of the desktop here. The same two commands at both ends. `hand-over --ledger <this place> --out <file>` writes the whole ledger into one handoff file (`.zkhand`, the record kit's one-file format), and this place stops writing it: a write is refused with `E_HANDED_OFF`, and the desktop does not write it either. If that file is lost on the way, running `hand-over` again writes the same handoff. A desktop data folder is handed over (with the credential) only past its write gates, judged as for a send or a write: under its read-only mark (`LEDGER_NOT_FETCHED`, `NEWER_ELSEWHERE`) or with a ledger whose own entries break its chain (`BROKEN`), it answers `E_READ_ONLY` (that code in `token`, exit 1), no handoff file is written and the ledger is not recorded as handed off. `take-over --ledger <this place> --handoff <file>` takes a handoff, as a follow-on only: every entry this place has must be in it and its ledger must be one line; then the entries this place lacks are written in sequence, and this place writes again. A place that handed the ledger off takes only the handoff coming back. Anything else is refused with `E_HANDOFF`, its `token` saying why (`NOT_BACK` not the one coming back, `AHEAD` this place has an entry the handoff lacks, `NOT_ONE_LINE` the handoff's ledger is not one line, or a file that does not read), and not one byte is written. This machine's side reads and writes with the credential, the desktop locked or not; the desktop open meanwhile shows the new entries at once. Which side anchored what does not travel with the handoff: the desktop's next ledger check reads it from the chain and queues only what is not on chain, so what the other side anchored is not sent again; a plain ledger folder keeps no queue, so for it the command line sends only what `anchor` is given, and a desktop data folder's queue is sent by `anchor --ledger` (see "Putting on chain with a credential" above). Which ledgers a machine handed off or took back is kept in a blind list in its machine folder (under the adopted list's salt): the list alone names no ledger.
 
 **Grant files.** `check-grant --grant` takes a grant entry file or a grant file exported by the app (`.zkgrant`): the command line opens it by the app's own reading (the bundle's shape, the kit law over the kit inside, the grant code, and every hop of the code carried in the bundle) and checks the grant the file is for; one that does not open is refused with `E_GRANT_FILE`.
 
-**When an entry is refused.** When a member of an entry is missing or malformed, standard output is `E_ENTRY` with `token` `E_BODY_FIELD` (exit 1); standard error adds one line for people naming the member and the flag that gives it, for example `statement_md: missing or malformed; given by --statement` (in Chinese on a Chinese system). That line is for people only and not part of the output contract.
+**When an entry is refused.** When a member of an entry is missing or malformed, standard output is `E_ENTRY` with `token` `E_BODY_FIELD` (exit 1); standard error adds one line for people naming the member and the flag that gives it, for example `mode: missing or malformed; given by --mark and --toolchain (or --file)` (the whole line in Chinese on a Chinese system). That line is for people only and not part of the output contract.
 
 **Recording a file with `history`.** `history --file <file>` follows the app's own convention for a recorded file: `content` is the SHA-256 of the file's bytes, and `mode` is `{"mark":"bytes-sha256/1","toolchain":<the SHA-256 of the text "bytes-sha256/1">}`. For the same file, the command line and the app write these two members alike. `--file` stands for `--content`, `--mark` and `--toolchain` and cannot be given with them; without `--file`, those three are given as before, and the law refuses what is left out.
 
-**Other.** `audit --out <file>` also saves the audit input this run assembled (its six members), usable as a `chain-check --hop <grant>=<audit input>`. The in-kit path of `kit-export --file <in-kit path>=<file>` is relative to the kit's `files/` folder, and that of `--proof` to `proofs/`. On misuse, the first line of standard error is `<reason> <subject>`: a flag is named as `--name`, while a value or path is named only by where it stands among the arguments and its length (`#3 (12 bytes)`), so a private key or a node address carrying an access key is never echoed. The second line explains it for people, in Chinese when the system locale (the first of `LC_ALL`, `LC_MESSAGES`, `LANG` and `LANGUAGE` that is set) is Chinese and in English otherwise. `--key-file <file>` gives the private key from a file instead of `--key` (the file must be readable by its owner only). `anchor` and `scan` take `--proxy`: `system` (the default), `none`, or `http://host:port` / `socks5://host:port`.
+**Other.** `audit --out <file>` also saves the audit input this run assembled (its six members), usable as a `chain-check --hop <grant>=<audit input>`. The in-kit path of `kit-export --file <in-kit path>=<file>` is relative to the kit's `files/` folder, and that of `--proof` to `proofs/`. On misuse, the first line of standard error is `<reason> <subject>`: a flag is named as `--name`, while a value or path is named only by where it stands among the arguments and its length (`#3 (12 bytes)`), so a private key or a node address carrying an access key is never echoed. The second line explains it for people, in Chinese when the system locale (the first of `LC_ALL`, `LC_MESSAGES`, `LANG` and `LANGUAGE` that is set) is Chinese and in English otherwise. `--key-file <file>` gives the private key from a file instead of `--key` (the file must be readable by its owner only). `anchor` and `scan` take `--proxy`: `system` (the default; as programs in a terminal do, the terminal's `https_proxy`, `http_proxy`, `all_proxy` and `no_proxy`, in either case, are followed when any proxy among them is set, on every system, and only when none is set are the system's proxy settings read), `none`, or a proxy address written as for "Custom proxy" in the settings (`http`, `https`, `socks5`, `socks4`, `user:password@` allowed, with an `@` or `:` in them written `%40`, `%3A`; a password on the command line is visible to other processes of this machine while the command runs).
 
 | Verb | What it does |
 |---|---|
@@ -1531,16 +1605,19 @@ A ledger in ZIKARON Desk's own data folder is encrypted, and the command line ha
 | `succeed` | Write a key change or handover entry |
 | `annotate` | Write a note |
 | `retract` | Write a deletion entry (the target must be a record in this ledger that is not already deleted) |
-| `anchor` | Anchor a hash on chain (through the registry contract, or as a bare self-transfer) |
-| `scan` | Scan for anchors using the chain settings (`--endpoint` takes http and https) |
-| `audit` | Audit a ledger against scan results and print a report and verdict (`--ledger` takes a ledger folder, a ledger mirror or a record kit) |
+| `anchor` | Anchor a hash on chain (through the registry contract, or as a bare self-transfer); with `--ledger` naming a desktop data folder's ledger, send its pending queue with the credential |
+| `scan` | Scan for anchors using the chain settings (`--endpoint` takes http and https; with `--ledger` naming a desktop data folder's ledger, the basis comes from its settings) |
+| `audit` | Audit a ledger against scan results and print a report and verdict (`--ledger` takes a ledger folder, a desktop data folder's ledger, a ledger mirror or a record kit) |
 | `check-grant` | Run the six checks on a grant (`--grant` takes a grant entry file or a grant file) |
 | `chain-check` | Check a sublicense chain hop by hop (`--hop <grant file>[=<audit input file>]`, repeatable) |
 | `depth` | Depth readings for a record |
 | `fpm-sign` | Sign a fingerprint manifest |
 | `ack-sign` | Sign an acknowledgement |
 | `badge` | Encode or decode a credential (exactly one of `--encode` and `--decode`) |
-| `kit-export` | Export a record kit (written only if it passes its self-check) |
+| `kit-export` | Export a record kit (written only if it passes its self-check; one file by default, `--as folder` for a folder) |
+| `kit-verify` | Verify a record kit record by record: is each original the one recorded, is it anchored (the desktop's "Verify record" judge) |
+| `hand-over` | Hand the whole ledger to another place (writes a handoff file; this place stops writing) |
+| `take-over` | Take a handoff in (a follow-on only); this place writes again |
 | `show` | Show an entry's author, ID, type, previous entry, sequence and content |
 | `contract` | Print the command line's own contract (verbs, each verb's flags, exit codes, refusal reasons), made from the same tables in the code |
 
@@ -1551,7 +1628,7 @@ A ledger in ZIKARON Desk's own data folder is encrypted, and the command line ha
 | 0 | Affirmative |
 | 1 | Negative (the entry was refused, or the verdict is FAIL, BROKEN_CHAIN or NO_LABEL) |
 | 2 | Misuse (nothing on standard output) |
-| 3 | Partial (PARTIAL, GAPS, UNAVAILABLE; an `anchor` through the desktop that was only queued) |
+| 3 | Partial (PARTIAL, GAPS, UNAVAILABLE; an `anchor` through the desktop or with the credential that was only queued: `E_QUEUED`) |
 | 4 | No answer (node unreachable, readings disagree, the desktop did not answer, and so on) |
 
 Standard output is one canonical JSON value with no trailing newline. `--now` injects the moment to judge at; without it, only chain time is used. For output shapes and every flag, see `CLI-SCHEMA.md` in the repository.
@@ -1580,26 +1657,25 @@ On the two layer-two networks the registry contract is the same build as mainnet
 
 Each preset node was measured to hold the registry's complete logs since its start block, both nodes of a network matching entry for entry; a query range too wide for a node is refused by it in words, and the app asks again and, after three refusals, splits the range at the limit it names.
 
-To use the testnet: choose "Sepolia testnet" under "Network" when making the identity; or choose "Custom" in wizard step 3, then in Settings > Network press "Edit nodes…", pick "Sepolia testnet" under "Preset", and press "Save nodes" and "Save chain settings".
-
-The mainnet node shipped with 0.1.0, `https://rpc.flashbots.net`, keeps only the last ten or twenty thousand blocks of logs and answers older ones empty, so syncing said "Nodes returned different results." After upgrading, a data folder whose nodes are still exactly the pair 0.1.0 shipped (letter for letter, in order) is switched to the pair above when it is opened for writing; nodes you changed are left alone.
+To use the testnet: choose "Sepolia testnet" under "Network" when making the identity; or choose "Custom" in wizard step 3, then in Settings > Network press "Edit nodes", pick "Sepolia testnet" under "Preset", and press "Save nodes" and "Save chain settings".
 
 ## Appendix B · Files on this machine and encryption
 
-**The machine folder** holds the key store, the identity registry, the machine settings `machine.json`, the record kit index and so on.
+**The machine folder** holds the key store, the identity registry, the machine settings, the record kit index and so on. The machine settings are in two files: `machine.json` holds only what the passcode gate needs, the language and the appearance; the rest (auto-lock, proxy, network, the command line's two switches, the data folders used, the whole-machine backup record) is in the encrypted `machine-<…>.sealed`, read once unlocked.
 
 - Its location is given by the pointer file `~/.zikaron-desk` (one line holding an absolute path), which the app writes each time it starts. Without a pointer it is `~/.zikaron-desk.d/`. On Windows both sit in `%LOCALAPPDATA%\ZIKARON\`: `%LOCALAPPDATA%\ZIKARON\.zikaron-desk` and `%LOCALAPPDATA%\ZIKARON\.zikaron-desk.d\`.
-- Earlier versions on macOS kept the machine folder at `~/Library/Application Support/ZIKARON`. If there is no pointer and that folder exists, the app keeps using it.
 
 **The data folders**, one for each role of each identity, hold the ledger, settings, pending queue, received grants and so on, in the subfolders `ledger`, `kits`, `grants-held` and `settings`. By default they sit in the machine folder: one folder per identity, its name computed with this machine's key, holding `author` (Recorder) and `grantee` (User).
 
 **Local encryption.** Ledger entries, settings, the pending queue, the identity registry, the record index, hand-filled record kit links, the record of checked facts (`checked/facts.json` in the machine folder), the index of what the last whole-machine backup holds, and received grants (with their last verification results and kept grant files) and terms files are all encrypted with a local data key derived from the master key (XChaCha20-Poly1305). While the app is locked none of it can be read, and someone who copies this machine's files cannot read it without the passcode. File names, and the part of each file's header that says which file it is, are computed with this machine's key, so someone holding the disk cannot tell from entry or grant numbers which entries or grants this machine keeps.
 
-Files are written only in the current encrypted format. Files written by earlier versions are read as they are and change format only when they are next written; nothing is converted in bulk. A file that cannot be opened (written by a newer version, or damaged) is never overwritten: it is named with the reason and left as it is. Files written by 0.1.2 cannot be read by 0.1.1.
+Files are written and read only in the current encrypted format. A file in any other form (a plain file, or one an earlier version wrote in an older form) is not read, and nothing converts it (see "Upgrading from an earlier version" in section 2). A file that cannot be opened (written by a newer version, or damaged, or in an older form) is never overwritten: it is named with the reason and left as it is. Files written by this version cannot be read by earlier versions.
 
 **Files that are not encrypted this way**
 
-- Files read before unlocking: the key store itself (encrypted separately), `machine.json`, and the data folder pointer.
+- Files read before unlocking: the key store itself (encrypted separately), `machine.json` (the language and the appearance only), and the data folder pointer.
+- The command line's credential `cli-credential-<…>.json` (only while "With a credential" is on): readable and writable by you only; it holds a random key and the master key sealed under it, so whoever has it can write the sealed data as the command line does; the credential is also what sends a data folder's pending queue. That is why turning the switch off removes it.
+- The adoption list `adopted-salt` and `adopted-list`: a random salt and, per adopted ledger, one line holding the SHA-256 of the salt followed by its root entry id; no ledger name, path or entry id. The handoff list `handed-pens` uses the same salt, one line per ledger handed over or taken, and holds none of these either.
 - Exports meant for others: record kits, the record kit index, kit verification results (`kits/verified/` in the machine folder), grant files, credentials, ledger mirrors, key files and whole-machine backups. A whole-machine backup is encrypted with its backup password.
 - The read-only networks (`read-networks.json` in the machine folder), which hold no account fact.
 - `cli-sent/` in the machine folder: the command line's record of the anchor transactions it signed (nonce and hash only, no key and no node).
@@ -1609,7 +1685,7 @@ Files are written only in the current encrypted format. Files written by earlier
 
 ## Appendix C · How deletion entries are read
 
-"Delete record…" writes an entry of type `retraction`, signed and put on chain like any other:
+"Delete record" writes an entry of type `retraction`, signed and put on chain like any other:
 
 | Field | Value |
 |---|---|

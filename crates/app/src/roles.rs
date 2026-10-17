@@ -17,8 +17,8 @@ impl Role {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Role::Author => "author",
-            Role::Grantee => "grantee",
+            Role::Author => zikaron_seal::envelope::SEATS[0],
+            Role::Grantee => zikaron_seal::envelope::SEATS[1],
         }
     }
 

@@ -66,19 +66,19 @@ pub fn key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, caret: 
     if resp.clicked() {
         menu::toggle(ui.ctx(), id);
     }
-    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, false, spec, items, keep)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), false, spec, items, keep)
 }
 
-/// Draw an open picker under `anchor` (aligned to its left edge when `left`, its right edge otherwise).
-/// Returns the picked row's index (into `items`).
+/// Draw an open picker under `anchor` (aligned to its left edge when `left`, its right edge otherwise), inside
+/// the window (an anchor drawn on no ui of its own). Returns the picked row's index (into `items`).
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
-    show_from(ctx, None, id, anchor, left, spec, items, keep)
+    show_from(ctx, None, id, anchor, ctx.content_rect(), left, spec, items, keep)
 }
 
 /// As [`show`], for a picker whose anchor lies in `parent` (an overlay it then hangs above; see
-/// [`crate::layer::under`]).
+/// [`crate::layer::under`]), inside `bounds` (the anchor's ui clip: [`crate::layer::drop_card`]).
 #[allow(clippy::too_many_arguments)]
-pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
+pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
     if !menu::is_open(ctx, id) {
         return None;
     }
@@ -97,7 +97,7 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
     let head_h = tokens::INPUT_H + if spec.dates.is_some() { tokens::S2 + tokens::INPUT_H } else { 0.0 };
     let w = spec.w.min(ctx.content_rect().width() - 16.0);
     let h = PAD + INSET + head_h + INSET + list_h + PAD;
-    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), left);
+    let drop = crate::layer::drop_card(ctx, anchor, bounds, vec2(w, h), left);
     let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;
@@ -135,7 +135,7 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             lu.painter().text(list.center(), egui::Align2::CENTER_CENTER, spec.empty, Type::Note.font(), c(C::Ink3));
             return;
         }
-        egui::ScrollArea::vertical().id_salt(id.with("rows")).max_height(list_h).auto_shrink([false, true]).show(&mut lu, |ui| {
+        crate::scroll::nested(&mut lu, egui::ScrollArea::vertical().id_salt(id.with("rows")).max_height(list_h).auto_shrink([false, true]), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for i in &kept {
                 let it = &items[*i];

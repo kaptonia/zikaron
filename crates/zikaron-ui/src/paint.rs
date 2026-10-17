@@ -29,6 +29,14 @@ pub fn galley(ui: &egui::Ui, s: &str, t: Type, colour: Color32) -> std::sync::Ar
     ui.painter().layout_no_wrap(s.to_string(), t.font(), colour)
 }
 
+/// Text laid out before it is placed: in `font`, lines `line_h` apart, wrapping at `max_w` where the words allow
+/// (as a wrapping label does). A widget that takes one cell of its caller's layout measures its words with this.
+pub fn wrapped(ui: &egui::Ui, s: &str, font: egui::FontId, colour: Color32, line_h: f32, max_w: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(s.to_string(), egui::TextFormat { font_id: font, color: colour, line_height: Some(line_h), ..Default::default() });
+    job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), ..Default::default() };
+    ui.painter().layout_job(job)
+}
+
 /// Text in a role, wrapping at the available width.
 pub fn text(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32) -> egui::Response {
     ui.add(egui::Label::new(egui::RichText::new(s).font(t.font()).color(colour).line_height(Some(t.line()))).wrap())
@@ -43,6 +51,26 @@ pub fn line(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32, max_w: f32) ->
     } else {
         r
     }
+}
+
+/// The height of [`lines`]: a row they stand in is at least this tall (`width::then_at`), so they sit on its
+/// middle line rather than hang from its top.
+pub fn lines_height(ui: &egui::Ui, rows: &[(&str, Type, Color32)], gap: f32) -> f32 {
+    rows.iter().map(|(s, t, colour)| galley(ui, s, *t, *colour).size().y).sum::<f32>() + gap * rows.len().saturating_sub(1) as f32
+}
+
+/// Lines stacked `gap` apart, each in its role on one line elided to `max_w` (whole on hover when cut), in one cell
+/// of the caller's layout (`width::cell`): two lines stand where a row's words go, centered in the row as one when
+/// the row is as tall as they are ([`lines_height`]).
+pub fn lines(ui: &mut egui::Ui, rows: &[(&str, Type, Color32)], gap: f32, max_w: f32) -> egui::Response {
+    let h = lines_height(ui, rows, gap);
+    crate::width::cell(ui, egui::vec2(max_w.max(0.0), h), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.spacing_mut().item_spacing.y = gap;
+        for (s, t, colour) in rows {
+            line(ui, s, *t, *colour, max_w);
+        }
+    })
+    .1
 }
 
 /// Paint text at a point in a role, elided to `max_w`; returns the drawn rectangle.

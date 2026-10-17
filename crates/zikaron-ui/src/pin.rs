@@ -24,10 +24,13 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
     let (rect, resp) = ui.push_id(("zikaron-pin", id_salt), |ui| ui.allocate_exact_size(vec2(w, ch), egui::Sense::click())).inner;
     // Focus is real focus and keys are taken only with it; `active` only means "take focus when nobody holds
     // it", and a holder is never displaced. A row that takes focus this frame does not take this frame's keys.
-    let held = resp.has_focus();
+    // Both ask first whether the row lies on top (`layer::on_top`): under an overlay it neither takes focus
+    // nor takes keys, so what is typed on the overlay never lands in a row nobody can see.
+    let top = crate::layer::on_top(ui, rect);
+    let held = resp.has_focus() && top;
     if resp.clicked() {
         resp.request_focus();
-    } else if active && ui.memory(|m| m.focused().is_none()) {
+    } else if active && top && ui.memory(|m| m.focused().is_none()) {
         resp.request_focus();
     }
     let mut changed = false;
@@ -95,8 +98,9 @@ pub fn words_grid_marked(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::s
     ui.push_id(("zikaron-words", id_salt), |ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = tokens::PIN_GAP;
+            let row_w = w * cols as f32 + tokens::PIN_GAP * (cols as f32 - 1.0);
             for row in 0..4 {
-                ui.horizontal(|ui| {
+                crate::width::cell(ui, vec2(row_w, tokens::INPUT_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = tokens::PIN_GAP;
                     for col in 0..cols {
                         let i = row * cols + col;
@@ -185,9 +189,14 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
     }
 }
 
-/// The strength bar: three segments 34 × 4, `lit` of them in the tone's color, then the reading.
+/// The strength bar: three segments 34 × 4, `lit` of them in the tone's color, then the reading, in one cell of
+/// the caller's layout (`width::cell`).
 pub fn strength(ui: &mut egui::Ui, lit: usize, tone: crate::mark::Mark, text: &str) {
-    ui.horizontal(|ui| {
+    // Three segments, each followed by the 4 between parts, then 4 more before the reading.
+    const BAR: f32 = 3.0 * (34.0 + 4.0) + 4.0;
+    let words = paint::wrapped(ui, text, Type::Tiny.font(), c(C::Ink2), Type::Tiny.line(), ui.available_width() - BAR);
+    let size = vec2(BAR + words.size().x, words.size().y.max(4.0));
+    crate::width::cell(ui, size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let colour = match tone {
             crate::mark::Mark::Ok => c(C::Ok),
@@ -200,6 +209,6 @@ pub fn strength(ui: &mut egui::Ui, lit: usize, tone: crate::mark::Mark, text: &s
             ui.painter().rect_filled(r, egui::CornerRadius::same(2), palette::mix(c(C::Line), colour, on));
         }
         ui.add_space(4.0);
-        paint::text(ui, text, Type::Tiny, c(C::Ink2));
+        ui.add(egui::Label::new(words));
     });
 }

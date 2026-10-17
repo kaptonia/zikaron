@@ -35,12 +35,16 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 (None, b, r, Vec::new(), None)
             }
             crate::verifyx::Source::File(p) => {
-                let raw = std::fs::read(p).map_err(|e| crate::fault::classify(&e, &p.display().to_string()))?;
-                let pairs = zikaron_glue::container::decode(&raw).map_err(|b| {
-                    crate::fault::Fault::known(crate::fault::Known::GrantFileBad, format!("{}:{}", b.code(), b.subject()))
-                })?;
-                let (b, r) = crate::verifyx::entries_of_pairs(&pairs);
-                (Some(crate::verifyx::kit_facts_of(&pairs)), b, r, crate::verifyx::originals_in_pairs(&pairs), crate::verifyx::manifest_in(&pairs))
+                // One file (a record package, a grant file): read out into a folder of its own, streaming, with no
+                // total bound (`zikaron_glue::read::unpack`), then verified as a kit folder is; the folder goes
+                // when this is done.
+                let out = zikaron_glue::read::unpack(p).map_err(|b| crate::fault::Fault::known(crate::fault::Known::KitFileBad, format!("{}:{}", b.code(), b.subject())))?;
+                let d = out.dir.clone();
+                let (b, r) = crate::verifyx::bytes_at(&crate::verifyx::Source::Kit(d.clone()))?;
+                let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
+                let read = (Some(crate::verifyx::verify_kit_at(&d)), b, r, crate::verifyx::originals_in_dir(&d), manifest);
+                drop(out);
+                read
             }
             crate::verifyx::Source::Remote(base) => {
                 let got = crate::fetchx::fetch_kit(base)?;

@@ -1,7 +1,7 @@
 //! `--proxy` on the verbs that contact nodes, on the real binary against an in-process node, HTTP CONNECT stub
-//! and SOCKS5 stub (no network: only the stubs resolve the node's name). Cases: a proxy address of either kind
-//! is used; `none` resolves locally; `system` and no flag follow the system settings; anything else is misuse
-//! (exit 2, nothing on stdout, the flag named).
+//! and SOCKS5 stub (no network: only the stubs resolve the node's name). Cases: a proxy address is used, its
+//! credentials too; `none` resolves locally; `system` and no flag follow the terminal's proxy variables; anything
+//! else is misuse (exit 2, nothing on stdout, the flag named).
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -156,7 +156,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     p
 }
 
-/// A proxy address of either kind is used; the proxy resolves the node's name.
+/// A proxy address is used, with credentials written into it too; the proxy resolves the node's name.
 #[test]
 fn a_proxy_address_is_gone_through() {
     let dir = scratch("through");
@@ -166,8 +166,11 @@ fn a_proxy_address_is_gone_through() {
     let r = scan(&dir, n, Some(&format!("socks5://127.0.0.1:{socks}")), &[]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(socks_seen.lock().expect("seen").iter().all(|p| *p == format!("node.invalid:{n}")) && !socks_seen.lock().expect("seen").is_empty());
-    let r = scan(&dir, n, Some(&format!("http://127.0.0.1:{connect}")), &[]);
-    assert_eq!(r.code, 0, "{}", r.err);
+    for typed in [format!("http://127.0.0.1:{connect}"), format!("http://u:p@127.0.0.1:{connect}")] {
+        let r = scan(&dir, n, Some(&typed), &[]);
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert!(!r.err.contains(":p@"), "the password is never echoed: {}", r.err);
+    }
     assert!(connect_seen.lock().expect("seen").iter().all(|p| *p == format!("node.invalid:{n}")) && !connect_seen.lock().expect("seen").is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -182,9 +185,8 @@ fn none_goes_straight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `system` and no flag follow the system settings: where those are environment variables, the proxy set there
-/// is used; elsewhere the machine's own settings apply (no stub is named, so the scan is unanswered or a system
-/// proxy refuses it).
+/// `system` and no flag follow the terminal's proxy variables when one is set, on every system, as terminal
+/// programs do; the system's own settings are read only when none is set.
 #[test]
 fn system_and_no_flag_follow_the_system() {
     let dir = scratch("system");
@@ -193,13 +195,9 @@ fn system_and_no_flag_follow_the_system() {
     let env = [("http_proxy", format!("http://127.0.0.1:{connect}"))];
     for proxy in [Some("system"), None] {
         let r = scan(&dir, n, proxy, &env);
-        if cfg!(all(unix, not(target_os = "macos"))) {
-            assert_eq!(r.code, 0, "{proxy:?}: {}", r.err);
-        } else {
-            assert_eq!(r.code, 4, "{proxy:?}: {}", r.err);
-        }
+        assert_eq!(r.code, 0, "{proxy:?}: {}", r.err);
     }
-    assert_eq!(seen.lock().expect("seen").is_empty(), !cfg!(all(unix, not(target_os = "macos"))));
+    assert!(!seen.lock().expect("seen").is_empty(), "the terminal's proxy was gone through");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -208,7 +206,7 @@ fn system_and_no_flag_follow_the_system() {
 fn any_other_proxy_is_misuse() {
     let dir = scratch("misuse");
     let n = node();
-    for bad in ["proxy.example:8080", "http://u:p@127.0.0.1:1", "https://127.0.0.1:1", "socks4://127.0.0.1:1", "http://127.0.0.1", "http://127.0.0.1:0", "", "SYSTEM2"] {
+    for bad in ["proxy.example:8080", "http://:p@127.0.0.1:1", "ftp://127.0.0.1:1", "socks4://id:pw@127.0.0.1:1", "http://127.0.0.1", "http://127.0.0.1:0", "", "SYSTEM2"] {
         let r = scan(&dir, n, Some(bad), &[]);
         assert_eq!((r.code, r.out.is_empty()), (2, true), "{bad:?}: {}", r.err);
         assert!(r.err.lines().next().unwrap_or("").contains("--proxy"), "{bad:?}: {}", r.err);

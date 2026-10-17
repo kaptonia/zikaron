@@ -17,7 +17,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::FromRawHandle;
 use std::path::Path;
 
-type Handle = *mut c_void;
+pub(crate) type Handle = *mut c_void;
 
 const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
 const GENERIC_READ: u32 = 0x8000_0000;
@@ -32,6 +32,11 @@ const OPEN_ALWAYS: u32 = 4;
 const TRUNCATE_EXISTING: u32 = 5;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+/// The `NTSTATUS` values an open meets on an entry that is not there, or is being deleted.
+const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
+const STATUS_OBJECT_PATH_NOT_FOUND: i32 = 0xC000_003A_u32 as i32;
+const STATUS_DELETE_PENDING: i32 = 0xC000_0056_u32 as i32;
 const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
 const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x2;
@@ -74,6 +79,11 @@ unsafe extern "system" {
     fn GetCurrentProcess() -> Handle;
     fn CloseHandle(h: Handle) -> i32;
     fn LocalFree(p: *mut c_void) -> *mut c_void;
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn RtlGetLastNtStatus() -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -699,6 +709,7 @@ pub fn spawn(cmd: &mut std::process::Command) -> std::io::Result<std::process::C
 
 // ───────────────────────── "Enable command line": the user's `Path` ─────────────────────────
 
+// The registry calls, declared once for this crate (the proxy reading reads through `reg_dword` / `reg_text`).
 #[link(name = "advapi32")]
 unsafe extern "system" {
     fn RegOpenKeyExW(key: Handle, sub: *const u16, options: u32, access: u32, out: *mut Handle) -> i32;
@@ -712,8 +723,8 @@ unsafe extern "system" {
     fn SendMessageTimeoutW(window: Handle, msg: u32, wparam: usize, lparam: isize, flags: u32, timeout: u32, result: *mut usize) -> isize;
 }
 
-const HKEY_CURRENT_USER: Handle = 0x8000_0001usize as Handle;
-const HKEY_LOCAL_MACHINE: Handle = 0x8000_0002usize as Handle;
+pub(crate) const HKEY_CURRENT_USER: Handle = 0x8000_0001usize as Handle;
+pub(crate) const HKEY_LOCAL_MACHINE: Handle = 0x8000_0002usize as Handle;
 const KEY_READ: u32 = 0x2_0019;
 const KEY_WRITE: u32 = 0x2_0006;
 const REG_EXPAND_SZ: u32 = 2;
@@ -792,6 +803,96 @@ fn reg_path(root: Handle, sub: &str) -> std::io::Result<String> {
     }
     let n = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
     Ok(String::from_utf16_lossy(&buf[..n]))
+}
+
+// ───────────────────────── System proxy settings (read by `proxy.rs`) ─────────────────────────
+
+/// One registry value's bytes under `root\sub` (`None` when the key or the value is absent or unreadable).
+fn reg_raw(root: Handle, sub: &str, name: &str) -> Option<Vec<u8>> {
+    let mut key: Handle = std::ptr::null_mut();
+    // SAFETY: opened for reading only and closed below; the first query asks the size, the second reads into a
+    // buffer of that size.
+    unsafe {
+        if RegOpenKeyExW(root, w(sub).as_ptr(), 0, KEY_READ, &mut key) != 0 {
+            return None;
+        }
+        let n = w(name);
+        let mut len = 0u32;
+        let mut out = None;
+        if RegQueryValueExW(key, n.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut len) == 0 {
+            let mut buf = vec![0u8; len as usize];
+            if RegQueryValueExW(key, n.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), buf.as_mut_ptr(), &mut len) == 0 {
+                buf.truncate(len as usize);
+                out = Some(buf);
+            }
+        }
+        RegCloseKey(key);
+        out
+    }
+}
+
+/// A registry number value (`REG_DWORD`).
+pub(crate) fn reg_dword(root: Handle, sub: &str, name: &str) -> Option<u32> {
+    reg_raw(root, sub, name).and_then(|b| Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?)))
+}
+
+/// A registry text value (`REG_SZ`), up to its first zero.
+pub(crate) fn reg_text(root: Handle, sub: &str, name: &str) -> Option<String> {
+    let b = reg_raw(root, sub, name)?;
+    let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// The system's structure as the call fills it; automatic detection is laid out as the system requires and not
+/// handed on (discovery is not followed).
+#[repr(C)]
+struct IeProxyConfigRaw {
+    _auto_detect: i32,
+    auto_config_url: *mut u16,
+    proxy: *mut u16,
+    proxy_bypass: *mut u16,
+}
+
+#[link(name = "winhttp")]
+unsafe extern "system" {
+    fn WinHttpGetIEProxyConfigForCurrentUser(config: *mut IeProxyConfigRaw) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GlobalFree(p: *mut c_void) -> *mut c_void;
+}
+
+/// The current user's proxy settings as the system answers them.
+pub(crate) struct IeProxy {
+    pub auto_config_url: Option<String>,
+    pub proxy: Option<String>,
+    pub bypass: Option<String>,
+}
+
+/// `WinHttpGetIEProxyConfigForCurrentUser` (`None` when the call fails). The strings it returns are copied and
+/// freed with `GlobalFree`, as the call requires.
+pub(crate) fn ie_proxy_config() -> Option<IeProxy> {
+    let mut raw = IeProxyConfigRaw { _auto_detect: 0, auto_config_url: std::ptr::null_mut(), proxy: std::ptr::null_mut(), proxy_bypass: std::ptr::null_mut() };
+    // SAFETY: the call fills the structure; each non-null string is zero-terminated, read once and freed once.
+    unsafe {
+        if WinHttpGetIEProxyConfigForCurrentUser(&mut raw) == 0 {
+            return None;
+        }
+        let take = |p: *mut u16| -> Option<String> {
+            if p.is_null() {
+                return None;
+            }
+            let mut n = 0;
+            while *p.add(n) != 0 {
+                n += 1;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            GlobalFree(p.cast());
+            Some(s).filter(|s| !s.trim().is_empty())
+        };
+        Some(IeProxy { auto_config_url: take(raw.auto_config_url), proxy: take(raw.proxy), bypass: take(raw.proxy_bypass) })
+    }
 }
 
 /// Write the user's `Path` and broadcast the environment change (newly opened terminals pick it up).
@@ -1015,4 +1116,59 @@ mod tests {
         assert_eq!(text(Path::new(r"C:\short")), r"C:\short");
         assert_eq!(text(Path::new("relative")), "relative");
     }
+}
+
+// ───────────────────────── The single-writer lock (a byte-range lock) ─────────────────────────
+
+#[repr(C)]
+struct Overlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: Handle,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn LockFileEx(file: Handle, flags: u32, reserved: u32, low: u32, high: u32, overlapped: *mut Overlapped) -> i32;
+}
+
+const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x1;
+const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x2;
+
+/// The locked range: one byte far beyond any data in the file. Windows locks are mandatory, and the writer
+/// lock file holds the holder's pid, which the settings page reads while the lock is held.
+const LOCK_OFFSET_HIGH: u32 = 0x4000_0000;
+
+fn lock_with(file: &std::fs::File, flags: u32) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    let mut at = Overlapped { internal: 0, internal_high: 0, offset: 0, offset_high: LOCK_OFFSET_HIGH, event: std::ptr::null_mut() };
+    // SAFETY: the handle stays open for the call (`file` holds it) and `at` outlives it.
+    unsafe { LockFileEx(file.as_raw_handle() as Handle, flags, 0, 1, 0, &mut at) != 0 }
+}
+
+/// The entry opened for its attributes alone (no access asked, every sharing allowed, a folder too, a link
+/// itself): an open that succeeds is an entry there; one that fails is read by the status the system met, read
+/// at once on this thread: not there, or delete pending (which the Win32 error alone spells as access denied).
+pub fn going(path: &Path) -> bool {
+    let name = wide(path);
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    // SAFETY: `name` is a NUL-terminated wide string that outlives the call; no security descriptor or template.
+    let h = unsafe { CreateFileW(name.as_ptr(), 0, share, std::ptr::null_mut(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut()) };
+    if h != INVALID_HANDLE_VALUE {
+        // SAFETY: `h` is the handle just opened, closed once.
+        unsafe { CloseHandle(h) };
+        return false;
+    }
+    // SAFETY: reads this thread's last status; nothing has been called since the failed open.
+    matches!(unsafe { RtlGetLastNtStatus() }, STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND | STATUS_DELETE_PENDING)
+}
+
+pub fn lock_now(file: &std::fs::File) -> bool {
+    lock_with(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)
+}
+
+pub fn lock_wait(file: &std::fs::File) -> bool {
+    lock_with(file, LOCKFILE_EXCLUSIVE_LOCK)
 }

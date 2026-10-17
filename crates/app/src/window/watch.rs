@@ -53,10 +53,11 @@ impl Win {
     /// network). A period of zero never runs by itself; with the basis incomplete, no node, or a task already
     /// in flight, nothing starts and nothing is said.
     pub(super) fn tick(&mut self, ctx: &egui::Context, now: f64) {
-        // egui draws only on events, so a configured timer requests a frame for the moment it falls due, or it
-        // would never fire.
+        // egui draws only on events, so each thing on a clock requests a frame for the moment it falls due, or it
+        // would never fire: the look at the disk while the command line writes alone (`Shell::follow_wake`, every
+        // second), and the configured self-audit and re-check periods. One wake, the earliest, asked here only.
+        let mut wake: Option<f64> = self.shell.follow_wake(now);
         if self.shell.home.is_some() && !self.shell.endpoints.is_empty() {
-            let mut wake: Option<f64> = None;
             for (every, kind) in [(self.shell.settings.audit_every, crate::task::Kind::Audit), (self.shell.settings.review_every, crate::task::Kind::Review)] {
                 if every > 0 {
                     let last = self.shell.tasks.landed_at(kind).unwrap_or(self.last_tick);
@@ -64,9 +65,9 @@ impl Win {
                     wake = Some(wake.map_or(due, |w: f64| w.min(due)));
                 }
             }
-            if let Some(d) = wake {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(d.max(0.5)));
-            }
+        }
+        if let Some(d) = wake {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(d.max(0.5)));
         }
         if self.shell.rekeying || self.shell.swapping {
             return;

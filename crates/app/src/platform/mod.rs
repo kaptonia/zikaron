@@ -5,7 +5,7 @@
 //! | System file dialog | [`ask_path`] (returns at once; the answer is awaited off the UI thread) | AppKit `NSOpenPanel` (Objective-C runtime) | `rfd` over the XDG desktop portal (no GTK) | `rfd` over the system dialog |
 //! | Single-writer lock | [`lock_now`], [`lock_wait`] | `flock` | `flock` | `LockFileEx` on one byte beyond the data |
 //! | The user's home directory | [`home_dir`] | `$HOME` | `$HOME` | the profile known folder |
-//! | The system time zone | [`zone_rules`] | `TZ`, else `/etc/localtime` | `TZ`, else `/etc/localtime` | `TZ`, else the system's zone written as a POSIX rule |
+//! | The system time zone | [`zone_rules`] | `TZ`, else `/etc/localtime` | `TZ`, else `/etc/localtime` | `TZ`, else the system's zone written as a POSIX rule for each year |
 //! | Chinese font faces | `zikaron_ui::fonts::ROLES` (the widget library installs fonts) | system PingFang | Noto Sans SC embedded in the build (OFL) | system Microsoft YaHei UI, else as Linux |
 //! | The per-user temporary directory | [`user_temp_dir`] | `confstr(_CS_DARWIN_USER_TEMP_DIR)` | `$XDG_RUNTIME_DIR`, else `/tmp` | `GetTempPath2W` (`GetTempPathW` before it) |
 //! | Where this app keeps its machine data by default | [`app_data_dir`] | the home directory | the home directory | `%LOCALAPPDATA%\ZIKARON` |
@@ -88,12 +88,12 @@ pub fn window_backend() -> Backend {
 /// Ask the kernel for an exclusive lock on this open file without waiting; true when obtained. The kernel
 /// releases it when the process exits, so stale locks cannot arise.
 pub fn lock_now(file: &std::fs::File) -> bool {
-    imp::lock_now(file)
+    zikaron_os::lock_now(file)
 }
 
 /// The same lock, blocking until obtained.
 pub fn lock_wait(file: &std::fs::File) -> bool {
-    imp::lock_wait(file)
+    zikaron_os::lock_wait(file)
 }
 
 /// The user's home directory; `None` when the system does not provide one. Implemented in `zikaron-os` so the
@@ -110,18 +110,24 @@ pub fn app_data_dir(user_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// The system time zone rules: the bytes of a TZif zone file, or the `TZ` value as a POSIX rule string when it
-/// names no readable file (validated later by the rule parser). `None` when neither `TZ` nor `/etc/localtime`
-/// gives anything, or the file is not a zone file.
+/// names no readable file (validated later by the rule parser), or, on a system that keeps its zone as rules by
+/// year (Windows), each year's rule. `None` when the system gives nothing, or the file is not a zone file.
 pub fn zone_rules() -> Option<Zone> {
     imp::zone_rules()
 }
 
-/// A time zone as provided by the system.
+/// A time zone as provided by the system. Every form answers a moment's offset by the rule of that moment's
+/// year, so a zone whose daylight rules changed reads its old moments by their own year's rules (a TZif file by
+/// its transitions, a by-year table by its year), never by today's rule; a single POSIX rule has no years.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Zone {
     /// The bytes of a TZif zone file.
     File(Vec<u8>),
     /// A POSIX TZ rule (`CET-1CEST,M3.5.0,M10.5.0/3`).
     Rule(String),
+    /// POSIX rules by year, years ascending, each listed where its rule begins: a rule holds from its year until
+    /// the next listed year, the first also before its year and the last after.
+    ByYear(Vec<(i64, String)>),
 }
 
 /// Tell the user why the app exits without a window (misuse, or the window could not be created). `line` goes

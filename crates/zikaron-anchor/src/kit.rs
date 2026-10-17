@@ -10,7 +10,7 @@
 
 use crate::mpt::{self, Answer};
 use crate::rlp;
-use crate::rpc::{Endpoint, Trouble};
+use crate::rpc::{Broke, Endpoint, ProofGap, Trouble};
 use crate::tx;
 use crate::wire::W;
 use zikaron::cryptox::keccak256;
@@ -67,7 +67,7 @@ impl Refuse {
     }
     pub fn detail(&self) -> String {
         match self {
-            Refuse::Missing(p) => format!("缺 {p}"),
+            Refuse::Missing(p) => p.to_string(),
             _ => String::new(),
         }
     }
@@ -352,44 +352,44 @@ pub fn capture(
 ) -> Result<Value, Trouble> {
     crate::seam();
     let txv = ep.call("eth_getTransactionByHash", &Value::Arr(vec![Value::Str(hexfmt::encode(tx_hash))]))?;
-    let t = tx::read(&txv).map_err(|e| Trouble::Transport(format!("交易读不成:{e:?}")))?;
-    let bn = t.block_number.ok_or(Trouble::Transport("这一笔还没入块".into()))?;
+    let t = tx::read(&txv).map_err(|e| Trouble::Transport(Broke::Proof(ProofGap::TxUnread(format!("{e:?}")))))?;
+    let bn = t.block_number.ok_or(Trouble::Transport(Broke::Proof(ProofGap::NotInBlock)))?;
     let block = ep.call(
         "eth_getBlockByNumber",
         &Value::Arr(vec![Value::Str(crate::scan::hex_quantity(bn)), Value::Bool(true)]),
     )?;
-    let header_raw = header_rlp(&block).ok_or(Trouble::Transport("区块头重编不出来".into()))?;
-    let header = read_header(&header_raw).ok_or(Trouble::Transport("重编出来的头读不回".into()))?;
+    let header_raw = header_rlp(&block).ok_or(Trouble::Transport(Broke::Proof(ProofGap::HeaderUnbuilt)))?;
+    let header = read_header(&header_raw).ok_or(Trouble::Transport(Broke::Proof(ProofGap::HeaderUnread)))?;
     let block_hash = block.member("hash").and_then(|x| x.as_str()).and_then(hexfmt::decode).unwrap_or_default();
     if header.hash.to_vec() != block_hash {
-        return Err(Trouble::Transport("重编出来的头不是节点给的那一枚哈希".into()));
+        return Err(Trouble::Transport(Broke::Proof(ProofGap::HeaderHash)));
     }
 
     // All transactions and receipts of the block, by index.
-    let txs = block.member("transactions").and_then(|x| x.as_arr()).ok_or(Trouble::Transport("区块没有交易表".into()))?;
+    let txs = block.member("transactions").and_then(|x| x.as_arr()).ok_or(Trouble::Transport(Broke::Proof(ProofGap::NoTxList)))?;
     let mut raws = Vec::new();
     let mut receipts = Vec::new();
     let mut index = None;
     for (i, one) in txs.iter().enumerate() {
-        let parsed = tx::read(one).map_err(|e| Trouble::Transport(format!("块内交易读不成:{e:?}")))?;
+        let parsed = tx::read(one).map_err(|e| Trouble::Transport(Broke::Proof(ProofGap::BlockTxUnread(format!("{e:?}")))))?;
         if &parsed.hash == tx_hash {
             index = Some(i as u64);
         }
         raws.push(parsed.raw);
         let r = ep.call("eth_getTransactionReceipt", &Value::Arr(vec![Value::Str(hexfmt::encode(&parsed.hash))]))?;
-        receipts.push(receipt_rlp(&r).ok_or(Trouble::Transport("收据重编不出来".into()))?);
+        receipts.push(receipt_rlp(&r).ok_or(Trouble::Transport(Broke::Proof(ProofGap::ReceiptUnbuilt)))?);
     }
-    let index = index.ok_or(Trouble::Transport("这一笔不在它自称的那一块里".into()))?;
+    let index = index.ok_or(Trouble::Transport(Broke::Proof(ProofGap::NotInItsBlock)))?;
     let tx_trie = mpt::Trie::indexed(&raws);
     if tx_trie.root() != header.tx_root {
-        return Err(Trouble::Transport("自建的交易根与头里的对不上".into()));
+        return Err(Trouble::Transport(Broke::Proof(ProofGap::TxRoot)));
     }
     let receipt_trie = mpt::Trie::indexed(&receipts);
     if receipt_trie.root() != header.receipt_root {
-        return Err(Trouble::Transport("自建的收据根与头里的对不上".into()));
+        return Err(Trouble::Transport(Broke::Proof(ProofGap::ReceiptRoot)));
     }
     let key = rlp::quantity(index);
-    let sender = t.sender.ok_or(Trouble::Transport("这一笔在这套语法里没有发送者".into()))?;
+    let sender = t.sender.ok_or(Trouble::Transport(Broke::Proof(ProofGap::NoSender)))?;
 
     let account_here = account_proof(ep, &sender, bn)?;
     let mut fields = vec![
@@ -413,7 +413,7 @@ pub fn capture(
             "eth_getBlockByNumber",
             &Value::Arr(vec![Value::Str(crate::scan::hex_quantity(bn - 1)), Value::Bool(false)]),
         )?;
-        let parent_raw = header_rlp(&parent_block).ok_or(Trouble::Transport("上一块的头重编不出来".into()))?;
+        let parent_raw = header_rlp(&parent_block).ok_or(Trouble::Transport(Broke::Proof(ProofGap::ParentUnbuilt)))?;
         fields.push(("parentHeader".to_string(), Value::Str(hexfmt::encode(&parent_raw))));
         let before = account_proof(ep, &sender, bn - 1)?;
         fields.push((
@@ -434,9 +434,9 @@ fn account_proof(ep: &mut dyn Endpoint, who: &[u8; 20], block: u64) -> Result<Ve
             Value::Str(crate::scan::hex_quantity(block)),
         ]),
     )?;
-    let arr = v.member("accountProof").and_then(|x| x.as_arr()).ok_or(Trouble::Transport("eth_getProof 没给账户证明".into()))?;
+    let arr = v.member("accountProof").and_then(|x| x.as_arr()).ok_or(Trouble::Transport(Broke::Proof(ProofGap::NoAccountProof)))?;
     arr.iter()
-        .map(|n| n.as_str().and_then(hexfmt::decode).ok_or(Trouble::Transport("账户证明里有不是字节串的东西".into())))
+        .map(|n| n.as_str().and_then(hexfmt::decode).ok_or(Trouble::Transport(Broke::Proof(ProofGap::AccountProofShape))))
         .collect()
 }
 

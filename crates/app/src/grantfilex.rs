@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// the command line (`zikaron_glue::grantfile`).
 pub use zikaron_glue::grantfile::{CODE_FILE, PUBLISH_FILE};
 /// Vault subdirectory holding kept grant files (under `grants-held/`; mirroring carries the whole vault).
-pub const KEPT: &str = "files";
+pub const KEPT: &str = zikaron_seal::envelope::KEPT_DIR;
 
 /// A grant file's name stem: `grant-<first ten hex digits of the id>` (the extension is added separately).
 pub fn stem(id: &str) -> String {

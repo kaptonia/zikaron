@@ -59,13 +59,11 @@ fn boot() -> Shell {
     shell
 }
 
-/// A home with its first entry, signed by the identity's anchor key (made once).
+/// A home with its first entry, signed by the current identity's key (made once); the home is its seat's own.
 fn home_with_genesis(shell: &mut Shell, at: &Path) -> PathBuf {
+    super::seated(shell, at);
     let opened = apply(shell, Action::OpenHome { root: at.display().to_string() });
     assert!(matches!(opened, Applied::Homed { .. }), "{opened:?}");
-    if shell.anchor.is_none() {
-        apply(shell, Action::MakeAnchorKey);
-    }
     let made = apply(shell, Action::Genesis { statement: "一本账的开端".into() });
     assert!(matches!(made, Applied::Genesised { .. }), "{made:?}");
     std::fs::canonicalize(at).expect("home")
@@ -192,7 +190,8 @@ fn a_request_is_done_by_the_action_layer_as_a_click_is() {
     let Applied::Annotated(pressed_id) = pressed else { panic!("{pressed:?}") };
     let pressed_bytes = entry_bytes(&shell, &pressed_id);
     assert_ne!(twin, first);
-    // Through the door, in the first home.
+    // Through the command-line channel, in the first home (the seat's home again).
+    super::seat_home(&first);
     let _ = apply(&mut shell, Action::OpenHome { root: first.display().to_string() });
     settle(&mut shell);
     shell.door_told.clear();
@@ -243,8 +242,12 @@ fn each_writing_verb_lands_its_entry() {
     assert!(matches!(r, Reply::Wrote { seq: 3, .. }), "revoke: {r:?}");
     let r = ask(&mut shell, b.ask("retract", &[("subject", &work_entry), ("note", "gone")]));
     assert!(matches!(r, Reply::Wrote { seq: 4, .. }), "retract: {r:?}");
+    // Handing the ledger to another key is done only by hand on the desktop: not a command-line verb, refused
+    // by name, nothing written.
+    let before = head(&shell);
     let r = ask(&mut shell, b.ask("succeed", &[("to", &format!("0x{}", "12".repeat(20))), ("kind", "handover"), ("effective", "5"), ("statement", "s")]));
-    assert!(matches!(r, Reply::Wrote { seq: 5, .. }) || matches!(&r, Reply::Refused { .. }), "succeed: {r:?}");
+    assert!(matches!(&r, Reply::Refused { code, network: false, .. } if code == "DOOR_UNREAD"), "succeed: {r:?}");
+    assert_eq!(head(&shell), before, "nothing written");
     assert!(!me.is_empty());
     // A refusal answers the action layer's code: a malformed subject.
     let r = ask(&mut shell, b.ask("retract", &[("subject", "not-an-id")]));
@@ -397,7 +400,7 @@ fn a_record_package_through_the_door_is_the_desktops_export() {
     }
     let (b, mut shell) = Bench::new("kit");
     let out = b.root.join("kit-out");
-    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string() }) {
+    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string(), form: "folder".into() }) {
         Applied::Trouble(f) => f.which().map(|k| k.as_str().to_string()).unwrap_or_default(),
         other => panic!("{other:?}"),
     };
@@ -444,7 +447,7 @@ fn the_door_table_is_the_contracts_and_each_flag_reaches_its_action() {
         return;
     }
     let doc = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md")).expect("CLI-SCHEMA.md");
-    let table = doc.split("## 11 · `--home`").nth(1).and_then(|s| s.split("| Verb | Flags beside `--home` |").nth(1)).expect("§11 table");
+    let table = doc.split("## 11 · `--home`").nth(1).map(|s| s.split("\n## ").next().unwrap_or_default()).and_then(|s| s.split("| Verb | Flags beside `--home` |").nth(1)).expect("§11 table");
     let rows: Vec<(String, Vec<String>)> = table
         .lines()
         .filter_map(|l| l.strip_prefix("| `"))

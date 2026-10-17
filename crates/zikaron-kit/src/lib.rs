@@ -10,6 +10,9 @@
 //! - [`b64`] the single base64url implementation.
 //! - [`tokens`] the closed constants of kit law §11.
 
+// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
+#![forbid(unsafe_code)]
+
 pub mod b64;
 pub mod badge;
 pub mod check;

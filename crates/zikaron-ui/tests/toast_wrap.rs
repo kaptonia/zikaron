@@ -122,3 +122,46 @@ fn an_english_value_breaks_between_words_and_a_chinese_one_anywhere() {
         assert_eq!(rows.concat(), chinese);
     }
 }
+
+/// A two-line toast's keys sit on its first line, with the icon: opening the details below (the toast grows
+/// downward) moves neither the keys nor the icon. Read from where a real toast draws its key's words.
+#[test]
+fn opening_a_toasts_details_moves_none_of_its_keys() {
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let mut t = Toasts::new();
+    t.set_labels("Details", "Hide details", "Close");
+    t.say_full("The nodes could not be reached.", "Check the network.", "E_UNREACHABLE: connect refused", Tone::Bad, 0.0);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0));
+    let mut time = 0.0;
+    let mut frame = |t: &mut Toasts, events: Vec<egui::Event>| -> egui::FullOutput {
+        time += 0.2;
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
+        ctx.run(input, |ctx| {
+            let _ = t.draw(ctx, 216.0);
+        })
+    };
+    let at = |out: &egui::FullOutput, text: &str| -> Option<egui::Rect> {
+        out.shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(x) if x.galley.job.text == text => Some(x.galley.rect.translate(x.pos.to_vec2())),
+            _ => None,
+        })
+    };
+    let mut out = frame(&mut t, Vec::new());
+    for _ in 0..3 {
+        out = frame(&mut t, Vec::new());
+    }
+    let shut = at(&out, "Details").expect("the details key is drawn");
+    let close_shut = at(&out, "Close").expect("the close key is drawn");
+    let p = shut.center();
+    let press = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    let _ = frame(&mut t, vec![egui::Event::PointerMoved(p), press(true), press(false)]);
+    for _ in 0..3 {
+        out = frame(&mut t, Vec::new());
+    }
+    let open = at(&out, "Hide details").expect("the key now hides the details");
+    assert!(at(&out, "E_UNREACHABLE: connect refused").is_some(), "the details are shown");
+    assert!((open.center().y - shut.center().y).abs() < 0.5, "the key stays on the first line: {shut:?} then {open:?}");
+    let close_open = at(&out, "Close").expect("the close key is drawn");
+    assert!((close_open.center().y - close_shut.center().y).abs() < 0.5, "close stays too: {close_shut:?} then {close_open:?}");
+}

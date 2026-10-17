@@ -169,7 +169,7 @@ fn socks_proxy(to: u16, refuse: Option<u8>) -> (u16, Arc<Mutex<Vec<String>>>) {
 }
 
 fn manual(kind: Kind, port: u16) -> Choice {
-    Choice::Manual(Proxy { kind, host: "127.0.0.1".into(), port })
+    Choice::Manual(Proxy { kind, host: "127.0.0.1".into(), port, auth: None })
 }
 
 fn nothing() -> Option<SystemProxies> {
@@ -179,7 +179,7 @@ fn nothing() -> Option<SystemProxies> {
 static SYSTEM_SOCKS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
 fn system_with_socks() -> Option<SystemProxies> {
-    Some(SystemProxies { socks: Some(("127.0.0.1".into(), SYSTEM_SOCKS.load(std::sync::atomic::Ordering::SeqCst))), ..Default::default() })
+    Some(SystemProxies { socks: Some(Proxy { kind: Kind::Socks5, host: "127.0.0.1".into(), port: SYSTEM_SOCKS.load(std::sync::atomic::Ordering::SeqCst), auth: None }), ..Default::default() })
 }
 
 #[test]
@@ -211,19 +211,19 @@ fn a_connection_goes_the_way_the_choice_says() {
     let (p, _) = connect_proxy(node, Some("HTTP/1.1 403 Forbidden"));
     set_choice(manual(Kind::Http, p));
     match ask(&format!("http://node.invalid:{node}/")) {
-        Err(Fail::Connect(said)) => assert!(said.contains(&format!("via proxy http://127.0.0.1:{p}")) && said.contains("403"), "{said}"),
+        Err(Fail::Proxy(said)) => assert!(said.contains(&format!("via proxy http://127.0.0.1:{p}")) && said.contains("403"), "{said}"),
         other => panic!("{:?}", other.err()),
     }
     let (p, _) = socks_proxy(node, Some(5));
     set_choice(manual(Kind::Socks5, p));
     match ask(&format!("http://node.invalid:{node}/")) {
-        Err(Fail::Connect(said)) => assert!(said.contains("socks5://127.0.0.1") && said.contains("code 5"), "{said}"),
+        Err(Fail::Proxy(said)) => assert!(said.contains("socks5://127.0.0.1") && said.contains("code 5"), "{said}"),
         other => panic!("{:?}", other.err()),
     }
     let closed = TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
     set_choice(manual(Kind::Http, closed));
     match ask(&format!("http://node.invalid:{node}/")) {
-        Err(Fail::Connect(said)) => assert!(said.contains(&format!("via proxy http://127.0.0.1:{closed}")), "{said}"),
+        Err(Fail::Proxy(said)) => assert!(said.contains(&format!("via proxy http://127.0.0.1:{closed}")), "{said}"),
         other => panic!("{:?}", other.err()),
     }
 
@@ -301,31 +301,40 @@ fn through(kind: Kind, port: u16, ms: u64) -> Result<u16, Fail> {
 
 fn connect_said(r: Result<u16, Fail>) -> String {
     match r {
-        Err(Fail::Connect(s)) => s,
-        other => panic!("not the connection's failure: {other:?}"),
+        Err(Fail::Proxy(s)) => s,
+        other => panic!("not the proxy's failure: {other:?}"),
+    }
+}
+
+/// A proxy asking for credentials when none were given: that failure, its words.
+fn asked_said(r: Result<u16, Fail>) -> String {
+    match r {
+        Err(Fail::ProxyCredentials { given: false, said }) => said,
+        other => panic!("not the proxy asking for credentials: {other:?}"),
     }
 }
 
 /// Every way the proxy side of the tunnel can fail is reported distinctly: silence (the deadline), a partial
-/// response, an unreadable response, a credentials demand; connection failures name the proxy.
+/// response, an unreadable response, a credentials demand (its own failure, `Fail::ProxyCredentials`); connection
+/// failures name the proxy.
 #[test]
 fn each_failure_on_the_proxys_side_is_named() {
     let _turn = turn();
     read_system_with(nothing);
-    // Silent after accepting: the exchange deadline applies, not a hang.
+    // Silent after accepting: the exchange deadline applies, not a hang, and it is the proxy's failure.
     let p = scripted(|mut s| {
         let _ = read_head(&mut s);
         hold(s)
     });
-    assert!(matches!(through(Kind::Http, p, 400), Err(Fail::Late(_))), "CONNECT silent");
+    assert!(matches!(through(Kind::Http, p, 400), Err(Fail::Proxy(ref s)) if s.contains("no answer within")), "CONNECT silent");
     let p = scripted(hold);
-    assert!(matches!(through(Kind::Socks5, p, 400), Err(Fail::Late(_))), "SOCKS5 silent before its greeting answer");
+    assert!(matches!(through(Kind::Socks5, p, 400), Err(Fail::Proxy(ref s)) if s.contains("no answer within")), "SOCKS5 silent before its greeting answer");
     let p = scripted(|mut s| {
         if read_greeting(&mut s) && s.write_all(&[5, 0]).is_ok() {
             hold(s)
         }
     });
-    assert!(matches!(through(Kind::Socks5, p, 400), Err(Fail::Late(_))), "SOCKS5 silent before its reply");
+    assert!(matches!(through(Kind::Socks5, p, 400), Err(Fail::Proxy(ref s)) if s.contains("no answer within")), "SOCKS5 silent before its reply");
     // A partial response, then closed.
     let p = scripted(|mut s| {
         if read_head(&mut s) {
@@ -384,20 +393,20 @@ fn each_failure_on_the_proxys_side_is_named() {
         });
         assert!(connect_said(through(Kind::Socks5, p, 3000)).contains("reply does not read"), "{form}");
     }
-    // Requires credentials: unsupported, and reported as such.
+    // Asks for credentials, and none are written with the proxy: reported as such.
     let p = scripted(|mut s| {
         if read_head(&mut s) {
             let _ = s.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n");
         }
     });
-    let said = connect_said(through(Kind::Http, p, 3000));
-    assert!(said.contains("407") && said.contains("needs credentials"), "{said}");
+    let said = asked_said(through(Kind::Http, p, 3000));
+    assert!(said.contains("407") && said.contains("asks for credentials"), "{said}");
     let p = scripted(|mut s| {
         if read_greeting(&mut s) {
             let _ = s.write_all(&[5, 0xFF]);
         }
     });
-    assert!(connect_said(through(Kind::Socks5, p, 3000)).contains("needs authentication"));
+    assert!(asked_said(through(Kind::Socks5, p, 3000)).contains("asks for authentication"));
 }
 
 /// A node that keeps connections open (HTTP/1.1, a length, no close), counting accepted connections.

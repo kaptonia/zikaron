@@ -18,10 +18,14 @@
 //!   full-window cover on a painted ground that takes every press and drag; a toast on nothing, so presses
 //!   beside it reach the page. Then the card's body ([`body`]): a press on the card off its rows does nothing.
 //!   Guard, body and rows share one layer, so no press can fall between them however layers are raised.
-//!   A floating card hangs under its anchor, or above it when the window has no room below ([`drop_card`]).
+//!   A floating card hangs under its anchor, or above it when the window has no room below, between the side
+//!   edges of the room its anchor is drawn in (the anchor's own clip, never past it onto what lies beside:
+//!   [`drop_card`]).
 //! - **Tips.** Hover tips are egui's own, drawn above everything and gone once the pointer leaves the widget
 //!   (so a tip never stands over a press); every one is attached here ([`tip`]).
 //! - **Esc.** One Esc closes one overlay: the one opened last of those on screen ([`esc`]).
+//! - **On top.** Whether what a widget draws at a place lies on top there ([`on_top`]): no overlay lies over it.
+//!   A widget that takes keys without a press (a passcode row taking focus nobody holds) asks it first.
 
 use crate::motion::{self, Curve};
 use egui::{Context, Id, LayerId, Pos2, Rect, Vec2};
@@ -235,20 +239,24 @@ pub fn body(ui: &mut egui::Ui, card: Rect) {
 }
 
 /// Where a floating card of `size` hangs off `anchor`: 6 under it, aligned to its left edge when `left` (its
-/// right edge otherwise) and kept 8 inside the window; above it instead when the window has no room under it
-/// and has room above; with room on neither side, on the side with more, kept 8 inside the window. `origin`
-/// is the corner it grows from, `moved` the offset it enters from (down from above when under the anchor, up
-/// from below when above it).
+/// right edge otherwise) and kept 8 inside the side edges of `bounds`; above it instead when the window has no
+/// room under it and has room above; with room on neither side, on the side with more, kept 8 inside the window.
+/// `bounds` is the room the anchor is drawn in (its ui's clip, `ui.clip_rect()`: a page's content area, so the
+/// card never lies over the rail beside it); up and down a card may reach past that room (out of a sheet's body,
+/// say) to the window's edges. `origin` is the corner it grows from, `moved` the offset it enters from (down
+/// from above when under the anchor, up from below when above it).
 pub struct Drop {
     pub rect: Rect,
     pub origin: Pos2,
     pub moved: Vec2,
 }
 
-pub fn drop_card(ctx: &Context, anchor: Rect, size: Vec2, left: bool) -> Drop {
+pub fn drop_card(ctx: &Context, anchor: Rect, bounds: Rect, size: Vec2, left: bool) -> Drop {
     let screen = ctx.content_rect();
+    let (room_l, room_r) = (bounds.left().max(screen.left()), bounds.right().min(screen.right()));
+    let (room_l, room_r) = if room_r > room_l { (room_l, room_r) } else { (screen.left(), screen.right()) };
     let x = if left { anchor.left() } else { anchor.right() - size.x };
-    let x = x.clamp(screen.left() + 8.0, (screen.right() - size.x - 8.0).max(screen.left() + 8.0));
+    let x = x.clamp(room_l + 8.0, (room_r - size.x - 8.0).max(room_l + 8.0));
     let below = anchor.bottom() + 6.0;
     let above = anchor.top() - 6.0 - size.y;
     // Under the anchor when it fits there; else above when it fits there; fitting neither side, on the side with
@@ -266,6 +274,14 @@ pub fn drop_card(ctx: &Context, anchor: Rect, size: Vec2, left: bool) -> Drop {
         (false, true) => rect.right_bottom(),
     };
     Drop { rect, origin, moved: egui::vec2(0.0, if up { 4.0 } else { -4.0 }) }
+}
+
+/// Whether `ui`'s layer is the one on top at `at`'s centre: the topmost layer there that takes presses (egui's
+/// own reading of the last frame's layers, modal included) is `ui`'s, or there is none (the page under every
+/// overlay). An overlay opened over it (a sheet, a cover, a floating card with its guard) lies over the whole
+/// window, so it answers no.
+pub fn on_top(ui: &egui::Ui, at: Rect) -> bool {
+    ui.ctx().layer_id_at(at.center()).is_none_or(|l| l == ui.layer_id())
 }
 
 /// Attach a hover tip to `resp` (egui's own tip: drawn above everything, gone once the pointer leaves `resp`).

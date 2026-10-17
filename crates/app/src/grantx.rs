@@ -208,9 +208,8 @@ pub fn window_of(body: &Value) -> Option<(u64, u64)> {
 
 /// Reads the register once: one row per grant in the ledger. A grant counts as revoked when a revocation in
 /// this ledger references it (law §6.4: only the issuing ledger can revoke). Exclusivity and documents come
-/// from the issuance record (`termsx`, written once at signing); `legacy` is the older exclusive list in the
-/// settings file (read-only, kept for data written by older versions).
-pub fn table(home: &Home, legacy: &[String]) -> Result<Vec<Row>, Fault> {
+/// from the issuance record (`termsx`, written once at signing).
+pub fn table(home: &Home) -> Result<Vec<Row>, Fault> {
     let records = crate::termsx::records(home)?;
     let survey = home
         .ledger()?
@@ -231,7 +230,7 @@ pub fn table(home: &Home, legacy: &[String]) -> Result<Vec<Row>, Fault> {
         .filter(|e| e.kind == EntryType::Grant)
         .map(|e| {
             let id = zikaron::hexfmt::encode(&e.id);
-            let from = crate::termsx::exclusive_of(&records, legacy, &id);
+            let from = crate::termsx::exclusive_of(&records, &id);
             Row {
                 grantee: text(&e.body, "grantee").unwrap_or("").to_string(),
                 work: text(&e.body, "work").unwrap_or("").to_string(),
@@ -342,7 +341,7 @@ pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
         ));
     }
     revocations.sort();
-    let rows = table(home, &[])?;
+    let rows = table(home)?;
     Ok(Story { grant: rows.into_iter().find(|r| r.id == want), revocations })
 }
 

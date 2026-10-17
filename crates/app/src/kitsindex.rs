@@ -68,99 +68,27 @@ pub struct Export {
     pub room: bool,
 }
 
-/// Where an exported kit says it is anchored: its home's chain, registry and start block at export.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AnchoredOn {
-    pub chain_id: u64,
-    pub from_block: u64,
-    /// The registry contract, `0x` and forty lowercase hex digits.
-    pub registry: String,
+/// Where an exported kit says it is anchored, and the note line that says it: the glue's
+/// (`zikaron_glue::anchoredon`), where the command line's record package states it too.
+pub use zikaron_glue::anchoredon::{note_with, split_note, AnchoredOn};
+
+/// An anchoring point as an index row's `anchoredOn` value.
+fn anchored_value(a: &AnchoredOn) -> Value {
+    Value::Obj(vec![
+        ("chainId".to_string(), Value::Int(a.chain_id)),
+        ("fromBlock".to_string(), Value::Int(a.from_block)),
+        ("registry".to_string(), Value::Str(a.registry.clone())),
+    ])
 }
 
-/// The line's fixed head and the separator between its three parts (space, U+00B7, space).
-const LINE_HEAD: &str = "anchored-on: eip155:";
-const LINE_SEP: &str = " \u{b7} ";
-
-impl AnchoredOn {
-    /// The fixed last line of a kit's `note_md`, the same in every language:
-    /// `anchored-on: eip155:<chain> · registry <address> · from <block>`.
-    pub fn line(&self) -> String {
-        format!("{LINE_HEAD}{}{LINE_SEP}registry {}{LINE_SEP}from {}", self.chain_id, self.registry, self.from_block)
-    }
-
-    /// Parse a line written by [`AnchoredOn::line`], exactly: decimal numbers without leading zeros (each within
-    /// the canonical JSON integer limit, so the index row reads back) and a lowercase address. Anything else is
-    /// `None`.
-    pub fn of_line(line: &str) -> Option<AnchoredOn> {
-        let rest = line.strip_prefix(LINE_HEAD)?;
-        let (chain, rest) = rest.split_once(LINE_SEP)?;
-        let (registry, from) = rest.strip_prefix("registry ")?.split_once(LINE_SEP)?;
-        let from = from.strip_prefix("from ")?;
-        let decimal = |t: &str| -> Option<u64> {
-            let ok = !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && (t == "0" || !t.starts_with('0'));
-            t.parse::<u64>().ok().filter(|n| ok && *n <= json::MAX_INT)
-        };
-        let lower_hex = registry.len() == 42
-            && registry.starts_with("0x")
-            && registry[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        if !lower_hex {
-            return None;
-        }
-        Some(AnchoredOn { chain_id: decimal(chain)?, from_block: decimal(from)?, registry: registry.to_string() })
-    }
-
-    fn value(&self) -> Value {
-        Value::Obj(vec![
-            ("chainId".to_string(), Value::Int(self.chain_id)),
-            ("fromBlock".to_string(), Value::Int(self.from_block)),
-            ("registry".to_string(), Value::Str(self.registry.clone())),
-        ])
-    }
-
-    fn of_value(v: &Value) -> Option<AnchoredOn> {
-        let int = |k: &str| match member(v, k) {
-            Some(Value::Int(n)) => Some(*n),
-            _ => None,
-        };
-        let a = AnchoredOn { chain_id: int("chainId")?, from_block: int("fromBlock")?, registry: str_of(v, "registry")? };
-        // Only values that round-trip through the line form are accepted.
-        (AnchoredOn::of_line(&a.line()).as_ref() == Some(&a)).then_some(a)
-    }
-}
-
-/// Split a manifest note into the author's text and the anchoring point, which only the last non-empty line
-/// can carry, and only when it matches exactly. Lines split at `\n` (a preceding `\r` belongs to the break);
-/// whitespace-only lines count as empty, so trailing blank lines neither hide the anchoring line nor survive
-/// its removal. The inverse of [`note_with`].
-pub fn split_note(note: &str) -> (String, Option<AnchoredOn>) {
-    let mut at = note.len();
-    for piece in note.split_inclusive('\n').collect::<Vec<_>>().into_iter().rev() {
-        at -= piece.len();
-        let line = piece.strip_suffix('\n').unwrap_or(piece);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.trim().is_empty() {
-            continue;
-        }
-        // The author's text is everything before this line, its own last line break left out.
-        let before = &note[..at];
-        let author = before.strip_suffix('\n').map(|b| b.strip_suffix('\r').unwrap_or(b)).unwrap_or(before);
-        return match AnchoredOn::of_line(line) {
-            Some(a) => (author.to_string(), Some(a)),
-            None => (note.to_string(), None),
-        };
-    }
-    (note.to_string(), None)
-}
-
-/// The note a kit carries: the author's text, then the anchoring line when one is given. An existing
-/// anchoring line is removed first, so exporting again never doubles it.
-pub fn note_with(note: &str, at: Option<&AnchoredOn>) -> String {
-    let author = split_note(note).0;
-    match at {
-        None => author,
-        Some(a) if author.is_empty() => a.line(),
-        Some(a) => format!("{author}\n{}", a.line()),
-    }
+/// An index row's `anchoredOn` value read back; only values that round-trip through the line form are accepted.
+fn anchored_of(v: &Value) -> Option<AnchoredOn> {
+    let int = |k: &str| match member(v, k) {
+        Some(Value::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let a = AnchoredOn { chain_id: int("chainId")?, from_block: int("fromBlock")?, registry: str_of(v, "registry")? };
+    (AnchoredOn::of_line(&a.line()).as_ref() == Some(&a)).then_some(a)
 }
 
 /// One index row (seven cells, and `anchoredOn` when the kit says where it is anchored).
@@ -207,7 +135,7 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
 fn row_value(r: &Row) -> Value {
     let mut m = Vec::new();
     if let Some(a) = &r.anchored_on {
-        m.push(("anchoredOn".to_string(), a.value()));
+        m.push(("anchoredOn".to_string(), anchored_value(a)));
     }
     m.extend([
         (contents_key().to_string(), Value::Arr(r.contents.iter().map(|c| Value::Str(c.clone())).collect())),
@@ -261,7 +189,7 @@ pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
         };
         let anchored_on = match member(k, "anchoredOn") {
             None => None,
-            Some(a) => Some(AnchoredOn::of_value(a).ok_or_else(bad)?),
+            Some(a) => Some(anchored_of(a).ok_or_else(bad)?),
         };
         out.push(Row { id, created, root, path, contents, note_md, link: str_of(k, "link"), anchored_on });
     }
@@ -330,6 +258,14 @@ pub fn default_link(publish: Option<&str>, rel: &str) -> Option<String> {
     Some(format!("{}{}/", base.as_str(), enc.join("/")))
 }
 
+/// The default `link` a package exported into `kits_room` at `kit` is offered: none for a package in one file
+/// (publication reads a folder file by file, so a file has no address to fetch it from), the publish base and
+/// its relative path for a folder. Decided only here: at add time, after the publish base changes, and when a
+/// hand-set link is taken back.
+fn default_for(publish: Option<&str>, kits_room: &Path, kit: &Path) -> Option<String> {
+    if kit.is_file() { None } else { default_link(publish, &rel_of(kits_room, kit)) }
+}
+
 /// Percent-encode one path segment (RFC 3986 unreserved characters unchanged, everything else `%XX` per
 /// byte).
 fn pct(seg: &str) -> String {
@@ -347,7 +283,7 @@ pub fn manifest_facts(kit: &Path) -> Result<(Vec<String>, String), Fault> {
 /// As [`manifest_facts`], plus the anchoring point from the note's last line.
 pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<AnchoredOn>), Fault> {
     let p = kit.join(zikaron_glue::names::MANIFEST);
-    let bytes = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
+    let bytes = manifest_of(kit)?;
     let v = json::parse(&bytes).map_err(|t| Fault::known(Known::NotAdoptable, format!("{}: {t:?}", p.display())))?;
     let contents = match member(&v, contents_key()) {
         Some(Value::Arr(a)) => a.iter().filter_map(|r| str_of(r, Field::Content.as_str())).collect(),
@@ -355,6 +291,15 @@ pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<Anc
     };
     let (note, at) = split_note(&str_of(&v, note_key()).unwrap_or_default());
     Ok((contents, note, at))
+}
+
+/// A kit's manifest bytes: a folder's manifest file, or a single-file kit's first item (`container::manifest_at`).
+fn manifest_of(kit: &Path) -> Result<Vec<u8>, Fault> {
+    if kit.is_file() {
+        return zikaron_glue::container::manifest_at(kit).ok_or_else(|| Fault::known(Known::KitFileBad, kit.display().to_string()));
+    }
+    let p = kit.join(zikaron_glue::names::MANIFEST);
+    std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))
 }
 
 /// Add a row after an export. Rows are keyed by bundle directory path: the same bundle exported to two places
@@ -366,7 +311,7 @@ pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, creat
     let mut rows = read(machine)?.unwrap_or_default();
     let o = overrides(machine)?;
     let path = crate::home::plain_path(kit.to_path_buf()).display().to_string();
-    let link = o.iter().find(|(k, _)| *k == path).map(|(_, l)| l.clone()).or_else(|| default_link(publish, &rel_of(&home.dir(crate::home::Slot::Kits), kit)));
+    let link = o.iter().find(|(k, _)| *k == path).map(|(_, l)| l.clone()).or_else(|| default_for(publish, &home.dir(crate::home::Slot::Kits), kit));
     let row = Row { id: id.to_string(), created, root, path, contents, note_md, link, anchored_on };
     rows.retain(|r| r.path != row.path);
     rows.push(row.clone());
@@ -387,7 +332,7 @@ pub fn set_link(machine: &Path, path: &str, link: &str, root: &str, kits_room: &
     o.retain(|(k, _)| k != path);
     let t = link.trim();
     let now = if t.is_empty() {
-        default_link(publish, &rel_of(kits_room, Path::new(&rows[at].path)))
+        default_for(publish, kits_room, Path::new(&rows[at].path))
     } else {
         let u = crate::fetchx::base_of(t)?.as_str().to_string();
         o.push((path.to_string(), u.clone()));
@@ -409,7 +354,7 @@ pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str
         if o.iter().any(|(k, _)| *k == r.path) || !r.root.eq_ignore_ascii_case(root) {
             continue;
         }
-        let l = default_link(publish, &rel_of(kits_room, Path::new(&r.path)));
+        let l = default_for(publish, kits_room, Path::new(&r.path));
         if l != r.link {
             r.link = l;
             n += 1;
@@ -431,9 +376,11 @@ pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     };
     let row = rows[at].clone();
     let dir = PathBuf::from(&row.path);
-    let manifest = std::fs::read(dir.join(zikaron_glue::names::MANIFEST)).ok();
+    let manifest = manifest_of(&dir).ok();
     let same = manifest.map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(&b)).eq_ignore_ascii_case(&row.id)).unwrap_or(false);
-    if same {
+    if same && dir.is_file() {
+        std::fs::remove_file(&dir).map_err(|e| classify(&e, &row.path))?;
+    } else if same {
         std::fs::remove_dir_all(&dir).map_err(|e| classify(&e, &row.path))?;
     }
     rows.remove(at);

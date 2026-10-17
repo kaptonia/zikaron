@@ -199,9 +199,14 @@ mod tests {
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let d = scratch("left");
         let at = place(&d, "t2");
-        // Stale: opened and never closed by a process that stopped (the path exists, nobody answers).
-        let (left, _never_closed) = listen(&at).expect("left");
-        drop(left);
+        // Stale: opened and never closed by a process that stopped (the path exists, nobody answers). Laid while
+        // no child can start (`crate::CHILDREN`): another test of this process starting a child at that moment
+        // would hold a copy of the listening socket until it execs, and the door would truly answer meanwhile.
+        {
+            let _no_child = crate::CHILDREN.write().unwrap_or_else(|e| e.into_inner());
+            let (left, _never_closed) = listen(&at).expect("left");
+            drop(left);
+        }
         assert!(at.exists());
         let (_l, closer) = listen(&at).expect("a door left behind is replaced");
         assert_eq!(listen(&at).err().map(|e| e.kind()), Some(std::io::ErrorKind::AddrInUse), "an open door is not taken");

@@ -11,7 +11,7 @@
 //! log (three topics, empty data) stops without a node query. On replay, asking one question the recording
 //! lacks is an error, so query order is part of what is tested.
 
-use crate::rpc::{Endpoint, Trouble};
+use crate::rpc::{Broke, Endpoint, Trouble};
 use crate::tx::{self, Tx};
 use zikaron::cryptox;
 use zikaron::hexfmt;
@@ -36,12 +36,75 @@ pub enum Refusal {
     ChainIdMismatch { declared: u64, served: String },
     /// The basis names a chain with no endpoint at hand.
     NoEndpoint(u64),
-    /// The chain did not answer: declined, unreachable, or not in the recording.
-    Unanswered { chain: u64, what: String },
+    /// The chain did not answer ([`Asked`]: what went unanswered, and how).
+    Unanswered { chain: u64, asked: Asked },
     /// The transaction the endpoint gave does not re-encode to the one it claims.
     TxNotItself(String),
-    /// What the endpoint gave is missing parts or has the wrong shape.
-    Malformed(String),
+    /// What the endpoint gave is missing parts or has the wrong shape ([`Shape`]).
+    Malformed(Shape),
+}
+
+/// What went unanswered, and how: structure only (the method, the node's own words, the transport's
+/// structure). Each end says it in its own words; the evidence is its machine form ([`Asked::evidence`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Asked {
+    /// The node declined `method`, in its own words (its JSON-RPC error as it sent it).
+    Declined { method: String, said: String },
+    /// The way to the node broke on `method`.
+    Broke { method: String, broke: Broke },
+    /// A recording lacks the question (its key).
+    NotServed(String),
+    /// `eth_getLogs` answered with something that is not a list of logs.
+    NotLogs,
+    /// The transaction (`0x` hash) is in a block, and its receipt is not given.
+    NoReceipt(String),
+    /// A window of `whole` blocks cannot be read at the `span` this node takes within `asks` questions.
+    TooWide { span: u64, whole: u64, asks: usize },
+    /// The scan stopped short (its round was cut off).
+    Short,
+}
+
+impl Asked {
+    /// The machine form: the method, a code, and the node's or the transport's own words where there are any.
+    pub fn evidence(&self) -> String {
+        match self {
+            Asked::Declined { method, said } => format!("{method} {said}"),
+            Asked::Broke { method, broke } => format!("{method} {}", broke.evidence()),
+            Asked::NotServed(k) => format!("NOT_SERVED {k}"),
+            Asked::NotLogs => "eth_getLogs NOT_LOGS".to_string(),
+            Asked::NoReceipt(tx) => format!("eth_getTransactionReceipt NO_RECEIPT {tx}"),
+            Asked::TooWide { span, whole, asks } => format!("eth_getLogs TOO_WIDE span {span} whole {whole} asks {asks}"),
+            Asked::Short => "SHORT".to_string(),
+        }
+    }
+}
+
+/// How what an endpoint gave is malformed: structure only; its machine form is [`Shape::evidence`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Shape {
+    /// A transaction (`0x` hash) lacks a part, or has it in the wrong shape.
+    TxLacks { part: String, tx: String },
+    /// A block has no `timestamp`.
+    NoTimestamp(u64),
+    /// `eth_getCode` answered with something that is not a byte string.
+    CodeNotBytes,
+    /// The basis passed the core's check, and yet its structure does not read.
+    Basis,
+    /// The recording contradicts itself (its key).
+    Contradiction(String),
+}
+
+impl Shape {
+    /// The machine form: a code and what it is about.
+    pub fn evidence(&self) -> String {
+        match self {
+            Shape::TxLacks { part, tx } => format!("TX_LACKS {part} {tx}"),
+            Shape::NoTimestamp(n) => format!("eth_getBlockByNumber NO_TIMESTAMP {n}"),
+            Shape::CodeNotBytes => "eth_getCode NOT_BYTES".to_string(),
+            Shape::Basis => "BASIS_UNREAD".to_string(),
+            Shape::Contradiction(k) => format!("CONTRADICTION {k}"),
+        }
+    }
 }
 
 impl Refusal {
@@ -54,13 +117,15 @@ impl Refusal {
             Refusal::Malformed(_) => "E_MALFORMED",
         }
     }
+
+    /// The evidence in machine form (the chain, the method, numbers, the node's own words): never a sentence.
     pub fn detail(&self) -> String {
         match self {
-            Refusal::ChainIdMismatch { declared, served } => format!("chain {declared} 的端点自称 {served}"),
-            Refusal::NoEndpoint(c) => format!("chain {c} 没有端点"),
-            Refusal::Unanswered { chain, what } => format!("chain {chain}: {what}"),
+            Refusal::ChainIdMismatch { declared, served } => format!("chain {declared} eth_chainId {served}"),
+            Refusal::NoEndpoint(c) => format!("chain {c}"),
+            Refusal::Unanswered { chain, asked } => format!("chain {chain} {}", asked.evidence()),
             Refusal::TxNotItself(h) => format!("tx {h}"),
-            Refusal::Malformed(w) => w.clone(),
+            Refusal::Malformed(w) => w.evidence(),
         }
     }
 }
@@ -237,10 +302,10 @@ impl<'a> Chain<'a> {
     /// A trouble as the scan's refusal.
     fn refused(&self, method: &str, t: Trouble) -> Refusal {
         match t {
-            Trouble::Node(e) => Refusal::Unanswered { chain: self.id, what: format!("{method} 被拒:{e}") },
-            Trouble::NotServed(k) => Refusal::Unanswered { chain: self.id, what: format!("录制里没有这一问:{k}") },
-            Trouble::Transport(e) => Refusal::Unanswered { chain: self.id, what: format!("{method} 传输坏了:{e}") },
-            Trouble::Contradiction(k) => Refusal::Malformed(format!("录制自相矛盾:{k}")),
+            Trouble::Node(e) => Refusal::Unanswered { chain: self.id, asked: Asked::Declined { method: method.to_string(), said: e } },
+            Trouble::NotServed(k) => Refusal::Unanswered { chain: self.id, asked: Asked::NotServed(k) },
+            Trouble::Transport(b) => Refusal::Unanswered { chain: self.id, asked: Asked::Broke { method: method.to_string(), broke: b } },
+            Trouble::Contradiction(k) => Refusal::Malformed(Shape::Contradiction(k)),
         }
     }
 
@@ -254,7 +319,7 @@ impl<'a> Chain<'a> {
         match tx::read(&v) {
             Ok(t) => Ok(Some(t)),
             Err(tx::Bad::HashMismatch) => Err(Refusal::TxNotItself(hexfmt::encode(h))),
-            Err(tx::Bad::Shape(w)) => Err(Refusal::Malformed(format!("交易缺 {w}:{}", hexfmt::encode(h)))),
+            Err(tx::Bad::Shape(w)) => Err(Refusal::Malformed(Shape::TxLacks { part: w.to_string(), tx: hexfmt::encode(h) })),
         }
     }
 
@@ -264,10 +329,7 @@ impl<'a> Chain<'a> {
     fn status_one(&mut self, h: &[u8; 32]) -> Result<bool, Refusal> {
         let v = self.ask("eth_getTransactionReceipt", vec![Value::Str(hexfmt::encode(h))])?;
         if v.is_null() {
-            return Err(Refusal::Unanswered {
-                chain: self.id,
-                what: format!("交易 {} 已入块而取不回它的收据", hexfmt::encode(h)),
-            });
+            return Err(Refusal::Unanswered { chain: self.id, asked: Asked::NoReceipt(hexfmt::encode(h)) });
         }
         // A receipt without `status` does not have status 1 (§9.1); the status byte is read, never the state
         // root.
@@ -276,7 +338,7 @@ impl<'a> Chain<'a> {
 
     fn block_timestamp(&mut self, n: u64) -> Result<u64, Refusal> {
         let v = self.ask("eth_getBlockByNumber", vec![Value::Str(hex_quantity(n)), Value::Bool(false)])?;
-        tx::qty_u64(&v, "timestamp").ok_or(Refusal::Malformed(format!("区块 {n} 没有 timestamp")))
+        tx::qty_u64(&v, "timestamp").ok_or(Refusal::Malformed(Shape::NoTimestamp(n)))
     }
 
     /// The two §9.3 boundaries: unanswered is UNPROVEN, answered with code is VOID.
@@ -312,13 +374,13 @@ pub fn code_at(ep: &mut dyn Endpoint, chain: u64, who: &[u8; 20], block: u64) ->
     let params = vec![Value::Str(hex20(who)), Value::Str(hex_quantity(block))];
     match crate::patience::ask(ep, "eth_getCode", &Value::Arr(params)) {
         Ok(v) => {
-            let b = v.as_str().and_then(hexfmt::decode).ok_or(Refusal::Malformed("eth_getCode 的答不是字节串".into()))?;
+            let b = v.as_str().and_then(hexfmt::decode).ok_or(Refusal::Malformed(Shape::CodeNotBytes))?;
             Ok(Some(!b.is_empty()))
         }
         Err(Trouble::Node(_)) => Ok(None),
-        Err(Trouble::NotServed(k)) => Err(Refusal::Unanswered { chain, what: format!("录制里没有这一问:{k}") }),
-        Err(Trouble::Transport(e)) => Err(Refusal::Unanswered { chain, what: format!("eth_getCode 传输坏了:{e}") }),
-        Err(Trouble::Contradiction(k)) => Err(Refusal::Malformed(format!("录制自相矛盾:{k}"))),
+        Err(Trouble::NotServed(k)) => Err(Refusal::Unanswered { chain, asked: Asked::NotServed(k) }),
+        Err(Trouble::Transport(b)) => Err(Refusal::Unanswered { chain, asked: Asked::Broke { method: "eth_getCode".into(), broke: b } }),
+        Err(Trouble::Contradiction(k)) => Err(Refusal::Malformed(Shape::Contradiction(k))),
     }
 }
 
@@ -420,7 +482,7 @@ fn noting(
         // The core says this is not a zikaron/1 basis; its no-label value is the only byte shape.
         return Ok(Err(zikaron::audit::no_label()));
     };
-    let basis = read_basis(&basis_value).ok_or(Refusal::Malformed("基底过了 K1 而读不成结构".into()))?;
+    let basis = read_basis(&basis_value).ok_or(Refusal::Malformed(Shape::Basis))?;
 
     let mut chains: Vec<u64> = basis.windows.iter().map(|w| w.chain_id).collect();
     chains.extend(basis.bare.iter().map(|b| b.0));
@@ -454,7 +516,7 @@ fn noting(
             if w.registries.is_empty() || w.senders.is_empty() {
                 continue;
             }
-            let logs = logs_over_window(&mut chain, w, &t0)?;
+            let logs = paged(&mut chain, &anchor_filter(w, &t0), w.from_block, w.to_block)?;
             for log in &logs {
                 let Some(rec) = registry_record(&mut chain, w, log, &t0, known, &mut seen)? else { continue };
                 if let Some(at) = emitter_of(log) {
@@ -507,19 +569,53 @@ fn padded(a: &[u8; 20]) -> [u8; 32] {
     out
 }
 
-/// The `eth_getLogs` query, built in one place for the whole range and for every sub-range: the window's
-/// registries, the range, topic 0, and as topic 1 the window's senders in one "any of" list (each left-padded
-/// to 32 bytes as the log carries it). §9.4 reads only logs whose sender the window lists, so asking for those
-/// alone reads the same records; the node's filtering is never trusted for that, every log that comes back is
-/// still judged here (`registry_record`). One question per window range, never one per sender.
-fn log_filter(w: &Window, from: u64, to: u64, t0: &[u8; 32]) -> Value {
-    let senders: Vec<Value> = w.senders.iter().map(|a| Value::Str(hexfmt::encode(&padded(a)))).collect();
-    Value::Obj(vec![
-        ("address".into(), Value::Arr(w.registries.iter().map(|r| Value::Str(hex20(r))).collect())),
-        ("fromBlock".into(), Value::Str(hex_quantity(from))),
-        ("toBlock".into(), Value::Str(hex_quantity(to))),
-        ("topics".into(), Value::Arr(vec![Value::Str(hexfmt::encode(t0)), Value::Arr(senders)])),
-    ])
+/// What one log question asks for besides its block range: the contracts that emitted the logs, and the topics
+/// position by position, in `eth_getLogs`'s own terms. Built into the question in one place ([`LogFilter::at`])
+/// for the whole range and for every sub-range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogFilter {
+    /// The emitting contracts: any of these (empty: any contract).
+    pub addresses: Vec<[u8; 20]>,
+    /// The topics, by position; positions past the last are any.
+    pub topics: Vec<Topic>,
+}
+
+/// One topic position of a log question. Closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Topic {
+    /// Any topic here.
+    Any,
+    /// This one.
+    One([u8; 32]),
+    /// Any of these.
+    AnyOf(Vec<[u8; 32]>),
+}
+
+impl LogFilter {
+    /// The `eth_getLogs` filter object over blocks `from` to `to`: `address` (the list), `fromBlock`,
+    /// `toBlock`, `topics` (`null`, one value, or a list, by position).
+    pub fn at(&self, from: u64, to: u64) -> Value {
+        let topic = |t: &Topic| match t {
+            Topic::Any => Value::Null,
+            Topic::One(x) => Value::Str(hexfmt::encode(x)),
+            Topic::AnyOf(xs) => Value::Arr(xs.iter().map(|x| Value::Str(hexfmt::encode(x))).collect()),
+        };
+        Value::Obj(vec![
+            ("address".into(), Value::Arr(self.addresses.iter().map(|r| Value::Str(hex20(r))).collect())),
+            ("fromBlock".into(), Value::Str(hex_quantity(from))),
+            ("toBlock".into(), Value::Str(hex_quantity(to))),
+            ("topics".into(), Value::Arr(self.topics.iter().map(topic).collect())),
+        ])
+    }
+}
+
+/// The anchor scan's filter for one window: the window's registries, topic 0, and as topic 1 the window's
+/// senders in one "any of" list (each left-padded to 32 bytes as the log carries it). §9.4 reads only logs whose
+/// sender the window lists, so asking for those alone reads the same records; the node's filtering is never
+/// trusted for that, every log that comes back is still judged here (`registry_record`). One question per
+/// window range, never one per sender.
+fn anchor_filter(w: &Window, t0: &[u8; 32]) -> LogFilter {
+    LogFilter { addresses: w.registries.clone(), topics: vec![Topic::One(*t0), Topic::AnyOf(w.senders.iter().map(padded).collect())] }
 }
 
 /// After splitting, each sub-range spans at least one block; a refusal at one block is passed on as the node
@@ -650,6 +746,16 @@ fn number_after(rest: &str) -> Option<(u64, usize)> {
     Some((n, i))
 }
 
+/// Logs matching `filter` in blocks `from` to `to` on one node of chain `chain`, fetched in ranges the node
+/// accepts: the anchor scan's own reader, under the same rules (asked with patience, asked again, the range
+/// shrunk, a node's cut range remembered, the asks bounded; see [`paged`]). An unfinished range is a named
+/// refusal, never fewer logs. The logs come back as the node gave them, in block order of the ranges asked;
+/// judging them is the caller's.
+pub fn logs_over_window(ep: &mut dyn Endpoint, chain: u64, filter: &LogFilter, from: u64, to: u64) -> Result<Vec<W>, Refusal> {
+    crate::seam();
+    paged(&mut Chain { id: chain, ep }, filter, from, to)
+}
+
 /// Logs of one window, fetched in ranges the node accepts.
 ///
 /// Ask for the whole range first: when the node accepts, the query is byte-identical to a single-range scan
@@ -665,46 +771,37 @@ fn number_after(rest: &str) -> Option<(u64, usize)> {
 ///
 /// A node whose range was cut before in this process ([`known_span`]) is asked at that range from the start;
 /// a range cut in this window is remembered once a question at it is answered.
-fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<W>, Refusal> {
+fn paged(chain: &mut Chain, filter: &LogFilter, from: u64, to: u64) -> Result<Vec<W>, Refusal> {
     let mut logs: Vec<W> = Vec::new();
-    if w.to_block < w.from_block {
+    if to < from {
         return Ok(logs);
     }
     // Saturating: a window from block 0 to the last there is spans one more block than a u64 counts.
-    let whole = (w.to_block - w.from_block).saturating_add(1);
+    let whole = (to - from).saturating_add(1);
     // Kept by place, not by the name said: two nodes on one host (`…/eth/<key>`, `…/polygon/<key>`) are two.
     let node = chain.ep.place();
     let mut span = known_span(&node).map_or(whole, |k| k.clamp(MIN_SPAN, whole));
-    let mut at = w.from_block;
+    let mut at = from;
     let mut shrinks = 0usize;
     let mut asks = 0usize;
     // How many times the question now due was refused.
     let mut refused = 0usize;
-    while at <= w.to_block {
-        let end = at.saturating_add(span - 1).min(w.to_block);
+    while at <= to {
+        let end = at.saturating_add(span - 1).min(to);
         if asks >= MAX_ASKS {
             // Unfinished is said as unfinished: a refusal goes out, never "zero logs", which downstream would
             // read as "no anchors in this range".
-            return Err(Refusal::Unanswered {
-                chain: chain.id,
-                what: format!(
-                    "这一扇窗按节点收得下的跨度({span} 块)问不完:{whole} 块要过 {MAX_ASKS} 问以上;\
-把起始区块往前挪,或换一处收得下更宽窗的节点"
-                ),
-            });
+            return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::TooWide { span, whole, asks: MAX_ASKS } });
         }
         asks += 1;
-        match chain.ask_paced("eth_getLogs", vec![log_filter(w, at, end, t0)]) {
+        match chain.ask_paced("eth_getLogs", vec![filter.at(at, end)]) {
             // Still limited after the patience table's pauses: passed on as it is.
             Err((e, true)) => return Err(e),
             Ok(answered) => {
                 // An answer that is not a log list was not answered: reading it as zero logs would turn an
                 // unusable answer into a complete empty anchor set.
                 let Some(mut got) = answered.as_arr().map(<[W]>::to_vec) else {
-                    return Err(Refusal::Unanswered {
-                        chain: chain.id,
-                        what: "eth_getLogs 回的不是一张日志表".into(),
-                    });
+                    return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::NotLogs });
                 };
                 logs.append(&mut got);
                 at = end.saturating_add(1);
@@ -726,8 +823,9 @@ fn logs_over_window(chain: &mut Chain, w: &Window, t0: &[u8; 32]) -> Result<Vec<
                 if span <= MIN_SPAN || shrinks >= MAX_SHRINKS {
                     return Err(e);
                 }
+                // The range limit is read from the node's own words only, never from a sentence made here.
                 let said = match &e {
-                    Refusal::Unanswered { what, .. } => what.clone(),
+                    Refusal::Unanswered { asked: Asked::Declined { said, .. }, .. } => said.clone(),
                     _ => String::new(),
                 };
                 span = said_limit(&said, span).unwrap_or(span / 2).max(MIN_SPAN);
@@ -965,8 +1063,8 @@ mod said_limit_tests {
     /// public Sepolia node, Alchemy, geth); each yields its stated limit and no other number.
     #[test]
     fn a_node_that_states_its_block_range_limit_is_read_at_that_number() {
-        // A public Sepolia node (the sentence also carries `"code":-32701`).
-        let real = "节点拒绝请求:{\"code\":-32701,\"message\":\"exceed maximum block range: 50000\"}";
+        // A public Sepolia node, its error as it sent it (it also carries `"code":-32701`).
+        let real = "{\"code\":-32701,\"message\":\"exceed maximum block range: 50000\"}";
         assert_eq!(said_limit(real, 60_000), Some(50_000), "取的该是 50000,不是句里那个错误码");
         // Alchemy: `2K` in thousands.
         assert_eq!(said_limit("You can make eth_getLogs requests with up to a 2K block range", 2_600_000), Some(2_000));
@@ -1054,12 +1152,31 @@ mod window_tests {
     }
 
     fn scan_window<F: FnMut(u64, u64, usize) -> Result<W, Trouble>>(node: &mut Logs<F>, w: &Window) -> Result<Vec<W>, Refusal> {
-        let mut chain = Chain { id: w.chain_id, ep: node };
-        logs_over_window(&mut chain, w, &topic0())
+        logs_over_window(node, w.chain_id, &anchor_filter(w, &topic0()), w.from_block, w.to_block)
     }
 
     fn no_pauses() {
         set_rate_backoff(Some(vec![std::time::Duration::ZERO; crate::said::RATE_BACKOFF.len()]));
+    }
+
+    /// The public filter is written position by position, in `eth_getLogs`'s own terms: no address is an empty
+    /// list (any contract), a topic left open is `null`, one topic is its hex, several are a list; the anchor
+    /// scan's own filter is the registries, topic 0 and its senders padded to a word, as it always asked.
+    #[test]
+    fn a_log_filter_is_written_position_by_position() {
+        let f = LogFilter { addresses: Vec::new(), topics: vec![Topic::Any, Topic::One([0x33; 32]), Topic::AnyOf(vec![[0x44; 32], [0x55; 32]])] };
+        let got = String::from_utf8(zikaron::json::canon_bytes(&f.at(0, u64::MAX))).expect("text");
+        let word = |b: u8| format!("\"0x{}\"", format!("{b:02x}").repeat(32));
+        assert_eq!(
+            got,
+            format!("{{\"address\":[],\"fromBlock\":\"0x0\",\"toBlock\":\"0xffffffffffffffff\",\"topics\":[null,{},[{},{}]]}}", word(0x33), word(0x44), word(0x55))
+        );
+        assert_eq!(String::from_utf8(zikaron::json::canon_bytes(&LogFilter { addresses: Vec::new(), topics: Vec::new() }.at(5, 5))).expect("text"), "{\"address\":[],\"fromBlock\":\"0x5\",\"toBlock\":\"0x5\",\"topics\":[]}");
+        let w = window(1, 9);
+        let anchor = anchor_filter(&w, &topic0());
+        let mut padded_sender = [0u8; 32];
+        padded_sender[12..].copy_from_slice(&[0x22; 20]);
+        assert_eq!(anchor, LogFilter { addresses: vec![[0x11; 20]], topics: vec![Topic::One(topic0()), Topic::AnyOf(vec![padded_sender])] });
     }
 
     /// A refusal asked again at once answers on the third try: three questions, the range whole.
@@ -1083,7 +1200,7 @@ mod window_tests {
         assert_eq!(node.asked[6], (1, 25));
         let mut node = logs(|_, _, _| Err(node_says(-32000, "always no")));
         match scan_window(&mut node, &window(1, 1)) {
-            Err(Refusal::Unanswered { what, .. }) => assert!(what.contains("always no"), "{what}"),
+            Err(Refusal::Unanswered { asked: Asked::Declined { method, said }, .. }) => assert!(method == "eth_getLogs" && said.contains("always no"), "{said}"),
             other => panic!("{other:?}"),
         }
         assert_eq!(node.asked.len(), TRIES);
@@ -1148,12 +1265,12 @@ mod window_tests {
     fn an_unfinished_window_is_refused_never_empty() {
         let mut node = logs(|f, t, _| if t > f { Err(node_says(-32000, "limited to 1 block")) } else { empty() });
         match scan_window(&mut node, &window(1, 5000)) {
-            Err(Refusal::Unanswered { what, .. }) => assert!(what.contains(&MAX_ASKS.to_string()), "{what}"),
+            Err(Refusal::Unanswered { asked: Asked::TooWide { asks, .. }, .. }) => assert_eq!(asks, MAX_ASKS),
             other => panic!("{other:?}"),
         }
         assert_eq!(node.asked.len(), MAX_ASKS);
         let mut node = logs(|_, _, _| Ok(W::of(crate::wire::Body::Null)));
-        assert!(matches!(scan_window(&mut node, &window(1, 10)), Err(Refusal::Unanswered { .. })));
+        assert!(matches!(scan_window(&mut node, &window(1, 10)), Err(Refusal::Unanswered { asked: Asked::NotLogs, .. })));
     }
 
     /// The window's extreme edges: from block 0 to the last block there is counts without overflow and
@@ -1211,11 +1328,61 @@ mod window_tests {
         assert!(scan_window(&mut node, &window(1, 30_000_000)).is_ok());
         assert_eq!(&node.asked[TRIES..], &[(1, 10_000_000), (10_000_001, 20_000_000), (20_000_001, 30_000_000)]);
         let arbitrum_wide = "{\"code\":-32602,\"message\":\"query spans 16777216 blocks (1 to 16777216), but only 30000 are allowed for this request; narrow the block range, or add an address filter\"}";
-        assert_eq!(said_limit(&format!("eth_getLogs 被拒:{arbitrum_wide}"), 16_777_216), Some(30_000));
+        assert_eq!(said_limit(arbitrum_wide, 16_777_216), Some(30_000));
         let sepolia = "{\"data\":{\"code\":\"ErrGetLogsExceededMaxAllowedRange\",\"message\":\"getLogs request exceeded max allowed range\",\"details\":{\"requestRange\":1048576,\"maxAllowedRange\":30000}},\"code\":-32012,\"message\":\"getLogs request exceeded max allowed range\"}";
         let mut node = logs(|f, t, _| if t - f + 1 > 30_000 { Err(Trouble::Node(sepolia.into())) } else { empty() });
         assert!(scan_window(&mut node, &window(1, 60_000)).is_ok());
         assert_eq!(&node.asked[TRIES..], &[(1, 30_000), (30_001, 60_000)]);
+    }
+
+    /// The range a node takes is read from its own words only (its error as it sent it), never from what this
+    /// side made of a failure: a broken way whose evidence happens to carry a range and a number halves the span,
+    /// a node that says its range is asked at it.
+    #[test]
+    fn the_range_is_read_from_the_nodes_own_words_only() {
+        no_pauses();
+        let broke = || Trouble::Transport(Broke::Said("http://n:1: limited to 50 blocks".into()));
+        let mut node = logs(|f, t, _| if t - f + 1 > 25 { Err(broke()) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
+        assert_eq!(node.asked[TRIES], (1, 50), "the transport's words are not the node's: half, not 50");
+        let mut node = logs(|f, t, _| if t - f + 1 > 40 { Err(node_says(-32000, "limited to 40 blocks")) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
+        assert_eq!(node.asked[TRIES], (1, 40), "the node's own words: at its limit");
+    }
+
+    /// Every refusal's evidence is in machine form, in no language: the method, codes, numbers, and the node's or
+    /// the transport's own words; the words for people are the two ends'.
+    #[test]
+    fn a_refusals_evidence_is_machine_form_in_no_language() {
+        let cjk = |x: &str| x.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        let declined = Refusal::Unanswered { chain: 1, asked: Asked::Declined { method: "eth_getLogs".into(), said: "{\"code\":-32000,\"message\":\"busy\"}".into() } };
+        assert_eq!(declined.detail(), "chain 1 eth_getLogs {\"code\":-32000,\"message\":\"busy\"}");
+        let late = Refusal::Unanswered {
+            chain: 11155111,
+            asked: Asked::Broke { method: "eth_getCode".into(), broke: Broke::Late { node: "http://n:1".into(), deadline: std::time::Duration::from_secs(5) } },
+        };
+        assert_eq!(late.detail(), "chain 11155111 eth_getCode TIMEOUT http://n:1 5000ms");
+        let all = [
+            declined,
+            late,
+            Refusal::ChainIdMismatch { declared: 1, served: "\"0x5\"".into() },
+            Refusal::NoEndpoint(7),
+            Refusal::Unanswered { chain: 1, asked: Asked::NotServed("eth_getLogs [..]".into()) },
+            Refusal::Unanswered { chain: 1, asked: Asked::NotLogs },
+            Refusal::Unanswered { chain: 1, asked: Asked::NoReceipt("0xab".into()) },
+            Refusal::Unanswered { chain: 1, asked: Asked::TooWide { span: 10, whole: 5000, asks: MAX_ASKS } },
+            Refusal::Unanswered { chain: 1, asked: Asked::Short },
+            Refusal::TxNotItself("0xab".into()),
+            Refusal::Malformed(Shape::TxLacks { part: "input".into(), tx: "0xab".into() }),
+            Refusal::Malformed(Shape::NoTimestamp(9)),
+            Refusal::Malformed(Shape::CodeNotBytes),
+            Refusal::Malformed(Shape::Basis),
+            Refusal::Malformed(Shape::Contradiction("k".into())),
+        ];
+        for r in &all {
+            assert!(!r.detail().is_empty() && !cjk(&r.detail()), "{r:?}: {}", r.detail());
+        }
+        assert_eq!(all[7].detail(), format!("chain 1 eth_getLogs TOO_WIDE span 10 whole 5000 asks {MAX_ASKS}"));
     }
 
     /// A transaction the node says it does not have (`null`, a lawful empty answer) drops the log from the anchor

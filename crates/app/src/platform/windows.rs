@@ -1,24 +1,16 @@
 //! Windows: the file dialog is `rfd` over the system dialog; everything else uses Win32 APIs declared here.
-//! The lock is a byte-range lock (`LockFileEx`); the home and application data folders are known folders
-//! (read in `zikaron-os`, shared with the command line); the time zone is `TZ` or the current system zone
-//! (`GetTimeZoneInformation`) converted to a POSIX rule; the temporary directory is the per-user one
-//! (`GetTempPath2W`, or `GetTempPathW` on systems without it).
+//! The lock is `zikaron-os`'s byte-range lock (`LockFileEx`); the home and application data folders are known
+//! folders (read in `zikaron-os`, shared with the command line); the time zone is `TZ` or the current system
+//! zone, its rule for each year (`GetDynamicTimeZoneInformation`, `GetTimeZoneInformationForYear`) converted to
+//! a POSIX rule; the temporary directory is the per-user one (`GetTempPath2W`, or `GetTempPathW` on systems
+//! without it).
 
 use std::ffi::c_void;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 type Handle = *mut c_void;
-
-#[repr(C)]
-struct Overlapped {
-    internal: usize,
-    internal_high: usize,
-    offset: u32,
-    offset_high: u32,
-    event: Handle,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -34,6 +26,7 @@ struct SystemTime {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct TimeZoneInformation {
     bias: i32,
     standard_name: [u16; 32],
@@ -44,14 +37,36 @@ struct TimeZoneInformation {
     daylight_bias: i32,
 }
 
-const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x1;
-const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x2;
+impl TimeZoneInformation {
+    fn zero() -> TimeZoneInformation {
+        TimeZoneInformation {
+            bias: 0,
+            standard_name: [0; 32],
+            standard_date: SystemTime::default(),
+            standard_bias: 0,
+            daylight_name: [0; 32],
+            daylight_date: SystemTime::default(),
+            daylight_bias: 0,
+        }
+    }
+}
+
+/// `DYNAMIC_TIME_ZONE_INFORMATION`: the zone as `TimeZoneInformation`, then its key name and whether automatic
+/// daylight time is turned off.
+#[repr(C)]
+struct DynamicTimeZoneInformation {
+    zone: TimeZoneInformation,
+    key_name: [u16; 128],
+    dynamic_daylight_time_disabled: u8,
+}
+
 const TIME_ZONE_ID_INVALID: u32 = 0xFFFF_FFFF;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn LockFileEx(file: Handle, flags: u32, reserved: u32, low: u32, high: u32, overlapped: *mut Overlapped) -> i32;
     fn GetTimeZoneInformation(info: *mut TimeZoneInformation) -> u32;
+    fn GetDynamicTimeZoneInformation(info: *mut DynamicTimeZoneInformation) -> u32;
+    fn GetTimeZoneInformationForYear(year: u16, zone: *const DynamicTimeZoneInformation, info: *mut TimeZoneInformation) -> i32;
     fn GetModuleHandleW(name: *const u16) -> Handle;
     fn GetProcAddress(module: Handle, name: *const u8) -> *mut c_void;
     fn GetTempPathW(len: u32, buf: *mut u16) -> u32;
@@ -97,26 +112,16 @@ pub(super) fn window_backend() -> super::Backend {
     super::Backend::Default
 }
 
-/// The locked range: one byte far beyond any data in the file. Windows locks are mandatory, and the writer
-/// lock file holds the holder's pid, which the settings page reads while the lock is held.
-const LOCK_OFFSET_HIGH: u32 = 0x4000_0000;
+/// The years asked of the system for their rules. Windows keeps a zone's past and announced rules for a span
+/// of years and answers a year outside it by the nearest year in it, so asking these covers every rule the
+/// system holds for moments this app shows.
+const RULE_YEARS: std::ops::RangeInclusive<u16> = 1970..=2100;
 
-fn lock(file: &std::fs::File, flags: u32) -> bool {
-    let mut at = Overlapped { internal: 0, internal_high: 0, offset: 0, offset_high: LOCK_OFFSET_HIGH, event: std::ptr::null_mut() };
-    unsafe { LockFileEx(file.as_raw_handle() as Handle, flags, 0, 1, 0, &mut at) != 0 }
-}
-
-pub(super) fn lock_now(file: &std::fs::File) -> bool {
-    lock(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)
-}
-
-pub(super) fn lock_wait(file: &std::fs::File) -> bool {
-    lock(file, LOCKFILE_EXCLUSIVE_LOCK)
-}
-
-/// `TZ` when set (a POSIX rule; Windows has no zone files); otherwise the system's zone, with its offsets and
-/// daylight transitions written as a POSIX rule ([`posix_rule`]). No zone database is bundled, so historical
-/// dates use today's rule, as with a POSIX `TZ`.
+/// `TZ` when set (a POSIX rule; Windows has no zone files); otherwise the system's zone, its rule for each
+/// year written as a POSIX rule ([`posix_rule`]) and listed where it changes, so a moment reads by its own
+/// year's rule as a zone file's moments do. With automatic daylight time turned off, the system keeps one rule
+/// for every year, and so does this: the one in force ([`today_rule`]). A year the system will not answer, or
+/// whose rule has no POSIX form, leaves the one rule in force too.
 pub(super) fn zone_rules() -> Option<super::Zone> {
     if let Ok(tz) = std::env::var("TZ") {
         let tz = tz.trim().trim_start_matches(':');
@@ -124,15 +129,30 @@ pub(super) fn zone_rules() -> Option<super::Zone> {
             return Some(super::Zone::Rule(tz.to_string()));
         }
     }
-    let mut info = TimeZoneInformation {
-        bias: 0,
-        standard_name: [0; 32],
-        standard_date: SystemTime::default(),
-        standard_bias: 0,
-        daylight_name: [0; 32],
-        daylight_date: SystemTime::default(),
-        daylight_bias: 0,
-    };
+    let mut dynamic = DynamicTimeZoneInformation { zone: TimeZoneInformation::zero(), key_name: [0; 128], dynamic_daylight_time_disabled: 0 };
+    if unsafe { GetDynamicTimeZoneInformation(&mut dynamic) } == TIME_ZONE_ID_INVALID {
+        return None;
+    }
+    if dynamic.dynamic_daylight_time_disabled != 0 {
+        return today_rule();
+    }
+    let mut years: Vec<(i64, String)> = Vec::new();
+    for year in RULE_YEARS {
+        let mut info = TimeZoneInformation::zero();
+        if unsafe { GetTimeZoneInformationForYear(year, &dynamic, &mut info) } == 0 {
+            return today_rule();
+        }
+        let Some(rule) = posix_rule(&info) else { return today_rule() };
+        if years.last().map(|(_, r)| r) != Some(&rule) {
+            years.push((i64::from(year), rule));
+        }
+    }
+    Some(super::Zone::ByYear(years))
+}
+
+/// The system zone's rule in force now, as one POSIX rule (`GetTimeZoneInformation`).
+fn today_rule() -> Option<super::Zone> {
+    let mut info = TimeZoneInformation::zero();
     if unsafe { GetTimeZoneInformation(&mut info) } == TIME_ZONE_ID_INVALID {
         return None;
     }

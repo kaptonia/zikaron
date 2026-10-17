@@ -49,14 +49,14 @@ fn a_key_file_written_is_never_below_the_backup_floor() {
     if super::alone_in(module_path!(), "a_key_file_written_is_never_below_the_backup_floor") {
         return;
     }
-    use app::action::{apply, Action, Applied};
+    use app::action::Action;
     super::vault_open();
     let floor = app::keystore::BACKUP_FLOOR;
     assert_eq!(app::keystore::Params::standard(), floor, "the level written is the floor");
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    answers!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_));
     let dir = std::env::temp_dir().join(format!("zk-r21b2-keyfile-{}", std::process::id()));
+    super::seated(&mut shell, &dir.join("home"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
     let pw = "a backup password";
@@ -281,20 +281,59 @@ fn a_node_address_is_said_without_its_key() {
     assert_eq!(NodeAddr::new("https://n.example/v3/aaaa").said(), NodeAddr::new("https://n.example/v3/bbbb").said(), "only the key differs: said alike");
 }
 
-/// The raw node address (which may carry a key) never leaves the crate: the field is private, and the raw
-/// form, the place key (it includes the path) and the endpoint spelling are `pub(crate)`.
+/// The raw node address (which may carry a key) reaches no sentence: the field is private, what is said of it is
+/// its safe form, and the written form (`for_transport`, the place key `place`, the endpoint spelling `spec`) is
+/// read in a closed set of places only: the sender's transport (`node`, `agree`, `batch`), and on this side the
+/// person's own settings and node editor and the node lists kept as written (`archive`, `window/check`,
+/// `action/audit`, `deploy`). The type is the sender's (`zikaron_send::node`), so the closed set is read across
+/// both crates and the door.
 #[test]
 fn a_node_address_gives_its_written_form_to_nobody_outside() {
-    let code = super::code_only(&super::read_src_file("chainx.rs").expect("chainx.rs"));
-    assert!(code.contains("pub struct NodeAddr(String);"), "the written form is a private field");
-    for crate_only in ["pub(crate) fn for_transport(&self) -> &str", "pub(crate) fn place(&self) -> String", "pub(crate) fn spec(&self) -> String"] {
-        assert!(code.contains(crate_only), "{crate_only}");
-    }
-    let at = code.find("impl NodeAddr {").expect("impl");
-    let body = &code[at..at + code[at..].find("\n}\n").expect("end")];
+    let read = |f: &str| super::code_only(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zikaron-send/src").join(f)).expect("sender source"));
+    let node = read("node.rs");
+    assert!(node.contains("pub struct NodeAddr(String);"), "the written form is a private field");
+    let at = node.find("impl NodeAddr {").expect("impl");
+    let body = &node[at..at + node[at..].find("\n}\n").expect("end")];
     let public: Vec<&str> = body.lines().map(str::trim).filter(|l| l.starts_with("pub fn")).collect();
-    assert_eq!(public, vec!["pub fn new(written: impl Into<String>) -> NodeAddr {", "pub fn said(&self) -> String {"], "only making one and saying it are public");
-    assert!(code.contains("pub url: NodeAddr,"), "an endpoint's address is the type, not a string");
+    assert_eq!(
+        public,
+        vec!["pub fn new(written: impl Into<String>) -> NodeAddr {", "pub fn said(&self) -> String {", "pub fn place(&self) -> String {", "pub fn for_transport(&self) -> &str {"],
+        "making one, saying it, and the two written readings"
+    );
+    assert!(node.contains("pub url: NodeAddr,"), "an endpoint's address is the type, not a string");
+    let readers = [".for_transport()", ".spec()", ".place()"];
+    let sender_ok = ["node.rs", "agree.rs", "batch.rs"];
+    for f in ["lib.rs", "node.rs", "agree.rs", "gate.rs", "keep.rs", "batch.rs", "sent.rs"] {
+        let code = read(f);
+        if readers.iter().any(|r| code.contains(r)) {
+            assert!(sender_ok.contains(&f), "{f} reads a node's written form");
+        }
+    }
+    let app_ok = ["archive.rs", "check.rs", "audit.rs", "deploy.rs"];
+    // The product's sources always; the door's (`tools/app-drive`) where it is there: a public tree ships without it.
+    let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let door = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/app-drive/src");
+    if door.is_dir() {
+        stack.push(door);
+    }
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("a source folder").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("rs") {
+                continue;
+            }
+            let code = super::code_only(&std::fs::read_to_string(&p).expect("a source file"));
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let reads = code.contains("url.for_transport()") || code.contains(".spec()") || code.contains("url.place()");
+            if reads {
+                assert!(app_ok.contains(&name.as_str()) && !p.to_string_lossy().contains("app-drive"), "{} reads a node's written form", p.display());
+            }
+        }
+    }
 }
 
 /// Every keyed document kind gets an on-disk name that differs from its logical name and contains no id; other
@@ -335,16 +374,21 @@ fn every_keyed_kind_is_renamed_by_the_one_naming() {
     }
 }
 
-/// Both the out-of-date name check and the naming function read `Doc::keyed`; neither keeps its own list of kinds.
+/// Which kinds are keyed is judged once (`Doc::keyed`), and both sides that act on it agree with it by what they
+/// do: for every kind, the naming leaves a logical name as it is exactly when the kind is not keyed, and the
+/// reading takes a file at its logical, unkeyed name exactly when the kind is not keyed. A side that kept a list
+/// of its own would disagree on the kind it missed.
 #[test]
 fn which_kinds_are_renamed_is_judged_once() {
-    let code = super::code_only(&super::read_src_file("local.rs").expect("local.rs"));
-    let body = |head: &str| {
-        let at = code.find(head).unwrap_or_else(|| panic!("{head}"));
-        code[at..at + code[at..].find("\n}\n").expect("end")].to_string()
-    };
-    assert!(body("fn names_out_of_date(").contains(".keyed()"), "the out-of-date check reads the kinds table");
-    let naming = body("pub fn disk_rel(");
-    assert!(naming.contains("doc.keyed()") && !naming.contains("_ => logical.to_string()"), "naming asks the table first and lets no keyed kind through unnamed");
-    assert_eq!(code.matches("Doc::Entry | Doc::Held | Doc::Verdict | Doc::KeptGrant | Doc::TermsDoc | Doc::TermsRecord").count(), 1, "the list is spelled once, in `keyed`");
+    use zikaron_seal::envelope::{disk_rel, envelope, unseal, Doc, Expect, Ident, Owner, NONCE};
+    let key = [7u8; 32];
+    let nk = zikaron_seal::names::NameKey::new([9u8; 32]);
+    let logical = "settings/probe.json".to_string();
+    for d in Doc::ALL {
+        let kept_by_naming = disk_rel(d, &logical, &nk).ok().as_deref() == Some(logical.as_str());
+        let sealed = envelope(&key, &Ident { owner: Owner::Machine, doc: d, logical: logical.clone() }, &[1u8; NONCE], b"{}").expect("sealed");
+        let taken_by_reading = unseal(&key, &Expect { owner: Some(Owner::Machine), doc: d, rel: Some(logical.clone()) }, &sealed, "probe", Some(&nk)).is_ok();
+        assert_eq!((kept_by_naming, taken_by_reading), (!d.keyed(), !d.keyed()), "{}: naming keeps / reading takes the unkeyed name", d.tag());
+    }
+    assert_eq!(Doc::ALL.iter().filter(|d| d.keyed()).count(), 6, "entry, held grant, verdict, kept grant, terms document, terms record");
 }

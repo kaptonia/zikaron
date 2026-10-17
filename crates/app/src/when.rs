@@ -2,9 +2,10 @@
 //!
 //! Every moment the window shows goes through [`when`]: `2026-09-24 23:46:12`, in the time zone
 //! chosen in settings. "UTC" shows the moment as it is; "follow the system" reads the system's
-//! zone rules (the `TZ` variable, else `/etc/localtime`) once when that zone is chosen, so the
-//! daylight-saving offset of each moment comes from the system's own rules. File names keep UTC
-//! (the keystore naming convention), via [`civil`].
+//! zone rules (`platform::zone_rules`: the `TZ` variable, else `/etc/localtime`; on Windows the
+//! system zone's rule for each year) once when that zone is chosen, so the daylight-saving offset
+//! of each moment comes from the system's own rules for that moment's year ([`offset_under`]).
+//! File names keep UTC (the keystore naming convention), via [`civil`].
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
@@ -91,6 +92,17 @@ pub fn short(unix_secs: u64) -> String {
     when(unix_secs).chars().skip(5).take(11).collect()
 }
 
+/// When something happened, said against now: its hour and minute on the day it is now (both read in the chosen
+/// zone), its month, day, hour and minute on another day, so a window left open past midnight never shows
+/// yesterday's time as today's.
+pub fn clock_or_day(then: u64, now: u64) -> String {
+    if day(then) == day(now) {
+        when(then).chars().skip(11).take(5).collect()
+    } else {
+        short(then)
+    }
+}
+
 /// The second, moved by the chosen zone's offset at that second.
 fn shifted(unix_secs: u64) -> u64 {
     let offset = match (zone(), SYSTEM.get()) {
@@ -144,7 +156,16 @@ fn month_len(y: i64, m: u32) -> u32 {
 
 // ───────────────────────── The system's zone rules (TZif, RFC 8536) ─────────────────────────
 
-/// One zone's offsets: the recorded transitions, then the POSIX rule for moments after the last one.
+/// Seconds east of UTC at the moment `t` (Unix seconds) under `zone` as a system gives it: a zone file by its
+/// transitions and then its footer rule, a POSIX rule as it is, a by-year table by the rule of the moment's
+/// year. `None` when the zone does not read (not a zone file, a rule that does not parse, an empty table, a
+/// year whose rule does not parse). The system zone is read the same way when it is chosen ([`set`]).
+pub fn offset_under(zone: &crate::platform::Zone, t: i64) -> Option<i64> {
+    Rules::of(zone).map(|r| r.offset(t))
+}
+
+/// One zone's offsets: the recorded transitions, then the POSIX rule for moments after the last one; or,
+/// for a zone given by year, each year's rule.
 #[derive(Clone, Debug)]
 struct Rules {
     /// (transition second, offset east of UTC from then on), ascending.
@@ -152,15 +173,34 @@ struct Rules {
     /// The offset before the first transition.
     initial: i64,
     footer: Option<Posix>,
+    /// (year, its rule), years ascending, each where its rule begins; when present, the only reading.
+    years: Vec<(i64, Posix)>,
 }
 
 impl Rules {
-    /// Read the system's zone (`platform::zone_rules`: a zone file's bytes, or a POSIX rule).
+    /// Read the system's zone (`platform::zone_rules`).
     fn of_system() -> Option<Rules> {
-        match crate::platform::zone_rules()? {
-            crate::platform::Zone::File(b) => Rules::parse(&b),
-            crate::platform::Zone::Rule(r) => Posix::parse(&r).map(|p| Rules { transitions: Vec::new(), initial: p.std, footer: Some(p) }),
+        Rules::of(&crate::platform::zone_rules()?)
+    }
+
+    /// Read a zone as a system gives it: a zone file's bytes, a POSIX rule, or rules by year (every one must
+    /// parse, and there must be one).
+    fn of(zone: &crate::platform::Zone) -> Option<Rules> {
+        match zone {
+            crate::platform::Zone::File(b) => Rules::parse(b),
+            crate::platform::Zone::Rule(r) => Posix::parse(r).map(|p| Rules { transitions: Vec::new(), initial: p.std, footer: Some(p), years: Vec::new() }),
+            crate::platform::Zone::ByYear(list) => {
+                let years: Vec<(i64, Posix)> = list.iter().map(|(y, r)| Posix::parse(r).map(|p| (*y, p))).collect::<Option<_>>()?;
+                let first = years.first()?.1.std;
+                Some(Rules { transitions: Vec::new(), initial: first, footer: None, years })
+            }
         }
+    }
+
+    /// The rule of year `y` in a by-year zone: the latest listed at or before it, else the first.
+    fn rule_in(&self, y: i64) -> &Posix {
+        let i = self.years.partition_point(|(at, _)| *at <= y);
+        &self.years[i.saturating_sub(1)].1
     }
 
     /// Parse a TZif file (versions 1 to 4); the 64-bit block and footer when present.
@@ -211,13 +251,31 @@ impl Rules {
         }
         // Before the first transition: the first standard-time type, else the first type (RFC 8536 §3.2).
         let initial = (0..types).find(|t| info.get(t * 6 + 4) == Some(&0)).and_then(utoff).or_else(|| utoff(0))?;
-        Some((Rules { transitions, initial, footer: None }, &data[len..]))
+        Some((Rules { transitions, initial, footer: None, years: Vec::new() }, &data[len..]))
     }
 
     /// Seconds east of UTC at that moment.
     fn offset(&self, t: i64) -> i64 {
-        match self.transitions.last() {
-            Some((last, _)) if t >= *last && self.footer.is_some() => self.footer.as_ref().map(|p| p.offset(t)).unwrap_or(0),
+        if !self.years.is_empty() {
+            // The moment's year where it is shown. A year turns at midnight by the clock running then, the
+            // ending year's standard time, and from that moment the new year's rule holds; an offset is under a
+            // day, so the year is the UTC year or one either side.
+            let year_at = |t: i64, r: &Posix| civil(t.saturating_add(r.std).max(0) as u64).0;
+            let utc = civil(t.max(0) as u64).0;
+            let local = if year_at(t, self.rule_in(utc - 1)) < utc {
+                utc - 1
+            } else if year_at(t, self.rule_in(utc)) > utc {
+                utc + 1
+            } else {
+                utc
+            };
+            return self.rule_in(local).offset(t);
+        }
+        // From the last transition on, or always when there is none (a zone given as one POSIX rule), the
+        // footer rule answers; before it, the recorded transitions.
+        let past_the_last = self.transitions.last().is_none_or(|(last, _)| t >= *last);
+        match &self.footer {
+            Some(p) if past_the_last => p.offset(t),
             _ => match self.transitions.partition_point(|(at, _)| *at <= t) {
                 0 => self.initial,
                 i => self.transitions[i - 1].1,
@@ -270,8 +328,8 @@ impl Posix {
         let Some((dst, start, end)) = self.dst else { return self.std };
         let (y, ..) = civil(t.max(0) as u64);
         // Start is given in standard local time, end in daylight local time.
-        let on = start.local(y) - self.std;
-        let off = end.local(y) - dst;
+        let on = start.local(y).saturating_sub(self.std);
+        let off = end.local(y).saturating_sub(dst);
         let in_dst = if on < off { t >= on && t < off } else { !(t >= off && t < on) };
         if in_dst {
             dst
@@ -282,7 +340,8 @@ impl Posix {
 }
 
 impl Date {
-    /// The switch moment in that year, as seconds since the epoch in local time.
+    /// The switch moment in that year, as seconds since the epoch in local time; saturates at the ends of the
+    /// `i64` range (a year near the last one an `i64` second reaches) instead of wrapping.
     fn local(self, y: i64) -> i64 {
         let (days, at) = match self {
             Date::Month(m, w, d, at) => {
@@ -301,7 +360,7 @@ impl Date {
             }
             Date::Day(n, at) => (days_from_civil(y, 1, 1) + n as i64, at),
         };
-        days * 86_400 + at
+        days.saturating_mul(86_400).saturating_add(at)
     }
 }
 

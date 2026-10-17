@@ -22,10 +22,8 @@
 //! that limit log queries to 10 to 1000 blocks (one audit would need hundreds of queries), and paid,
 //! rate-limited or discontinued nodes.
 //!
-//! Earlier node pairs: a home copies a row's nodes when it is filled, so changing the table only reaches homes
-//! filled later. A row keeps its earlier pairs ([`Deployment::was`]); opening a home for writing whose nodes
-//! exactly match one of them (same text, same order) switches it to today's pair and saves once
-//! (`action::open_home_at`). A home with any other nodes was edited by a person and is left alone.
+//! A home copies a row's nodes when it is filled, so changing the table reaches homes filled later; a home's
+//! nodes are then its own, changed only by the person.
 
 use crate::lang::Key;
 
@@ -43,51 +41,22 @@ pub struct Deployment {
     pub from_block: u64,
     /// Two public nodes from different sources (`https://`).
     pub nodes: [&'static str; 2],
-    /// The pairs this row shipped with before, oldest first (none for a row whose nodes never changed).
-    pub was: &'static [[&'static str; 2]],
 }
 
-/// The whole table.
+/// The whole table: each row's chain, registry, start block and nodes are the anchoring crate's
+/// (`zikaron_anchor::deploy::ROWS`, where the command line reads them too); the display name is this table's.
 pub const KNOWN: [Deployment; 4] = [
-    Deployment {
-        name: "mainnet",
-        label: Key::DeployMainnet,
-        chain_id: 1,
-        registry: "0x36Ea8A857a5FE813429d4D9947000C644A88809A",
-        from_block: 26_087_229,
-        nodes: ["https://mainnet.gateway.tenderly.co", "https://rpc.mevblocker.io"],
-        // Shipped in 0.1.0: that node keeps the last ten to twenty thousand blocks of logs and answers
-        // older windows empty, so every scan from the start block disagreed with the other node.
-        was: &[["https://mainnet.gateway.tenderly.co", "https://rpc.flashbots.net"]],
-    },
-    Deployment {
-        name: "sepolia",
-        label: Key::DeploySepolia,
-        chain_id: 11_155_111,
-        registry: "0xC29410B882c4C3b77e33659d2f06ac563e7B08a3",
-        from_block: 11_715_660,
-        nodes: ["https://sepolia.gateway.tenderly.co", "https://rpc.sepolia.ethpandaops.io"],
-        was: &[],
-    },
-    Deployment {
-        name: "arbitrum-one",
-        label: Key::ChainArbitrumOne,
-        chain_id: 42_161,
-        registry: "0x36Ea8A857a5FE813429d4D9947000C644A88809A",
-        from_block: 511_445_184,
-        nodes: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.gateway.tenderly.co"],
-        was: &[],
-    },
-    Deployment {
-        name: "op-mainnet",
-        label: Key::ChainOpMainnet,
-        chain_id: 10,
-        registry: "0x36Ea8A857a5FE813429d4D9947000C644A88809A",
-        from_block: 157_735_914,
-        nodes: ["https://mainnet.optimism.io", "https://optimism.gateway.tenderly.co"],
-        was: &[],
-    },
+    row(0, Key::DeployMainnet),
+    row(1, Key::DeploySepolia),
+    row(2, Key::ChainArbitrumOne),
+    row(3, Key::ChainOpMainnet),
 ];
+
+/// A row of this table from the anchoring crate's row `i`, with its display name.
+const fn row(i: usize, label: Key) -> Deployment {
+    let r = zikaron_anchor::deploy::ROWS[i];
+    Deployment { name: r.name, label, chain_id: r.chain_id, registry: r.registry, from_block: r.from_block, nodes: r.nodes }
+}
 
 /// The row selected by default in the wizard's network step and the new-identity sheet, until this machine
 /// chooses one.
@@ -165,11 +134,6 @@ impl Deployment {
         specs(self.chain_id, &self.nodes)
     }
 
-    /// The pairs this row shipped with before, written as settings file endpoints.
-    pub fn was_specs(&self) -> Vec<Vec<String>> {
-        self.was.iter().map(|p| specs(self.chain_id, p)).collect()
-    }
-
     /// This row as the network editor's cells.
     pub fn cells(&self) -> Cells {
         Cells {
@@ -199,10 +163,6 @@ pub fn same_as_row(chain_id: Option<u64>, registry: Option<crate::key::Address>,
     })
 }
 
-/// The row that shipped these endpoints as an earlier pair (same text, same order); `None` if no row did.
-pub fn shipped_before(endpoints: &[String]) -> Option<&'static Deployment> {
-    KNOWN.iter().find(|d| d.was_specs().iter().any(|p| p.as_slice() == endpoints))
-}
 
 #[cfg(test)]
 mod tests {
@@ -215,9 +175,6 @@ mod tests {
             assert!(d.nodes.iter().all(|u| u.starts_with("https://")), "公共节点须 TLS");
             assert_ne!(d.nodes[0], d.nodes[1], "两处须不同");
             assert_ne!(d.name, CUSTOM);
-            for p in d.was {
-                assert_ne!(p, &d.nodes, "从前的一对不是今天的一对");
-            }
         }
         assert_eq!(choices().last(), Some(&CUSTOM));
         assert!(choices().iter().all(|c| is_choice(c)));

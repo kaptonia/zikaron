@@ -11,6 +11,9 @@
 //! RLP, transaction encoding and sender recovery, JSON-RPC transport and MPT proof checking are written here
 //! with no third-party chain crates; cryptography goes through the core's `cryptox` only.
 
+// `unsafe` lives in the platform piece (`zikaron-os`) alone: here it does not compile.
+#![forbid(unsafe_code)]
+
 /// The component code this crate carries in its trace marks.
 pub const A2: &str = "A2";
 
@@ -23,6 +26,7 @@ pub fn seam() {
     zikaron::trace::mark(A2);
 }
 
+pub mod deploy;
 pub mod endpoints;
 pub mod input;
 pub mod judge;

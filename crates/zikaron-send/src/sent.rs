@@ -86,10 +86,10 @@ fn files(dir: &Path) -> Result<Files, String> {
         let item = item.map_err(|e| format!("{}: {e}", dir.display()))?;
         let at = item.path();
         let name = item.file_name().to_string_lossy().into_owned();
-        // The landing's own temporary siblings are not records; nor is a hidden file (a name starting with `.`:
-        // this record never writes one; a file browser or a sync tool does, `.DS_Store`). Any other name that
-        // does not read as a record still refuses the whole reading.
-        if zikaron_glue::landing::is_beside_name(&name) || name.starts_with('.') {
+        // A name starting with `.` is not a record: a landing's temporary sibling, or a hidden file a file browser
+        // or sync tool leaves (`.DS_Store`). Any other name that does not read as a record still refuses the whole
+        // reading.
+        if name.starts_with('.') {
             continue;
         }
         let bad = || format!("{}: not a record", at.display());

@@ -194,14 +194,11 @@ pub fn originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
     }
     let root = crate::ledgerx::root_of(home)?;
     let rows = crate::recordsx::read(&crate::home::machine_dir()?)?;
-    let mut out: Vec<Listed> = rows
+    let ids: Vec<String> = ids.into_iter().collect();
+    Ok(zikaron_seal::records::originals_for(&rows, &root, &ids)
         .into_iter()
-        .filter(|r| r.root.eq_ignore_ascii_case(&root) && ids.contains(&r.id.to_ascii_lowercase()))
         .map(|r| Listed { present: Path::new(&r.path).is_file(), id: r.id, seq: r.seq, name: r.name, path: r.path })
-        .collect();
-    out.sort_by(|a, b| a.seq.cmp(&b.seq).then(a.path.cmp(&b.path)));
-    out.dedup_by(|a, b| a.id == b.id && a.path == b.path);
-    Ok(out)
+        .collect())
 }
 
 /// Preview: the ids of the chosen entries and of those pulled in by closure, from the same selection export
@@ -219,60 +216,9 @@ pub fn preview(home: &Home, pick: &Pick) -> Result<(Vec<String>, Vec<String>), F
 
 // ───────────────────────── Names inside the kit ─────────────────────────
 
-/// The table mapping original names to kit names, stored in the kit (under `files/`) and listed in the
-/// manifest.
-pub const NAMES_FILE: &str = "zikaron-names.json";
-
-/// How many hex digits of the original name's digest are appended when transliterating.
-pub const DIGEST_HEX: usize = 8;
-
-/// Convert one name segment to a valid kit name segment, as defined by the kit crate's `is_kit_path`
-/// (kit law §7.2: lowercase letters, digits, `.` `_` `-`, not starting with `-`, at most 255 bytes).
-/// A valid segment is kept as is. Otherwise: lowercase, replace each run of other characters with one `-`,
-/// append the first 8 hex digits of the sha256 of the original name (UTF-8) for uniqueness, and keep the
-/// extension when valid. `None` when the result is still invalid (too long, for example); the UI then marks
-/// it red and disables export.
-pub fn kit_segment(orig: &str) -> Option<String> {
-    if zikaron_kit::kitdir::is_kit_path(orig) && !orig.contains('/') {
-        return Some(orig.to_string());
-    }
-    let squash = |x: &str| -> String {
-        let mut out = String::new();
-        let mut dash = false;
-        for c in x.chars().flat_map(|c| c.to_lowercase()) {
-            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.' {
-                out.push(c);
-                dash = false;
-            } else if !dash {
-                out.push('-');
-                dash = true;
-            }
-        }
-        out.trim_matches(|c| c == '-' || c == '.').to_string()
-    };
-    let (stem, ext) = match orig.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() && !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()) => (s, Some(e.to_ascii_lowercase())),
-        _ => (orig, None),
-    };
-    let digest = zikaron::hexfmt::encode(&zikaron::cryptox::sha256(orig.as_bytes()));
-    let tag = &digest.trim_start_matches("0x")[..DIGEST_HEX];
-    let body = squash(stem);
-    let name = match (body.is_empty(), ext) {
-        (true, Some(e)) => format!("{tag}.{e}"),
-        (true, None) => tag.to_string(),
-        (false, Some(e)) => format!("{body}-{tag}.{e}"),
-        (false, None) => format!("{body}-{tag}"),
-    };
-    if zikaron_kit::kitdir::is_kit_path(&name) { Some(name) } else { None }
-}
-
-/// Transliterate a relative path segment by segment. The whole path must still pass `is_kit_path`, which
-/// also enforces the 1024-byte total length.
-pub fn kit_rel(orig: &str) -> Option<String> {
-    let segs: Option<Vec<String>> = orig.split('/').map(kit_segment).collect();
-    let rel = segs?.join("/");
-    if zikaron_kit::kitdir::is_kit_path(&rel) { Some(rel) } else { None }
-}
+/// How names go into a kit (the table of renamed items, a name segment, a path): the glue's
+/// (`zikaron_glue::kitnames`), the command line's record package takes the same.
+pub use zikaron_glue::kitnames::{kit_rel, kit_segment, DIGEST_HEX, NAMES_FILE};
 
 /// What an attachment will be called in the kit: for each item (each file of a directory) the original name
 /// and the kit name, `None` when it cannot be converted. Uses the same conversion as export, so the preview
@@ -366,12 +312,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
         if !originals.admits(&crate::anchorx::file_digest(&bytes)) {
             return Err(stranger());
         }
-        let inside = kit_rel(&name).ok_or_else(|| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(name.to_string())))?;
-        if inside != name {
-            names.push((name.clone(), inside.clone()));
-        }
-        into.files.push((inside.clone(), bytes));
-        into.contents.push(inside);
+        zikaron_glue::kitnames::put_original(&name, bytes, into, names).map_err(|n| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(n)))?;
     } else if md.is_dir() {
         if !originals.admits(&crate::anchorx::of_dir(path)?.digest) {
             return Err(stranger());
@@ -401,25 +342,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
     Ok(into.files.len() - before)
 }
 
-/// Member names of the name table.
-pub mod names_member {
-    pub const NAMES: &str = "names";
-    pub const FROM: &str = "from";
-    pub const TO: &str = "to";
-}
-
-/// The table of original names to kit names: canonical JSON `{"names":[{"from":original,"to":kit name},…]}`,
-/// sorted by kit name.
-pub fn names_table(names: &[(String, String)]) -> Vec<u8> {
-    use zikaron::json::Value;
-    let mut rows: Vec<&(String, String)> = names.iter().collect();
-    rows.sort_by(|a, b| a.1.cmp(&b.1));
-    let arr = rows
-        .into_iter()
-        .map(|(from, to)| Value::Obj(vec![(names_member::FROM.to_string(), Value::Str(from.clone())), (names_member::TO.to_string(), Value::Str(to.clone()))]))
-        .collect();
-    zikaron::json::canon_bytes(&Value::Obj(vec![(names_member::NAMES.to_string(), Value::Arr(arr))]))
-}
+pub use zikaron_glue::kitnames::{names_member, names_table};
 
 /// The most recent kit in the home's kits directory (the one whose manifest was modified last). "Check
 /// publication" uses it when no local kit was chosen.
@@ -470,6 +393,7 @@ pub fn export(
     attachments: &[String],
     note: &str,
     out: &Path,
+    form: zikaron_glue::pack::Form,
 ) -> Result<Made, Fault> {
     // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::W5);
@@ -514,7 +438,7 @@ pub fn export(
             }
         }
     }
-    let landed = pack::export(out, b).map_err(|t| {
+    let landed = pack::export_as(out, b, form).map_err(|t| {
         Fault::of_landing(t)
     })?;
     Ok(Made {

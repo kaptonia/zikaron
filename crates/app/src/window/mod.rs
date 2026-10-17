@@ -44,8 +44,8 @@ pub const MIN_H: f32 = 560.0;
 
 #[derive(Default)]
 struct Typed {
-    /// The proxy address being typed (settings, network page, "enter one").
-    proxy: String,
+    /// The custom proxy's cells being typed (settings, network page); the password cell never holds a saved one.
+    proxy: crate::proxycells::Cells,
     home: String,
     cap: String,
     migrate: String,
@@ -161,6 +161,10 @@ enum Out {
 /// The toast key that opens the old data the last fetch left (not a task kind).
 const OLD_DATA_TAG: u64 = u64::MAX;
 
+/// The toast key that goes to the command line's two switches (settings, local data), after a desktop write the
+/// command line's turn held back (`CLI_WRITING`).
+const CLI_SWITCHES_TAG: u64 = u64::MAX - 1;
+
 impl Win {
     /// One frame. `update` only calls this and does not use `eframe::Frame`, so tests can run the same code in
     /// a headless frame (`probe_face`).
@@ -243,14 +247,6 @@ impl Win {
             let more = if rang.len() > 1 { fill1(Key::SaidMoreAlerts, &(rang.len() - 1).to_string()) } else { String::new() };
             self.toasts.say_full(first.clone(), &more, "", Tone::Alert, now);
         }
-        // The first unlock after an upgrade settled the primary identity: say so once, naming what recovers it.
-        if self.shell.primary_settled.take().is_some() {
-            let k = match self.shell.primary {
-                Some((_, crate::keybox::PrimaryKind::KeyFile)) => Key::PrimaryOnlyKeyFile,
-                _ => Key::PrimaryOnlyWords,
-            };
-            self.toasts.say_full(t(k).to_string(), "", "", Tone::Note, now);
-        }
         // On a new alert, request the system's attention (the dock icon bounces), once per alert.
         if std::mem::take(&mut self.shell.attention) && !quiet {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
@@ -267,19 +263,26 @@ impl Win {
         let left = if self.rail_shown() { tk::RAIL_W } else { 0.0 };
         let drawn = self.toasts.draw(ctx, left);
         if let Some(tag) = drawn.pressed {
-            if tag == OLD_DATA_TAG {
-                if let Some(p) = self.shell.last_aside.clone() {
-                    self.act(Action::ViewOldData { root: p.display().to_string() }, now);
-                }
-            } else {
-                self.view_task(tag, now);
-            }
+            self.toast_pressed(tag, now);
         }
         zikaron_ui::layer::fade_out(ctx);
         // Background work lands through a channel the frame only drains: while any is in flight, repaint again
         // shortly (animations request their own frames).
         if !self.shell.tasks.flying().is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// A toast's key was pressed: its tag says where to go.
+    fn toast_pressed(&mut self, tag: u64, now: f64) {
+        if tag == OLD_DATA_TAG {
+            if let Some(p) = self.shell.last_aside.clone() {
+                self.act(Action::ViewOldData { root: p.display().to_string() }, now);
+            }
+        } else if tag == CLI_SWITCHES_TAG {
+            self.go_cli_switches(now);
+        } else {
+            self.view_task(tag, now);
         }
     }
 
@@ -325,25 +328,6 @@ impl eframe::App for Win {
         }
         // Quitting locks: the master key is wiped at once and the next start opens at the passcode gate.
         crate::keybox::lock();
-    }
-}
-
-/// Where a watch row's "next" leads: an unanswered node goes to network settings; expiring holdings and
-/// missing chains go to my grants.
-fn gap_target(g: crate::watchx::Gap) -> Place {
-    use crate::watchx::Say;
-    match g.say {
-        Say::AuditUnavailable => Place::Settings(Section::Network),
-        Say::HoldingNoNow | Say::HoldingExpired | Say::HoldingSoon => Place::Page(Page::Vault),
-        _ => Place::Page(g.go),
-    }
-}
-
-/// The settled place for [`gap_target`] (the link is named after it).
-fn gap_place(g: crate::watchx::Gap, role: crate::roles::Role) -> Place {
-    match gap_target(g) {
-        Place::Page(p) => crate::nav::home_of(p, role),
-        other => other,
     }
 }
 
@@ -493,14 +477,12 @@ impl Win {
             Action::OpenEntry { id } => Some(id.clone()),
             _ => None,
         };
-        // The sequence number the next entry takes, read before the table goes stale (toasts name entries by number).
-        self.ux.next_seq = self.shell.rows.as_ref().map(|(r, _)| r.iter().map(|x| x.seq + 1).max().unwrap_or(0));
         // A long action records where it started, so the rail can go back there and its landing can offer "view"
         // once the user has left.
         if let Some(k) = task_of(&a) {
             self.ux.origin.retain(|(x, _, _)| *x != k);
             let h = self.hist().clone();
-            self.ux.origin.push((k, self.ux.stack, h));
+            self.ux.origin.push((k, self.ux.nav.stack, h));
         }
         // Report troubles recorded before this press first; those this press records are reported below.
         self.tell_faults(now);
@@ -513,9 +495,10 @@ impl Win {
         self.told(applied, want, now)
     }
 
-    /// The next entry's number as a sentence piece ("#12"), or empty when the table was not read.
+    /// The number of the entry just written, as written ("#12"): another writer may have moved the head
+    /// meanwhile, so it is never guessed beforehand.
     fn new_seq(&self) -> String {
-        self.ux.next_seq.map(|n| format!("#{n}")).unwrap_or_default()
+        self.shell.landed.as_ref().map(|(_, n)| format!("#{n}")).unwrap_or_default()
     }
 
     /// An entry named for a toast: "#seq" when the table knows it, else a short id.
@@ -564,7 +547,6 @@ impl Win {
             }
             Applied::Refused(k) => (fill1(Key::SaidInFlight, t(self.task_word(k))), Tone::Bad),
             Applied::Stopped(r) => (fill1(Key::SaidReaped, &r.joined.to_string()), Tone::Note),
-            Applied::AnchorKey(_) => (t(Key::SaidAnchorKeyPlain).to_string(), Tone::Note),
             Applied::Seated(r) => (fill1(Key::SaidSeated, t(id_seat_key(r))), Tone::Note),
             // Reading identities, generating or wiping new words, showing or hiding: the result is on the sheet, no
             // toast.
@@ -770,6 +752,9 @@ impl Win {
             // What is at the command line's install location shows on its row, no toast.
             Applied::CliPathRead(_) => (String::new(), Tone::Note),
             Applied::CliAnchorSet(to) => (fill1(Key::SaidCliAnchor, t(cli_anchor_label(to))), Tone::Note),
+            Applied::CliDesktopSet(on) => (t(if on { Key::SaidCliDesktopOn } else { Key::SaidCliDesktopOff }).to_string(), Tone::Note),
+            Applied::CliAloneSet(Some(expires)) => (fill1(Key::SaidCliAloneOn, &settings::cli_expiry_said(expires)), Tone::Note),
+            Applied::CliAloneSet(None) => (t(Key::SaidCliAloneOff).to_string(), Tone::Note),
             // The request shows now and the system's attention is asked once; the user sends from the queue page.
             Applied::SendAsked { count } => {
                 self.shell.attention = true;
@@ -911,6 +896,14 @@ impl Win {
                 _ => {}
             },
             VaultSite::Backup => self.bk_back(r, now),
+            VaultSite::Cli => match r {
+                Applied::CliAloneSet(_) => self.cli_close(),
+                Applied::Trouble(f) => {
+                    self.ux.pin_shake = Some(now);
+                    self.ux.cli_trouble = Some(f);
+                }
+                _ => {}
+            },
             VaultSite::Attest => match r {
                 Applied::Attested { .. } => {
                     self.ux.pin_shake = None;
@@ -972,8 +965,10 @@ impl Win {
     }
 
     fn say_fault(&mut self, f: &crate::fault::Fault, now: f64) {
-        let (what, next) = self.import_face(f).unwrap_or((f.human(), f.next()));
-        let (what, mut next) = (what.to_string(), next.to_string());
+        let (what, mut next) = match self.import_face(f) {
+            Some((what, next)) => (what.to_string(), next.to_string()),
+            None => (f.human().to_string(), f.next()),
+        };
         if f.then_key() == Some(Key::ExitBehindSay) {
             next = fill1(Key::ExitBehindSay, f.tail());
         }
@@ -989,6 +984,12 @@ impl Win {
                 next = fill2(Key::FundsNeedHave, &eth_cap(need), &eth_held(have));
             }
             act = self.shell.anchor.map(|a| (t(Key::IdDoCopy).to_string(), a.hex()));
+        }
+        // The command line holds the turn: say so, with a key to its switch.
+        if f.which() == Some(crate::fault::Known::CliWriting) {
+            let go = vec![(t(Key::CliWritingGo).to_string(), zikaron_ui::toast::Act::Tag(CLI_SWITCHES_TAG))];
+            self.toasts.say_keys(what, &next, &f.raw(), Tone::Bad, now, go);
+            return;
         }
         self.toasts.say_with(what, &next, &f.raw(), Tone::Bad, now, act);
     }
@@ -1118,9 +1119,6 @@ struct WorkLine {
 struct Ux {
     /// Where the wizard was opened from (seat, stack, place); its way out returns there.
     wiz_from: Option<(crate::roles::Role, Stack, Option<Place>, Option<History>)>,
-    /// The wizard was opened on a true first run (no passcode and no identity then): it offers no way out for
-    /// the whole run, whatever its steps set meanwhile.
-    wiz_fresh: bool,
     /// The wizard's "exit?" card is up (new words not yet checked).
     wiz_exit_ask: bool,
     /// The backup sheet open now, its step, and what was typed on it.
@@ -1132,6 +1130,13 @@ struct Ux {
     bk_pin: crate::secret::Secret,
     bk_dir: String,
     bk_trouble: Option<crate::fault::Fault>,
+    /// The "write alone" sheet is open, and what was typed on it: the passcode, the validity's three cells
+    /// (days, hours, minutes: `CLI_SPAN`), whether it never expires, and the last refusal.
+    cli_sheet: bool,
+    cli_pin: crate::secret::Secret,
+    cli_span: [String; 3],
+    cli_never: bool,
+    cli_trouble: Option<crate::fault::Fault>,
     /// The backup password for fetching a restored identity's ledger.
     fetch_pw: crate::secret::Secret,
     /// The backup password of the last fetch, kept until the fetch answers: a conflict's "fetch and replace"
@@ -1143,17 +1148,10 @@ struct Ux {
     search: std::collections::BTreeMap<&'static str, String>,
     /// The date range under each list's search field: start and end day, `YYYY-MM-DD` or empty (per face).
     range: std::collections::BTreeMap<&'static str, (String, String)>,
-    /// The current place. `None` until settled (the first frame follows `shell.page`).
-    place: Option<Place>,
-    /// Which view the user is in, and each view's page history.
-    stack: Stack,
-    hist: std::collections::BTreeMap<Stack, History>,
-    /// How the page on screen entered, and a counter that changes on every page change (entrance animations
-    /// key on it).
-    entry: motion::Entry,
-    entry_key: u64,
-    /// The page's body scroll offset last frame (the toolbar's hairline and detail titles follow it).
-    scroll_y: f32,
+    /// The shell's navigation over this product's pages: the current place (`None` until settled; the first
+    /// frame follows `shell.page`), which view the user is in and each view's page history, how the page on
+    /// screen entered, and the body's scroll offset.
+    nav: pages::Frame,
     /// Whether the wizard is open, and at which step.
     wizard: Option<crate::nav::Step>,
     /// Whether this start has asked "open the wizard by itself" yet.
@@ -1162,8 +1160,17 @@ struct Ux {
     wizard_forced: bool,
     /// The confirmation sheet after the key that writes genesis.
     confirm_genesis: bool,
+    /// The sheet that adopts an existing ledger at the step that creates one, and the folder chosen in it.
+    confirm_adopt: bool,
+    wiz_adopt: String,
     /// Whether the language from settings has been applied.
     lang_applied: bool,
+    /// The shell's page the window last followed or set itself (`chrome` follows a change to it; `entered`
+    /// records the page it sets, so following never loops back on the window's own move).
+    page_seen: Option<Page>,
+    /// Whether the page drawn this frame takes dropped files in its own zones (set by the page as it draws;
+    /// the whole-window drop stands aside for it).
+    page_drops: bool,
     /// This frame's interface time.
     now: f64,
     /// Inputs opened in settings sections.
@@ -1187,8 +1194,6 @@ struct Ux {
     syncing: Vec<crate::task::Kind>,
     sync_said: Vec<Result<Done, crate::fault::Fault>>,
     synced_at: Option<f64>,
-    /// The next entry's sequence number, read before a write (toasts name entries by number).
-    next_seq: Option<u64>,
     /// Wizard and settings inputs.
     wiz_statement: String,
     /// The network row chosen in the wizard's network step.
@@ -1304,6 +1309,8 @@ enum VaultSite {
     Attest,
     /// The whole-machine backup sheets.
     Backup,
+    /// The "write alone" sheet (the command line's credential).
+    Cli,
 }
 
 /// Identity sheets. Closed.
@@ -1480,6 +1487,8 @@ struct U3 {
     kit_orig: Option<(String, Result<Vec<crate::kitx::Listed>, String>)>,
     /// Originals the user removed (by path); the rest travel with the kit.
     kit_orig_off: std::collections::BTreeSet<String>,
+    /// Export the kit as a folder (to publish it at an address) rather than one file.
+    kit_folder: bool,
     /// This pick's originals gate (same key as the list).
     kit_admit: Option<(String, Option<crate::kitx::Originals>)>,
     /// The pick list's working state while open (written back only on "done").
@@ -1578,6 +1587,8 @@ mod identity;
 mod kit;
 mod ledger;
 mod modals;
+mod pages;
+mod probes;
 mod others;
 mod settings;
 mod shared;
@@ -1587,6 +1598,8 @@ mod watch;
 mod wizard;
 mod works;
 pub use self::faces::*;
+pub use self::probes::*;
+use self::pages::*;
 use self::chrome::stagger;
 use self::common::*;
 use self::others::*;

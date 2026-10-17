@@ -202,11 +202,7 @@ pub fn hint_ex(ui: &mut egui::Ui, s: &str, bad: bool) {
 
 /// One reading line: a mark and 13 words, 10 apart.
 pub fn okline(ui: &mut egui::Ui, m: Mark, s: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        mark::mark(ui, m);
-        paint::text(ui, s, Type::Small, c(C::Ink));
-    });
+    mark::mark_words(ui, m, s, Type::Small, c(C::Ink), 10.0);
 }
 
 /// A stack of check rows: a mark, a name, and an optional quiet figure at the right.

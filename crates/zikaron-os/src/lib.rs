@@ -11,8 +11,8 @@
 //! - [`land_new`]: give a written file its name without ever replacing an existing one: a hard link, else a
 //!   non-replacing rename ([`rename_new`]), else an exclusive create to claim the name and a rename over that
 //!   claim; whichever the volume supports first.
-//! - [`system_proxies`]: read-only system proxy settings (`proxy.rs`: macOS network configuration, Windows
-//!   user Internet settings, other unix from the environment).
+//! - [`system_proxies`]: read-only system proxy settings ([`proxy`]: macOS network configuration, Windows as the
+//!   system answers them, Linux desktop settings files, else the environment).
 //! - [`spawn`] / [`LockFile`]: a kernel lock opened as a [`LockFile`] is listed while open, and every child
 //!   closes the listed ones before it runs (a lock released while a child held a copy would stay held by it).
 //! - [`user_home`] / [`app_data_dir`] / [`machine`]: the user's home, where the app keeps machine data by
@@ -21,6 +21,15 @@
 //!   requesting administrator rights only through the OS's own dialog.
 //! - [`door`]: a local IPC endpoint for other processes of the same user (a socket file on unix, a named pipe on
 //!   Windows), with the peer's user checked on both sides.
+//! - [`lock_now`] / [`lock_wait`]: the single-writer lock, a kernel lock on an open descriptor (released when the
+//!   process ends, so no lock is ever stale): the app and the command line take a home's lock and the key
+//!   vault's lock through these.
+//! - [`put_at`] / [`rename_over`] / [`open_owner_only`]: replace a file whole and durably: written owner-only under
+//!   a temporary name, synced, renamed over its place in one step, the directory synced; a write that does not
+//!   land takes its temporary file with it.
+//! - [`wipe`] / [`wipe_string`] / [`wipe_string_tail`]: zero secret bytes in place with writes the compiler
+//!   cannot drop. The one place outside the platform implementations that writes through a raw pointer: every
+//!   other crate of the product forbids `unsafe` and wipes through these.
 //!
 //! The OS split lives only here: unix (macOS, Linux) in `unix.rs`, Windows in `windows.rs`.
 //!
@@ -41,8 +50,8 @@ use windows as imp;
 pub mod cli_path;
 pub mod door;
 pub mod machine;
-mod proxy;
-pub use proxy::{from_env as proxies_from_env, from_windows as proxies_from_windows, place_of as proxy_place_of, Proxies};
+pub mod proxy;
+pub use proxy::{from_env as proxies_from_env, from_windows as proxies_from_windows, place_of as proxy_place_of, Place as ProxyPlace, Proxies};
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("zikaron-os has an implementation for unix and one for Windows; this system has neither");
@@ -369,8 +378,93 @@ pub fn system_proxies() -> Option<Proxies> {
     proxy::system()
 }
 
+
+// ───────────────────────── Wiping secrets ─────────────────────────
+
+/// Zero `b` in place. Volatile writes and a fence, so the compiler cannot drop them as dead stores before the
+/// memory is freed or reused.
+pub fn wipe(b: &mut [u8]) {
+    for x in b.iter_mut() {
+        // SAFETY: `x` is a valid, aligned, exclusive reference to one byte.
+        unsafe { std::ptr::write_volatile(x, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Zero a string's whole allocation (its text and the capacity past it, where removed characters were) and
+/// leave it empty.
+pub fn wipe_string(s: &mut String) {
+    // SAFETY: only zeros are written, within the allocation; zero bytes are valid UTF-8, and the length is then
+    // set to zero.
+    let v = unsafe { s.as_mut_vec() };
+    let (p, cap) = (v.as_mut_ptr(), v.capacity());
+    for i in 0..cap {
+        unsafe { std::ptr::write_volatile(p.add(i), 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    v.clear();
+}
+
+/// After a string shrank from `old` bytes to its length now, zero the bytes it let go of (`[len, old)`, within
+/// capacity, so nothing moves); its text stays.
+pub fn wipe_string_tail(s: &mut String, old: usize) {
+    let new = s.len();
+    // SAFETY: only zeros are written, only within capacity and past the length, and the length stays.
+    let v = unsafe { s.as_mut_vec() };
+    let p = v.as_mut_ptr();
+    for i in new..old.min(v.capacity()) {
+        unsafe { std::ptr::write_volatile(p.add(i), 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// An entry is going when it is not there: a file or a folder that is there is not going, the same names once
+    /// removed are. (A Windows entry being deleted, its last handle still open, is the third form; the walks of a
+    /// live folder meet it in the app's tests.)
+    #[test]
+    fn an_entry_is_going_when_it_is_not_there() {
+        let dir = std::env::temp_dir().join(format!("zk-os-going-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder");
+        let file = dir.join("file");
+        std::fs::write(&file, b"x").expect("a file");
+        assert!(!going(&file), "a file that is there");
+        assert!(!going(&dir), "a folder that is there");
+        std::fs::remove_file(&file).expect("removed");
+        assert!(going(&file), "a file removed");
+        std::fs::remove_dir_all(&dir).expect("removed");
+        assert!(going(&dir), "a folder removed");
+        assert!(going(&dir.join("never")), "under a folder that is not there");
+    }
+
+    /// The three wipes leave zeros where the secret was: a slice whole; a string's whole allocation, past its
+    /// length too, and the string empty; a string's let-go tail, its text kept.
+    #[test]
+    fn a_wipe_leaves_zeros_where_the_secret_was() {
+        let mut b = *b"secret bytes";
+        wipe(&mut b);
+        assert_eq!(b, [0u8; 12]);
+        let mut s = String::with_capacity(32);
+        s.push_str("passphrase words here");
+        let (p, cap) = (s.as_ptr(), s.capacity());
+        wipe_string(&mut s);
+        assert!(s.is_empty());
+        assert_eq!(s.as_ptr(), p, "the allocation stays where it was");
+        // SAFETY: reading the string's own allocation, which it still owns.
+        assert!((0..cap).all(|i| unsafe { *p.add(i) } == 0), "the whole allocation is zero");
+        let mut t = String::from("keep this, drop that");
+        let old = t.len();
+        t.truncate(9);
+        wipe_string_tail(&mut t, old);
+        assert_eq!(t, "keep this");
+        let q = t.as_ptr();
+        // SAFETY: as above, within the capacity the string still owns.
+        assert!((9..old).all(|i| unsafe { *q.add(i) } == 0), "the tail let go is zero");
+    }
+
     use super::*;
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -644,4 +738,79 @@ mod tests {
         pretend_unsupported(0);
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+// ───────────────────────── An entry on its way out ─────────────────────────
+
+/// Whether an entry a folder listed is on its way out at this moment, judged by the entry's own state, not by the
+/// error a look at it met: it is not there any more, or (Windows) it is being deleted, its last handle not yet
+/// closed, so the system opens it as "delete pending" and answers access denied. A walk of a live folder takes
+/// such an entry as not there; an entry that is there and will not open is not going, and its trouble stands.
+pub fn going(path: &Path) -> bool {
+    imp::going(path)
+}
+
+// ───────────────────────── The single-writer lock ─────────────────────────
+
+/// Ask the kernel for an exclusive lock on this descriptor, without waiting. True when obtained. The lock is
+/// released when the descriptor closes or the process ends, so no lock is ever stale.
+pub fn lock_now(file: &std::fs::File) -> bool {
+    imp::lock_now(file)
+}
+
+/// The same lock, blocking until obtained.
+pub fn lock_wait(file: &std::fs::File) -> bool {
+    imp::lock_wait(file)
+}
+
+// ───────────────────────── Replacing a file whole ─────────────────────────
+
+/// A write that did not land: the system's error, and the path it is said with (the file being written; its
+/// directory for creating or syncing that directory). The temporary name is the writer's own business and is
+/// never the path said.
+#[derive(Debug)]
+pub struct Unput {
+    pub error: std::io::Error,
+    pub at: std::path::PathBuf,
+}
+
+/// Creates a new file readable and writable by its owner only (refusing an existing name: `create_new`). The
+/// permission is part of the creating call ([`owner_only`]), so there is no moment others may read it.
+pub fn open_owner_only(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = Options::new();
+    o.write(true).create_new(true);
+    owner_only(&mut o);
+    o.open(path)
+}
+
+/// Replaces the file `name` in `dir` whole: the bytes go to `tmp` (a name of the caller's one temporary shape)
+/// created owner-only, are synced, and the file is renamed over `name` in one step and the directory synced
+/// ([`rename_over`]), so the place holds either the old file or the new one, never half of either. A write that
+/// does not land removes its temporary file. `dir` is created when missing.
+pub fn put_at(dir: &Path, name: &str, tmp: &str, bytes: &[u8]) -> Result<(), Unput> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir).map_err(|error| Unput { error, at: dir.to_path_buf() })?;
+    let tmp = dir.join(tmp);
+    let p = dir.join(name);
+    let wrote = (|| -> Result<(), Unput> {
+        let at = || p.clone();
+        let mut f = open_owner_only(&tmp).map_err(|error| Unput { error, at: at() })?;
+        f.write_all(bytes).map_err(|error| Unput { error, at: at() })?;
+        f.sync_all().map_err(|error| Unput { error, at: at() })?;
+        drop(f);
+        rename_over(&tmp, &p)
+    })();
+    if wrote.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    wrote
+}
+
+/// Renames `from` over `to` in one step, then syncs the directory so the new name survives a power cut. A failed
+/// rename is said with the target, a failed sync with the directory (the file is in place, but the write is not
+/// taken as done).
+pub fn rename_over(from: &Path, to: &Path) -> Result<(), Unput> {
+    replace(from, to).map_err(|error| Unput { error, at: to.to_path_buf() })?;
+    let dir = to.parent().unwrap_or_else(|| Path::new("."));
+    sync_dir(dir, to).map_err(|error| Unput { error, at: dir.to_path_buf() })
 }

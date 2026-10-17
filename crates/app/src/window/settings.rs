@@ -1,4 +1,4 @@
-//! Settings: the home (one line per section: title, what it holds, a chevron) and the eight section pages.
+//! Settings: the home (one line per section: title, what it holds, a chevron) and the section pages.
 //! Technical values (addresses, nodes, contract, chain id, start block, paths, key file names, the instance
 //! lock) live under each section's details.
 
@@ -30,6 +30,7 @@ impl Win {
             Section::Network => self.set_network(ui, now),
             Section::Notify => self.set_notify(ui, now),
             Section::Data => self.set_data(ui, now),
+            Section::Cli => self.set_cli(ui, now),
             Section::About => self.set_about(ui, now),
         }
     }
@@ -68,10 +69,38 @@ impl Win {
         }
     }
 
-    /// "Enable command line": a switch the size of the one above, with a line under it only when there is
-    /// something to say (installed, taken by another install, provided by a package, or not supported here, with
-    /// the reason folded). Its state is reread whenever the row is shown again after a pause (by the action
-    /// layer, never the frame); when it cannot be installed, the switch does not flip.
+    /// The command line's page, three groups: the terminal command; the automation level (the two ways it may
+    /// write this machine's data); how its anchoring is handled, for both ways. Each switch keeps its behavior and
+    /// where it is stored; the page only gathers them.
+    fn set_cli(&mut self, ui: &mut egui::Ui, now: f64) {
+        self.set_cli_path(ui, now);
+        self.set_cli_writes(ui, now);
+        self.set_cli_anchor(ui, now);
+    }
+
+    /// "Putting on chain from the command line" (machine-wide): sent as the send key sends, or left queued for
+    /// the person; one judgement for both of the command line's ways (`zikaron_seal::machine::turn`).
+    fn set_cli_anchor(&mut self, ui: &mut egui::Ui, now: f64) {
+        let all = crate::machine::CliAnchor::ALL;
+        let cur = all.iter().position(|x| *x == self.shell.machine.cli_anchor).unwrap_or(0);
+        let cells: Vec<seg::Cell> = all.iter().map(|x| seg::Cell::from(t(cli_anchor_label(*x)))).collect();
+        let mut pick = None;
+        stagger(ui, 2, |ui| {
+            card::section(ui, t(Key::SetCliAnchoring), "", |ui| {
+                card::form(ui, |ui, f| {
+                    f.row_with(ui, None, t(Key::SetCliAnchor), t(Key::SetCliAnchorSay), card::Value::None, |ui| pick = seg::seg(ui, "set-cli-anchor", &cells, cur));
+                });
+            });
+        });
+        if let Some(i) = pick.filter(|i| *i != cur) {
+            self.act(Action::SetCliAnchor { to: all[i] }, now);
+        }
+    }
+
+    /// "Enable the zikaron command": a switch with a line under it only when there is something to say
+    /// (installed, taken by another install, provided by a package, or not supported here, with the reason
+    /// folded). Its state is reread whenever the row is shown again after a pause (by the action layer, never the
+    /// frame); when it cannot be installed, the switch does not flip.
     fn set_cli_path(&mut self, ui: &mut egui::Ui, now: f64) {
         use zikaron_os::cli_path::State;
         if now - self.ux.cli_path_seen > 1.0 || self.shell.cli_path.is_none() {
@@ -88,17 +117,155 @@ impl Win {
             State::Unsupported(_) => (false, false, t(Key::CliPathUnsupportedSay).to_string()),
         };
         let mut flip = false;
-        stagger(ui, 3, |ui| {
-            card::form(ui, |ui, f| {
-                f.row_with(ui, None, t(Key::SetCliPath), &say, card::Value::None, |ui| flip = toggle::switch(ui, on, can && !busy).clicked());
+        stagger(ui, 0, |ui| {
+            card::section(ui, t(Key::SetCliTerminal), "", |ui| {
+                card::form(ui, |ui, f| {
+                    f.row_with(ui, None, t(Key::SetCliPath), &say, card::Value::None, |ui| flip = toggle::switch(ui, on, can && !busy).clicked());
+                });
+                // Why it cannot be installed: the details, folded.
+                if let State::Unsupported(why) = &state {
+                    fold::fold(ui, "cli-path-why", t(Key::SetEvidence), |ui| hint(ui, why));
+                }
             });
-            // Why it cannot be installed: the details, folded.
-            if let State::Unsupported(why) = &state {
-                fold::fold(ui, "cli-path-why", t(Key::SetEvidence), |ui| hint(ui, why));
-            }
         });
         if flip {
             self.act(Action::SetCliPath { on: !on }, now);
+        }
+    }
+
+    /// The command line's two ways to write this machine's sealed data, one group ("automation level"): "through
+    /// the desktop app" (requests to the running app; no passcode) and "with a credential" (the passcode and a
+    /// validity each time it is turned on, on its sheet). Writing alone outranks the desktop path: while it is on, the
+    /// desktop switch is greyed out and the desktop accepts no command-line requests (`machine::Machine::cli_path`).
+    fn set_cli_writes(&mut self, ui: &mut egui::Ui, now: f64) {
+        // The two switches' four states are resolved in one place (`cli_path`); the page only draws them.
+        let path = self.shell.machine.cli_path();
+        let alone = path == crate::machine::CliPath::Alone;
+        let desktop = path == crate::machine::CliPath::Desktop;
+        let unlocked = self.shell.unlocked();
+        let alone_say = match (alone, self.shell.credential) {
+            (true, Some(c)) => cli_expiry_said(c.expires),
+            _ => t(Key::SetCliAloneSay).to_string(),
+        };
+        let desktop_say = if alone { t(Key::SetCliDesktopGrey) } else { t(Key::SetCliDesktopSay) };
+        let (mut flip_desktop, mut flip_alone) = (false, false);
+        stagger(ui, 1, |ui| {
+            card::section(ui, t(Key::SetCliLevel), "", |ui| {
+                card::form(ui, |ui, f| {
+                    f.row_with(ui, None, t(Key::SetCliDesktop), desktop_say, card::Value::None, |ui| flip_desktop = toggle::switch(ui, desktop, unlocked && !alone).clicked());
+                    f.row_with(ui, None, t(Key::SetCliAlone), &alone_say, card::Value::None, |ui| flip_alone = toggle::switch(ui, alone, unlocked).clicked());
+                });
+            });
+        });
+        if flip_desktop {
+            self.act(Action::SetCliDesktop { on: !desktop }, now);
+        }
+        if flip_alone {
+            if alone {
+                self.act(Action::CliAloneOff, now);
+            } else {
+                self.cli_open();
+            }
+        }
+    }
+
+    /// Go to the command line's switches (its own settings page), from a toast's key.
+    pub(super) fn go_cli_switches(&mut self, now: f64) {
+        self.go(Place::Settings(Section::Cli), now);
+    }
+
+    /// Open the "write alone" sheet (every other sheet closes); the validity starts empty.
+    pub(super) fn cli_open(&mut self) {
+        self.sheets_clear();
+        self.ux.cli_sheet = true;
+        self.ux.cli_span = Default::default();
+        self.ux.cli_never = false;
+    }
+
+    /// Close the "write alone" sheet, wiping the passcode typed on it.
+    pub(super) fn cli_close(&mut self) {
+        self.ux.cli_sheet = false;
+        self.ux.cli_pin.clear();
+        self.ux.cli_trouble = None;
+    }
+
+    /// The "write alone" sheet: the passcode, then how long the credential lasts: days, hours and minutes (an
+    /// empty cell is zero), or never by the switch under them, which leaves the cells faint and not taken. A cell
+    /// past its most is framed red and the line under the switch says why; the key turns it on only with a
+    /// whole passcode and a validity in range.
+    pub(super) fn cli_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.ux.cli_sheet {
+            return;
+        }
+        let len = crate::keybox::PIN_LEN;
+        let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
+        let span = cli_span(&self.ux.cli_span, self.ux.cli_never);
+        let lasts = match span {
+            Span::Lasts(l) => Some(l),
+            _ => None,
+        };
+        let pin_full = self.ux.cli_pin.chars() == len;
+        let trouble = self.ux.cli_trouble.clone();
+        let said = cli_span_said(span, (self.shell.clock)());
+        let (mut go, mut close) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("cli-alone", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::SetCliAlone), t(Key::SetCliAloneSay));
+                hint(ui, t(Key::SetCliAloneGas));
+                field(ui, t(Key::IdPinGate), None, |ui| {
+                    pin::pin_row(ui, "cli-alone-pin", &mut me.ux.cli_pin, len, me.ux.pin_shake, !busy, true);
+                });
+                field(ui, t(Key::U3Window), None, |ui| {
+                    let never = me.ux.cli_never;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if never {
+                            ui.disable();
+                            ui.multiply_opacity(tk::OFF);
+                        }
+                        for (i, (unit, _, _)) in CLI_SPAN.iter().enumerate() {
+                            if i > 0 {
+                                ui.add_space(CLI_CELL_GAP);
+                            }
+                            let bad = matches!(span, Span::Over(o) if o[i]);
+                            ui.push_id(("cli-span", i), |ui| {
+                                input::field(ui, &mut me.ux.cli_span[i], "0", CLI_CELL_W, input::Look { mono: true, bad, centred: true, ..Default::default() });
+                            });
+                            me.ux.cli_span[i] = cli_cell(&me.ux.cli_span[i]);
+                            ui.add_space(tk::S2);
+                            paint::text(ui, t(*unit), Type::Body, c(C::Ink2));
+                        }
+                    });
+                    paint::rule(ui, CLI_RULE_GAP);
+                    toggle::toggle(ui, &mut me.ux.cli_never, t(Key::CliLastsNever), "", true);
+                    ui.add_space(tk::S3);
+                    let colour = if said.1 { c(C::Bad) } else { c(C::Ink2) };
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), Type::Small.size() + 5.0), egui::Sense::hover());
+                    if !said.0.is_empty() {
+                        ui.painter().text(rect.left_top(), egui::Align2::LEFT_TOP, &said.0, Type::Small.font(), colour);
+                    }
+                });
+                if let Some(f) = &trouble {
+                    states::err_box(ui, "cli-trouble", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
+                }
+            },
+            |ui, _me| {
+                go = page::Page::new().primary_with(ui, t(Key::DoCliAloneOn), pin_full && lasts.is_some() && !busy).1.clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                if busy {
+                    sheet::foot_note(ui, t(Key::VaultBusy));
+                }
+            },
+        );
+        if close || out.esc {
+            self.cli_close();
+        } else if let (true, Some(lasts)) = (go, lasts) {
+            let pin = std::mem::take(&mut self.ux.cli_pin);
+            let r = self.act(Action::SetCliAlone { lasts, pin }, now);
+            self.vault_or(VaultSite::Cli, r, now);
         }
     }
 
@@ -131,15 +298,13 @@ impl Win {
         let mut copy = false;
         stagger(ui, 0, |ui| {
             card::card(ui, |ui| {
-                width::then(
+                let lines = [(name.as_str(), Type::Page, c(C::Ink)), (kind.as_str(), Type::Note, c(C::Ink2))];
+                width::then_at(
                     ui,
+                    paint::lines_height(ui, &lines, 2.0).max(tk::INPUT_H),
                     |ui| copy = key::key(ui, t(Key::IdDoCopy), Role::Secondary, can_sign).clicked(),
                     |ui, room| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            paint::line(ui, &name, Type::Page, c(C::Ink), room);
-                            paint::line(ui, &kind, Type::Note, c(C::Ink2), room);
-                        });
+                        paint::lines(ui, &lines, 2.0, room);
                     },
                 );
             });
@@ -226,7 +391,7 @@ impl Win {
                         f.row(ui, t(Key::IdPrimaryTag), t(by), card::Value::Text(t(Key::IdPrimaryThis)));
                     } else {
                         f.row(ui, t(Key::IdPrimaryTag), "", card::Value::Text(&primary_name));
-                        set_primary = f.row(ui, t(Key::IdDoSetPrimary), "", if current.is_some() && !unseated { card::Value::Nav } else { card::Value::Off }).clicked();
+                        set_primary = f.row(ui, t(Key::PrimaryTitle), "", if current.is_some() && !unseated { card::Value::Nav } else { card::Value::Off }).clicked();
                     }
                 });
             });
@@ -258,7 +423,7 @@ impl Win {
                                 lock_pick = menu::menu_key(ui, "auto-lock", &lock_label, false, 150.0, &items);
                             });
                         }
-                        change = f.row(ui, t(Key::IdDoChangePin), "", card::Value::Nav).clicked();
+                        change = f.row(ui, t(Key::ChangePinTitle), "", card::Value::Nav).clicked();
                     } else {
                         f.row(ui, t(Key::IdPin), "", card::Value::Text(t(Key::IdPinNone)));
                         f.keys(ui, |ui| set_pin = key::key(ui, t(Key::IdDoSetPin), Role::Secondary, true).clicked());
@@ -273,8 +438,8 @@ impl Win {
         stagger(ui, 4, |ui| {
             card::section(ui, t(Key::IdExportGroup), if has_words || current.is_none() { "" } else { t(Key::IdNoWordsHint) }, |ui| {
                 card::form(ui, |ui, f| {
-                    backup = f.row(ui, t(Key::IdDoBackup), "", if can_sign { card::Value::Nav } else { card::Value::Off }).clicked();
-                    words = f.row(ui, t(Key::IdDoWords), "", if !unseated && has_words { card::Value::Nav } else { card::Value::Off }).clicked();
+                    backup = f.row(ui, t(Key::IdDoBackupGo), "", if can_sign { card::Value::Nav } else { card::Value::Off }).clicked();
+                    words = f.row(ui, t(Key::IdWordsTitle), "", if !unseated && has_words { card::Value::Nav } else { card::Value::Off }).clicked();
                 });
             });
         });
@@ -283,10 +448,10 @@ impl Win {
         stagger(ui, 5, |ui| {
             card::section(ui, t(Key::IdChangeFold), change_note, |ui| {
                 card::form(ui, |ui, f| {
-                    switch = f.row(ui, t(Key::IdDoSwitch), "", if reg.rows.len() > 1 { card::Value::Nav } else { card::Value::Off }).clicked();
-                    new = f.row(ui, t(Key::IdDoNew), "", card::Value::Nav).clicked();
-                    import = f.row(ui, t(Key::IdDoImport), "", card::Value::Nav).clicked();
-                    rename = f.row(ui, t(Key::IdDoRename), "", if current.is_some() { card::Value::Nav } else { card::Value::Off }).clicked();
+                    switch = f.row(ui, t(Key::IdSwitchTitle), "", if reg.rows.len() > 1 { card::Value::Nav } else { card::Value::Off }).clicked();
+                    new = f.row(ui, t(Key::IdNewTitle), "", card::Value::Nav).clicked();
+                    import = f.row(ui, t(Key::IdImportTitle), "", card::Value::Nav).clicked();
+                    rename = f.row(ui, t(Key::IdDoRenameGo), "", if current.is_some() { card::Value::Nav } else { card::Value::Off }).clicked();
                 });
             });
         });
@@ -320,7 +485,7 @@ impl Win {
         let mut delete = false;
         stagger(ui, 7, |ui| {
             if current.is_some() {
-                card::form(ui, |ui, f| delete = f.danger(ui, t(Key::IdDoDelete)).clicked());
+                card::form(ui, |ui, f| delete = f.danger(ui, t(Key::IdDoDeleteGo)).clicked());
             }
         });
         if copy {
@@ -439,19 +604,6 @@ impl Win {
         if flip {
             self.act(Action::SetAutoAnchor { on: !s.auto_anchor }, now);
         }
-        // How the command line puts records on chain through the desktop (machine-wide).
-        let all = crate::machine::CliAnchor::ALL;
-        let cur = all.iter().position(|x| *x == self.shell.machine.cli_anchor).unwrap_or(0);
-        let cells: Vec<seg::Cell> = all.iter().map(|x| seg::Cell::from(t(cli_anchor_label(*x)))).collect();
-        let mut pick = None;
-        stagger(ui, 1, |ui| {
-            card::form(ui, |ui, f| {
-                f.row_with(ui, None, t(Key::SetCliAnchor), "", card::Value::None, |ui| pick = seg::seg(ui, "set-cli-anchor", &cells, cur));
-            });
-        });
-        if let Some(i) = pick.filter(|i| *i != cur) {
-            self.act(Action::SetCliAnchor { to: all[i] }, now);
-        }
         let (mut read_chain, mut save_nodes, mut save_basis) = (false, false, false);
         stagger(ui, 2, |ui| {
             card::card(ui, |ui| {
@@ -531,10 +683,15 @@ impl Win {
         stagger(ui, 5, |ui| card::section(ui, t(Key::SetProxy), "", |ui| self.set_proxy(ui, now)));
     }
 
-    /// The proxy (machine-wide): follow the system, none, or a typed address, parsed the way the transport
-    /// parses it and refused by name before saving.
+    /// The proxy (machine-wide): follow the system, none, or a custom proxy in cells (kind, host, port, user name,
+    /// password; checked in `proxycells`). A wrong cell is framed red with its reason under the cells, and saving
+    /// waits until every cell is valid. A whole address pasted into the host cell, or left there, is split into
+    /// the cells. A saved password is never shown again: its cell stays empty, and the page says one is set only
+    /// while saving the cells as they are would keep it (`proxycells::password_stays`: the same proxy and user
+    /// name).
     fn set_proxy(&mut self, ui: &mut egui::Ui, now: f64) {
         use crate::machine::proxy::{NONE, SYSTEM};
+        use crate::proxycells::{self as pc, Bad};
         ui.spacing_mut().item_spacing.y = tk::S3;
         let written = self.shell.machine.proxy.clone();
         let cur = match written.as_deref().map(str::trim) {
@@ -542,8 +699,11 @@ impl Win {
             Some(NONE) => 1,
             Some(_) => 2,
         };
+        let saved = written.as_deref().filter(|_| cur == 2).and_then(pc::of_saved);
         if cur == 2 && !self.ux.proxy_seeded {
-            self.typed.proxy = written.clone().unwrap_or_default();
+            if let Some((cells, _)) = &saved {
+                self.typed.proxy = cells.clone();
+            }
             self.ux.proxy_seeded = true;
         }
         let shown = if self.ux.proxy_manual { 2 } else { cur };
@@ -560,21 +720,88 @@ impl Win {
             }
             _ => {}
         }
-        if self.ux.proxy_manual || cur == 2 {
-            let typed = self.typed.proxy.trim().to_string();
-            let differs = cur != 2 || Some(typed.as_str()) != written.as_deref();
-            let (resp, hit) = width::line_then(ui, &mut self.typed.proxy, t(Key::ProxyHint), true, |ui| key::key(ui, t(Key::ReadNetSave), Role::Secondary, differs).clicked());
-            match (!typed.is_empty()).then(|| zikaron_net::proxy_of(&typed).err()).flatten() {
-                Some(zikaron_net::NotAProxy::Credentials) => states::okline(ui, Mark::Bad, &fill1(Key::TailProxyCredentials, &typed)),
-                Some(zikaron_net::NotAProxy::Shape) => states::okline(ui, Mark::Bad, &fill1(Key::TailProxyShape, &typed)),
-                None => {}
+        if !(self.ux.proxy_manual || cur == 2) {
+            return;
+        }
+        let c = &mut self.typed.proxy;
+        let kinds: Vec<seg::Cell> = pc::KINDS.iter().map(|(_, w)| seg::Cell::from(*w)).collect();
+        let at = pc::KINDS.iter().position(|(k, _)| *k == c.kind).unwrap_or(0);
+        if let Some(i) = field(ui, t(Key::U3RawType), None, |ui| seg::seg(ui, "proxy-kind", &kinds, at)) {
+            c.kind = pc::KINDS[i].0;
+        }
+        let checked = pc::check(c);
+        let is_bad = |b: Bad| matches!(&checked, Err(v) if v.contains(&b));
+        let host_bad = is_bad(Bad::Host) && !c.host.trim().is_empty();
+        let host = field(ui, t(Key::ProxyCellHost), None, |ui| {
+            let w = ui.available_width();
+            input::field(ui, &mut c.host, t(Key::ProxyHint), w, input::Look { mono: true, bad: host_bad, ..Default::default() })
+        });
+        // A whole address pasted at once, or left in the host cell, is split into the cells (`proxycells::split_in`):
+        // never mid-way while it is typed.
+        let pasted: Option<String> = ui.input(|i| {
+            let p: String = i.events.iter().filter_map(|e| if let egui::Event::Paste(p) = e { Some(p.as_str()) } else { None }).collect();
+            (!p.is_empty()).then_some(p)
+        });
+        if let Some(split) = pc::split_in(c, pasted.as_deref(), host.has_focus()) {
+            *c = split;
+        }
+        let port_bad = is_bad(Bad::Port) && !c.port.trim().is_empty();
+        field(ui, t(Key::ProxyCellPort), None, |ui| input::field(ui, &mut c.port, "", CLI_CELL_W * 2.0, input::Look { mono: true, bad: port_bad, ..Default::default() }));
+        let user_bad = (is_bad(Bad::UserMissing) || is_bad(Bad::UserLong)) && !(c.user.is_empty() && c.pass.is_empty());
+        let user_label = if pc::takes_password(c.kind) { Key::ProxyCellUser } else { Key::ProxyCellUserId };
+        field(ui, t(user_label), Some(t(Key::ProxyCellOptional)), |ui| {
+            let w = ui.available_width();
+            input::field(ui, &mut c.user, "", w, input::Look { bad: user_bad, ..Default::default() })
+        });
+        if pc::takes_password(c.kind) {
+            let pass_bad = is_bad(Bad::PassLong);
+            field(ui, t(Key::IdPassword), Some(t(Key::ProxyCellOptional)), |ui| {
+                let w = ui.available_width();
+                input::secret_line_w_marked(ui, &mut c.pass, "", w, pass_bad)
+            });
+        }
+        // Why a cell is red, one line each; else whether a password is kept.
+        let shown_bad: Vec<Key> = match &checked {
+            Err(v) => v
+                .iter()
+                .filter(|b| match b {
+                    Bad::Host => host_bad,
+                    Bad::Port => port_bad,
+                    Bad::UserMissing | Bad::UserLong => user_bad,
+                    Bad::PassLong => true,
+                })
+                .map(|b| match b {
+                    Bad::Host => Key::ProxyBadHost,
+                    Bad::Port => Key::ProxyBadPort,
+                    Bad::UserMissing => Key::ProxyBadUserMissing,
+                    Bad::UserLong => Key::ProxyBadUserLong,
+                    Bad::PassLong => Key::ProxyBadPassLong,
+                })
+                .collect(),
+            Ok(_) => Vec::new(),
+        };
+        for k in &shown_bad {
+            states::okline(ui, Mark::Bad, t(*k));
+        }
+        let typed_pass = !c.pass.is_empty() && pc::takes_password(c.kind);
+        // "Password set" only when saving these cells now would keep the saved password (the same check saving uses).
+        let saved_proxy = written.as_deref().and_then(|w| zikaron_net::proxy_of(w).ok());
+        let typed_proxy = pc::check(c).ok().and_then(|a| zikaron_net::proxy_of(&a).ok());
+        if let (Some(s), Some(t_)) = (&saved_proxy, &typed_proxy) {
+            if pc::password_stays(s, t_) {
+                states::okline(ui, Mark::Ok, t(Key::ProxyPasswordSet));
             }
-            // Saving goes to the action layer even when the address does not parse: it refuses by name there and
-            // nothing is written.
-            if (resp.lost_focus() && differs && !typed.is_empty()) || hit {
-                self.act(Action::SetProxy { choice: typed }, now);
-                if self.shell.machine.proxy.as_deref().map(|p| p != SYSTEM && p != NONE).unwrap_or(false) {
+        }
+        // Saving: every cell reads, and the cells differ from what is saved (a password typed counts).
+        let shown_written = written.as_deref().map(|w| zikaron_net::proxy_text_shown(w).0).unwrap_or_default();
+        let to_save = checked.ok().filter(|a| cur != 2 || typed_pass || zikaron_net::proxy_text_shown(a).0 != shown_written);
+        if key::key(ui, t(Key::ReadNetSave), Role::Secondary, to_save.is_some()).clicked() {
+            if let Some(address) = to_save {
+                self.act(Action::SetProxy { choice: address }, now);
+                if self.shell.machine.proxy.as_deref().is_some_and(|p| p != SYSTEM && p != NONE) {
                     self.ux.proxy_manual = false;
+                    self.ux.proxy_seeded = false;
+                    self.typed.proxy.pass.clear();
                 }
             }
         }
@@ -877,7 +1104,10 @@ impl Win {
         self.set_fetch(ui, now);
         self.set_old_data(ui, now);
         // What is here, how it is kept, how much room it takes (every number from the last background
-        // measurement; the frame reads no disk).
+        // measurement; the frame reads no disk). Measured again once the ledger moved, whoever wrote.
+        if self.shell.take_measure_due() {
+            self.auto(Action::Measure, now);
+        }
         let usage = match self.shell.archive.as_ref() {
             Some(a) => Val::Mark(if a.bytes > self.shell.settings.cap_bytes { Mark::Bad } else { Mark::Ok }, fill2(Key::SetUsageHuman, &size_say(a.bytes), &size_say(self.shell.settings.cap_bytes))),
             None => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
@@ -914,8 +1144,8 @@ impl Win {
                             f.row(ui, t(Key::IdNotBacked), "", card::Value::Text("\u{2014}"));
                         }
                     }
-                    export = f.row(ui, t(Key::DoExportBackup), "", if self.shell.unlocked() { card::Value::Nav } else { card::Value::Off }).clicked();
-                    restore = f.row(ui, t(Key::DoRestoreBackup), "", card::Value::Nav).clicked();
+                    export = f.row(ui, t(Key::BackupExportTitle), "", if self.shell.unlocked() { card::Value::Nav } else { card::Value::Off }).clicked();
+                    restore = f.row(ui, t(Key::BackupRestoreTitle), "", card::Value::Nav).clicked();
                 });
             });
         });
@@ -930,7 +1160,7 @@ impl Win {
             let mut mirror = false;
             stagger(ui, 2, |ui| {
                 card::section(ui, t(Key::PageMirror), "", |ui| {
-                    card::form(ui, |ui, f| mirror = f.row(ui, t(Key::DoExportMirror), "", card::Value::Nav).clicked());
+                    card::form(ui, |ui, f| mirror = f.row(ui, t(Key::MirrorTitle), "", card::Value::Nav).clicked());
                 });
             });
             if mirror {
@@ -984,7 +1214,6 @@ impl Win {
                 self.act(Action::SetHideLocalDeletions { on: !on }, now);
             }
         }
-        self.set_cli_path(ui, now);
         if measure {
             self.act(Action::Measure, now);
         }
@@ -1199,7 +1428,7 @@ impl Win {
                     ui.scope(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         // Scroll both ways so a licence line is never cut short.
-                        egui::ScrollArea::both().id_salt("about-notices-text").max_height(320.0).auto_shrink([false, true]).show_rows(ui, row_h, lines.len(), |ui, range| {
+                        zikaron_ui::scroll::nested_rows(ui, egui::ScrollArea::both().id_salt("about-notices-text").max_height(320.0).auto_shrink([false, true]), row_h, lines.len(), |ui, range| {
                             for l in &lines[range] {
                                 ui.add(egui::Label::new(egui::RichText::new(*l).font(Type::MonoSmall.font()).color(c(C::Ink2)).line_height(Some(row_h))).wrap_mode(egui::TextWrapMode::Extend));
                             }
@@ -1372,4 +1601,136 @@ fn net_cells(ui: &mut egui::Ui, d: &mut Draft, fresh: bool) {
     field(ui, t(Key::SetRegistry), None, |ui| input::mono(ui, &mut d.registry, ""));
     field(ui, t(Key::BasisFrom), None, |ui| input::mono(ui, &mut d.from, ""));
     field(ui, t(Key::SetNodes), None, |ui| input::area(ui, &mut d.nodes, 2));
+}
+
+/// The validity's three cells on the "write alone" sheet, in order: the unit's word, the most the cell takes,
+/// and the unit in seconds. Together they run from a minute to a year (`machine::LASTS_MIN`, `LASTS_MAX`).
+const CLI_SPAN: [(Key, u64, u64); 3] = [(Key::CliLastsDays, 365, 86_400), (Key::CliLastsHours, 23, 3_600), (Key::CliLastsMinutes, 59, 60)];
+/// One cell's width, the gap between a unit and the next cell, and the room above and below the rule.
+pub(super) const CLI_CELL_W: f32 = 64.0;
+const CLI_CELL_GAP: f32 = 20.0;
+const CLI_RULE_GAP: f32 = 18.0;
+
+/// The validity as typed on the "write alone" sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Span {
+    /// Nothing typed yet.
+    Empty,
+    /// These cells (days, hours, minutes) are past their most.
+    Over([bool; 3]),
+    /// Every cell zero.
+    Zero,
+    /// Longer than a year.
+    PastYear,
+    /// A validity that may be chosen (`machine::Lasts::ok`).
+    Lasts(crate::machine::Lasts),
+}
+
+/// The validity as typed: the three cells (an empty cell is zero), or never when the switch is on (the cells are
+/// then not read).
+fn cli_span(cells: &[String; 3], never: bool) -> Span {
+    use crate::machine::{Lasts, LASTS_MAX};
+    if never {
+        return Span::Lasts(Lasts::Never);
+    }
+    if cells.iter().all(|x| x.is_empty()) {
+        return Span::Empty;
+    }
+    let n: [Option<u64>; 3] = std::array::from_fn(|i| if cells[i].is_empty() { Some(0) } else { cells[i].parse().ok() });
+    let over: [bool; 3] = std::array::from_fn(|i| n[i].is_none_or(|v| v > CLI_SPAN[i].1));
+    if over.contains(&true) {
+        return Span::Over(over);
+    }
+    match (0..3).map(|i| n[i].unwrap_or(0) * CLI_SPAN[i].2).sum::<u64>() {
+        0 => Span::Zero,
+        s if s > LASTS_MAX => Span::PastYear,
+        s => Span::Lasts(Lasts::Secs(s)),
+    }
+}
+
+/// One cell as typed, kept to digits without leading zeros.
+fn cli_cell(typed: &str) -> String {
+    let digits: String = typed.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    match digits.trim_start_matches('0') {
+        "" if digits.is_empty() => String::new(),
+        "" => "0".to_string(),
+        rest => rest.to_string(),
+    }
+}
+
+/// The line under the switch: when a validity expires from `now`, or why it cannot be chosen (and whether that
+/// is a refusal, said in red); empty while nothing is typed or it never expires.
+fn cli_span_said(span: Span, now: u64) -> (String, bool) {
+    use crate::machine::Lasts;
+    match span {
+        Span::Empty | Span::Lasts(Lasts::Never) => (String::new(), false),
+        Span::Over(over) => {
+            let each: Vec<String> = CLI_SPAN.iter().zip(over).filter(|(_, o)| *o).map(|((unit, most, _), _)| crate::lang::filln(Key::CliLastsAtMost, &[t(*unit), &most.to_string()])).collect();
+            (each.join(t(Key::ListJoin)), true)
+        }
+        Span::Zero => (t(Key::CliLastsZero).to_string(), true),
+        Span::PastYear => (t(Key::CliLastsPastYear).to_string(), true),
+        Span::Lasts(Lasts::Secs(s)) => (cli_expiry_said(Some(now + s)), false),
+    }
+}
+
+/// When the command line's credential expires, said for people (`None`: never).
+pub(super) fn cli_expiry_said(expires: Option<u64>) -> String {
+    match expires {
+        Some(at) => fill1(Key::CliAloneUntil, &crate::when::when(at)),
+        None => t(Key::CliLastsNever).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod cli_lasts_tests {
+    use super::*;
+
+    fn cells(d: &str, h: &str, m: &str) -> [String; 3] {
+        [d.to_string(), h.to_string(), m.to_string()]
+    }
+
+    /// Days, hours and minutes add up (an empty cell is zero) to a validity from a minute to a year; a cell past
+    /// its most, all zero or past a year is no validity; never, with the switch on, whatever the cells hold.
+    #[test]
+    fn a_validity_is_three_cells_within_a_minute_and_a_year_or_never() {
+        use crate::machine::Lasts;
+        assert_eq!(cli_span(&cells("", "", ""), false), Span::Empty);
+        assert_eq!(cli_span(&cells("", "", "1"), false), Span::Lasts(Lasts::Secs(60)));
+        assert_eq!(cli_span(&cells("1", "2", "3"), false), Span::Lasts(Lasts::Secs(86_400 + 7_200 + 180)));
+        assert_eq!(cli_span(&cells("365", "", ""), false), Span::Lasts(Lasts::Secs(365 * 86_400)));
+        assert_eq!(cli_span(&cells("365", "", "1"), false), Span::PastYear);
+        assert_eq!(cli_span(&cells("0", "0", "0"), false), Span::Zero);
+        assert_eq!(cli_span(&cells("366", "24", "59"), false), Span::Over([true, true, false]));
+        assert_eq!(cli_span(&cells("", "", "99999999999999999999999"), false), Span::Over([false, false, true]));
+        assert_eq!(cli_span(&cells("400", "x", ""), true), Span::Lasts(Lasts::Never));
+        for s in [cli_span(&cells("1", "", ""), false), cli_span(&cells("", "", ""), true)] {
+            if let Span::Lasts(l) = s {
+                assert!(l.ok());
+            }
+        }
+    }
+
+    /// A cell keeps digits only, without leading zeros; a typed zero stays one zero.
+    #[test]
+    fn a_cell_keeps_its_digits() {
+        assert_eq!(cli_cell("0012"), "12");
+        assert_eq!(cli_cell("1a2"), "12");
+        assert_eq!(cli_cell("000"), "0");
+        assert_eq!(cli_cell("x"), "");
+    }
+
+    /// The line under the switch: the expiry from now for a validity, each cell past its most by name, zero and
+    /// past a year in red; nothing while empty or never.
+    #[test]
+    fn the_line_under_the_switch_says_the_expiry_or_why_not() {
+        use crate::machine::Lasts;
+        assert_eq!(cli_span_said(Span::Lasts(Lasts::Secs(60)), 1_000), (cli_expiry_said(Some(1_060)), false));
+        assert_eq!(cli_span_said(Span::Zero, 0), (t(Key::CliLastsZero).to_string(), true));
+        assert_eq!(cli_span_said(Span::PastYear, 0), (t(Key::CliLastsPastYear).to_string(), true));
+        let over = cli_span_said(Span::Over([true, false, true]), 0);
+        assert!(over.1 && over.0.contains("365") && over.0.contains("59") && !over.0.contains("23"), "{over:?}");
+        assert_eq!(cli_span_said(Span::Empty, 0), (String::new(), false));
+        assert_eq!(cli_span_said(Span::Lasts(Lasts::Never), 0), (String::new(), false));
+    }
 }

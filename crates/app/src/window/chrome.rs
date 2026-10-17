@@ -2,178 +2,54 @@
 //! entrance, the full-window layers (the first-run wizard and the passcode gate), the sheets above them, the
 //! whole-window drop, and the keyboard.
 //!
-//! Every destination comes from the `nav` table and every button goes through `action::apply`; nothing here
-//! decides anything about the ledger.
+//! No page is named here: histories, the rail's list and the page area are the shell's own
+//! (`zikaron_ui::nav`), and every page, place and route comes from this product's table (`Pages`, given in
+//! `pages`). Every button goes through `action::apply`; nothing here decides anything about the ledger.
 
 use super::*;
+use zikaron_ui::nav::{self as shell_nav, Pages};
+
+/// This product's place and route, as the shell knows them (through its table).
+type P = <Win as Pages>::Place;
+type R = <Win as Pages>::Route;
 
 impl Win {
     // ─── History ───
 
     /// The current view's history (a view seen for the first time stands on its own page).
-    pub(super) fn hist(&mut self) -> &History {
-        let stack = self.ux.stack;
-        let root = self.root_of(stack);
-        self.ux.hist.entry(stack).or_insert_with(|| History::at(root))
-    }
-
-    fn hist_mut(&mut self) -> &mut History {
-        let stack = self.ux.stack;
-        let root = self.root_of(stack);
-        self.ux.hist.entry(stack).or_insert_with(|| History::at(root))
+    pub(super) fn hist(&mut self) -> &zikaron_ui::nav::History<R> {
+        shell_nav::hist(self)
     }
 
     /// The page on screen.
-    pub(super) fn route(&mut self) -> Route {
-        self.hist().cur.clone()
-    }
-
-    /// A view's own page when it has no history yet.
-    fn root_of(&self, stack: Stack) -> Place {
-        match stack {
-            Stack::Home => Place::Home,
-            Stack::Settings => Place::SettingsHome,
-            Stack::View(v) => crate::nav::rail(self.shell.settings.role)
-                .iter()
-                .flat_map(|g| g.items.iter())
-                .find_map(|i| match i.place {
-                    Place::View(x, t) if x == v => Some(Place::View(x, t)),
-                    _ => None,
-                })
-                .unwrap_or(Place::View(v, 0)),
-        }
-    }
-
-    /// The page changed: set how it enters, restart the entrance animation, sync the shell's page (tests and the
-    /// trace channel read it), and drop what belonged to the previous page.
-    fn entered(&mut self, how: motion::Entry, now: f64) {
-        self.ux.entry = how;
-        self.ux.entry_key = self.ux.entry_key.wrapping_add(1);
-        self.ux.scroll_y = 0.0;
-        self.ux.u3.drop_armed = None;
-        let route = self.route();
-        let bottom = self.hist().bottom().clone();
-        if let Route::Root(p) = &bottom {
-            self.ux.place = Some(*p);
-        }
-        let page = route_page(&route, self.ux.place.unwrap_or(Place::Home), self.shell.settings.role);
-        if let Some(p) = page {
-            if self.shell.page != p {
-                self.auto(Action::Show(p), now);
-            }
-        }
-        // A detail page reads its entry's bytes once, off the frame (the action layer reads the disk).
-        match &route {
-            Route::Work(id) | Route::Entry(id) | Route::Grant(id) | Route::Pending(id) => {
-                if self.opened.as_ref().map(|d| !d.id.eq_ignore_ascii_case(id)).unwrap_or(true) {
-                    self.auto(Action::OpenEntry { id: id.clone() }, now);
-                }
-            }
-            _ => {}
-        }
+    pub(super) fn route(&mut self) -> R {
+        shell_nav::route(self)
     }
 
     /// Go into a page of the current view.
-    pub(super) fn push(&mut self, r: Route, now: f64) {
-        crate::nav::History::push(self.hist_mut(), r);
-        self.entered(motion::Entry::Push, now);
+    pub(super) fn push(&mut self, r: R, now: f64) {
+        shell_nav::push(self, r, now);
     }
 
     /// Back one page in the current view.
     pub(super) fn back(&mut self, now: f64) {
-        if self.hist_mut().back() {
-            self.entered(motion::Entry::Pop, now);
-        }
+        shell_nav::back(self, now);
     }
 
     /// Forward one page in the current view.
     pub(super) fn fwd(&mut self, now: f64) {
-        if self.hist_mut().fwd() {
-            self.entered(motion::Entry::Push, now);
-        }
+        shell_nav::fwd(self, now);
     }
 
     /// A tab of the view's own page (the segmented control in the toolbar): the page is replaced in place and
     /// fades.
-    pub(super) fn set_tab(&mut self, place: Place, now: f64) {
-        let h = self.hist_mut();
-        h.cur = Route::Root(place);
-        h.back.clear();
-        h.fwd.clear();
-        self.entered(motion::Entry::Fade, now);
-    }
-
-    /// Land on a place with a fresh history (links on pages, gaps, tests): its view becomes current and
-    /// shows that place, with the view's own page behind it when the place is a pushed page.
-    pub(super) fn go(&mut self, place: Place, now: f64) {
-        if let Place::Page(p) = place {
-            self.arrive(p);
-        }
-        let role = self.shell.settings.role;
-        let (stack, h) = crate::nav::history_of(place, role);
-        let same = self.ux.stack == stack && self.ux.hist.get(&stack) == Some(&h);
-        self.ux.stack = stack;
-        self.ux.hist.insert(stack, h);
-        if !same {
-            self.entered(motion::Entry::Root, now);
-        }
+    pub(super) fn set_tab(&mut self, place: P, now: f64) {
+        shell_nav::set_tab(self, place, now);
     }
 
     /// A rail item: the same view goes back to its own page; another view shows where that view was left.
-    fn rail_to(&mut self, place: Place, now: f64) {
-        let stack = crate::nav::stack_of(place);
-        if self.ux.stack == stack {
-            let root = self.root_of(stack);
-            let h = self.hist_mut();
-            if h.has_history() || !h.cur.is_root() {
-                h.root(root);
-                self.entered(motion::Entry::Pop, now);
-            }
-            return;
-        }
-        self.ux.stack = stack;
-        let root = self.root_of(stack);
-        self.ux.hist.entry(stack).or_insert_with(|| History::at(root));
-        self.entered(motion::Entry::Root, now);
-    }
-
-    /// The intent of pages folded into a parent item. Exhaustive: each new `Page` makes the compiler ask
-    /// whether it has an intent here.
-    pub(super) fn arrive(&mut self, p: Page) {
-        match p {
-            Page::Audit => self.ux.u3.audit_open = true,
-            Page::Adopt => self.u3_form_open(U3Form::Adopt),
-            Page::Succeed => self.u3_form_open(U3Form::Succeed),
-            Page::Upstreams => self.ux.u4.vault_by_issuer = true,
-            Page::FirstRun => {
-                let step = self.progress().first_open().unwrap_or(crate::nav::Step::Pin);
-                self.wizard_open(step);
-            }
-            Page::Ledger
-            | Page::Anchoring
-            | Page::Queue
-            | Page::Grant
-            | Page::Grants
-            | Page::Revoke
-            | Page::FirstWindow
-            | Page::Kit
-            | Page::Depth
-            | Page::Reader
-            | Page::Check
-            | Page::Watch
-            | Page::Diligence
-            | Page::Verifier
-            | Page::Delivery
-            | Page::Vault
-            | Page::Sentinel
-            | Page::Relicense
-            | Page::Badge
-            | Page::Identity
-            | Page::Archive
-            | Page::Mirror
-            | Page::Skeleton
-            | Page::About => {}
-        }
+    fn rail_to(&mut self, place: P, now: f64) {
+        shell_nav::rail_to(self, place, now);
     }
 
     /// Whether the rail is on screen (not under the gate or the first-run wizard).
@@ -186,31 +62,21 @@ impl Win {
     /// One frame of the shell: rail, toolbar and page; the wizard and the gate over them; sheets over all.
     pub(super) fn chrome(&mut self, ctx: &egui::Context, now: f64) {
         self.ux.now = now;
-        if self.ux.place.is_none() {
-            let start = self.ux.hist.get(&self.ux.stack).map(|h| h.bottom().clone());
-            match start {
-                Some(Route::Root(p)) => self.ux.place = Some(p),
-                _ => {
-                    let place = Place::Page(self.shell.page);
-                    let (stack, h) = crate::nav::history_of(place, self.shell.settings.role);
-                    self.ux.stack = stack;
-                    self.ux.hist.insert(stack, h);
+        if self.ux.nav.place.is_none() {
+            let start = self.ux.nav.hist.get(&self.ux.nav.stack).map(|h| h.bottom().clone());
+            match start.and_then(|r| self.root_place(&r)) {
+                Some(p) => self.ux.nav.place = Some(p),
+                None => {
+                    let h = self.history_of(self.start_place());
+                    self.ux.nav.land(h);
                     let bottom = self.hist().bottom().clone();
-                    if let Route::Root(p) = bottom {
-                        self.ux.place = Some(p);
+                    if let Some(p) = self.root_place(&bottom) {
+                        self.ux.nav.place = Some(p);
                     }
                 }
             }
         }
-        // After switching seat, a view that seat lacks lands on home.
-        if let Some(p) = self.ux.place {
-            let settled = crate::nav::settle(p, self.shell.settings.role);
-            if settled != p && matches!(settled, Place::Home) {
-                self.ux.hist.clear();
-                self.ux.stack = Stack::Home;
-                self.ux.place = Some(Place::Home);
-            }
-        }
+        self.settle_seat();
         // Apply the language chosen in settings once at startup.
         if !self.ux.lang_applied {
             self.ux.lang_applied = true;
@@ -221,19 +87,19 @@ impl Win {
             }
             crate::when::set(self.shell.settings.zone.unwrap_or(crate::when::Zone::Utc));
         }
+        self.follow_page(now);
         // Whether the wizard opens by itself is asked once, and only with the gate down: while the vault is
         // locked the key cannot be read, and a locked machine would read as one without a key.
         let gate = self.shell.vault.gate_up();
         if !self.ux.wizard_asked && !gate {
             self.ux.wizard_asked = true;
-            let pr = self.progress();
-            if self.ux.wizard_forced || pr.wants_wizard(self.shell.settings.role) {
-                self.wizard_open(pr.first_open().unwrap_or(crate::nav::Step::Pin));
-            }
+            self.wizard_by_itself();
         }
         if self.rail_shown() {
             self.chrome_rail(ctx, now);
         }
+        // A page that takes drops in its own zones says so as it draws (`takes_drops`).
+        self.ux.page_drops = false;
         self.chrome_page(ctx, now);
         // The full-window layers: the first-run wizard, and the passcode gate above it.
         if self.ux.wizard.is_some() && !gate {
@@ -248,10 +114,8 @@ impl Win {
     /// The side rail.
     fn chrome_rail(&mut self, ctx: &egui::Context, now: f64) {
         let role = self.shell.settings.role;
-        let place = self.ux.place.unwrap_or(Place::Home);
-        let lit = if self.ux.stack == Stack::Settings { None } else { crate::nav::lit(place, role) };
-        let alerts = self.alert_count();
-        let mut picked: Option<Place> = None;
+        let in_settings = self.ux.nav.stack == self.stack_of(self.settings_place());
+        let mut picked: Option<P> = None;
         let mut lock = false;
         let mut switch = false;
         let mut settings = false;
@@ -286,33 +150,14 @@ impl Win {
                 }
                 let foot_h = tk::RAIL_ITEM_H * if pin_set { 2.0 } else { 1.0 } + 2.0 + 13.0 + 32.0;
                 let list_h = (ui.available_height() - foot_h).max(tk::RAIL_ITEM_H);
-                let groups = crate::nav::rail(role);
-                let mut lines: Vec<rail::Line> = Vec::new();
-                let mut places: Vec<Place> = Vec::new();
-                let mut lit_i = None;
-                for (gi, g) in groups.iter().enumerate() {
-                    lines.push(rail::Line::Group(if gi == 0 { None } else { g.title.map(t) }));
-                    for item in g.items {
-                        if lit.map(|l| same_item(l, item.place)).unwrap_or(false) {
-                            lit_i = Some(places.len());
-                        }
-                        let count = if matches!(item.place, Place::View(crate::nav::View::Alerts, _)) { alerts } else { 0 };
-                        lines.push(rail::Line::Item { glyph: item.glyph, label: t(item.name), count });
-                        places.push(item.place);
-                    }
-                }
-                egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt("rail-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                    if let Some(i) = rail::nav(ui, &lines, lit_i) {
-                        picked = places.get(i).copied();
-                    }
-                });
+                picked = shell_nav::rail_list(ui, &*self, list_h);
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     status = rail::status(ui, &words, voice, progress, sync, t(Key::NavRefresh));
                     if pin_set && rail::foot_item(ui, Glyph::Lock, t(Key::NavLock), false, "\u{2318}L").clicked() {
                         lock = true;
                     }
-                    if rail::foot_item(ui, Glyph::Gear, t(Key::NavSettings), self.ux.stack == Stack::Settings, "").clicked() {
+                    if rail::foot_item(ui, Glyph::Gear, t(Key::NavSettings), in_settings, "").clicked() {
                         settings = true;
                     }
                     rail::foot_rule(ui);
@@ -327,10 +172,7 @@ impl Win {
         }
         if switch {
             self.act(Action::SwitchRole, now);
-            self.ux.hist.clear();
-            self.ux.stack = Stack::Home;
-            self.ux.place = Some(Place::Home);
-            self.entered(motion::Entry::Root, now);
+            shell_nav::home(self, motion::Entry::Root, now);
         }
         if status.sync_clicked {
             self.refresh_chain(now);
@@ -341,7 +183,7 @@ impl Win {
             }
         }
         if settings {
-            self.rail_to(Place::SettingsHome, now);
+            self.rail_to(self.settings_place(), now);
         }
         if let Some(p) = picked {
             self.rail_to(p, now);
@@ -397,8 +239,8 @@ impl Win {
             items.push(menu::Item::Who(menu::Who { name: names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
         }
         items.push(menu::Item::Sep);
-        items.push(menu::row(t(Key::IdDoNew)));
-        items.push(menu::row(t(Key::IdDoImport)));
+        items.push(menu::row(t(Key::IdNewTitle)));
+        items.push(menu::row(t(Key::IdImportTitle)));
         items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::SetKeys)));
         if let Some(i) = menu::show(ctx, id, anchor, true, 236.0, &items) {
@@ -407,10 +249,7 @@ impl Win {
                 let r = &rows[i - 1];
                 if current.as_deref() != Some(r.id.as_str()) {
                     self.act(Action::SwitchIdentity { id: r.id.clone() }, now);
-                    self.ux.hist.clear();
-                    self.ux.stack = Stack::Home;
-                    self.ux.place = Some(Place::Home);
-                    self.entered(motion::Entry::Fade, now);
+                    shell_nav::home(self, motion::Entry::Fade, now);
                 }
             } else if i == n + 2 {
                 self.id_layer_open(IdModal::New);
@@ -418,7 +257,7 @@ impl Win {
             } else if i == n + 3 {
                 self.id_layer_open(IdModal::Import);
             } else if i == n + 5 {
-                self.go(Place::Settings(Section::Keys), now);
+                self.go(self.keys_place(), now);
             }
         }
     }
@@ -449,7 +288,8 @@ impl Win {
             Some(at) => {
                 let ago = (self.ux.now - at).max(0.0) as u64;
                 let zone = if self.shell.settings.zone.unwrap_or(crate::when::Zone::Utc) == crate::when::Zone::Utc { " UTC" } else { "" };
-                fill1(Key::NavReadAt, &format!("{}{zone}", hm_zone(wall_secs().saturating_sub(ago))))
+                let wall = wall_secs();
+                fill1(Key::NavReadAt, &format!("{}{zone}", crate::when::clock_or_day(wall.saturating_sub(ago), wall)))
             }
             None => t(Key::NavReadNever).to_string(),
         };
@@ -464,7 +304,7 @@ impl Win {
     /// Whether the person left the page a task was started on.
     pub(super) fn task_away(&self, k: crate::task::Kind) -> bool {
         match self.ux.origin.iter().find(|(x, _, _)| *x == k) {
-            Some((_, stack, h)) => self.ux.stack != *stack || self.ux.hist.get(stack).map(|now| now.cur != h.cur).unwrap_or(true),
+            Some((_, stack, h)) => self.ux.nav.stack != *stack || self.ux.nav.hist.get(stack).map(|now| now.cur != h.cur).unwrap_or(true),
             None => false,
         }
     }
@@ -472,9 +312,8 @@ impl Win {
     /// Go back to where a task was started ("view" on its toast, the rail's task line).
     pub(super) fn view_task(&mut self, tag: u64, now: f64) {
         let Some((_, stack, h)) = self.ux.origin.iter().find(|(x, _, _)| *x as u64 == tag).cloned() else { return };
-        self.ux.stack = stack;
-        self.ux.hist.insert(stack, h);
-        self.entered(motion::Entry::Root, now);
+        self.ux.nav.land((stack, h));
+        shell_nav::entered(self, motion::Entry::Root, now);
     }
 
     /// Refresh chain state (the sync button): the chain query, and the self-audit or the vault re-check for the
@@ -555,7 +394,7 @@ impl Win {
         }
     }
 
-    /// The page area: toolbar and body.
+    /// The page area: toolbar and body (the shell's, over this product's pages).
     fn chrome_page(&mut self, ctx: &egui::Context, now: f64) {
         let covered = !self.rail_shown();
         egui::CentralPanel::default().frame(rail::page_frame()).show(ctx, |ui| {
@@ -565,162 +404,8 @@ impl Win {
             let full = ui.max_rect();
             let grip = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 10.0));
             grip_acts(ctx, &ui.interact(grip, ui.id().with("page-grip"), egui::Sense::click_and_drag()));
-            let route = self.route();
-            let detail = !route.is_root() && matches!(route, Route::Work(_) | Route::Pending(_) | Route::Grant(_) | Route::Entry(_) | Route::Other(_) | Route::Held(_));
-            zikaron_ui::probe::route(ctx, &route.name());
-            if detail {
-                zikaron_ui::probe::inner(ctx);
-            }
-            let title = self.title_of(&route);
-            if detail {
-                zikaron_ui::probe::inner_head(ctx, &title);
-            }
-            let (back, fwd) = {
-                let h = self.hist();
-                (!h.back.is_empty(), !h.fwd.is_empty())
-            };
-            zikaron_ui::probe::history(ctx, back, fwd);
-            let bar = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), tk::TOOLBAR_H));
-            ui.allocate_rect(bar, egui::Sense::hover());
-            // A detail page carries its large title in the page; the toolbar's title shows only once that has
-            // scrolled away.
-            let title_alpha = if detail { if self.ux.scroll_y > 44.0 { 1.0 } else { 0.0 } } else { 1.0 };
-            let (nav, _) = zikaron_ui::toolbar::toolbar(ui, bar, &title, title_alpha, (back, fwd), self.ux.scroll_y > 4.0, (t(Key::NavBack), t(Key::NavFwd)), |ui| {
-                if route.is_root() {
-                    zikaron_ui::probe::head_keys(ui.ctx());
-                    self.toolbar_acts(ui, &route, now);
-                }
-            });
-            if nav.back {
-                self.back(now);
-            }
-            if nav.fwd {
-                self.fwd(now);
-            }
-            // The body scrolls; it enters by how the page changed.
-            let body_rect = egui::Rect::from_min_max(egui::pos2(full.left(), bar.bottom()), full.max);
-            let mut body = ui.new_child(egui::UiBuilder::new().max_rect(body_rect).layout(egui::Layout::top_down(egui::Align::Min)));
-            body.set_clip_rect(body_rect);
-            let key = self.ux.entry_key;
-            ctx.data_mut(|d| d.insert_temp(egui::Id::new(ENTRY_KEY), key));
-            let how = self.ux.entry;
-            let p = motion::enter(ctx, egui::Id::new("zikaron-page-entry"), key, 0.0, how.dur(), motion::Curve::Ease);
-            let (off, alpha) = how.at(p);
-            let route_salt = motion::key_of(&(self.ux.stack, route.name(), key));
-            let shown = egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt(("page", route_salt)).auto_shrink([false, false]).show(&mut body, |ui| {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin { left: tk::PAGE_PAD as i8, right: tk::PAGE_PAD as i8, top: tk::S3 as i8, bottom: tk::PAGE_PAD as i8 })
-                    .show(ui, |ui| {
-                        width::body(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = tk::CARD_GAP;
-                            motion::shifted(ui, off, alpha, |ui| {
-                                ui.spacing_mut().item_spacing.y = tk::CARD_GAP;
-                                self.banner(ui, now);
-                                self.page_body(ui, &route, now);
-                            });
-                        });
-                    });
-            });
-            self.ux.scroll_y = shown.state.offset.y;
+            shell_nav::page_area(ui, self, (t(Key::NavBack), t(Key::NavFwd)), now);
         });
-    }
-
-    /// The page for a route.
-    fn page_body(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
-        use crate::nav::{tab as T, View};
-        match route {
-            Route::Root(Place::Home) => self.page_home(ui, now),
-            Route::Root(Place::View(View::Works, tab)) => {
-                if *tab == T::WORKS_PENDING {
-                    self.works_pending(ui, now)
-                } else {
-                    self.works(ui, now)
-                }
-            }
-            Route::Root(Place::View(View::Grants, _)) => self.grants_list(ui, now),
-            Route::Root(Place::View(View::Verify, tab)) => self.verify_page(ui, *tab, now),
-            Route::Root(Place::View(View::Log, _)) => self.ledger_page(ui, now),
-            Route::Root(Place::View(View::Alerts, _)) => self.alerts_page(ui, now),
-            Route::Root(Place::View(View::MyGrants, _)) => self.vault_page(ui, now),
-            Route::Root(Place::SettingsHome) | Route::Root(Place::Settings(_)) => self.settings_home(ui, now),
-            Route::Section(s) => self.settings_section(ui, *s, now),
-            Route::Root(Place::Page(_)) => self.page_home(ui, now),
-            Route::Work(id) => self.work_detail(ui, id, now),
-            Route::Pending(id) => self.pending_detail(ui, id, now),
-            Route::Kit => self.kit_page(ui, now),
-            Route::NewGrant => self.grant_form_page(ui, now),
-            Route::Grant(id) | Route::Entry(id) => self.entry_detail(ui, id, now),
-            Route::Other(seq) => self.other_entry(ui, *seq, now),
-            Route::Held(id) => self.held_detail(ui, id, now),
-            Route::Relicense => self.relicense_page(ui, now),
-        }
-    }
-
-    /// The toolbar title of a route.
-    pub(super) fn title_of(&self, route: &Route) -> String {
-        use crate::nav::View;
-        let rows: &[crate::ledgerx::Row] = self.shell.rows.as_ref().map(|(r, _)| r.as_slice()).unwrap_or(&[]);
-        let entry_title = |id: &str| rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{} \u{b7} {}", r.seq, t(user_kind_key(r.kind))));
-        match route {
-            Route::Root(Place::Home) | Route::Root(Place::Page(_)) => t(Key::NavHome).to_string(),
-            Route::Root(Place::SettingsHome) | Route::Root(Place::Settings(_)) => t(Key::NavSettings).to_string(),
-            Route::Root(Place::View(v, _)) => t(match v {
-                View::Works => Key::NavWorksView,
-                View::Grants => Key::KindGrant,
-                View::Verify => Key::NavVerifyView,
-                View::Log => Key::NavLogView,
-                View::Alerts => Key::NavAlertsView,
-                View::MyGrants => Key::NavMyGrantsView,
-            })
-            .to_string(),
-            Route::Section(s) => t(s.key()).to_string(),
-            Route::Work(id) => rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(human_summary).unwrap_or_default(),
-            Route::Pending(id) | Route::Entry(id) => entry_title(id).unwrap_or_default(),
-            Route::Grant(id) => rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{} \u{b7} {}", r.seq, t(Key::KindGrant))).unwrap_or_default(),
-            Route::Other(seq) => self.other_title(*seq),
-            Route::Held(id) => self.held_title(id),
-            Route::Kit => t(Key::U3UseForKit).to_string(),
-            Route::NewGrant => t(Key::V2NewGrant).to_string(),
-            Route::Relicense => t(Key::U4RelicenseTitle).to_string(),
-        }
-    }
-
-    /// The buttons at the right of a view's own page's toolbar.
-    fn toolbar_acts(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
-        use crate::nav::{tab as T, View};
-        let Route::Root(place) = route else { return };
-        if matches!(self.shell.unfetched, Some(crate::restorex::State::NewerElsewhere { .. })) {
-            mark::pill(ui, t(Key::NoteReader), PillTone::Warn);
-        }
-        match place {
-            Place::View(View::Works, tab) => {
-                self.ensure_rows(now);
-                let cells = [seg::Cell::from(t(Key::U3FilterAll)), seg::Cell { text: t(Key::ItemUnanchored), count: Some(self.shell.queue.len()) }];
-                if let Some(i) = seg::seg(ui, "works-tabs", &cells, usize::from(*tab == T::WORKS_PENDING)) {
-                    self.set_tab(Place::View(View::Works, if i == 1 { T::WORKS_PENDING } else { T::WORKS_ALL }), now);
-                }
-            }
-            Place::View(View::Grants, _) => {
-                self.ensure_grants(now);
-                let (_s, r) = page::Page::new().primary(ui, t(Key::V2NewGrant));
-                if r.clicked() {
-                    self.grant_form_fresh();
-                    self.push(Route::NewGrant, now);
-                }
-            }
-            Place::View(View::Verify, tab) => {
-                let role = self.shell.settings.role;
-                let list = crate::nav::tabs(View::Verify, role);
-                let labels: Vec<seg::Cell> = list.iter().map(|x| seg::Cell::from(t(tab_key(View::Verify, *x)))).collect();
-                let cur = list.iter().position(|x| x == tab).unwrap_or(0);
-                if let Some(i) = seg::seg(ui, "verify-tabs", &labels, cur) {
-                    self.set_tab(Place::View(View::Verify, list[i]), now);
-                }
-            }
-            Place::View(View::Log, _) => self.ledger_acts(ui, now),
-            Place::View(View::MyGrants, _) => self.vault_acts(ui, now),
-            _ => {}
-        }
     }
 
     // ─── Keyboard, drops ───
@@ -739,12 +424,12 @@ impl Win {
             self.fwd(now);
         }
         if pressed(egui::Key::Comma) {
-            self.rail_to(Place::SettingsHome, now);
+            self.rail_to(self.settings_place(), now);
         }
         if !self.shell.vault.absent() && pressed(egui::Key::L) {
             self.lock_now(now);
         }
-        let items: Vec<Place> = crate::nav::rail(self.shell.settings.role).iter().flat_map(|g| g.items.iter().map(|i| i.place)).collect();
+        let items: Vec<P> = self.rail().iter().flat_map(|g| g.items.iter().map(|i| i.place)).collect();
         let keys = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6];
         for (i, k) in keys.iter().enumerate() {
             if pressed(*k) {
@@ -755,10 +440,16 @@ impl Win {
         }
     }
 
-    /// Whether the page on screen takes dropped files in its own zones (the whole-window drop stands aside).
+    /// Whether the page on screen takes dropped files in its own zones (the whole-window drop stands aside): what
+    /// the page declared as it drew this frame ([`Win::takes_drops`]), never a list of pages kept here.
     fn page_takes_drops(&mut self) -> bool {
-        use crate::nav::{tab as T, View};
-        matches!(self.route(), Route::Kit | Route::NewGrant | Route::Relicense | Route::Root(Place::View(View::Verify, T::VERIFY_CHECK)))
+        self.ux.page_drops
+    }
+
+    /// Declared by a page while it draws: it takes dropped files in its own zones this frame, so the
+    /// whole-window drop stands aside.
+    pub(super) fn takes_drops(&mut self) {
+        self.ux.page_drops = true;
     }
 
     /// The whole-window drop: while a file is dragged over a page that takes drops as a whole, the veil covers
@@ -782,7 +473,7 @@ impl Win {
                 } else {
                     self.typed.vf_path = one.clone();
                     self.ux.u4.verify_autorun = true;
-                    self.go(Place::View(crate::nav::View::Verify, crate::nav::tab::VERIFY_WORK), now);
+                    self.go(self.record_check_place(), now);
                 }
             }
             _ => self.toasts.say(t(Key::U3OneAtATime), Tone::Bad, now),
@@ -793,37 +484,9 @@ impl Win {
 
 /// A block of a page that enters one after another (the stagger of lists and detail pages), keyed on the
 /// page's entrance.
-pub(super) fn stagger<R>(ui: &mut egui::Ui, i: usize, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let key = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new(ENTRY_KEY))).unwrap_or(0);
+pub(super) fn stagger<Out>(ui: &mut egui::Ui, i: usize, add: impl FnOnce(&mut egui::Ui) -> Out) -> Out {
+    let key = shell_nav::entry_key(ui.ctx());
     motion::stagger(ui, egui::Id::new(("zikaron-stagger", i)), key, i, add)
-}
-
-/// Where the page's entrance counter is kept for the frame (blocks stagger on it).
-const ENTRY_KEY: &str = "zikaron-entry-key";
-
-/// Which old page a route stands for (the shell records it: tests and the trace channel read it).
-fn route_page(route: &Route, root: Place, role: crate::roles::Role) -> Option<Page> {
-    use crate::nav::tab as T;
-    Some(match route {
-        Route::Kit => Page::Kit,
-        Route::NewGrant => Page::Grant,
-        Route::Relicense => Page::Relicense,
-        Route::Work(_) => Page::Anchoring,
-        Route::Pending(_) => Page::Queue,
-        Route::Grant(_) => Page::Grants,
-        Route::Entry(_) => Page::Ledger,
-        Route::Other(_) => match role {
-            crate::roles::Role::Author => Page::Reader,
-            crate::roles::Role::Grantee => Page::Diligence,
-        },
-        Route::Held(_) => Page::Vault,
-        Route::Section(_) | Route::Root(Place::SettingsHome) | Route::Root(Place::Settings(_)) | Route::Root(Place::Home) | Route::Root(Place::Page(_)) => return None,
-        Route::Root(Place::View(v, tab)) => {
-            let _ = root;
-            let _ = T::WORKS_ALL;
-            view_page(*v, *tab, role)
-        }
-    })
 }
 
 /// Tasks that run long enough to show on a button and on the rail.

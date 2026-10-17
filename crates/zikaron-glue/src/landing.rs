@@ -57,37 +57,13 @@ fn failed(subject: &Path, what: &str, at: &Path, e: &std::io::Error) -> Trouble 
     Trouble::Io(say(subject), format!("{what} {}: {e}", at.display()))
 }
 
-/// Temporary sibling tags: a single-file landing and a tree's staging area.
-const TAGS: [&str; 2] = ["landing", "staging"];
-
-/// Whether a name is one of this crate's temporary siblings (`.{base}.{tag}-{pid}-{sixteen hex}`), judged by
-/// the name alone; the inverse of [`beside`].
-pub fn is_beside_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix('.') else { return false };
-    let Some((base, tail)) = rest.rsplit_once('.') else { return false };
-    let mut parts = tail.splitn(3, '-');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(tag), Some(pid), Some(n)) => {
-            !base.is_empty()
-                && TAGS.contains(&tag)
-                && !pid.is_empty()
-                && pid.bytes().all(|b| b.is_ascii_digit())
-                && n.len() == 16
-                && n.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        }
-        _ => false,
-    }
-}
-
-/// A temporary sibling path in the target's parent (a move is atomic only within one file system). The name
-/// carries the process id and a random part, so two processes landing on one path do not collide.
-fn beside(out: &Path, tag: &str) -> Result<PathBuf, Trouble> {
+/// The temporary sibling of `out`, named in the product's single temporary-file form
+/// (`zikaron_store::layout::tmp_file_name`: a fixed prefix and sixteen random hex digits), so any reader of a
+/// directory recognises a leftover one with `zikaron_store::layout::tmp_shaped`, whichever write left it.
+fn beside(out: &Path) -> Result<PathBuf, Trouble> {
     let parent = out.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-    let base = out
-        .file_name()
-        .map(|x| x.to_string_lossy().into_owned())
-        .unwrap_or_else(|| String::from("landing"));
-    Ok(parent.join(format!(".{base}.{tag}-{}-{}", std::process::id(), nonce().map_err(|e| failed(Path::new(zikaron_os::ENTROPY_SOURCE), "read", Path::new(zikaron_os::ENTROPY_SOURCE), &e))?)))
+    let nonce = nonce().map_err(|e| failed(Path::new(zikaron_os::ENTROPY_SOURCE), "read", Path::new(zikaron_os::ENTROPY_SOURCE), &e))?;
+    Ok(parent.join(zikaron_store::layout::tmp_file_name(&nonce)))
 }
 
 /// Sixteen random hex digits from the system entropy source. If it cannot be read the landing fails, naming
@@ -100,7 +76,7 @@ fn nonce() -> std::io::Result<String> {
 
 /// A temporary staging path beside the target (tree landings lay themselves out, so they need the name).
 pub fn staging_beside(out: &Path) -> Result<PathBuf, Trouble> {
-    beside(out, TAGS[1])
+    beside(out)
 }
 
 /// Write one file. An existing path is refused atomically (`hard_link`); a failed write leaves no truncated
@@ -129,7 +105,7 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
     if out.exists() {
         return Err(Trouble::Occupied(say(out)));
     }
-    let tmp = beside(out, TAGS[0])?;
+    let tmp = beside(out)?;
     let _ = std::fs::remove_file(&tmp);
     // Write in full and fsync: after the move the bytes must be on disk, not only in the page cache.
     let wrote = (|| -> std::io::Result<()> {
@@ -150,6 +126,46 @@ pub fn land_bytes_for(readers: Readers, out: &Path, bytes: &[u8]) -> Result<(), 
         Ok(_) => sync_parent(out),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Trouble::Occupied(say(out))),
         Err(e) => Err(failed(out, "land", out, &e)),
+    }
+}
+
+/// Why a streamed landing did not land: what filled the file refused, or the landing itself.
+#[derive(Debug)]
+pub enum Streamed<E> {
+    Fill(E),
+    Land(Trouble),
+}
+
+/// Write one file by streaming into it: `fill` writes the temporary sibling (whatever size), which is then fsynced
+/// and moved into place as [`land_bytes_for`] moves it. An existing path is refused before `fill` runs and again,
+/// atomically, at the move; `fill` refusing, or any step failing, leaves nothing at `out`.
+pub fn land_stream<E>(readers: Readers, out: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<(), E>) -> Result<(), Streamed<E>> {
+    if out.exists() {
+        return Err(Streamed::Land(Trouble::Occupied(say(out))));
+    }
+    let tmp = beside(out).map_err(Streamed::Land)?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = match create_for(readers, &tmp) {
+        Ok(f) => f,
+        Err(e) => return Err(Streamed::Land(failed(out, "write", &tmp, &e))),
+    };
+    if let Err(x) = fill(&mut f) {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Streamed::Fill(x));
+    }
+    if let Err(e) = f.sync_all() {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Streamed::Land(failed(out, "write", &tmp, &e)));
+    }
+    drop(f);
+    let linked = zikaron_os::land_new(&tmp, out);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(_) => sync_parent(out).map_err(Streamed::Land),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Streamed::Land(Trouble::Occupied(say(out)))),
+        Err(e) => Err(Streamed::Land(failed(out, "land", out, &e))),
     }
 }
 
@@ -179,6 +195,12 @@ pub fn land_tree(out: &Path, staged: &Path) -> Result<(), Trouble> {
 /// overwritten there and nobody reads it yet.
 pub fn put(path: &Path, bytes: &[u8]) -> Result<(), Trouble> {
     std::fs::write(path, bytes).map_err(|e| failed(path, "write", path, &e))
+}
+
+/// [`put`], streamed from `body`: a file of any size inside a staging area we just created.
+pub fn put_from(path: &Path, body: &mut dyn std::io::Read) -> Result<(), Trouble> {
+    let mut f = std::fs::File::create(path).map_err(|e| failed(path, "write", path, &e))?;
+    std::io::copy(body, &mut f).map(|_| ()).map_err(|e| failed(path, "write", path, &e))
 }
 
 /// Create a directory of our own.

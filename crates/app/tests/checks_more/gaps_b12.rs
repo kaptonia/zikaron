@@ -3,10 +3,8 @@
 //! The index names entries and held grants by their ids, so it lives in the machine directory sealed under the
 //! machine's key (`local`, kind `backup-index`), never in the clear. Forms, one test each: a backup writes it
 //! sealed and the count behind reads it; no index; an index that does not read (not sealed, truncated, altered)
-//! falls back to the older reading and is never overwritten; another backup's index; a plain index left by an
-//! older version is never read, never sealed in place, and is removed at the next backup (if its place is taken
-//! by something that cannot be removed, that backup is refused by name); while locked, the index is not
-//! guessed; the kind moves with the machine's files and is resealed under a new master key. Places are set
+//! falls back to the plain count and is never overwritten; another backup's index; while locked, the index is
+//! not guessed; the kind moves with the machine's files and is resealed under a new master key. Places are set
 //! before any vault or shell use (`vault_open`); each test runs alone in its own process
 //! ([`super::alone_in`]).
 
@@ -17,20 +15,20 @@ use std::path::{Path, PathBuf};
 
 const PW: &str = "zikaron-backup-probe";
 
-/// A shell on a fresh base, its anchoring key made.
+/// A shell on a fresh base (each home it lays is an identity's own: [`home`]).
 fn bench(name: &str) -> (app::shell::Shell, PathBuf) {
     vault_open();
     let base = std::env::temp_dir().join(format!("zk-b12-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let ctx = zikaron_ui::egui::Context::default();
-    let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    answers!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_));
+    let shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
     (shell, base)
 }
 
 /// A home under `base` with one entry of its own (the first entry is recorded on the spot).
 fn home(shell: &mut app::shell::Shell, base: &Path, name: &str) -> PathBuf {
     let dir = base.join(name);
+    super::seated_anew(shell, &dir);
     answers!(apply(shell, Action::OpenHome { root: dir.display().to_string() }), Applied::Homed { .. });
     let made = apply(shell, Action::Genesis { statement: format!("{name} genesis") });
     assert!(matches!(made, Applied::Genesised { .. }), "{made:?}");
@@ -96,7 +94,6 @@ fn a_backup_seals_its_index_and_says_no_id_in_the_clear() {
     }
     let plain = String::from_utf8(app::local::read(&at, Doc::BackupIndex).expect("opens").expect("there")).expect("text");
     assert!(ids.iter().all(|id| plain.contains(id.as_str())), "the index names what the backup holds: {plain}");
-    assert!(!app::home::machine_dir().expect("machine").join(app::backup::PLAIN_INDEX_FILE).exists(), "no plain index");
     // The kind moves with the machine's files (what a key change reseals).
     let found: Vec<_> = app::local::all_files().expect("files").into_iter().filter(|f| f.doc == Doc::BackupIndex).collect();
     assert_eq!(found.len(), 1);
@@ -170,30 +167,6 @@ fn another_backups_index_is_the_older_reading() {
     assert_eq!(behind(), Some(0), "another backup's index: the older reading");
     app::local::put(at.parent().expect("room"), app::backup::INDEX_FILE, Doc::BackupIndex, text.as_bytes()).expect("put back");
     assert_eq!(behind(), Some(1), "this backup's again");
-    drop(shell);
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// An older version's plain index (beside the machine settings, the same items in the clear) is never read,
-/// never sealed in place by the first unlock's pass, and is gone once the next backup's sealed index is written.
-#[test]
-fn an_older_plain_index_is_never_read_and_goes_at_the_next_backup() {
-    if super::alone_in(module_path!(), "an_older_plain_index_is_never_read_and_goes_at_the_next_backup") {
-        return;
-    }
-    let (shell, base) = two_readings_apart("plain");
-    let at = app::backup::index_path().expect("place");
-    let text = app::local::read(&at, Doc::BackupIndex).expect("opens").expect("there");
-    std::fs::remove_file(&at).expect("the sealed index removed");
-    let plain_at = app::home::machine_dir().expect("machine").join(app::backup::PLAIN_INDEX_FILE);
-    std::fs::write(&plain_at, &text).expect("a plain index as older versions wrote it");
-    assert_eq!(behind(), Some(0), "the plain index is not read");
-    assert_eq!(app::local::migrate_plain().map(|m| m.sealed).ok(), Some(0), "nothing sealed in place");
-    assert_eq!(std::fs::read(&plain_at).expect("still there"), text, "untouched");
-    assert!(!at.exists(), "no sealed index made of it");
-    app::backup::export(&base.join("out2"), PW, 1_800_000_100).expect("the next backup");
-    assert!(!plain_at.exists(), "the plain index goes");
-    assert!(app::local::is_sealed(&std::fs::read(&at).expect("the sealed index")));
     drop(shell);
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -291,31 +264,6 @@ fn the_app_cell_and_the_command_line_read_an_item_alike() {
         assert_eq!(zikaron_anchor::rpc::endpoint_spec(&spec), Err(zikaron_anchor::rpc::NotAnEndpoint::InnerSpace), "{spec:?}");
         assert_eq!(cell(&mut shell, &spec), None, "{spec:?}");
     }
-    drop(shell);
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// The plain index's name taken by something that cannot be removed (a folder with a file in it): the next
-/// backup is refused naming that place, and the record stays the earlier backup's; once moved aside, the next
-/// backup goes through and the record is its own. The refusal's code is the system's answer to removing a
-/// folder (macOS: not permitted; Linux: is a directory), so only the place is checked.
-#[test]
-fn a_plain_index_place_that_cannot_be_cleared_is_said_by_name() {
-    if super::alone_in(module_path!(), "a_plain_index_place_that_cannot_be_cleared_is_said_by_name") {
-        return;
-    }
-    let (mut shell, base) = bench("plain-stuck");
-    home(&mut shell, &base, "a");
-    app::backup::export(&base.join("out"), PW, 1_800_000_000).expect("a backup");
-    let plain_at = app::home::machine_dir().expect("machine").join(app::backup::PLAIN_INDEX_FILE);
-    std::fs::create_dir_all(&plain_at).expect("a folder under the plain index's name");
-    std::fs::write(plain_at.join("inside"), b"x").expect("a file in it");
-    let said = app::backup::export(&base.join("out2"), PW, 1_800_000_100).expect_err("refused");
-    assert!(said.tail().contains(app::backup::PLAIN_INDEX_FILE), "{said:?}");
-    assert_eq!(last().at, 1_800_000_000, "the record is the earlier backup's");
-    std::fs::remove_dir_all(&plain_at).expect("moved aside");
-    app::backup::export(&base.join("out3"), PW, 1_800_000_200).expect("the next backup");
-    assert_eq!(last().at, 1_800_000_200);
     drop(shell);
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -1,4 +1,4 @@
-//! The twenty-two verbs. Each does the same three steps: arrange arguments, call the public API below, render
+//! The twenty-five verbs. Each does the same three steps: arrange arguments, call the public API below, render
 //! the returned state on one line.
 //!
 //! The shell only requires the flags it needs itself (where the ledger is, whose key, where to write).
@@ -42,7 +42,7 @@ fn flags<'a>(base: &[&'a str], more: &[&'a str]) -> Vec<&'a str> {
 /// every verb's arguments by its row before the verb runs (the crate's one `close`), [`VERBS`] is this table's
 /// first column, and the `contract` verb prints it. `--key-file` is taken wherever `key` is
 /// (`args::STANDS_FOR`, read by `close`).
-const ACCEPTS: [(&str, &[&str], &[&str]); 22] = [
+const ACCEPTS: [(&str, &[&str], &[&str]); 25] = [
     ("keygen", &[], &[]),
     ("init", &[], &["ledger", "key", "statement", "home"]),
     ("history", &WRITE, &["content", "mark", "toolchain", "note", "file", "home"]),
@@ -53,8 +53,8 @@ const ACCEPTS: [(&str, &[&str], &[&str]); 22] = [
     ("succeed", &WRITE, &["to", "kind", "effective", "statement", "home"]),
     ("annotate", &WRITE, &["subject", "note", "home"]),
     ("retract", &WRITE, &["subject", "note", "home"]),
-    ("anchor", &[], &["key", "endpoint", "form", "registry", "hash", "calldata", "wait-secs", "proxy", "home"]),
-    ("scan", &[], &["endpoint", "fixture", "basis", "adoptions", "proxy"]),
+    ("anchor", &[], &["key", "endpoint", "form", "registry", "hash", "calldata", "wait-secs", "proxy", "home", "ledger"]),
+    ("scan", &[], &["endpoint", "fixture", "basis", "adoptions", "proxy", "ledger"]),
     ("audit", &[], &["ledger", "root", "input", "fragment", "unavailable", "out"]),
     ("check-grant", &[], &["ledger", "root", "input", "fragment", "unavailable", "now", "grant"]),
     ("chain-check", &[], &["ledger", "root", "hop", "now", "input", "fragment", "unavailable"]),
@@ -62,28 +62,35 @@ const ACCEPTS: [(&str, &[&str], &[&str]); 22] = [
     ("fpm-sign", &[], &["key", "work", "grant", "note", "rows", "out"]),
     ("ack-sign", &[], &["key", "note", "fpm", "fpm-doc", "variant", "out"]),
     ("badge", &[], &["encode", "decode"]),
-    ("kit-export", &[], &["ledger", "root", "note", "out", "entry", "file", "proof", "home"]),
+    ("kit-export", &[], &["ledger", "root", "note", "out", "entry", "file", "proof", "as", "home"]),
+    ("kit-verify", &[], &["kit", "fragment", "unavailable"]),
+    ("hand-over", &[], &["ledger", "out"]),
+    ("take-over", &[], &["ledger", "handoff"]),
     ("show", &[], &["ledger", "entry", "path"]),
     ("contract", &[], &[]),
 ];
 
 /// The verbs the desktop does when `--home` names its home, and the flags each takes beside `--home` then (the
 /// desktop writes with its own identity, into its own ledger: the flags that name a key, a ledger or a link are
-/// not taken). Closed: a verb not here does not take `--home` (its row in [`ACCEPTS`] does not list it).
-/// `CLI-SCHEMA.md` §11 is the readable form.
-pub const HOME: [(&str, &[&str]); 11] = [
+/// not taken). Closed: a verb not here is not handed to the desktop (a verb in [`BY_HAND`] takes `--home` and is
+/// refused here). `CLI-SCHEMA.md` §11 is the readable form.
+pub const HOME: [(&str, &[&str]); 10] = [
     ("init", &["statement"]),
     ("history", &["file", "note"]),
     ("grant", &["grantee", "work", "terms", "history", "window-from", "window-to", "scope", "upstream"]),
     ("revoke", &["grant", "case"]),
     ("adopt", &["anchors", "attestor", "attestation"]),
     ("attest", &[]),
-    ("succeed", &["to", "kind", "effective", "statement"]),
     ("annotate", &["subject", "note"]),
     ("retract", &["subject", "note"]),
     ("anchor", &[]),
-    ("kit-export", &["entry", "note", "out"]),
+    ("kit-export", &["entry", "note", "out", "as"]),
 ];
+
+/// The verbs that take `--home` but are done on the desktop by hand only: a final, rare change of who holds the
+/// ledger. With `--home` they answer `E_ON_DESKTOP` here (exit 1) and nothing is asked of the desktop ([`run`]).
+/// Closed; a verb takes `--home` exactly when it is in [`HOME`] or here.
+pub const BY_HAND: [&str; 1] = ["succeed"];
 
 /// The flag that hands a verb to the desktop.
 pub const HOME_FLAG: &str = "home";
@@ -105,17 +112,19 @@ const ALL_FLAGS: [&str; 34] = [
     "subject", "endpoint", "form", "registry", "hash", "calldata", "wait-secs",
 ];
 
-const MORE_FLAGS: [&str; 22] = [
+const MORE_FLAGS: [&str; 25] = [
     "fixture", "basis", "adoptions", "input", "fragment", "unavailable", "now", "hop", "entry",
     "path", "out", "file", "proof", "variant", "fpm", "fpm-doc", "rows", "encode", "decode", "proxy",
-    "key-file", "home",
+    "key-file", "home", "as", "kit", "handoff",
 ];
 
-/// The way out for the verbs that reach nodes: `--proxy system` (or no flag: the transport's default) follows
-/// the system's proxy settings, `--proxy none` goes straight, an address (`http://host:port`,
-/// `socks5://host:port`) is that proxy; anything else is misuse. Loopback nodes are always reached straight.
+/// The way out for the verbs that reach nodes: `--proxy system` (or no flag) follows the terminal's proxy
+/// variables when any is set, else the system's proxy settings (as programs in a terminal do, on every system);
+/// `--proxy none` goes straight, an address (`http://host:port`, `socks5://host:port`) is that proxy; anything
+/// else is misuse. Loopback nodes are always reached straight.
 fn proxy_from(a: &Args) {
-    use zikaron_anchor::rpc::{proxy_of, set_choice, Choice};
+    use zikaron_anchor::rpc::{follow_the_terminal, proxy_of, set_choice, Choice};
+    follow_the_terminal();
     let choice = match a.one("proxy").as_deref().map(str::trim) {
         None | Some("system") => Choice::System,
         Some("none") => Choice::Off,
@@ -140,8 +149,12 @@ pub fn run(a: &Args) -> Answer {
     if let Some(allowed) = accepts(a.verb(), a.homed()) {
         a.close(&allowed);
     }
-    // `--home`: the desktop does the verb (`desk`).
+    // `--home`: the desktop does the verb (`desk`); a verb done on the desktop by hand only ([`BY_HAND`]) is
+    // refused here and nothing is asked of it.
     if a.homed() {
+        if BY_HAND.contains(&a.verb()) {
+            return crate::desk::on_desktop();
+        }
         return crate::desk::ask(a);
     }
     match a.verb() {
@@ -165,6 +178,9 @@ pub fn run(a: &Args) -> Answer {
         "ack-sign" => ack_sign(a),
         "badge" => badge_verb(a),
         "kit-export" => kit_export(a),
+        "kit-verify" => kit_verify(a),
+        "hand-over" => crate::handoff::hand_over(a),
+        "take-over" => crate::handoff::take_over(a),
         "show" => show(a),
         "contract" => contract(a),
         // A verb not in the table is named by its place and length, never echoed (it may be anything pasted).
@@ -257,7 +273,7 @@ fn init(a: &Args) -> Answer {
         body.push((Field::StatementMd, s(&x)));
     }
     seal_and_append(
-        &dir,
+        Landing::Dir(&dir),
         &[],
         &author,
         EntryType::Genesis.as_str(),
@@ -316,33 +332,35 @@ fn history(a: &Args) -> Answer {
 }
 
 /// Which flags give a body member the core refused (`entry::body_fault`'s path), per entry type: the words of
-/// the stderr line. A member no flag gives (an unlisted type has no table) says none.
-fn body_flags(kind: EntryType, member: &str) -> &'static str {
+/// the stderr line, in both languages (Chinese, English) as the rest of that line is; the line takes the
+/// system's (`out::body_line`). A member no flag gives (an unlisted type has no table) says none.
+fn body_flags(kind: EntryType, member: &str) -> Option<(&'static str, &'static str)> {
+    let one = |f: &'static str| Some((f, f));
     match (kind, member) {
-        (EntryType::Genesis, "statement_md") => "--statement",
-        (EntryType::History, "content") => "--content(或 --file)",
-        (EntryType::History, "mode") => "--mark 与 --toolchain(或 --file)",
-        (EntryType::History, "mode.mark") => "--mark",
-        (EntryType::History, "mode.toolchain") => "--toolchain",
-        (EntryType::History, "note_md") => "--note",
-        (EntryType::Grant, "grantee") => "--grantee",
-        (EntryType::Grant, "work") => "--work",
-        (EntryType::Grant, "terms") => "--terms",
-        (EntryType::Grant, "history") => "--history",
-        (EntryType::Grant, "window" | "window.from" | "window.to") => "--window-from 与 --window-to",
-        (EntryType::Grant, "scope_md") => "--scope",
-        (EntryType::Revocation, "grant") => "--grant",
-        (EntryType::Revocation, "case") => "--case",
-        (EntryType::Adoption, "attestor") => "--attestor",
-        (EntryType::Adoption, "attestation") => "--attestation",
-        (EntryType::Adoption, _) => "--anchors",
-        (EntryType::Succession, "to") => "--to",
-        (EntryType::Succession, "kind") => "--kind",
-        (EntryType::Succession, "effective") => "--effective",
-        (EntryType::Succession, "statement_md") => "--statement",
-        (EntryType::Annotation, "subject") => "--subject",
-        (EntryType::Annotation, "note_md") => "--note",
-        _ => "",
+        (EntryType::Genesis, "statement_md") => one("--statement"),
+        (EntryType::History, "content") => Some(("--content(或 --file)", "--content (or --file)")),
+        (EntryType::History, "mode") => Some(("--mark 与 --toolchain(或 --file)", "--mark and --toolchain (or --file)")),
+        (EntryType::History, "mode.mark") => one("--mark"),
+        (EntryType::History, "mode.toolchain") => one("--toolchain"),
+        (EntryType::History, "note_md") => one("--note"),
+        (EntryType::Grant, "grantee") => one("--grantee"),
+        (EntryType::Grant, "work") => one("--work"),
+        (EntryType::Grant, "terms") => one("--terms"),
+        (EntryType::Grant, "history") => one("--history"),
+        (EntryType::Grant, "window" | "window.from" | "window.to") => Some(("--window-from 与 --window-to", "--window-from and --window-to")),
+        (EntryType::Grant, "scope_md") => one("--scope"),
+        (EntryType::Revocation, "grant") => one("--grant"),
+        (EntryType::Revocation, "case") => one("--case"),
+        (EntryType::Adoption, "attestor") => one("--attestor"),
+        (EntryType::Adoption, "attestation") => one("--attestation"),
+        (EntryType::Adoption, _) => one("--anchors"),
+        (EntryType::Succession, "to") => one("--to"),
+        (EntryType::Succession, "kind") => one("--kind"),
+        (EntryType::Succession, "effective") => one("--effective"),
+        (EntryType::Succession, "statement_md") => one("--statement"),
+        (EntryType::Annotation, "subject") => one("--subject"),
+        (EntryType::Annotation, "note_md") => one("--note"),
+        _ => None,
     }
 }
 
@@ -461,18 +479,39 @@ fn annotate(a: &Args) -> Answer {
 /// same way as `annotate`: the core builds, signs and checks it, the storage crate lands it.
 fn retract(a: &Args) -> Answer {
     use zikaron_glue::retraction as convention;
-    let key = a.key("key");
-    let author = match entry::address(&key) {
-        Some(x) => x,
-        None => return out::denied(Reason::Key, vec![]),
+    let at = a.need("ledger");
+    // A home the desktop keeps sealed is retracted in with the credential, as the other entry-writing verbs
+    // write it (`write_entry`); a key given for it is misuse.
+    let home = if crate::sealed::is_home(&at) {
+        if a.one("key").is_some() || a.one(args::KEY_FILE).is_some() {
+            out::misuse(Reason::Args, out::Subject::Flags(vec!["key", args::KEY_FILE]), out::Said::SealedNoKey);
+        }
+        let now = now_secs();
+        match crate::sealed::open(&at, now) {
+            Ok(h) => Some((h, now)),
+            Err(t) => return crate::sealed::refused(&t),
+        }
+    } else {
+        None
     };
-    let dir = match ledger::open(&a.need("ledger")) {
-        Ok(d) => d,
-        Err(t) => return ledger_trouble(&t),
-    };
-    let items = match ledger::pile(&dir) {
-        Ok(x) => x,
-        Err(t) => return ledger_trouble(&t),
+    let (key, author, dir, items) = match &home {
+        Some((h, _)) => (h.key, h.author.clone(), None, h.items.clone()),
+        None => {
+            let key = a.key("key");
+            let author = match entry::address(&key) {
+                Some(x) => x,
+                None => return out::denied(Reason::Key, vec![]),
+            };
+            let dir = match ledger::open(&at) {
+                Ok(d) => d,
+                Err(t) => return ledger_trouble(&t),
+            };
+            let items = match ledger::pile(&dir) {
+                Ok(x) => x,
+                Err(t) => return ledger_trouble(&t),
+            };
+            (key, author, Some(dir), items)
+        }
     };
     // Ask which entry to follow first: giving only one of `--seq` and `--prev` is misuse, and misuse goes out
     // before any answer (same order as `write_entry`).
@@ -480,6 +519,10 @@ fn retract(a: &Args) -> Answer {
         Ok(x) => x,
         Err(answer) => return answer,
     };
+    // A home's write gates, as for every entry written with the credential.
+    if let Some(refused) = home.as_ref().and_then(|(h, _)| crate::sealedsend::write_gates(h)) {
+        return refused;
+    }
     let root = match root_named(a, &items) {
         Ok(x) => x,
         Err(answer) => return answer,
@@ -494,8 +537,13 @@ fn retract(a: &Args) -> Answer {
         Ok(id) => id,
         Err(why) => return out::denied(Reason::Retraction, vec![(Key::Token, s(why.token()))]),
     };
+    let landing = match (&home, &dir) {
+        (Some((h, now)), _) => Landing::Sealed(h, *now, None),
+        (None, Some(d)) => Landing::Dir(d),
+        (None, None) => return out::denied(Reason::Ledger, vec![]),
+    };
     seal_and_append(
-        &dir,
+        landing,
         &items,
         &author,
         convention::ENTRY_TYPE,
@@ -510,6 +558,22 @@ fn retract(a: &Args) -> Answer {
 // Chain.
 
 fn anchor(a: &Args) -> Answer {
+    // A home's queue, sent with the credential (`sealedsend`): what it sends and how come from the home's settings
+    // and this machine's, so the flags that would name them are misuse, as a key is for any sealed write.
+    if let Some(at) = a.one("ledger") {
+        if !crate::sealed::is_home(&at) {
+            out::misuse(Reason::Args, out::Subject::flag("ledger"), out::Said::AnchorNotAHome);
+        }
+        if a.one("key").is_some() || a.one(args::KEY_FILE).is_some() {
+            out::misuse(Reason::Args, out::Subject::Flags(vec!["key", args::KEY_FILE]), out::Said::SealedNoKey);
+        }
+        for f in ["endpoint", "form", "registry", "hash", "calldata", "proxy"] {
+            if !a.many(f).is_empty() {
+                out::misuse(Reason::Args, out::Subject::flag(f), out::Said::HomeSettingsSay);
+            }
+        }
+        return crate::sealedsend::anchor(&at, std::time::Duration::from_secs(a.u64_of("wait-secs").unwrap_or(90)));
+    }
     proxy_from(a);
     use zikaron_anchor::send;
     let specs = chain::endpoint_specs(&a.many_at("endpoint"));
@@ -603,6 +667,21 @@ fn anchor(a: &Args) -> Answer {
             }
         }
     }
+    // Anchored already, by whichever side: the registry's logs from this key, for these hashes, from the
+    // registry's deployment block (`deploy::start_of`; block 0 for a registry no row names) to the head
+    // (`send::on_chain`). Any hash the chain holds already: nothing is sent, each named. A chain that does not say
+    // is no answer, and nothing is sent on a guess. The bare form and raw calldata name no registry log to ask by.
+    if let (send::Form::Registry, Some(reg), None) = (form, registry, calldata.as_ref()) {
+        match send::on_chain(&mut ep, chain_id, &reg, &from, &hashes, zikaron_anchor::deploy::start_of(chain_id, &reg)) {
+            Ok(found) if !found.is_empty() => {
+                let first = found[0];
+                let names: Vec<String> = found.iter().map(|f| hexfmt::encode(&f.hash)).collect();
+                return on_chain(&names, &hexfmt::encode(&first.tx), first.block);
+            }
+            Ok(_) => {}
+            Err(not) => return out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&not.evidence()))]),
+        }
+    }
     // The transaction is estimated before it is sent, by the rule the app takes (`send::estimate_gas`), and
     // carries the limit that estimate gives (`send::limit_for`). A call the endpoint refuses to estimate would
     // revert, and one estimated above the ceiling would run out of gas, either with the fee paid: neither is
@@ -638,6 +717,11 @@ fn anchor(a: &Args) -> Answer {
             send::NoGas::Unreadable(hex) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&hex))]),
         },
         Err(send::NotSent::Send(e)) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("{e:?}")))]),
+        // The node's answer to the nonce question, as it came, named by the question.
+        Err(send::NotSent::Nonce(v)) => {
+            let said = v.map(|v| String::from_utf8_lossy(&zikaron::json::canon_bytes(&v)).into_owned()).unwrap_or_default();
+            out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("eth_getTransactionCount: {said}")))])
+        }
         // The hash could not be landed: nothing was broadcast.
         Err(send::NotSent::Land(said)) => out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&said))]),
         // The broadcast failed after the hash was landed: the bytes may be in a pool, so the answer carries the
@@ -663,8 +747,24 @@ fn sent_answer(tx: &[u8; 32], confirm: &zikaron_anchor::send::Confirm, wait: std
     }
 }
 
-/// `anchor`'s answers once the transaction went out, built here only (the command line's own sending and the
-/// desktop's under `--home` both answer by these): included with status 1, at that block.
+/// `anchor`'s answer when the chain already holds anchors of hashes it was to send, from this key through this
+/// registry (`names`, the earliest in `tx` at `block`): nothing was sent. Built here only: the direct `anchor`, the
+/// desktop's under `--home` and the credential's with `--ledger` all answer by it.
+pub(crate) fn on_chain(names: &[String], tx: &str, block: u64) -> Answer {
+    out::denied(Reason::OnChain, vec![(Key::BlockNumber, Value::Int(block)), (Key::Names, Value::Arr(names.iter().map(|n| s(n)).collect())), (Key::Tx, s(tx))])
+        .telling(out::Said::OnChain.text().to_string())
+}
+
+/// `anchor`'s answer when the switch leaves sending to the person on the desktop: nothing was sent, `count`
+/// entries wait in the queue (exit 3). The desktop's under `--home` and the credential's with `--ledger` answer by
+/// it.
+pub(crate) fn queued(count: u64) -> Answer {
+    out::partial(Reason::Queued, vec![(Key::Count, Value::Int(count))]).telling(out::Said::Queued.text().to_string())
+}
+
+/// `anchor`'s answers once the transaction went out, built here only (the command line's own sending, the
+/// desktop's under `--home` and the credential's with `--ledger` all answer by these): included with status 1, at
+/// that block.
 pub(crate) fn anchored(tx: &str, block: Option<u64>) -> Answer {
     out::affirmed(vec![(Key::BlockNumber, block.map(Value::Int).unwrap_or(Value::Null)), (Key::Tx, s(tx))])
 }
@@ -700,7 +800,7 @@ fn scan(a: &Args) -> Answer {
     // A run over recordings reads no basis, no adoptions and no network: any of them given (once or more) is
     // misuse, never silently left unread.
     if !fixtures.is_empty() {
-        for f in ["basis", "adoptions", "proxy"] {
+        for f in ["basis", "adoptions", "proxy", "ledger"] {
             if !a.many(f).is_empty() {
                 out::misuse(Reason::Args, out::Subject::flag(f), out::Said::NotWithFixture);
             }
@@ -737,7 +837,15 @@ fn scan(a: &Args) -> Answer {
     } else {
         let specs = chain::endpoint_specs(&a.many_at("endpoint"));
         thin = chain::thin_chains(&specs);
-        let basis = a.need("basis");
+        // The basis: the file `--basis` names, or the one a home the desktop keeps declares (`--ledger`).
+        let basis = match (a.one("basis"), a.one("ledger")) {
+            (Some(p), None) => chain::basis_bytes(&p),
+            (None, Some(at)) => match home_basis(&at, &specs) {
+                Ok(b) => b,
+                Err(answer) => return answer,
+            },
+            _ => out::misuse(Reason::Args, out::Subject::Flags(vec!["basis", "ledger"]), out::Said::OneOf),
+        };
         let adoptions = a.one("adoptions");
         for k in 0..chain::rounds(&specs) {
             match chain::live_fragment(&basis, adoptions.as_deref(), &specs, k) {
@@ -795,6 +903,30 @@ fn scan(a: &Args) -> Answer {
     }
 }
 
+/// The basis a home the desktop keeps declares, as the desktop's self-audit declares it (`zikaron_glue::basis`):
+/// the chain, the registry and the block to scan from in the home's settings (read with the credential,
+/// `sealed::read`), the senders of its ledger, and the chain's head as its endpoints say it (the lowest of them)
+/// for the window's last block. A ledger folder that is not a home's has no settings to read (misuse, `--ledger`);
+/// a home whose settings name no chain or no registry has no basis (`E_SCAN`, `E_NO_BASIS`); no endpoint of that
+/// chain given, or none answering its head, is no answer (`E_UNREACHABLE`).
+fn home_basis(at: &str, specs: &[(u64, String)]) -> Result<Vec<u8>, Answer> {
+    if !crate::sealed::is_home(at) {
+        out::misuse(Reason::Args, out::Subject::flag("ledger"), out::Said::NotAHome);
+    }
+    let r = crate::sealed::read(at, now_secs()).map_err(|t| crate::sealed::refused(&t))?;
+    let ground = r.ground().map_err(|t| crate::sealed::refused(&t))?;
+    let (Some(chain), Some(registry)) = (ground.chain_id, ground.registry) else {
+        return Err(out::unanswered(Reason::Scan, vec![(Key::Token, s("E_NO_BASIS")), (Key::Detail, s(at))]));
+    };
+    let Some(head) = chain::least_head(specs, chain) else {
+        return Err(out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("eth_blockNumber {chain}")))]));
+    };
+    let senders = zikaron_glue::basis::senders_of(&r.items);
+    let registry = hexfmt::encode(&registry);
+    let window = zikaron_glue::basis::Window { chain, registry: &registry, from_block: ground.from_block, to_block: head.max(ground.from_block), senders: &senders };
+    Ok(json::canon_bytes(&zikaron_glue::basis::basis_of(&window)))
+}
+
 fn chains_in(path: &str) -> Vec<u64> {
     use zikaron_anchor::wire::{self, Body};
     let b = args::slurp(path);
@@ -827,7 +959,7 @@ fn audit_input(a: &Args) -> Result<Value, Answer> {
             Err(_) => Err(out::verbatim(Exit::Denied, audit::no_label())),
         };
     }
-    let items = match ledger::read_any(&a.need("ledger")) {
+    let items = match ledger::read_any(&a.need("ledger"), now_secs()) {
         Ok(x) => x,
         Err(r) => return Err(read_refused(r)),
     };
@@ -1213,15 +1345,35 @@ fn badge_verb(a: &Args) -> Answer {
 
 // Kits and showing entries.
 
+/// The form `--as` names a kit in (`file` or `folder`); without it, one file.
+fn form_of(a: &Args) -> kitout::Form {
+    match a.one("as") {
+        None => kitout::Form::File,
+        Some(w) => kitout::Form::of(&w).unwrap_or_else(|| out::misuse(Reason::Args, out::Subject::flag("as"), out::Said::AsWord)),
+    }
+}
+
 fn kit_export(a: &Args) -> Answer {
-    let dir = match ledger::open(&a.need("ledger")) {
-        Ok(d) => d,
-        Err(t) => return ledger_trouble(&t),
+    let at = a.need("ledger");
+    let form = form_of(a);
+    // A home the desktop keeps sealed is read with the credential, as every read of it is (`sealed::read`).
+    let (items, home) = if crate::sealed::is_home(&at) {
+        match crate::sealed::read(&at, now_secs()) {
+            Ok(r) => (r.items.clone(), Some(r)),
+            Err(t) => return crate::sealed::refused(&t),
+        }
+    } else {
+        let dir = match ledger::open(&at) {
+            Ok(d) => d,
+            Err(t) => return ledger_trouble(&t),
+        };
+        match ledger::pile(&dir) {
+            Ok(x) => (x, None),
+            Err(t) => return ledger_trouble(&t),
+        }
     };
-    let items = match ledger::pile(&dir) {
-        Ok(x) => x,
-        Err(t) => return ledger_trouble(&t),
-    };
+    // The ledger's root (its genesis entry's id): which of this machine's signed files are this ledger's.
+    let root = items.iter().filter_map(|x| zikaron::entry::check(x).ok()).find(|e| e.seq == 0).map(|e| e.id_hex()).unwrap_or_default();
     let wanted = a.many("entry");
     let entries: Vec<Vec<u8>> = if wanted.is_empty() {
         items
@@ -1281,7 +1433,7 @@ fn kit_export(a: &Args) -> Answer {
         };
         proofs.push((kit_path.to_string(), tx.to_string(), args::slurp(src)));
     }
-    let bundle = kitout::Bundle {
+    let mut bundle = kitout::Bundle {
         entries,
         files,
         proofs,
@@ -1289,9 +1441,26 @@ fn kit_export(a: &Args) -> Answer {
         root: a.one("root"),
         note: a.one("note").unwrap_or_default(),
     };
+    // From a home: the chosen records' originals as the desktop takes them, and the note's anchoring line.
+    let taken = match &home {
+        Some(r) => match from_home(r, &root, &mut bundle) {
+            Ok(x) => Some(x),
+            Err(answer) => return answer,
+        },
+        None => None,
+    };
     let out_dir = a.need("out");
-    match kitout::export(std::path::Path::new(&out_dir), bundle) {
-        Ok(l) => kit_written(&l.dropped, l.entries as u64, l.files as u64, &l.kit_id, &out_dir, l.proofs as u64),
+    match kitout::export(std::path::Path::new(&out_dir), bundle, form) {
+        Ok(l) => {
+            let written = kit_written(&l.dropped, l.entries as u64, l.files as u64, &l.kit_id, &out_dir, l.proofs as u64);
+            match taken {
+                Some((originals, left_out)) => written.with(vec![
+                    (Key::Originals, Value::Arr(originals.iter().map(|x| s(x)).collect())),
+                    (Key::LeftOut, Value::Arr(left_out.iter().map(|x| s(x)).collect())),
+                ]),
+                None => written,
+            }
+        }
         // When the kit core judges a kit invalid, `state` is the `zikaron.kit/1` verdict and `detail` its subject;
         // disk failures carry `path`. The fields are read from the kit output crate's error in one place.
         Err(t) => match (t.verdict(), t.path()) {
@@ -1318,6 +1487,66 @@ fn kit_export(a: &Args) -> Answer {
     }
 }
 
+/// What a record package exported from a home takes besides its entries, as the desktop's export does: the
+/// originals of its chosen records from this machine's index of signed files (`zikaron_seal::records`), each a
+/// file still in place whose bytes match the record's `content`, named in the package as the desktop names them
+/// (`zikaron_glue::kitnames`, renamed ones listed in its name table); the terms documents of its chosen grants
+/// (`zikaron_seal::terms`); and the home's anchoring point as the note's last line (`zikaron_glue::anchoredon`,
+/// from the home's settings). Returns the package paths of the originals taken and the paths of those left out
+/// (gone, no longer the recorded bytes, or with a name that cannot be made kit-legal).
+fn from_home(r: &crate::sealed::Reading, root: &str, b: &mut kitout::Bundle) -> Result<(Vec<String>, Vec<String>), Answer> {
+    let rows = r.records().map_err(|t| crate::sealed::refused(&t))?;
+    let chosen: Vec<String> = b
+        .entries
+        .iter()
+        .filter_map(|x| zikaron::entry::check(x).ok())
+        .filter(|e| zikaron_glue::recordcheck::work_of(e.kind, &e.body).is_some())
+        .map(|e| e.id_hex())
+        .collect();
+    let mut names: Vec<(String, String)> = Vec::new();
+    let (mut taken, mut left_out, mut contents): (Vec<String>, Vec<String>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
+    for row in zikaron_seal::records::originals_for(&rows, root, &chosen) {
+        let content = row.content.to_ascii_lowercase();
+        if contents.contains(&content) {
+            continue;
+        }
+        let bytes = match std::fs::read(&row.path) {
+            Ok(x) if hexfmt::encode(&zikaron_glue::recording::content_of(&x)).eq_ignore_ascii_case(&content) => x,
+            _ => {
+                left_out.push(row.path.clone());
+                continue;
+            }
+        };
+        let name = std::path::Path::new(&row.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match zikaron_glue::kitnames::put_original(&name, bytes, b, &mut names) {
+            Ok(inside) => {
+                contents.push(content);
+                taken.push(inside);
+            }
+            Err(_) => left_out.push(row.path.clone()),
+        }
+    }
+    if !names.is_empty() {
+        b.files.push((zikaron_glue::kitnames::NAMES_FILE.to_string(), zikaron_glue::kitnames::names_table(&names)));
+    }
+    // The terms documents kept when the chosen grants were signed travel with them, at their kept path, as the
+    // desktop's export carries them.
+    let grants: Vec<String> = b.entries.iter().filter_map(|x| zikaron::entry::check(x).ok()).filter(|e| e.kind == EntryType::Grant).map(|e| e.id_hex()).collect();
+    for g in grants {
+        if let Some((rel, doc)) = r.terms_of(&g).map_err(|t| crate::sealed::refused(&t))? {
+            if !b.files.iter().any(|(p, _)| *p == rel) {
+                b.files.push((rel, doc));
+            }
+        }
+    }
+    let ground = r.ground().map_err(|t| crate::sealed::refused(&t))?;
+    if let (Some(chain_id), Some(registry)) = (ground.chain_id, ground.registry) {
+        let at = zikaron_glue::anchoredon::AnchoredOn { chain_id, from_block: ground.from_block, registry: hexfmt::encode(&registry) };
+        b.note = zikaron_glue::anchoredon::note_with(&b.note, Some(&at));
+    }
+    Ok((taken, left_out))
+}
+
 /// `kit-export`'s affirmative answer, built here only (the command line's own export and the desktop's under
 /// `--home` both answer by it).
 pub(crate) fn kit_written(dropped: &[String], entries: u64, files: u64, kit_id: &str, path: &str, proofs: u64) -> Answer {
@@ -1330,6 +1559,97 @@ pub(crate) fn kit_written(dropped: &[String], entries: u64, files: u64, kit_id: 
         (Key::Proofs, Value::Int(proofs)),
         (Key::State, s(KIT_OK)),
     ])
+}
+
+/// `kit-verify`: a record package, one file or a folder, record by record, with the same check the desktop's
+/// verification uses (`zikaron_glue::recordcheck::records`): is each record's original the one it records
+/// (`original`: `match`, `mismatch`, `missing`), and is it anchored on the chain read (`anchored`: `anchored` with
+/// `firstAt`, `notAnchored`, or `unread` without `--fragment`). The package must pass the kit law first
+/// (`verify_kit`; refused `E_KIT`). Every record holding is exit 0; an original that is not the one recorded is
+/// `E_RECORDS` exit 1; otherwise a record not anchored, not read or without its original is `E_RECORDS` exit 3.
+fn kit_verify(a: &Args) -> Answer {
+    let at = a.need("kit");
+    // Every argument is read before the package is read out, so no misuse exit leaves a folder behind.
+    let fragment = a.one("fragment").map(|p| {
+        let v = args::slurp_json(&p);
+        v.member(Key::Fragment.as_str()).cloned().unwrap_or(v)
+    });
+    let unavailable: Vec<String> = a.many("unavailable");
+    let p = std::path::Path::new(&at);
+    let unpacked = if zikaron_glue::container::is_container_at(p) {
+        match zikaron_glue::read::unpack(p) {
+            Ok(u) => Some(u),
+            Err(b) => return out::denied(Reason::Kit, vec![(Key::Detail, s(&b.subject())), (Key::State, s(b.code()))]),
+        }
+    } else {
+        None
+    };
+    let dir = unpacked.as_ref().map(|u| u.dir.as_path()).unwrap_or(p);
+    let answer = records_of(dir, fragment.as_ref(), &unavailable);
+    drop(unpacked);
+    answer
+}
+
+/// The record verdicts of a record package folder (see [`kit_verify`]).
+fn records_of(dir: &std::path::Path, fragment: Option<&Value>, unavailable: &[String]) -> Answer {
+    use zikaron_glue::recordcheck::{OnChain, Original};
+    let kit_id = match zikaron_kit::kitdir::verify_kit(dir) {
+        zikaron_kit::kitdir::KitVerdict::Ok { kit_id, .. } => hexfmt::encode(&kit_id),
+        zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } => {
+            let mut ms = vec![(Key::State, s(verdict.as_str()))];
+            if let Some(x) = subject {
+                ms.push((Key::Detail, s(&x)));
+            }
+            return out::denied(Reason::Kit, ms);
+        }
+    };
+    let items = match zikaron_glue::read::kit_entries(dir) {
+        Ok(x) => x,
+        Err(p) => return out::denied(Reason::Kit, vec![(Key::Detail, s(&p)), (Key::State, s(zikaron_kit::tokens::KitFailToken::Unreadable.as_str()))]),
+    };
+    let originals = zikaron_glue::recordcheck::originals_in_dir(dir);
+    // The chain as the fragment reads it: the audit outcome of these entries under their root, as the desktop
+    // reads it; none without a fragment, or when it does not assemble or audit.
+    let outcome = fragment.and_then(|f| {
+        let root = ledger::root_of(&items).ok()?;
+        let input = zikaron_anchor::input::assemble(f, &root, &ledger::pile_hex(&items), unavailable)?;
+        audit::audit_full(&input)
+    });
+    let read = outcome.as_ref().and_then(|o| fragment.map(|f| (o, f)));
+    let rows = zikaron_glue::recordcheck::records(&items, &originals, read);
+    let word_original = |o: Original| match o {
+        Original::Match => "match",
+        Original::Mismatch => "mismatch",
+        Original::Missing => "missing",
+    };
+    let word_chain = |c: OnChain| match c {
+        OnChain::Anchored { .. } => "anchored",
+        OnChain::NotAnchored => "notAnchored",
+        OnChain::Unread => "unread",
+    };
+    let listed: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            let mut ms = vec![
+                (Key::EntryId.as_str().to_string(), s(&r.id)),
+                (Key::Content.as_str().to_string(), s(&r.content)),
+                (Key::Original.as_str().to_string(), s(word_original(r.original))),
+                (Key::Anchored.as_str().to_string(), s(word_chain(r.chain))),
+            ];
+            if let OnChain::Anchored { first_at } = r.chain {
+                ms.push((Key::FirstAt.as_str().to_string(), Value::Int(first_at)));
+            }
+            Value::Obj(ms)
+        })
+        .collect();
+    let members = vec![(Key::KitId, s(&kit_id)), (Key::Entries, Value::Int(items.len() as u64)), (Key::Records, Value::Arr(listed))];
+    if rows.iter().any(|r| r.original == Original::Mismatch) {
+        out::denied(Reason::Records, members).telling(out::Said::RecordsNotAll.text().to_string())
+    } else if rows.iter().all(|r| r.original == Original::Match && matches!(r.chain, OnChain::Anchored { .. })) {
+        out::affirmed(members)
+    } else {
+        out::partial(Reason::Records, members).telling(out::Said::RecordsNotAll.text().to_string())
+    }
 }
 
 /// The one rule for entry ids: strip at most one `0x`, then apply the storage crate's naming rule (64
@@ -1348,12 +1668,13 @@ fn show(a: &Args) -> Answer {
         (Some(p), None) => args::slurp(&p),
         (None, Some(id)) => {
             let form = entry_id_form(&id);
-            // A mirror bundle or a record package is read by the read-only reading (`ledger::read_any`), and the
-            // entry is the one whose id the core computes as `--entry`; not there is `E_ENTRY_ABSENT`.
+            // A mirror bundle, a record package (a folder or one file) or a home the desktop keeps sealed (with the
+            // credential) is read by the read-only reading (`ledger::read_any`), and the entry is the one whose id
+            // the core computes as `--entry`; not there is `E_ENTRY_ABSENT`.
             let at = a.need("ledger");
             let p = std::path::Path::new(&at);
-            if zikaron_glue::mirror::is_bundle(p) || zikaron_glue::read::is_kit(p) {
-                let items = match ledger::read_any(&at) {
+            if zikaron_glue::mirror::is_bundle(p) || zikaron_glue::read::is_kit(p) || zikaron_glue::container::is_container_at(p) || crate::sealed::is_home(&at) {
+                let items = match ledger::read_any(&at, now_secs()) {
                     Ok(x) => x,
                     Err(r) => return read_refused(r),
                 };
@@ -1442,12 +1763,53 @@ fn contract(_a: &Args) -> Answer {
 // Shared parts.
 
 fn write_entry(a: &Args, kind: EntryType, body: Vec<(Field, Value)>) -> Answer {
+    let at = a.need("ledger");
+    // A home ZIKARON Desk keeps sealed: written with the command line's credential (`sealed`), the key the
+    // desktop's vault keeps for the home; a key given here is misuse.
+    if crate::sealed::is_home(&at) {
+        if a.one("key").is_some() || a.one(args::KEY_FILE).is_some() {
+            out::misuse(Reason::Args, out::Subject::Flags(vec!["key", args::KEY_FILE]), out::Said::SealedNoKey);
+        }
+        let now = now_secs();
+        let home = match crate::sealed::open(&at, now) {
+            Ok(h) => h,
+            Err(t) => return crate::sealed::refused(&t),
+        };
+        let (seq, prev) = match next_link(a, &home.items) {
+            Ok(x) => x,
+            Err(answer) => return answer,
+        };
+        // The home's write gates, as for a send: its read-only mark, a ledger that broke, a ledger handed off.
+        if let Some(refused) = crate::sealedsend::write_gates(&home) {
+            return refused;
+        }
+        // A file recorded into the home is this machine's original of that record, indexed as the desktop indexes
+        // the files it signs (`--file` of `history`: its place, its name, the content it gave).
+        let original = match (kind, a.one("file")) {
+            (EntryType::History, Some(p)) => body.iter().find(|(f, _)| *f == Field::Content).and_then(|(_, v)| v.as_str().map(str::to_string)).map(|content| {
+                let at = std::fs::canonicalize(&p).unwrap_or_else(|_| std::path::PathBuf::from(&p));
+                Original { name: at.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), path: at.display().to_string(), content }
+            }),
+            _ => None,
+        };
+        return seal_and_append(
+            Landing::Sealed(&home, now, original),
+            &home.items,
+            &home.author.clone(),
+            kind.as_str(),
+            seq,
+            prev.as_deref(),
+            entry::shape(body),
+            &home.key,
+            a.one("root").as_deref(),
+        );
+    }
     let key = a.key("key");
     let author = match entry::address(&key) {
         Some(x) => x,
         None => return out::denied(Reason::Key, vec![]),
     };
-    let dir = match ledger::open(&a.need("ledger")) {
+    let dir = match ledger::open(&at) {
         Ok(d) => d,
         Err(t) => return ledger_trouble(&t),
     };
@@ -1460,7 +1822,7 @@ fn write_entry(a: &Args, kind: EntryType, body: Vec<(Field, Value)>) -> Answer {
         Err(answer) => return answer,
     };
     seal_and_append(
-        &dir,
+        Landing::Dir(&dir),
         &items,
         &author,
         kind.as_str(),
@@ -1472,12 +1834,31 @@ fn write_entry(a: &Args, kind: EntryType, body: Vec<(Field, Value)>) -> Answer {
     )
 }
 
+/// Seconds since the epoch now (when a sealed home's credential is checked, and its queue's time).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Where a sealed entry lands: a ledger directory the command line keeps (its own bytes), or a home the desktop
+/// keeps sealed (the sealed layer's ledger and queue, at the time given, and the original of a file recorded there).
+enum Landing<'a> {
+    Dir(&'a LedgerDir),
+    Sealed(&'a crate::sealed::Opened, u64, Option<Original>),
+}
+
+/// A file recorded into a home: where it is, its name, the content it gave its record.
+struct Original {
+    path: String,
+    name: String,
+    content: String,
+}
+
 /// Seal one entry and land it, after the one write gate: the core audits this pile with the candidate
 /// offline, and a chain finding the pile did not already have refuses the write by name (`E_WOULD_BREAK`,
 /// the findings' names) with not one byte written (`ledger::new_findings`). Every entry-writing verb comes here,
 /// `init` and `retract` included, after the tip and the root are asked.
 fn seal_and_append(
-    dir: &LedgerDir,
+    landing: Landing,
     items: &[Vec<u8>],
     author: &str,
     entry_type: &str,
@@ -1487,6 +1868,19 @@ fn seal_and_append(
     key: &[u8; 32],
     root: Option<&str>,
 ) -> Answer {
+    // A plain ledger the desktop adopted is written through its sealed copy from then on, never here: checked
+    // against this machine's adopted list (`zikaron_seal::adopted`) before anything is written (no passcode, no
+    // credential needed).
+    if let Landing::Dir(_) = landing {
+        if let Some(refused) = adopted_here(items) {
+            return refused;
+        }
+    }
+    // A ledger this machine handed off to another place is not written here until its handoff comes back, a plain
+    // folder and a sealed home alike (`zikaron_seal::pens`).
+    if let Some(refused) = handed_here(items) {
+        return refused;
+    }
     let sealed = match entry::seal(author, entry_type, seq, prev, body.clone(), key) {
         Ok(x) => x,
         // The core's token passes through unchanged: no translation, no regrouping. A body refusal also tells
@@ -1495,8 +1889,8 @@ fn seal_and_append(
             let answer = out::denied(Reason::Entry, vec![(Key::Token, s(t.as_str()))]);
             let kind = EntryType::of(entry_type);
             return match (t, zikaron::entry::body_fault(kind, &body)) {
-                (zikaron::tokens::Token::BodyField, Some(member)) if !body_flags(kind, member).is_empty() => {
-                    answer.telling(out::body_line(member, body_flags(kind, member)))
+                (zikaron::tokens::Token::BodyField, Some(member)) if body_flags(kind, member).is_some() => {
+                    answer.telling(out::body_line(member, body_flags(kind, member).unwrap_or_default()))
                 }
                 _ => answer,
             };
@@ -1512,10 +1906,49 @@ fn seal_and_append(
         }
         Err(r) => return out::denied(r, vec![]),
     }
-    match ledger::append(dir, &sealed.entry, &sealed.bytes) {
-        Ok(stored) => wrote(&sealed.entry.id_hex(), &dir.root().to_string_lossy(), seq, matches!(stored, Stored::Written)),
-        Err(t) => ledger_trouble(&t),
+    match landing {
+        Landing::Dir(dir) => match ledger::append(dir, &sealed.entry, &sealed.bytes) {
+            Ok(stored) => wrote(&sealed.entry.id_hex(), &dir.root().to_string_lossy(), seq, matches!(stored, Stored::Written)),
+            Err(t) => ledger_trouble(&t),
+        },
+        Landing::Sealed(home, now, original) => {
+            // The original is indexed before the entry lands: a row whose entry never landed names no chosen
+            // record and is never taken; an entry landed without its row would export without its original.
+            if let Some(o) = original {
+                let root = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).find(|e| e.seq == 0).map(|e| e.id_hex()).unwrap_or_default();
+                let row = zikaron_seal::records::Row { root, content: o.content, id: sealed.entry.id_hex(), seq, name: o.name, path: o.path };
+                if let Err(t) = home.index_original(row) {
+                    return crate::sealed::refused(&t);
+                }
+            }
+            match home.append(&sealed.entry.id_hex(), &sealed.bytes, now) {
+                Ok(written) => wrote(&sealed.entry.id_hex(), &home.ledger_root(), seq, written),
+                Err(t) => crate::sealed::refused(&t),
+            }
+        }
     }
+}
+
+/// The refusal for a plain ledger this machine's desktop adopted (`zikaron_seal::adopted`), by its root id; `None`
+/// when it was not adopted here (or has no root yet, or this user has no machine folder). A list that does not
+/// read is refused by name: nothing is written past a check that could not be made.
+fn adopted_here(items: &[Vec<u8>]) -> Option<Answer> {
+    let root = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).find(|e| e.seq == 0)?.id;
+    let (machine, _) = zikaron_os::machine::here().ok()?;
+    match zikaron_seal::adopted::contains(&machine, &root) {
+        Ok(false) => None,
+        Ok(true) => Some(out::denied(Reason::Adopted, vec![]).telling(out::Said::Adopted.text().to_string())),
+        Err(t) => Some(crate::sealed::refused(&t)),
+    }
+}
+
+/// The refusal for a ledger this machine handed off (`zikaron_seal::pens`, by its root id): `E_HANDED_OFF` naming
+/// the handoff; `None` when its pen is here (or it has no root yet, or this user has no machine folder). A pen
+/// list that does not read is refused by name: nothing is written past a check that could not be made.
+pub(crate) fn handed_here(items: &[Vec<u8>]) -> Option<Answer> {
+    let root = items.iter().filter_map(|b| zikaron::entry::check(b).ok()).find(|e| e.seq == 0)?.id;
+    let (machine, _) = zikaron_os::machine::here().ok()?;
+    zikaron_seal::pens::may_write(&machine, &root).err().map(|t| crate::sealed::refused(&t))
 }
 
 /// An entry-writing verb's affirmative answer, built here only (the command line's own writing and the
@@ -1564,6 +1997,9 @@ fn read_refused(r: ledger::ReadRefused) -> Answer {
         }
         ledger::ReadRefused::Mirror(said) => out::denied(Reason::Ledger, vec![(Key::Detail, s(&said))]),
         ledger::ReadRefused::Unreadable(p) => out::misuse(Reason::Unreadable, out::typed(&p), out::Said::Unreadable),
+        // A record package in one file: the layout's code is the kit's state, as a kit the kit law refused.
+        ledger::ReadRefused::File(b) => out::denied(Reason::Kit, vec![(Key::Detail, s(&b.subject())), (Key::State, s(b.code()))]),
+        ledger::ReadRefused::Sealed(t) => crate::sealed::refused(&t),
     }
 }
 
@@ -1576,7 +2012,7 @@ fn said_detail(code: &str, said: Option<&str>) -> Value {
     }
 }
 
-fn ledger_trouble(t: &zikaron_store::codes::Trouble) -> Answer {
+pub(crate) fn ledger_trouble(t: &zikaron_store::codes::Trouble) -> Answer {
     let mut ms = vec![(Key::Detail, said_detail(t.code.as_str(), t.said.as_deref()))];
     if !t.names.is_empty() {
         ms.push((
@@ -1591,10 +2027,11 @@ fn ledger_trouble(t: &zikaron_store::codes::Trouble) -> Answer {
 }
 
 fn refused(r: chain::Refused) -> Answer {
-    out::unanswered(
-        r.reason,
-        vec![(Key::Detail, s(&r.detail)), (Key::Token, s(&r.code))],
-    )
+    let a = out::unanswered(r.reason, vec![(Key::Detail, s(&r.detail)), (Key::Token, s(&r.code))]);
+    match r.line {
+        Some(said) => a.telling(said.text().to_string()),
+        None => a,
+    }
 }
 
 /// Every flag a verb uses must be in [`ALL_FLAGS`] or [`MORE_FLAGS`]; the tests scan for it.

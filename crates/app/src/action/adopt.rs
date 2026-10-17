@@ -165,6 +165,7 @@ pub(super) fn read_claim(shell: &mut Shell, text: &str) -> Result<Option<Spawned
 /// in `apply`. This desk's key signs the claim's preimage (`sign::sign_adoption`) exactly as given in the text.
 pub(super) fn attest_for(shell: &mut Shell, text: &str) -> Result<(String, String), crate::fault::Fault> {
     let claim = crate::adoptx::claim_of(text)?;
+    super::keys::listed_now()?;
     let missing = || crate::fault::Fault::known(crate::fault::Known::KeychainMissing, crate::lang::t(crate::lang::Key::SetNoKey).to_string());
     let secret = crate::key::load(crate::register::account_now()?.as_deref())?.ok_or_else(missing)?;
     let who = secret.address().ok_or_else(missing)?;

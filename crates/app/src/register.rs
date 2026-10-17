@@ -37,29 +37,26 @@ pub fn write(reg: &Registry) -> Result<(), Fault> {
     crate::local::put(&machine, &crate::places::registry_file(), crate::local::Doc::Registry, &reg.to_bytes())
 }
 
-/// The identities on this machine (`identity::view` over the stored register). Without a register, the
-/// account-base key appears as the only row.
-pub fn view(seat: Role) -> Result<Registry, Fault> {
-    crate::identity::view(read()?, seat)
+/// The identities on this machine (`identity::view` over the stored register; empty without one).
+pub fn view() -> Result<Registry, Fault> {
+    Ok(crate::identity::view(read()?))
 }
 
-/// Which registry row is current (`None` without a registry; never the account-base key).
+/// Which registry row is current (`None` without a registry, or with no current row).
 ///
-/// Used by the signing-key ownership check, seat switching, opening a home and mirror export. They need a row
-/// the person registered on this machine; treating the account-base key as current would let machines without
-/// a registry pass those checks (and opening a home would then rewrite the machine pointer).
+/// Used by the signing-key ownership check, seat switching, opening a home and mirror export.
 pub fn now_row_listed() -> Result<Option<(Row, Role)>, Fault> {
     Ok(read()?.and_then(|r| r.now().map(|(row, s)| (row.clone(), s))))
 }
 
 /// Which slot signs now (`identity::account_now` over [`view`]).
 pub fn account_now() -> Result<Option<String>, Fault> {
-    Ok(crate::identity::account_now(&view(Role::Author)?))
+    Ok(crate::identity::account_now(&view()?))
 }
 
 /// Apply one change to the register as stored on disk. Returns `None` and writes nothing when this machine
 /// has no register; otherwise `apply` transforms it and it is written if it changed. Used at boot and when
-/// following a moved home, neither of which should record the account-base key's row.
+/// following a moved home, neither of which makes a register.
 pub fn change_listed<T>(apply: impl FnOnce(&mut Registry) -> Result<T, Fault>) -> Result<Option<T>, Fault> {
     let Some(mut reg) = read()? else { return Ok(None) };
     let before = reg.clone();
@@ -71,12 +68,12 @@ pub fn change_listed<T>(apply: impl FnOnce(&mut Registry) -> Result<T, Fault>) -
 }
 
 /// One identity change: read the table ([`view`]), let `apply` transform it (`identity`'s add, rename,
-/// switch, delete, mark), and write it if it changed or if this machine had no register yet (the first
-/// identity action records the account-base key's row). A refused change writes nothing.
-pub fn change<T>(seat: Role, apply: impl FnOnce(&mut Registry) -> Result<T, Fault>) -> Result<T, Fault> {
+/// switch, delete, mark), and write it if it changed or if this machine had no register yet. A refused change
+/// writes nothing.
+pub fn change<T>(apply: impl FnOnce(&mut Registry) -> Result<T, Fault>) -> Result<T, Fault> {
     let listed = read()?;
     let had = listed.is_some();
-    let mut reg = crate::identity::view(listed, seat)?;
+    let mut reg = crate::identity::view(listed);
     let before = reg.clone();
     let out = apply(&mut reg)?;
     if !had || reg != before {

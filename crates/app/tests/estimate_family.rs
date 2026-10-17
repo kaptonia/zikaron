@@ -156,11 +156,29 @@ fn places_whose_addresses_do_not_read_are_not_the_calls() {
     assert_eq!(estimate(&["wss://node.example".to_string()]), (Some(Known::SettingsShape), false));
 }
 
+/// Places whose estimates differ refuse nothing: an estimate is a quantity each node works out, read by the
+/// largest (`judge::rule_of`), so there is no disagreement to read as the call's or the network's.
 #[test]
 fn places_that_answer_differently_are_not_the_calls() {
+    zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
     let a = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\"0x5208\"}".into());
     let b = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\"0x5209\"}".into());
-    assert_eq!(estimate(&[a, b]), (Some(Known::Disagree), false));
+    let eps: Vec<Endpoint> = [a, b].iter().map(|u| Endpoint::at(31337, u.as_str())).collect();
+    let r = ask_call(&eps, "eth_estimateGas", &Value::Arr(Vec::new())).map_err(|(f, call)| (f.which(), call)).expect("differing estimates are read");
+    assert_eq!((r.value, r.sources, r.single_source), (Value::Str("0x5209".into()), 2, false));
+}
+
+/// Places that all answer, none with a quantity (text that is not one, a number that is not text, `null`): the
+/// reading refuses as the chain's shape, not as unreachable, and not as the call's.
+#[test]
+fn places_answering_no_quantity_are_the_chains_shape() {
+    let a = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\"0xzz\"}".into());
+    let b = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":16}".into());
+    assert_eq!(estimate(&[a, b]), (Some(Known::ChainShape), false));
+    // Every place says null: a call has an outcome or a refusal, never "none", so null is the chain's shape, as
+    // one node's null is on the command line's path (`send::estimate_gas`).
+    let (a, b) = (node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":null}".into()), node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":null}".into()));
+    assert_eq!(estimate(&[a, b]), (Some(Known::ChainShape), false));
 }
 
 /// With several places refusing, the member and whether it is about the call are both read off the first

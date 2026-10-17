@@ -39,6 +39,18 @@ impl Answer {
     pub fn telling(self, line: String) -> Answer {
         Answer { told: Some(line), ..self }
     }
+
+    /// The same answer with these members added to its object (the printed form orders members by itself).
+    pub fn with(self, members: Vec<(Key, Value)>) -> Answer {
+        let value = match self.value {
+            Value::Obj(mut ms) => {
+                ms.extend(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)));
+                Value::Obj(ms)
+            }
+            other => other,
+        };
+        Answer { value, ..self }
+    }
 }
 
 fn obj(members: Vec<(Key, Value)>) -> Value {
@@ -80,8 +92,44 @@ pub fn partial(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
 }
 
 /// No answer: unreachable endpoint, disagreeing readings, declined scan. Exit 4 (law §9.4).
+///
+/// An endpoint not reached because its proxy required authentication (`detail` carries the transport's message,
+/// `zikaron_anchor::rpc::proxy_credentials`) is handled here for every verb: the stderr line says how `--proxy`
+/// carries credentials, and an `E_UNREACHABLE` answer gains `token` `PROXY_CREDENTIALS_MISSING` (none given) or
+/// `PROXY_CREDENTIALS_REFUSED` (the ones given were refused); a reason with a `token` of its own (`E_SCAN`) keeps it.
+///
+/// An endpoint not reached after the connection went ahead without the system's proxy auto-configuration (PAC)
+/// script (`zikaron_anchor::rpc::script_trouble_last`) gets a stderr line naming the script's problem and the way
+/// out.
 pub fn unanswered(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
-    at(Exit::Unanswered, reason, members)
+    let asked = members.iter().find_map(|(k, v)| match (k, v) {
+        (Key::Detail, Value::Str(d)) => zikaron_anchor::rpc::proxy_credentials_of(d),
+        _ => None,
+    });
+    match asked {
+        Some(given) => {
+            let (token, said) = if given { ("PROXY_CREDENTIALS_REFUSED", Said::ProxyCredentialsRefused) } else { ("PROXY_CREDENTIALS_MISSING", Said::ProxyCredentialsMissing) };
+            let mut ms = members;
+            if reason == Reason::Unreachable && !ms.iter().any(|(k, _)| *k == Key::Token) {
+                ms.push((Key::Token, s(token)));
+            }
+            at(Exit::Unanswered, reason, ms).telling(said.text().to_string())
+        }
+        None => match zikaron_anchor::rpc::script_trouble_last().filter(|_| reason == Reason::Unreachable) {
+            Some(x) => at(Exit::Unanswered, reason, members).telling(script_line(x)),
+            None => at(Exit::Unanswered, reason, members),
+        },
+    }
+}
+
+/// The stderr line for a connection that went ahead without the system's PAC script (`x`, what went wrong with
+/// it) and failed.
+fn script_line(x: zikaron_anchor::rpc::PacTrouble) -> String {
+    match x {
+        zikaron_anchor::rpc::PacTrouble::RemoteHttp => Said::PacRemoteHttp.text().to_string(),
+        zikaron_anchor::rpc::PacTrouble::Unfetched => Said::PacUnfetched.text().to_string(),
+        other => Said::PacFailed.text().replace("{0}", other.code()),
+    }
 }
 
 fn at(exit: Exit, reason: Reason, members: Vec<(Key, Value)>) -> Answer {
@@ -309,6 +357,7 @@ pub enum Said {
     KeyFileOpen,
     NotWithHome,
     DesktopLocked,
+    DoorAlone,
     DesktopClosed,
     DoorPathLong,
     DoorNotYou,
@@ -316,10 +365,36 @@ pub enum Said {
     NoMachine,
     OnDesktop,
     Queued,
+    SealedNoKey,
+    CredentialExpired,
+    CredentialMissing,
+    CredentialShape,
+    HomeHeld,
+    HomeOtherMachine,
+    Adopted,
+    AsWord,
+    NotAHome,
+    HandedOff,
+    HandoffFile,
+    HandoffNotBack,
+    HandoffAhead,
+    HandoffNotOneLine,
+    RecordsNotAll,
+    OnChain,
+    ProxyCredentialsMissing,
+    ProxyCredentialsRefused,
+    PacRemoteHttp,
+    PacUnfetched,
+    PacFailed,
+    AnchorNotAHome,
+    HomeSettingsSay,
+    SendRefused,
+    ReadOnly,
+    ScanTooWide,
 }
 
 impl Said {
-    pub const ALL: [Said; 48] = [
+    pub const ALL: [Said; 75] = [
         Said::Usage,
         Said::NotAVerb,
         Said::NotAFlag,
@@ -361,6 +436,7 @@ impl Said {
         Said::KeyFileOpen,
         Said::NotWithHome,
         Said::DesktopLocked,
+        Said::DoorAlone,
         Said::DesktopClosed,
         Said::DoorPathLong,
         Said::DoorNotYou,
@@ -368,6 +444,32 @@ impl Said {
         Said::NoMachine,
         Said::OnDesktop,
         Said::Queued,
+        Said::SealedNoKey,
+        Said::CredentialExpired,
+        Said::CredentialMissing,
+        Said::CredentialShape,
+        Said::HomeHeld,
+        Said::HomeOtherMachine,
+        Said::Adopted,
+        Said::AsWord,
+        Said::NotAHome,
+        Said::HandedOff,
+        Said::HandoffFile,
+        Said::HandoffNotBack,
+        Said::HandoffAhead,
+        Said::HandoffNotOneLine,
+        Said::RecordsNotAll,
+        Said::OnChain,
+        Said::ProxyCredentialsMissing,
+        Said::ProxyCredentialsRefused,
+        Said::PacRemoteHttp,
+        Said::PacUnfetched,
+        Said::PacFailed,
+        Said::AnchorNotAHome,
+        Said::HomeSettingsSay,
+        Said::SendRefused,
+        Said::ReadOnly,
+        Said::ScanTooWide,
     ];
 
     /// The words, one table: Chinese and English.
@@ -388,10 +490,10 @@ impl Said {
             Said::NotJson => ("不是 JSON", "not JSON"),
             Said::NotLawJson => ("不是法 §3.5 收的 JSON", "not JSON the law takes (§3.5)"),
             Said::NotUtf8 => ("参数不是合法 UTF-8", "an argument is not valid UTF-8"),
-            Said::Sealed => ("已锁定:这是 ZIKARON Desk 封存的本机数据,命令行不读", "Locked: this is local data ZIKARON Desk keeps sealed; the command line does not read it"),
+            Said::Sealed => ("已锁定:这是 ZIKARON Desk 封存的本机数据;命令行只凭凭据读桌面所管之家的账本", "Locked: this is local data ZIKARON Desk keeps sealed; the command line reads it only as the ledger of a home the desktop keeps, with the credential"),
             Said::EndpointShape => ("--endpoint 的形是 <链号>=<url>", "--endpoint is <chain id>=<url>"),
             Said::EndpointScheme => ("端点只认 http:// 或 https:// 地址", "an endpoint is an http:// or https:// address"),
-            Said::ProxyShape => ("--proxy 只认 system、none、http://主机:端口 或 socks5://主机:端口(不带用户名与口令)", "--proxy takes system, none, http://host:port or socks5://host:port (without a user name or password)"),
+            Said::ProxyShape => ("--proxy 取 system、none 或代理地址", "--proxy takes system, none or a proxy address"),
             Said::NeedEndpoint => ("至少要一个 --endpoint <链号>=<url>", "at least one --endpoint <chain id>=<url> is wanted"),
             Said::OneEndpoint => ("anchor 只往一条链上发,只收一个 --endpoint", "anchor sends to one chain and takes one --endpoint"),
             Said::ChainIdNotInt => ("链号不是十进制整数", "the chain id is not a decimal integer"),
@@ -414,6 +516,7 @@ impl Said {
             Said::KeyFileOpen => ("这份密钥档别的账户也读得到(只许本人可读)", "other accounts can read this key file (it must be readable by its owner only)"),
             Said::NotWithHome => ("带 --home 时不收这一旗(桌面那一侧用它自己的身份与账本)", "not taken together with --home (the desktop uses its own identity and ledger)"),
             Said::DesktopLocked => ("桌面锁着或没有打开", "The desktop is locked or not open"),
+            Said::DoorAlone => ("纯命令行写入开着,桌面不收 --home;去掉 --home 直写", "Writing alone is on, so the desktop takes no --home; write without --home"),
             Said::DesktopClosed => ("桌面在答之前锁上、关了这处数据或退出了", "The desktop locked, closed this data folder or quit before it answered"),
             Said::DoorPathLong => ("本机数据所在文件夹的路径太长,连不到桌面", "The path of this machine's data folder is too long to reach the desktop"),
             Said::DoorNotYou => ("桌面那一端不是本机这位用户", "The desktop at the other end is another user's"),
@@ -421,6 +524,41 @@ impl Said {
             Said::NoMachine => ("找不到本机数据所在的文件夹", "This machine's data folder cannot be found"),
             Said::OnDesktop => ("此动作须在桌面上做", "This action must be done on the desktop"),
             Said::Queued => ("已在队列,待用户在桌面上发", "Queued; waiting for the user to send it from the desktop"),
+            Said::SealedNoKey => ("封存数据不收 --key 或 --key-file", "sealed data does not take --key or --key-file"),
+            Said::CredentialExpired => ("命令行凭据已过期;到桌面重新打开纯命令行写入", "The command-line credential has expired; turn writing alone on again on the desktop"),
+            Said::CredentialMissing => ("本机没有命令行凭据;到桌面打开纯命令行写入", "This machine has no command-line credential; turn writing alone on in the desktop"),
+            Said::CredentialShape => ("命令行凭据无效;到桌面关掉再打开纯命令行写入", "The command-line credential is not valid; turn writing alone off and on again on the desktop"),
+            Said::HomeHeld => ("桌面正在写入,未写;稍后再试", "The desktop is writing; nothing was written. Try again shortly"),
+            Said::HomeOtherMachine => ("这份数据由另一台机器写入,未写", "Another machine writes this data; nothing was written"),
+            Said::Adopted => ("这本账已被 ZIKARON Desk 采用,原目录不再写", "ZIKARON Desk has adopted this ledger; its folder is no longer written"),
+            Said::AsWord => ("--as 只认 file 或 folder", "--as takes file or folder"),
+            Said::NotAHome => ("这不是桌面所管之家的账本,没有底账设置;给 --basis", "this is not the ledger of a home the desktop keeps and has no basis settings; give --basis"),
+            Said::HandedOff => ("这本账已交接到另一处;收下交回的交接件之前不在这里写", "This ledger was handed off to another place; it is not written here until its handoff comes back"),
+            Said::HandoffFile => ("这份文件读不出交接件,未写", "This file does not read as a handoff; nothing was written"),
+            Said::HandoffNotBack => ("这一处已交出这本账,这份交接件不是交回来的那一份,未写", "This place handed the ledger off, and this handoff is not the one coming back; nothing was written"),
+            Said::HandoffAhead => ("这一处有交接件里没有的条目,收下会丢掉或分叉它,未写", "This place holds an entry the handoff lacks; taking it would lose or fork that entry; nothing was written"),
+            Said::HandoffNotOneLine => ("交接件里的账不是一条线,未写", "The handoff's ledger is not one line; nothing was written"),
+            Said::ProxyCredentialsMissing => (
+                "代理要用户名与密码:在 --proxy 写成 协议://用户名:密码@主机:端口(其中的 @、: 写成 %40、%3A)",
+                "The proxy asks for a user name and password: write them in --proxy as scheme://user:password@host:port (an @ or : in them as %40, %3A)",
+            ),
+            Said::ProxyCredentialsRefused => (
+                "代理不收所给的用户名与密码:请核对 --proxy 里写的(其中的 @、: 写成 %40、%3A)",
+                "The proxy refused the user name and password given: check the ones written in --proxy (an @ or : in them as %40, %3A)",
+            ),
+            Said::PacRemoteHttp => ("代理脚本在远程 http 上,未用:请用 --proxy 指定代理", "Proxy script is on remote http, not used: give a proxy with --proxy"),
+            Said::PacUnfetched => ("取不到代理脚本:请开启代理软件,或用 --proxy 指定代理", "Can't fetch the proxy script: start your proxy app, or give a proxy with --proxy"),
+            Said::PacFailed => ("代理脚本出错({0}):请用 --proxy 指定代理", "Proxy script failed ({0}): give a proxy with --proxy"),
+            Said::OnChain => ("链上已有这一条(别处已上链),没有再发", "The chain already holds this anchor (put on chain elsewhere); nothing was sent"),
+            Said::RecordsNotAll => ("不是每一条记录都成立:看各条的 original 与 anchored", "Not every record holds: see each one's original and anchored"),
+            Said::AnchorNotAHome => ("--ledger 要桌面所管之家的账本;直发给 --key 与 --endpoint", "--ledger takes the ledger of a home the desktop keeps; to send directly give --key and --endpoint"),
+            Said::HomeSettingsSay => ("这处数据的链、合约、节点与代理由设置给,不收这一旗", "this home's chain, registry, nodes and proxy come from its settings; this flag is not taken"),
+            Said::SendRefused => ("什么也没发出:看 token 与 detail", "Nothing was sent: see token and detail"),
+            Said::ReadOnly => ("这一处数据只读,未写:看 token 与 detail", "This home is read-only; nothing was written: see token and detail"),
+            Said::ScanTooWide => (
+                "这一扇窗按节点收得下的跨度问不完:把起始区块往前挪,或换一处收得下更宽窗的节点",
+                "This window cannot be read at the span the node takes: move the start block forward, or use a node that takes wider windows",
+            ),
         }
     }
 
@@ -436,10 +574,10 @@ impl Said {
 
 /// The line for people when the law refuses an entry's body (`E_BODY_FIELD`): which member, and which flags
 /// give it.
-pub fn body_line(member: &str, flags: &str) -> String {
+pub fn body_line(member: &str, (zh, en): (&str, &str)) -> String {
     match lang() {
-        Lang::Zh => format!("{member}: 缺或不成形,由 {flags} 给"),
-        Lang::En => format!("{member}: missing or malformed; given by {flags}"),
+        Lang::Zh => format!("{member}: 缺或不成形,由 {zh} 给"),
+        Lang::En => format!("{member}: missing or malformed; given by {en}"),
     }
 }
 

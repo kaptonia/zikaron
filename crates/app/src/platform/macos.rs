@@ -1,9 +1,9 @@
-//! macOS: the file dialog is AppKit's NSOpenPanel through the Objective-C runtime (no third-party crate); lock,
-//! zone and error output are shared with Linux (`unix.rs`); the temporary directory is the per-user one from
-//! `confstr(_CS_DARWIN_USER_TEMP_DIR)`, ignoring `TMPDIR`. The panel opens without blocking the run loop
+//! macOS: the file dialog is AppKit's NSOpenPanel through the Objective-C runtime (no third-party crate);
+//! zone and error output are shared with Linux (`unix.rs`), the lock is `zikaron-os`'s; the temporary
+//! directory is the per-user one from `confstr(_CS_DARWIN_USER_TEMP_DIR)`, ignoring `TMPDIR`. The panel opens without blocking the run loop
 //! (`beginWithCompletionHandler:`), so the window keeps drawing, and no child process is started.
 
-pub(super) use super::unix::{lock_now, lock_wait, say_without_window, zone_rules};
+pub(super) use super::unix::{say_without_window, zone_rules};
 
 use std::ffi::c_void;
 

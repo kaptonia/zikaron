@@ -148,7 +148,7 @@ pub fn ask_each(nodes: Vec<(String, Box<dyn crate::rpc::Endpoint + Send>)>, meth
     each(
         nodes,
         |(_, mut ep)| crate::patience::ask(ep.as_mut(), method, params),
-        || Err(crate::rpc::Trouble::Transport("asking this node stopped short".into())),
+        || Err(crate::rpc::Trouble::Transport(crate::rpc::Broke::Short)),
     )
     .into_iter()
     .zip(names)

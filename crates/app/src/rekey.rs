@@ -49,9 +49,9 @@ pub fn set_primary(id: &str, pin: &str) -> Result<(), Fault> {
         }
     }
     let nb = crate::keybox::build_new(crate::keybox::PinFor::New(pin), Some((&row.id, kind, &secret)), &slots);
-    zikaron_ui::secret::wipe(&mut secret);
+    zikaron_os::wipe(&mut secret);
     for (_, b) in slots.iter_mut() {
-        zikaron_ui::secret::wipe(b);
+        zikaron_os::wipe(b);
     }
     let nb = nb?;
     let new = nb.local_key();

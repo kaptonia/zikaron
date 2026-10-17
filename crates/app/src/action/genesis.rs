@@ -101,6 +101,14 @@ pub(super) fn adopt(shell: &mut Shell, dir: &str) -> Result<crate::firstrun::Ado
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
+    // Adopting writes this home's ledger: only the instance that writes it, never a second one reading it or one
+    // whose home another machine writes (the writer refusal of `Shell::may_write_entries`, whose other gates this
+    // does not ask: adopting is how a home with no ledger, or one not fetched, gets its own).
+    match shell.lock.as_ref() {
+        Some(l) if l.mode().writable() => {}
+        Some(l) => return Err(crate::fault::Fault::known(crate::fault::Known::ReadOnly, crate::lang::filln(crate::lang::Key::Tail006, &[&(l.holder()).to_string()]))),
+        None => return Err(crate::fault::Fault::known(crate::fault::Known::NoHome, crate::lang::t(crate::lang::Key::Tail005).to_string())),
+    }
     let got = crate::firstrun::adopt(std::path::Path::new(dir), home);
     // Adoption changed this home's ledger (whether or not it succeeded), so reread everything derived from it.
     // The pen and the broken-chain banner are not touched here.

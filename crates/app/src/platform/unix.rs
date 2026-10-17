@@ -1,21 +1,5 @@
-//! What macOS and Linux do the same way: the kernel lock, `$HOME`, and the zone from `TZ` or `/etc/localtime`.
-
-unsafe extern "C" {
-    fn flock(fd: i32, op: i32) -> i32;
-}
-
-const LOCK_EX: i32 = 2;
-const LOCK_NB: i32 = 4;
-
-pub(super) fn lock_now(file: &std::fs::File) -> bool {
-    use std::os::unix::io::AsRawFd;
-    unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) == 0 }
-}
-
-pub(super) fn lock_wait(file: &std::fs::File) -> bool {
-    use std::os::unix::io::AsRawFd;
-    unsafe { flock(file.as_raw_fd(), LOCK_EX) == 0 }
-}
+//! What macOS and Linux do the same way: `$HOME`, and the zone from `TZ` or `/etc/localtime` (the kernel lock is
+//! `zikaron-os`'s).
 
 /// On Unix the reason goes to standard error only.
 pub(super) fn say_without_window(line: &str, _sentence: &str) {

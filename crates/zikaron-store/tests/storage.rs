@@ -384,3 +384,17 @@ fn the_binary_holds_no_verb_that_deletes() {
     let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger.rs")).unwrap();
     assert!(lib.contains("remove_file"), "库侧的扫场还在");
 }
+
+/// An entry is written owner-only from the moment its temporary file is created, and the landed entry is that
+/// file (linked or moved), so it keeps the mode: no moment when another account on the machine could read it.
+#[test]
+fn an_entry_is_owner_only_from_its_temporary_to_its_place() {
+    let dir = scratch("owner-only");
+    let ledger = LedgerDir::open_or_create(PathBuf::from(&dir)).expect("ledger");
+    let staged = ledger.stage(&name("cd"), b"{}").expect("staged");
+    let tmp = std::fs::read_dir(&*dir).expect("listing").flatten().find(|e| layout::tmp_shaped(&e.file_name().to_string_lossy())).expect("the temporary file").path();
+    assert!(zikaron_os::is_owner_only(&tmp).expect("mode"), "the temporary file is owner-only at creation");
+    staged.link().expect("linked").seal().expect("sealed");
+    let landed = dir.join(layout::entry_file_name(&name("cd")));
+    assert!(zikaron_os::is_owner_only(&landed).expect("mode"), "the landed entry keeps it");
+}

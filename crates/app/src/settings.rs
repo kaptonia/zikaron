@@ -11,7 +11,7 @@ use crate::roles::Role;
 use zikaron::json::{self, Value};
 
 /// The settings file name.
-pub const FILE: &str = "desk.json";
+pub const FILE: &str = zikaron_seal::ground::SETTINGS_FILE;
 
 /// Default size cap in bytes. The cap can be changed but not removed.
 pub const CAP_DEFAULT: u64 = 4 * 1024 * 1024 * 1024;
@@ -57,12 +57,6 @@ pub struct Settings {
     pub audit_every: u64,
     /// The registered git repository.
     pub repo: Option<RepoRecord>,
-    /// The former local exclusivity list, kept read-only for older homes.
-    ///
-    /// Exclusivity is now carried by the issuance record written once at signing (`termsx`). This list is
-    /// read but never changed; the UI marks its entries "no terms document", and the double-sale check still
-    /// reads it (`legacy` in `grantx::table`).
-    pub exclusive: Vec<String>,
     /// Address book, purely local: only what the person pasted in. This layer never discovers or enumerates
     /// addresses, so it never becomes a directory.
     pub book: Vec<String>,
@@ -117,7 +111,6 @@ impl Default for Settings {
             from_block: 0,
             audit_every: AUDIT_EVERY_DEFAULT,
             repo: None,
-            exclusive: Vec::new(),
             book: Vec::new(),
             upstreams: Vec::new(),
             review_every: REVIEW_EVERY_DEFAULT,
@@ -136,8 +129,8 @@ impl Default for Settings {
 }
 
 /// The members this version reads and writes; any other is kept as it came (`Settings::extra`).
-const MEMBERS: [&str; 22] = [
-    "alarmed", "auditEvery", "autoAnchor", "book", "capBytes", "chainId", "endpoints", "exclusive", "fromBlock", "grantNotes",
+const MEMBERS: [&str; 21] = [
+    "alarmed", "auditEvery", "autoAnchor", "book", "capBytes", "chainId", "endpoints", "fromBlock", "grantNotes",
     "hideLocalDeletions", "issuerNotes", "lang", "mirror", "network", "publish", "registry", "repo", "reviewEvery", "role",
     "upstreams", "zone",
 ];
@@ -168,20 +161,6 @@ impl Settings {
             Some(Value::Int(n)) if *n > 0 => *n,
             _ => CAP_DEFAULT,
         };
-        let endpoints = match field(&v, "endpoints") {
-            Some(Value::Arr(a)) => a
-                .iter()
-                .filter_map(|x| match x {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        let addr = |k: &str| match field(&v, k) {
-            Some(Value::Str(s)) => Address::parse(s),
-            _ => None,
-        };
         let mirror = match field(&v, "mirror") {
             Some(m) => {
                 let path = match field(m, "path") {
@@ -210,36 +189,23 @@ impl Settings {
             }
             None => None,
         };
+        // The three basis fields and the nodes are read where the command line reads them too
+        // (`zikaron_seal::ground`).
+        let ground = zikaron_seal::ground::of_settings(&v);
         Ok(Settings {
             role,
             cap_bytes: cap,
-            endpoints,
+            endpoints: ground.endpoints,
             mirror,
-            chain_id: match field(&v, "chainId") {
-                Some(Value::Int(n)) => Some(*n),
-                _ => None,
-            },
-            registry: addr("registry"),
-            from_block: match field(&v, "fromBlock") {
-                Some(Value::Int(n)) => *n,
-                _ => 0,
-            },
+            chain_id: ground.chain_id,
+            registry: ground.registry.map(Address),
+            from_block: ground.from_block,
             audit_every: match field(&v, "auditEvery") {
                 Some(Value::Int(n)) => *n,
                 _ => AUDIT_EVERY_DEFAULT,
             },
             repo,
             book: match field(&v, "book") {
-                Some(Value::Arr(a)) => a
-                    .iter()
-                    .filter_map(|x| match x {
-                        Value::Str(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            },
-            exclusive: match field(&v, "exclusive") {
                 Some(Value::Arr(a)) => a
                     .iter()
                     .filter_map(|x| match x {
@@ -341,15 +307,6 @@ impl Settings {
             ids.sort();
             ids.dedup();
             m.push(("book".to_string(), Value::Arr(ids.into_iter().map(Value::Str).collect())));
-        }
-        if !self.exclusive.is_empty() {
-            let mut ids = self.exclusive.clone();
-            ids.sort();
-            ids.dedup();
-            m.push((
-                "exclusive".to_string(),
-                Value::Arr(ids.into_iter().map(Value::Str).collect()),
-            ));
         }
         if let Some(r) = &self.repo {
             m.push((

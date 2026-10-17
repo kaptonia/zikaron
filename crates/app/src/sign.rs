@@ -136,198 +136,18 @@ pub fn sign_adoption(s: &Secret, preimage: &[u8]) -> Result<String, Fault> {
     seal(s, preimage, Law::Core(zikaron::tokens::Domain::Adoption))
 }
 
-/// Where this broadcast went: hash, how many nodes were asked, which one took it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Broadcast {
-    pub hash: [u8; 32],
-    /// How many times the transaction (`eth_sendRawTransaction`) was submitted in total (including backoff
-    /// retries at the same place).
-    pub asked: usize,
-    /// The endpoint that took it.
-    pub taken: crate::chainx::NodeAddr,
-    /// The nonce it was signed at, when this send chose it (`anchor_send`); a resend's is the batch's own.
-    pub nonce: Option<u64>,
-}
-
-/// Send an anchoring transaction using the whole endpoint table. The key-lending exit (`with_tx_key`) is
-/// visible only to this file and called only here: signing and submission both happen inside this loan.
-///
-/// Using only the first endpoint for nonce and broadcast, with no retry or failover, would leave a whole
-/// batch stuck when the preset public nodes rate-limit. So:
-/// 1. Sign once: the pending nonce is asked of every endpoint at once (each with the patience table, so a
-///    rate limit is waited out there) and the largest is taken; an endpoint that does not answer is skipped.
-/// 2. Submit the same signed bytes endpoint by endpoint; a matching echo is success. Network-kind refusals
-///    (rate limit, no answer, timeout, bad answer, access refused: `fault::Known::NETWORK`) move to the next
-///    endpoint (a rate limit first retries the same one per `backoff`). The nonce is fixed and the hash
-///    identical, so there is no double spend.
-/// 3. A node's substantive verdict (insufficient balance, nonce used, underpriced, execution reverted…)
-///    would be the same everywhere, so it is returned at once without asking further.
-/// 4. Only when no endpoint took it is it refused, with the last answer.
-///
-/// `backoff` is the list of backoff durations from the caller (a shell field tests can change); how the
-/// transaction is signed and broadcast belongs to the anchoring crate. `_pass` is the exit gate's
-/// [`crate::exitgate::Pass`]: there is no way to the chain except through the gate.
-#[allow(clippy::too_many_arguments)]
-pub fn anchor_send(
-    _pass: &crate::exitgate::Pass,
-    s: &Secret,
-    urls: &[crate::chainx::NodeAddr],
-    chain: u64,
-    registry: Option<[u8; 20]>,
-    hashes: &[[u8; 32]],
-    fees: zikaron_anchor::send::Fees,
-    backoff: &[std::time::Duration],
-) -> Result<Broadcast, Fault> {
-    // The first node in its safe-to-display form, as a refusal's evidence names it.
-    let first = urls.first().map(crate::chainx::NodeAddr::said).unwrap_or_default();
-    let open = |url: &crate::chainx::NodeAddr| {
-        crate::chainx::endpoint_at(url.for_transport()).ok_or_else(|| {
-            Fault::known(Known::SettingsShape, crate::chainx::address_said(url.for_transport()))
-        })
-    };
-    use crate::chainx::Next;
-    let mut last: Option<Fault> = None;
-    // Step 1: sign once. The pending nonce is asked of every endpoint at once, each with the patience table
-    // (`zikaron_anchor::patience`: a rate limit is waited out there, never here), and the largest is taken (a
-    // node that is behind would hand out a nonce already used). An endpoint that did not answer is skipped; a
-    // node's substantive verdict refuses at once; if none answers, the last answer is returned.
-    crate::task::stage_at(crate::task::Kind::Anchor, 0);
-    let mut signed: Option<(Vec<u8>, [u8; 32], u64)> = None;
-    let from = s.address().map(|a| a.0);
-    if let Some(from) = from {
-        let params = zikaron_anchor::send::nonce_params(&from);
-        let mut nodes: Vec<(String, Box<dyn zikaron_anchor::rpc::Endpoint + Send>)> = Vec::new();
-        let mut words: Vec<(usize, Fault)> = Vec::new();
-        for (i, url) in urls.iter().enumerate() {
-            match open(url) {
-                Ok(h) => nodes.push((url.for_transport().to_string(), h)),
-                Err(f) => words.push((i, f)),
-            }
-        }
-        let answers = zikaron_anchor::endpoints::ask_each(nodes, "eth_getTransactionCount", &params);
-        let judged = zikaron_anchor::judge::judge("eth_getTransactionCount", &params, answers);
-        match judged {
-            Ok(j) => {
-                let taker = j.sources.first().cloned().unwrap_or_default();
-                match j.value.as_str().and_then(crate::chainx::wei).and_then(|n| u64::try_from(n).ok()) {
-                    Some(nonce) => match signed_at(s, chain, registry, hashes, None, fees, nonce) {
-                        Ok((raw, hash)) => signed = Some((raw, hash, nonce)),
-                        Err(t) => return Err(crate::chainx::said_fault(&taker, &t)),
-                    },
-                    None => last = Some(crate::chainx::said_fault(&taker, &zikaron_anchor::rpc::Trouble::Transport("nonce 读不出".into()))),
-                }
-            }
-            Err(zikaron_anchor::judge::NoReading::NoneAnswered(missing)) => {
-                for (url, m) in missing {
-                    let t = match m {
-                        zikaron_anchor::judge::Missing::Trouble(t) => t,
-                        zikaron_anchor::judge::Missing::Unreadable(_) => zikaron_anchor::rpc::Trouble::Transport("nonce 读不出".into()),
-                    };
-                    let f = crate::chainx::said_fault(&url, &t);
-                    let i = urls.iter().position(|u| u.for_transport() == url).unwrap_or(usize::MAX);
-                    words.push((i, f));
-                }
-                words.sort_by_key(|(i, _)| *i);
-                if let Some((_, f)) = words.iter().find(|(_, f)| crate::chainx::next_after(f) == Next::Stop) {
-                    return Err(f.clone());
-                }
-                last = words.pop().map(|(_, f)| f);
-            }
-            // Taking the maximum, the answers never disagree.
-            Err(_) => last = Some(Fault::known(Known::Unreachable, first.clone())),
-        }
+/// The signing port the sender asks through (`zikaron_send::batch::Signer`): the only place an anchoring
+/// transaction is signed. The key is lent here alone (`with_tx_key`, visible to this file only), to
+/// `send::sign_at` (a registry call to `registry` with the hashes, or the given call data), at the given nonce;
+/// asking the nonce, broadcasting and every refusal are the sender's.
+impl zikaron_send::batch::Signer for Secret {
+    fn from(&self) -> Option<[u8; 20]> {
+        self.address().map(|a| a.0)
     }
-    let Some((raw, hash, nonce)) = signed else {
-        return Err(last.unwrap_or_else(|| Fault::known(Known::NoEndpoint, first)));
-    };
-    broadcast(urls, chain, &raw, hash, backoff, last).map(|b| Broadcast { nonce: Some(nonce), ..b })
-}
 
-/// Sign a stuck batch's resend with higher fees: the same transaction (its nonce, recipient and call data,
-/// read back from the chain, `task::Stuck`) signed again with `fees` by the same key; nothing is sent. A
-/// different key is refused before anything is signed (`AddressMismatch`). The caller records the hash, then
-/// sends the bytes ([`bump_broadcast`]), so a resend that went out is always one the queue watches.
-pub fn bump_sign(_pass: &crate::exitgate::Pass, s: &Secret, urls: &[crate::chainx::NodeAddr], stuck: &crate::task::Stuck, fees: zikaron_anchor::send::Fees) -> Result<(Vec<u8>, [u8; 32]), Fault> {
-    let first = urls.first().map(|u| u.for_transport().to_string()).unwrap_or_default();
-    if s.address().map(|a| a.0) != Some(stuck.from) {
-        return Err(Fault::known(Known::AddressMismatch, zikaron::hexfmt::encode(&stuck.from)));
+    fn sign(&self, chain: u64, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], input: Option<Vec<u8>>, fees: zikaron_anchor::send::Fees, nonce: u64) -> Result<(Vec<u8>, [u8; 32]), zikaron_anchor::rpc::Trouble> {
+        self.with_tx_key(|k| zikaron_anchor::send::sign_at(k, chain, zikaron_anchor::send::Form::Registry, registry, hashes, input, fees, nonce))
     }
-    crate::task::stage_at(crate::task::Kind::Anchor, 0);
-    signed_at(s, stuck.chain, Some(stuck.to), &[], Some(stuck.input.clone()), fees, stuck.nonce).map_err(|t| crate::chainx::said_fault(&first, &t))
-}
-
-/// Send a signed resend through the single broadcast path ([`broadcast`]), once.
-pub fn bump_broadcast(_pass: &crate::exitgate::Pass, urls: &[crate::chainx::NodeAddr], chain: u64, raw: &[u8], hash: [u8; 32], backoff: &[std::time::Duration]) -> Result<Broadcast, Fault> {
-    broadcast(urls, chain, raw, hash, backoff, None)
-}
-
-/// The only place an anchoring transaction is signed: the key is lent here alone, to `send::sign_at` (a
-/// registry call to `registry` with the hashes, or the given call data), at the given nonce.
-fn signed_at(s: &Secret, chain: u64, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], input: Option<Vec<u8>>, fees: zikaron_anchor::send::Fees, nonce: u64) -> Result<(Vec<u8>, [u8; 32]), zikaron_anchor::rpc::Trouble> {
-    s.with_tx_key(|k| zikaron_anchor::send::sign_at(k, chain, zikaron_anchor::send::Form::Registry, registry, hashes, input, fees, nonce))
-}
-
-/// Submit signed bytes endpoint by endpoint (every anchoring transaction goes out here, once per signing):
-/// the first endpoint that echoes the hash took it; one that answers "already pending" or "nonce used" is
-/// asked by hash whether it knows this very transaction.
-fn broadcast(urls: &[crate::chainx::NodeAddr], chain: u64, raw: &[u8], hash: [u8; 32], backoff: &[std::time::Duration], last: Option<Fault>) -> Result<Broadcast, Fault> {
-    // The first node in its safe-to-display form, as a refusal's evidence names it.
-    let first = urls.first().map(crate::chainx::NodeAddr::said).unwrap_or_default();
-    let mut last = last;
-    let open = |url: &crate::chainx::NodeAddr| crate::chainx::endpoint_at(url.for_transport()).ok_or_else(|| Fault::known(Known::SettingsShape, crate::chainx::address_said(url.for_transport())));
-    use crate::chainx::Next;
-    let waits: Vec<std::time::Duration> = std::iter::once(std::time::Duration::ZERO).chain(backoff.iter().copied()).collect();
-    // Step 2: submit the same bytes endpoint by endpoint.
-    crate::task::stage_at(crate::task::Kind::Anchor, 1);
-    let mut asked = 0usize;
-    // An earlier endpoint already received these bytes (it answered with a network-kind refusal, and the
-    // bytes may be in its pool).
-    let mut handed = false;
-    for url in urls {
-        let mut http = match open(url) {
-            Ok(h) => h,
-            Err(f) => {
-                last = Some(f);
-                continue;
-            }
-        };
-        for w in &waits {
-            if !w.is_zero() {
-                std::thread::sleep(*w);
-            }
-            asked += 1;
-            match zikaron_anchor::send::submit(http.as_mut(), raw, &hash) {
-                Ok(()) => return Ok(Broadcast { hash, asked, taken: url.clone(), nonce: None }),
-                Err(t) => {
-                    // What the node said, classified only in `chainx::said_fault`.
-                    let f = crate::chainx::said_fault(url.for_transport(), &t);
-                    // "Already pending" or "nonce used": ask once by hash; if a node knows the transaction it
-                    // was taken (then wait for the receipt), otherwise refuse as before.
-                    if crate::chainx::already_taken(&f) && crate::chainx::tx_known(urls, chain, &hash) {
-                        return Ok(Broadcast { hash, asked, taken: url.clone(), nonce: None });
-                    }
-                    match crate::chainx::next_after(&f) {
-                        Next::Retry => last = Some(f),
-                        Next::NextEndpoint => {
-                            handed = true;
-                            last = Some(f);
-                            break;
-                        }
-                        Next::Stop => return Err(f),
-                    }
-                }
-            }
-        }
-    }
-    // Submitted but no endpoint answered (timeout, disconnect): the bytes may be in some pool. Ask once by
-    // hash; known means taken (the receipt decides), unknown means refuse. Refusing outright would make the
-    // next pass anchor again with a new nonce, and if the earlier transaction was also included the batch would
-    // be anchored twice.
-    if handed && crate::chainx::tx_known(urls, chain, &hash) {
-        let Some(taken) = urls.first().cloned() else { return Err(last.unwrap_or_else(|| Fault::known(Known::NoEndpoint, first))) };
-        return Ok(Broadcast { hash, asked, taken, nonce: None });
-    }
-    Err(last.unwrap_or_else(|| Fault::known(Known::NoEndpoint, first)))
 }
 
 /// Sign by face. The window and tests go through here; this is the only face-to-function mapping.
@@ -354,8 +174,8 @@ pub fn domains() -> Vec<&'static str> {
 pub enum Use {
     /// Sign a face.
     Sign(Face),
-    /// Send an anchoring transaction ([`anchor_send`]). Not a signing domain: it signs a transaction, with
-    /// the same key.
+    /// Send an anchoring transaction (signed through this key's port to the sender, `zikaron_send::batch::Signer`).
+    /// Not a signing domain: it signs a transaction, with the same key.
     Anchor,
 }
 

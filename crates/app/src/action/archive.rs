@@ -86,7 +86,7 @@ pub(super) fn read_chain(eps: &[crate::chainx::Endpoint], who: &crate::key::Addr
 pub(super) fn set_endpoints(shell: &mut Shell, specs: &str) -> Result<usize, crate::fault::Fault> {
     let mut eps = Vec::new();
     for one in specs.split_whitespace() {
-        let e = crate::chainx::Endpoint::typed(one).map_err(|said| crate::fault::Fault::known(crate::fault::Known::SettingsShape, said))?;
+        let e = crate::chainx::typed(one).map_err(|said| crate::fault::Fault::known(crate::fault::Known::SettingsShape, said))?;
         eps.push(e);
     }
     let specs: Vec<String> = eps.iter().map(|e| e.spec()).collect();
@@ -187,7 +187,7 @@ pub(super) fn remember_custom(shell: &mut Shell) -> Result<(), crate::fault::Fau
         None => Ok(false),
     })?;
     if changed == Some(true) {
-        shell.seat_identities(Some(crate::register::view(shell.settings.role)?));
+        shell.seat_identities(Some(crate::register::view()?));
     }
     Ok(())
 }

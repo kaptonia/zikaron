@@ -5,6 +5,8 @@ impl Win {
     /// "check and export" runs in the background. Beside it: how the recipient checks, the depth reading, and
     /// the kits exported on this machine.
     pub(super) fn kit_page(&mut self, ui: &mut egui::Ui, now: f64) {
+        // Its attachment zone takes dropped files.
+        self.takes_drops();
         self.ensure_rows(now);
         if self.typed.kit_out.trim().is_empty() {
             if let Some(h) = self.shell.home.as_ref() {
@@ -60,15 +62,13 @@ impl Win {
                             ("", a, b) => fill3(Key::KitEntriesRange, a, b, &in_pick.len().to_string()),
                             _ => fill1(Key::KitPickCount, &in_pick.len().to_string()),
                         };
-                        width::then(
+                        let lines = [(t(Key::KitEntries), Type::Note, c(C::Ink2)), (range.as_str(), Type::Body, c(C::Ink))];
+                        width::then_at(
                             ui,
+                            paint::lines_height(ui, &lines, 2.0).max(tk::INPUT_H),
                             |ui| open_picker = key::key(ui, t(Key::KitPickOpen), Role::Secondary, true).clicked(),
                             |ui, room| {
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    paint::line(ui, t(Key::KitEntries), Type::Note, c(C::Ink2), room);
-                                    paint::line(ui, &range, Type::Body, c(C::Ink), room);
-                                });
+                                paint::lines(ui, &lines, 2.0, room);
                             },
                         );
                         if let Some(e) = pick_err.as_ref() {
@@ -212,6 +212,13 @@ impl Win {
                         });
                         field(ui, t(Key::KitNoteLabel), None, |ui| input::area_words(ui, &mut self.typed.kit_note, 2, ""));
                         Self::place_row(ui, Key::IdStore, &mut self.typed.kit_out);
+                        ui.horizontal(|ui| {
+                            if toggle::switch(ui, self.ux.u3.kit_folder, true).clicked() {
+                                self.ux.u3.kit_folder = !self.ux.u3.kit_folder;
+                            }
+                            paint::text(ui, t(Key::KitAsFolder), Type::Body, c(C::Ink));
+                        });
+                        hint(ui, t(Key::KitAsFolderNote));
                         paint::rule(ui, 0.0);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = tk::S2;
@@ -308,7 +315,13 @@ impl Win {
             // digest.
             let pick = crate::kitx::Pick::parse_ids(&self.typed.pick_from, &self.typed.pick_to, &self.typed.pick_ids).unwrap_or_default();
             let stem = crate::kitx::landing_stem(&rows, &pick);
-            let chosen = crate::home::choose(&crate::home::Kind::Bundle { stem: stem.clone() }, std::path::Path::new(self.typed.kit_out.trim()));
+            // One `.zkit` file unless a folder was asked for.
+            let kind = if self.ux.u3.kit_folder {
+                crate::home::Kind::Bundle { stem: stem.clone() }
+            } else {
+                crate::home::Kind::File { stem: stem.clone(), ext: zikaron_glue::container::EXT_KIT.to_string() }
+            };
+            let chosen = crate::home::choose(&kind, std::path::Path::new(self.typed.kit_out.trim()));
             self.remember_landing(Out::Kit, &chosen);
             let out = chosen.at.display().to_string();
             // Originals still on disk and not removed come first, then dropped items, one per line.
@@ -328,6 +341,7 @@ impl Win {
                 attach: attach.join("\n"),
                 note: self.typed.kit_note.clone(),
                 out,
+                form: if self.ux.u3.kit_folder { zikaron_glue::pack::Form::Folder } else { zikaron_glue::pack::Form::File }.word().to_string(),
             };
             self.act(a, now);
         }
@@ -431,7 +445,7 @@ impl Win {
                 }
                 let (query, range) = typed.borrow().clone();
                 let Some(st) = me.ux.u3.kit_pick.as_mut() else { return };
-                egui::ScrollArea::vertical().id_salt("kit-pick-list").max_height(260.0).show(ui, |ui| {
+                zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("kit-pick-list").max_height(260.0), |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for row in rows.iter().filter(|r| keep(r, &query, &range)) {
                         let (tag, summary, struck) = row_face(&rows, &reading, row);

@@ -150,7 +150,6 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::SelfCheck,
         Action::Measure,
         Action::Quit,
-        Action::MakeAnchorKey,
         Action::SwitchRole,
         Action::ReadIdentities,
         Action::NewIdentity,
@@ -210,7 +209,7 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::SendBatch { count: 1 },
         Action::BumpFee { tx: format!("0x{}", "ef".repeat(32)), cap: 1 },
         Action::PickKit { from: s(), to: s(), ids: s() },
-        Action::ExportKit { from: s(), to: s(), ids: s(), attach: s(), note: s(), out: s() },
+        Action::ExportKit { from: s(), to: s(), ids: s(), attach: s(), note: s(), out: s(), form: "folder".into() },
         Action::VetAttachments { paths: Vec::new() },
         Action::ReadDepth { work: s() },
         Action::DraftGrant { draft: Box::new(ids.draft.clone()), exclusive: false, terms_file: None },
@@ -264,6 +263,9 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::ReadCliPath,
         Action::SetCliPath { on: false },
         Action::SetCliAnchor { to: app::machine::CliAnchor::Send },
+        Action::SetCliDesktop { on: true },
+        Action::SetCliAlone { lasts: app::machine::Lasts::Never, pin: String::new().into() },
+        Action::CliAloneOff,
         Action::SendAsked { count: 1 },
         Action::SetProxy { choice: s() },
     ]
@@ -334,7 +336,7 @@ fn every_ledger_write_is_refused_as_read_only_in_both_reader_modes() {
     let boot = || Shell::boot(zikaron_ui::skin::dress(&ctx));
     // The writer: a ledger with a first entry, a record and a grant.
     let mut w = boot();
-    answers!(apply(&mut w, Action::MakeAnchorKey), Applied::AnchorKey(_));
+    super::seated(&mut w, &root);
     let opened = apply(&mut w, Action::OpenHome { root: root.display().to_string() });
     assert!(matches!(opened, Applied::Homed { mode: app::lock::Mode::Writer, .. }), "{opened:?}");
     let genesis = match apply_settled(&mut w, Action::Genesis { statement: "a8".into() }) {
@@ -422,8 +424,9 @@ fn the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it() {
         assert_eq!(app::cryptx::derivations(), d, "{form}: no derivation ran");
         let f = got.err().unwrap_or_else(|| panic!("{form}: refused"));
         assert_ne!(f.which(), Some(Known::PinWrong), "{form}: not judged: {}", f.said());
-        // Writing the count is what failed (the vault lock was taken: its file is there).
-        assert!(f.tail().contains(&format!(".{}.", app::places::keybox_file())), "{form}: the count's write named: {}", f.tail());
+        // Writing the count is what failed, said with the vault's own file (the vault lock was taken: its file is
+        // there).
+        assert!(f.tail().starts_with(&format!("{}:", m.join(app::places::keybox_file()).display())), "{form}: the count's write named: {}", f.tail());
         said.push(f.said().to_string());
     }
     reopen(&m, was);
@@ -557,7 +560,7 @@ fn each_seal_authenticates_its_parameters_and_salt() {
     }
     for (form, bytes) in [("recoveryParameters", edit(&good, &[m::KDF, m::N], |v| *v = Value::Int(4))), ("recoverySalt", edit(&good, &[m::RECOVERY, "0", m::SALT], flip))] {
         put_vault(&bytes);
-        assert_eq!(known(app::keybox::recover(&words, PIN, &id, &[])), Some(Known::RecoveryNoMatch), "{form}");
+        assert_eq!(known(app::keybox::recover(&words, PIN)), Some(Known::RecoveryNoMatch), "{form}");
         not_open(form);
         assert_eq!(vault(), bytes, "{form}: nothing written");
     }
@@ -568,11 +571,11 @@ fn each_seal_authenticates_its_parameters_and_salt() {
 
 // ═════════════════════ The whole-machine backup ═════════════════════
 
-/// A shell with its anchoring key and one home with a first entry, so a backup holds something.
+/// A shell with an identity and its home with a first entry, so a backup holds something.
 fn machine_with_a_ledger(base: &Path) -> Shell {
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = Shell::boot(zikaron_ui::skin::dress(&ctx));
-    answers!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_));
+    super::seated(&mut shell, &base.join("home"));
     answers!(apply(&mut shell, Action::OpenHome { root: base.join("home").display().to_string() }), Applied::Homed { .. });
     let made = apply_settled(&mut shell, Action::Genesis { statement: "a8 backup".into() });
     assert!(matches!(made, Applied::Genesised { .. }), "{made:?}");
@@ -735,9 +738,11 @@ fn a_backup_counts_only_once_read_back_and_reopened() {
     assert_eq!(app::backup::peek(&made.path, PW).ok(), Some(made.summary.clone()), "reopens to what was answered");
     let record = |at: &str| app::machine::read().unwrap_or_else(|f| panic!("{at}: {}", f.said()));
     let m = record("landed");
-    assert_eq!(m.backup.as_ref().map(|b| (b.at, b.path.clone(), b.indexed)), Some((t1, made.path.display().to_string(), true)));
+    assert_eq!(m.backup.as_ref().map(|b| (b.at, b.path.clone())), Some((t1, made.path.display().to_string())));
     assert_eq!(m.backup_failed, None);
-    // Cannot be written: refused by name, no file, the failure recorded, the last backup kept.
+    // Cannot be written: refused by name, no file, the last backup kept. The failure is recorded where the
+    // backup task ends, whatever failed inside it (`gate_landing::a_backup_that_fails_anywhere_in_its_task_is_recorded`),
+    // not by the export itself.
     let closed = base.join("closed");
     std::fs::create_dir_all(&closed).unwrap();
     let was = shut(&closed);
@@ -747,9 +752,9 @@ fn a_backup_counts_only_once_read_back_and_reopened() {
     assert!(!f.said().is_empty(), "named");
     assert_eq!(std::fs::read_dir(&closed).unwrap().count(), 0, "no file left: {}", f.said());
     let m = record("not landed");
-    assert_eq!(m.backup_failed, Some(t2), "the failure recorded at its time");
+    assert_eq!(m.backup_failed, None, "the export itself records no failure");
     assert_eq!(m.backup.as_ref().map(|b| b.at), Some(t1), "the last backup kept");
-    // The next successful backup clears the failure.
+    // The next successful backup lands, and no failure stands.
     let next = app::backup::export(&closed, PW, t3).expect("lands");
     assert_eq!(app::backup::peek(&next.path, PW).ok(), Some(next.summary.clone()));
     let m = record("landed again");

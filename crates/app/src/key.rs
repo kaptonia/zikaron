@@ -67,9 +67,7 @@ pub struct Secret([u8; 32]);
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        for b in self.0.iter_mut() {
-            unsafe { std::ptr::write_volatile(b, 0) };
-        }
+        zikaron_os::wipe(&mut self.0);
     }
 }
 
@@ -111,15 +109,15 @@ impl Secret {
 
     /// The signing exit for the anchoring transaction.
     ///
-    /// The anchoring crate's `send::anchor` takes the thirty-two bytes (Ethereum signing lives in that crate),
+    /// The anchoring crate's `send::sign_at` takes the thirty-two bytes (Ethereum signing lives in that crate),
     /// so this lends them for exactly that call: the caller cannot keep the reference, and the self-check
-    /// suite counts exactly one caller, whose next statement is `send::anchor`. It leads to no file; the only
+    /// suite counts exactly one caller, whose next statement is `send::sign_at`. It leads to no file; the only
     /// path to disk is `ciphered`.
     ///
-    /// Visible only to `sign`, and the closure runs the send itself. A `pub(crate)` version could be called
-    /// as `with_tx_key(|k| *k)`, copying the bytes out (e.g. into a background thread) and letting any file
-    /// call the core's signing primitive directly. With `pub(in crate::sign)`, the only caller
-    /// (`sign::anchor_send`) runs `send::anchor` entirely inside the closure, so the loan is exactly that send.
+    /// Visible only to `sign`, and the closure signs itself. A `pub(crate)` version could be called as
+    /// `with_tx_key(|k| *k)`, copying the bytes out (e.g. into a background thread) and letting any file call
+    /// the core's signing primitive directly. With `pub(in crate::sign)`, the only caller (the sender's signing
+    /// port in `sign`) runs `send::sign_at` entirely inside the closure, so the loan is exactly that signature.
     pub(in crate::sign) fn with_tx_key<R>(&self, f: impl FnOnce(&[u8; 32]) -> R) -> R {
         lent();
         f(&self.0)
@@ -143,9 +141,7 @@ struct Wipe([u8; 32]);
 
 impl Drop for Wipe {
     fn drop(&mut self) {
-        for b in self.0.iter_mut() {
-            unsafe { std::ptr::write_volatile(b, 0) };
-        }
+        zikaron_os::wipe(&mut self.0);
     }
 }
 
@@ -192,9 +188,8 @@ pub fn generate() -> Result<Secret, Fault> {
 /// Whether this identity's key for this seat is present now. "Absent" is not an error: first run asks exactly
 /// this.
 ///
-/// `acct` is the current slot (`identity::account_now`, read by the caller from the register): without a
-/// register, the account-base slot; with one, the current identity's current seat's slot. An empty current
-/// seat (`None`) answers "absent".
+/// `acct` is the current slot (`identity::account_now`, read by the caller from the register): the current
+/// identity's current seat's slot. No current identity, or an empty current seat (`None`), answers "absent".
 pub fn present(acct: Option<&str>) -> Result<bool, Fault> {
     // Use the vault's `present`, not `get`: it reads only slot names on disk and does not need the master
     // key, so it answers while the vault is locked or does not exist yet. With `get`, asking "is there a key"
@@ -235,9 +230,7 @@ pub(crate) fn seat_slots(entropy: &[u8; crate::family::ENTROPY_BYTES]) -> Option
 pub(crate) fn derived(entropy: &[u8; crate::family::ENTROPY_BYTES], role: crate::roles::Role) -> Option<Secret> {
     let mut raw = crate::cryptx::derive(entropy, &crate::family::path(role))?;
     let s = Secret::take(raw);
-    for b in raw.iter_mut() {
-        unsafe { std::ptr::write_volatile(b, 0) };
-    }
+    zikaron_os::wipe(&mut raw);
     s
 }
 
@@ -254,13 +247,9 @@ pub(crate) fn from_hex(text: &str) -> Option<Secret> {
     }
     let mut raw = [0u8; 32];
     raw.copy_from_slice(&b);
-    for x in b.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
+    zikaron_os::wipe(&mut b);
     let s = Secret::take(raw);
-    for x in raw.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
+    zikaron_os::wipe(&mut raw);
     s
 }
 
@@ -277,9 +266,7 @@ pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
         return Ok(None);
     };
     if raw.len() != 32 {
-        for x in raw.iter_mut() {
-            unsafe { std::ptr::write_volatile(x, 0) };
-        }
+        zikaron_os::wipe(&mut raw);
         return Err(Fault::known(
             Known::KeyMalformed,
             crate::lang::filln(crate::lang::Key::Tail163, &[&(acct).to_string(), &(raw.len()).to_string()]),
@@ -290,18 +277,13 @@ pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
     let got = Secret::take(b);
     // Wipe both plaintext copies: `raw` from the vault and the stack copy `b`. This runs on every signature;
     // without it, locking would clear the master key but leave this key in a heap buffer and on the stack.
-    for x in raw.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
-    for x in b.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
+    zikaron_os::wipe(&mut raw);
+    zikaron_os::wipe(&mut b);
     got.ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::filln(crate::lang::Key::Tail164, &[&(acct).to_string()])))
         .map(Some)
 }
 
-/// Reads bytes as a key and computes its address (used by migration to check each slot). `None` for the
-/// wrong shape.
+/// Reads bytes as a key and computes its address. `None` for the wrong shape.
 pub(crate) fn address_of(raw: &[u8]) -> Option<Address> {
     if raw.len() != 32 {
         return None;
@@ -309,9 +291,7 @@ pub(crate) fn address_of(raw: &[u8]) -> Option<Address> {
     let mut b = [0u8; 32];
     b.copy_from_slice(raw);
     let s = Secret::take(b)?;
-    for x in b.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
+    zikaron_os::wipe(&mut b);
     s.address()
 }
 
@@ -323,10 +303,8 @@ pub fn address_of_probe(raw: &[u8]) -> Option<Address> {
 /// Recovers the vault with a private key (the existing-key identity path: the key decrypted from a keystore
 /// file). The bytes do not leave this module.
 pub(crate) fn recover_with(s: &Secret, new_pin: &str) -> Result<(), Fault> {
-    let a = s
-        .address()
-        .ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string()))?;
-    keybox::recover(s.bytes(), new_pin, &a.hex(), &[crate::places::key_slot(&a)])
+    s.address().ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string()))?;
+    keybox::recover(s.bytes(), new_pin)
 }
 
 /// Records a recovery seal for this identity (an existing-key identity recovers with its private key). The

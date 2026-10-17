@@ -90,7 +90,7 @@ pub fn key_account() -> &'static str {
 
 /// A key's slot name.
 pub fn key_slot(address: &crate::key::Address) -> String {
-    format!("{}-{}", key_account(), address.hex())
+    zikaron_seal::places::key_slot_for(key_account(), &address.hex())
 }
 
 /// An identity's seed slot name.
@@ -112,12 +112,12 @@ pub fn keybox_file() -> String {
 
 /// The key vault's file name under a given account base.
 pub fn keybox_file_for(account: &str) -> String {
-    format!("keys-{account}.json")
+    zikaron_seal::places::keybox_file_for(account)
 }
 
 /// The account base a key vault file belongs to, read back from its name (`None`: not a key vault file).
 pub fn keybox_file_account(name: &str) -> Option<&str> {
-    name.strip_prefix("keys-")?.strip_suffix(".json")
+    zikaron_seal::places::keybox_file_account(name)
 }
 
 /// The key vault's lock file name (next to the vault file).
@@ -126,7 +126,7 @@ pub fn keybox_file_account(name: &str) -> Option<&str> {
 /// aside, then renamed), so two processes could each lock a different, stale inode and exclude nothing. This
 /// file exists only to be locked; its content is never read.
 pub fn keybox_lock_file() -> String {
-    format!("keys-{}.lock", key_account())
+    zikaron_seal::places::keybox_lock_file_for(key_account())
 }
 
 /// The identity register's file name (in the machine directory; no key material). Named by account base, so
@@ -137,10 +137,22 @@ pub fn registry_file() -> String {
 
 /// The identity register's file name under a given account base.
 pub fn registry_file_for(account: &str) -> String {
-    format!("identities-{account}.json")
+    zikaron_seal::places::registry_file_for(account)
 }
 
 /// The account base an identity register file belongs to, read back from its name (`None`: not one).
 pub fn registry_file_account(name: &str) -> Option<&str> {
-    name.strip_prefix("identities-")?.strip_suffix(".json")
+    zikaron_seal::places::registry_file_account(name)
+}
+
+/// The sealed machine settings' file name (in the machine directory, next to the plain `machine.json`, which
+/// keeps only what the passcode screen reads; `machine`). Named by account base.
+pub fn machine_file() -> String {
+    zikaron_seal::places::machine_file_for(key_account())
+}
+
+/// The command line's credential file name (in the machine directory; `zikaron_seal::credential`). Named by
+/// account base: the command line reads the base back from it.
+pub fn credential_file() -> String {
+    zikaron_seal::places::credential_file_for(key_account())
 }

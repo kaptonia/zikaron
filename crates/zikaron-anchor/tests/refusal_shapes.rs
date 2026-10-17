@@ -250,14 +250,14 @@ fn asked(url: &str) -> Trouble {
 #[test]
 fn an_answer_that_is_not_json_is_not_about_the_call() {
     let t = asked(&answering("200 OK", "<html>bad gateway</html>"));
-    assert!(matches!(&t, Trouble::Transport(e) if rpc::is_not_json(e)), "{t:?}");
+    assert!(matches!(&t, Trouble::Transport(rpc::Broke::NotJson)), "{t:?}");
     assert_eq!(read(&t), (None, false));
 }
 
 #[test]
 fn json_without_the_shape_of_an_answer_is_not_about_the_call() {
     let t = asked(&answering("200 OK", "{\"message\":\"x\"}"));
-    assert!(matches!(&t, Trouble::Transport(e) if rpc::is_shapeless(e)), "{t:?}");
+    assert!(matches!(&t, Trouble::Transport(rpc::Broke::Shapeless { .. })), "{t:?}");
     assert_eq!(read(&t), (None, false));
 }
 
@@ -316,4 +316,45 @@ fn a_recordings_hole_is_not_about_the_call() {
 fn the_one_table_reads_a_nodes_error_in_one_place() {
     let err = "{\"code\":-32603,\"message\":\"internal error\"}";
     assert_eq!(refusal(&node(err)), Some(refusal_of(err)));
+}
+
+/// Every way the way to a node breaks, and every failure made on this side, is structure: its machine form (its
+/// evidence, and its `Debug`) leads with its code and carries no language, so each end says it in its own words.
+#[test]
+fn every_broken_way_is_machine_form_in_no_language() {
+    use rpc::{Broke, ProofGap};
+    let node = "http://n.example".to_string();
+    let all = [
+        Broke::Late { node: node.clone(), deadline: std::time::Duration::from_millis(1500) },
+        Broke::Overlong { node: node.clone(), max: 4096 },
+        Broke::Status { node: node.clone(), code: 502 },
+        Broke::NotJson,
+        Broke::Shapeless { node: node.clone() },
+        Broke::Proxy { node: node.clone(), said: "via proxy http://127.0.0.1:9: refused".into() },
+        Broke::ProxyCredentials { node: node.clone(), given: false, said: "407".into() },
+        Broke::ProxyCredentials { node: node.clone(), given: true, said: "407".into() },
+        Broke::Closed { node: node.clone() },
+        Broke::Said(format!("{node}: connection refused")),
+        Broke::Short,
+        Broke::Unread { method: "eth_getTransactionCount".into() },
+        Broke::NoEndpoint,
+        Broke::KeyRange,
+        Broke::Unsigned,
+        Broke::NoRegistry,
+        Broke::EchoNotOurs,
+        Broke::Proof(ProofGap::TxRoot),
+    ];
+    let cjk = |x: &str| x.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    for b in &all {
+        let e = b.evidence();
+        assert!(!e.is_empty() && !cjk(&e), "{e}");
+        assert_eq!(format!("{b:?}"), e, "its Debug is its evidence");
+    }
+    assert_eq!(all[0].evidence(), "TIMEOUT http://n.example 1500ms");
+    assert_eq!(all[2].evidence(), "HTTP_502 http://n.example");
+    assert_eq!(rpc::status_of(&Trouble::Transport(all[2].clone())), Some(502));
+    // The proxy's question about credentials is read back from the machine form alone (the command line's token).
+    assert_eq!(rpc::proxy_credentials_of(&all[6].evidence()), Some(false));
+    assert_eq!(rpc::proxy_credentials_of(&format!("{:?}", Trouble::Transport(all[7].clone()))), Some(true));
+    assert_eq!(rpc::proxy_credentials_of(&all[5].evidence()), None);
 }

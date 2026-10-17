@@ -1,6 +1,6 @@
 [package]
 name = "zikaron-cli"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "MIT"
 
@@ -18,6 +18,12 @@ zikaron-anchor = { path = "../zikaron-anchor" }
 zikaron-glue = { path = "../zikaron-glue" }
 # The system's entropy source, read through the one place that knows each system's.
 zikaron-os = { path = "../zikaron-os" }
+# The sealed layer, one implementation with the desktop: writing a home the desktop keeps sealed, with the
+# command line's credential (`sealed`).
+zikaron-seal = { path = "../zikaron-seal" }
+# The sender, one for every road that puts anchors on chain: the direct `anchor` keeps its record of what it sent
+# there (`sent`).
+zikaron-send = { path = "../zikaron-send" }
 
 [[bin]]
 name = "zikaron"

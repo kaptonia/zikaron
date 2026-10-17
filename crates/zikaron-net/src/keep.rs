@@ -50,12 +50,29 @@ fn idle() -> std::sync::MutexGuard<'static, BTreeMap<Place, Vec<(Instant, Conn)>
     IDLE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Tests that shut down, and tests that would observe the flag meanwhile, run serially: the flag is
-/// process-wide.
+/// A test that raises the shutdown flag runs alone in a process of its own: the flag and the count of cuts are
+/// process-wide, so any other test's exchange under way meanwhile would be cut by it and counted with it. The
+/// test calls this first: in the test harness's process it runs that one test in a child of this binary, requires
+/// it to pass and answers `None` (the caller returns); in the child (or on the main thread, where nothing runs
+/// beside it) it answers the turn and the body runs.
 #[cfg(test)]
-pub(crate) fn turn() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn turn() -> Option<std::sync::MutexGuard<'static, ()>> {
     static TURN: Mutex<()> = Mutex::new(());
-    TURN.lock().unwrap_or_else(|e| e.into_inner())
+    const CHILD: &str = "ZK_NET_ALONE";
+    let name = std::thread::current().name().map(str::to_string);
+    match name {
+        Some(test) if test != "main" && std::env::var_os(CHILD).is_none() => {
+            let me = std::env::current_exe().expect("this test binary");
+            let mut c = std::process::Command::new(me);
+            c.args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"]).env(CHILD, &test);
+            c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let out = zikaron_os::spawn(&mut c).and_then(|ch| ch.wait_with_output()).expect("the child runs");
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && said.contains("1 passed"), "{test}\n{said}\n{}", String::from_utf8_lossy(&out.stderr));
+            None
+        }
+        _ => Some(TURN.lock().unwrap_or_else(|e| e.into_inner())),
+    }
 }
 
 /// Raise the shutdown flag alone, touching no socket: shows a cut rests on the flag, not on the system waking
@@ -201,7 +218,7 @@ mod tests {
     fn conn(l: &TcpListener, place: &Place) -> (Conn, u16) {
         let tcp = TcpStream::connect(l.local_addr().expect("addr")).expect("connect");
         let port = tcp.local_addr().expect("addr").port();
-        (Conn { stream: Stream::Plain(tcp), place: place.clone() }, port)
+        (Conn { stream: Stream::Plain(crate::Sock::Tcp(tcp)), place: place.clone() }, port)
     }
 
     fn port_of(c: &Conn) -> u16 {
@@ -212,7 +229,7 @@ mod tests {
     /// first.
     #[test]
     fn at_most_per_place_idle_connections_are_kept_the_newest() {
-        let _turn = turn();
+        let Some(_turn) = turn() else { return };
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let at = place("per-place.test");
         let mut ports = Vec::new();
@@ -231,7 +248,7 @@ mod tests {
     /// timestamp is backdated in the idle list itself.
     #[test]
     fn an_idle_connection_older_than_idle_keep_is_not_taken() {
-        let _turn = turn();
+        let Some(_turn) = turn() else { return };
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let at = place("idle-keep.test");
         let (old, _) = conn(&l, &at);
@@ -249,7 +266,7 @@ mod tests {
     /// tracking a connection just made is refused as the cut of the exchange making it, counted once.
     #[test]
     fn a_kept_connection_refused_while_shutting_down_is_not_a_cut() {
-        let _turn = turn();
+        let Some(_turn) = turn() else { return };
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let at = place("refused-kept.test");
         let (kept, _) = conn(&l, &at);
@@ -272,7 +289,7 @@ mod tests {
     /// Shutdown drops every idle connection: one kept before shutdown is not handed out after reopening.
     #[test]
     fn closing_down_clears_the_idle_connections() {
-        let _turn = turn();
+        let Some(_turn) = turn() else { return };
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let at = place("close-down.test");
         let (c, _) = conn(&l, &at);

@@ -124,7 +124,7 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
         let (y, m, _) = parse(value).unwrap_or(today);
         ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
     }
-    match calendar(ui.ctx(), Some(ui.layer_id()), id, rect, value, today, words) {
+    match calendar(ui.ctx(), Some(ui.layer_id()), id, rect, ui.clip_rect(), value, today, words) {
         Some(v) if v != *value => {
             *value = v;
             true
@@ -134,7 +134,8 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
 }
 
 /// The open calendar card; returns the day picked (`Some("")` is clear).
-fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
+#[allow(clippy::too_many_arguments)]
+fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
     if !crate::menu::is_open(ctx, id) {
         return None;
     }
@@ -143,7 +144,7 @@ fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, an
     let view = ctx.data(|d| d.get_temp::<(i32, u32)>(view_id)).unwrap_or((today.0, today.1));
     let w = CELL_W * 7.0 + PAD * 2.0 + 6.0;
     let h = PAD + HEAD_H + WEEK_H + CELL_H * 6.0 + SEP_H + ROW_H + PAD;
-    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), true);
+    let drop = crate::layer::drop_card(ctx, anchor, bounds, vec2(w, h), true);
     let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;

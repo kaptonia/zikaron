@@ -67,6 +67,10 @@ fn places() -> Vec<(&'static str, String)> {
         ("app::kitsindex::DIR/FILE", format!("{}/{}", app::kitsindex::DIR, app::kitsindex::FILE)),
         ("app::kitsindex::DIR/verifiedx::DIR", format!("{}/{}", app::kitsindex::DIR, app::verifiedx::DIR)),
         ("zikaron_glue::names::MANIFEST", zikaron_glue::names::MANIFEST.into()),
+        ("zikaron_glue::container::EXT_KIT", zikaron_glue::container::EXT_KIT.into()),
+        ("zikaron_glue::container::EXT_HAND", zikaron_glue::container::EXT_HAND.into()),
+        ("zikaron_glue::names::HANDOFF_NOTE", zikaron_glue::names::HANDOFF_NOTE.into()),
+        ("zikaron_seal::pens::FILE", zikaron_seal::pens::FILE.into()),
     ]
 }
 

@@ -245,23 +245,27 @@ pub fn manifest(b: &Bundle) -> Value {
     ])
 }
 
-/// The verification note included in every kit. It is itself a manifest row: a kit may hold nothing outside
-/// the manifest (`E_KIT_EXTRA`, kit law §7.4).
+/// The verification note included in every kit, for whoever receives it: the same steps and the same counts in
+/// Chinese and in English, one section each (the exporting side cannot know which the reader reads). It is itself
+/// a manifest row: a kit may hold nothing outside the manifest (`E_KIT_EXTRA`, kit law §7.4).
 pub fn verification_note(b: &Bundle) -> Vec<u8> {
     crate::seam_v2();
+    let (entries, files, proofs) = (b.entries.len(), b.files.len() + 1, b.proofs.len());
     let mut t = String::new();
     t.push_str("# 怎么核这一包\n\n");
     t.push_str("1. 逐档算 sha256,对 `manifest.json` 里 `files` 与 `proofs` 各行的 `sha256`;\n");
     t.push_str("2. `entries/` 下每一档的 sha256 即它的档名(去 `.zk1`),也即 `entries` 表里那一行;\n");
     t.push_str("3. 每一枚条目按 zikaron/1 §4.3 判十三步;\n");
     t.push_str("4. 清单外的档一件也不该有。\n\n");
-    t.push_str(&format!(
-        "本束:条目 {} 枚 · 档 {} 件 · 证明 {} 件。\n",
-        b.entries.len(),
-        b.files.len() + 1,
-        b.proofs.len()
-    ));
+    t.push_str(&format!("本束:条目 {entries} 枚 · 档 {files} 件 · 证明 {proofs} 件。\n"));
     t.push_str("\n出包时已由 zikaron.kit/1 的 `verify_kit` 自验,KIT_OK 才落盘(不变式 9)。\n");
+    t.push_str("\n# How to verify this kit\n\n");
+    t.push_str("1. Compute each file's sha256 and compare it with the `sha256` of its row under `files` and `proofs` in `manifest.json`;\n");
+    t.push_str("2. Each file under `entries/` is named by its own sha256 (less `.zk1`), which is also its row in the `entries` table;\n");
+    t.push_str("3. Judge each entry by the thirteen steps of zikaron/1 §4.3;\n");
+    t.push_str("4. There should be no file outside the manifest.\n\n");
+    t.push_str(&format!("This kit: {entries} entries · {files} files · {proofs} proofs.\n"));
+    t.push_str("\nBefore it was written, the kit verified itself with `verify_kit` of zikaron.kit/1, and it was written only on KIT_OK (invariant 9).\n");
     t.into_bytes()
 }
 
@@ -346,6 +350,52 @@ pub fn export(out: &Path, mut b: Bundle) -> Result<Landed, Trouble> {
             Err(t)
         }
     }
+}
+
+/// The two forms a kit is written in: one file (`.zkit`, [`crate::container`]) or a folder. Closed set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    File,
+    Folder,
+}
+
+impl Form {
+    /// The form's word (the command line's `--as` value).
+    pub fn word(self) -> &'static str {
+        match self {
+            Form::File => "file",
+            Form::Folder => "folder",
+        }
+    }
+
+    /// The form a word names; any other word is none.
+    pub fn of(word: &str) -> Option<Form> {
+        [Form::File, Form::Folder].into_iter().find(|f| f.word() == word)
+    }
+}
+
+/// Lay out, self-verify and write to `out` in `form`, only on KIT_OK: a folder as [`export`] writes it; one file
+/// laid out from the same verified folder, streamed into place (`container::pack_dir`), the folder then cleared.
+/// An existing `out` is refused either way and never overwritten.
+pub fn export_as(out: &Path, b: Bundle, form: Form) -> Result<Landed, Trouble> {
+    crate::seam_v2();
+    if form == Form::Folder {
+        return export(out, b);
+    }
+    if out.exists() {
+        return Err(Trouble::Occupied(out.to_string_lossy().into_owned()));
+    }
+    let laid = landing::staging_beside(out)?;
+    let landed = export(&laid, b);
+    let packed = match landed {
+        Ok(l) => crate::container::pack_dir(&laid, out).map(|_| l).map_err(|t| match t {
+            crate::container::PackTrouble::Land(t) => Trouble::from(t),
+            crate::container::PackTrouble::File(b) => Trouble::Io(out.to_string_lossy().into_owned(), format!("{}: {}", b.code(), b.subject())),
+        }),
+        Err(t) => Err(t),
+    };
+    let _ = std::fs::remove_dir_all(&laid);
+    packed
 }
 
 /// Two items at one kit path are refused, with that path as subject. Files and proofs are separate tables.

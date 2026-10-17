@@ -13,46 +13,18 @@
 //!    refuses when it exists, and the product has no other writer or action to change it (changing
 //!    exclusivity means revoking and issuing again). It is local bookkeeping, not part of the grant bytes (law
 //!    §6.3's grant fields have no exclusivity field); the UI marks it "local record only".
-//!
-//! The older exclusivity list in the settings file (`settings.exclusive`) is kept read-only: read, never
-//! changed, and marked "no terms document" in the UI. The double-sale check reads both (`grantx::table`).
 
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
 use std::path::{Path, PathBuf};
-use zikaron::json::Value;
 
 /// The terms directory inside `kits`, the same directory a grant file carries its terms in (named once, in
 /// `zikaron_glue::grantfile`).
 pub use zikaron_glue::grantfile::TERMS_ROOM as ROOM;
 
-/// A grant's issuance record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Record {
-    pub grant: String,
-    pub terms: String,
-    pub exclusive: bool,
-    /// The document's relative path in `kits` (also its path under a record bundle's `files/`); `None` when
-    /// no document was given.
-    pub doc: Option<String>,
-    /// The document's file name as the person picked it (before transliteration). `None` when no document
-    /// was given, and for records written by older versions without this field.
-    pub name: Option<String>,
-}
-
-impl Record {
-    /// The name inside the kit (the last path segment of `doc`, transliterated).
-    pub fn doc_name(&self) -> Option<&str> {
-        self.doc.as_deref().and_then(|d| d.rsplit('/').next())
-    }
-
-    /// The name shown for the attached document: the original file name when recorded, otherwise the name
-    /// inside the kit (older records without the original name). Decided only here.
-    pub fn shown_name(&self) -> Option<&str> {
-        self.doc.as_ref()?;
-        self.name.as_deref().or_else(|| self.doc_name())
-    }
-}
+/// A grant's issuance record, its byte form and its file name, defined in the sealed layer (`zikaron_seal::terms`)
+/// so the command line reads it from a home the same way.
+pub use zikaron_seal::terms::{record_bytes, record_of, Record, RECORD_PREFIX, RECORD_SUFFIX};
 
 /// The document's relative path, assembled only here: `terms/<digest without 0x>/<kit name>`. `None` when it
 /// cannot be transliterated.
@@ -61,56 +33,16 @@ pub fn doc_rel(terms: &str, name: &str) -> Option<String> {
     Some(format!("{ROOM}/{}/{seg}", terms.trim().trim_start_matches("0x").to_ascii_lowercase()))
 }
 
-/// A terms record's file name is `<prefix><keyed name><suffix>`.
-pub const RECORD_PREFIX: &str = "grant-";
-pub const RECORD_SUFFIX: &str = ".json";
-
-/// Where a grant's issuance record lives; the name is keyed by the names key (`names`).
+/// Where a grant's issuance record lives; the name is keyed by the names key (`zikaron_seal::terms::record_rel`).
 pub fn record_path(home: &Home, grant: &str) -> Result<PathBuf, Fault> {
-    let name = crate::names::key()?.name(crate::names::Logical::TermsRecord(grant));
-    Ok(home.dir(Slot::Kits).join(ROOM).join(format!("{RECORD_PREFIX}{name}{RECORD_SUFFIX}")))
+    Ok(home.root().join(zikaron_seal::terms::record_rel(&crate::names::key()?, grant)))
 }
 
 /// Where a terms document is on disk: one file per digest (same digest, same bytes), both names keyed by the
-/// names key. Records and exports use the document's logical path (`doc_rel`); only this maps it to disk.
+/// names key (`zikaron_seal::terms::doc_rel_on_disk`). Records and exports use the document's logical path
+/// (`doc_rel`); only this maps it to disk.
 pub fn doc_path(home: &Home, terms: &str) -> Result<PathBuf, Fault> {
-    let nk = crate::names::key()?;
-    Ok(home
-        .dir(Slot::Kits)
-        .join(ROOM)
-        .join(nk.name(crate::names::Logical::TermsDir(terms)))
-        .join(nk.name(crate::names::Logical::TermsDoc(terms))))
-}
-
-fn record_bytes(r: &Record) -> Vec<u8> {
-    let mut m: Vec<(String, Value)> = vec![
-        ("exclusive".to_string(), Value::Bool(r.exclusive)),
-        ("grant".to_string(), Value::Str(r.grant.clone())),
-        ("terms".to_string(), Value::Str(r.terms.clone())),
-    ];
-    if let Some(d) = &r.doc {
-        m.push(("doc".to_string(), Value::Str(d.clone())));
-    }
-    if let Some(n) = &r.name {
-        m.push(("name".to_string(), Value::Str(n.clone())));
-    }
-    m.sort_by(|a, b| a.0.cmp(&b.0));
-    zikaron::json::canon_bytes(&Value::Obj(m))
-}
-
-fn record_of(bytes: &[u8]) -> Option<Record> {
-    let v = zikaron::json::parse(bytes).ok()?;
-    let s = |k: &str| match v.member(k) {
-        Some(Value::Str(x)) => Some(x.clone()),
-        _ => None,
-    };
-    Some(Record {
-        grant: s("grant")?,
-        terms: s("terms")?,
-        exclusive: matches!(v.member("exclusive"), Some(Value::Bool(true))),
-        doc: s("doc").filter(|d| zikaron_kit::kitdir::is_kit_path(d)),
-        name: s("name").filter(|n| !n.is_empty() && !n.contains('/')),
-    })
+    Ok(home.root().join(zikaron_seal::terms::doc_rel_on_disk(&crate::names::key()?, terms)))
 }
 
 /// Write once at signing. A given document is first checked against the digest signed into the grant
@@ -185,22 +117,17 @@ pub fn doc_bytes(home: &Home, r: &Record) -> Result<Option<(String, Vec<u8>)>, c
     Ok(crate::local::read(&doc_path(home, &r.terms)?, crate::local::Doc::TermsDoc)?.map(|b| (rel, b)))
 }
 
-/// Where exclusivity comes from: the record at signing, or the older list in the settings file (no terms
-/// document).
+/// Whether a grant is exclusive: recorded as exclusive at signing, or not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Exclusive {
     No,
     Signed,
-    Legacy,
 }
 
-/// Whether a grant is exclusive, read in one place. The issuance record first; only without a record is the
-/// old list consulted.
-pub fn exclusive_of(records: &[Record], legacy: &[String], grant: &str) -> Exclusive {
+/// Whether a grant is exclusive, read in one place: its issuance record (a grant without one is not).
+pub fn exclusive_of(records: &[Record], grant: &str) -> Exclusive {
     match records.iter().find(|r| r.grant.eq_ignore_ascii_case(grant)) {
         Some(r) if r.exclusive => Exclusive::Signed,
-        Some(_) => Exclusive::No,
-        None if legacy.iter().any(|x| x.eq_ignore_ascii_case(grant)) => Exclusive::Legacy,
-        None => Exclusive::No,
+        _ => Exclusive::No,
     }
 }

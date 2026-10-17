@@ -18,47 +18,17 @@
 
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
-use zikaron::json::{self, Value};
+use zikaron::json::Value;
 
-/// The mark file name (in `settings/`).
-pub const FILE: &str = "unfetched.json";
+/// The mark's shape is the sealed layer's (`zikaron_seal::unfetched`), read the same by the command line.
+pub use zikaron_seal::unfetched::{member, word, State, FILE};
 
-/// Which state the mark records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
-    /// The ledger has not been fetched.
-    Unfetched,
-    /// Fetched, but the chain has anchors this ledger lacks (`missing` of them).
-    NewerElsewhere { missing: usize },
-}
-
-impl State {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            State::Unfetched => word::UNFETCHED,
-            State::NewerElsewhere { .. } => word::NEWER_ELSEWHERE,
-        }
+/// The fault returned when a write action is refused while the mark is there.
+pub fn fault(s: State) -> Fault {
+    match s {
+        State::Unfetched => Fault::known(Known::LedgerNotFetched, String::new()),
+        State::NewerElsewhere { missing } => Fault::known(Known::NewerElsewhere, missing.to_string()),
     }
-
-    /// The fault returned when a write action is refused.
-    pub fn fault(self) -> Fault {
-        match self {
-            State::Unfetched => Fault::known(Known::LedgerNotFetched, String::new()),
-            State::NewerElsewhere { missing } => Fault::known(Known::NewerElsewhere, missing.to_string()),
-        }
-    }
-}
-
-/// The mark file's member names.
-pub mod member {
-    pub const STATE: &str = "state";
-    pub const MISSING: &str = "missing";
-}
-
-/// The mark file's state words (spelled only here, for `State::as_str` and the reader).
-pub mod word {
-    pub const UNFETCHED: &str = "unfetched";
-    pub const NEWER_ELSEWHERE: &str = "newer-elsewhere";
 }
 
 /// Place the mark when an identity is restored, even if the home already has a ledger: it may be an old
@@ -70,11 +40,7 @@ pub fn mark(home: &Home) -> Result<(), Fault> {
 
 /// Write the mark in the given state (sealed, atomic, 0600, via `local::put`).
 pub fn write(home: &Home, s: State) -> Result<(), Fault> {
-    let mut m = vec![(member::STATE.to_string(), Value::Str(s.as_str().to_string()))];
-    if let State::NewerElsewhere { missing } = s {
-        m.insert(0, (member::MISSING.to_string(), Value::Int(missing as u64)));
-    }
-    crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Unfetched, &json::canon_bytes(&Value::Obj(m)))
+    crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Unfetched, &zikaron_seal::unfetched::render(s))
 }
 
 /// Read the mark. `None` means writable. An unreadable mark is an error (the home stays read-only), never
@@ -82,16 +48,7 @@ pub fn write(home: &Home, s: State) -> Result<(), Fault> {
 pub fn read(home: &Home) -> Result<Option<State>, Fault> {
     let p = home.dir(Slot::Settings).join(FILE);
     let Some(bytes) = crate::local::read(&p, crate::local::Doc::Unfetched)? else { return Ok(None) };
-    let bad = || Fault::known(Known::SettingsShape, p.display().to_string());
-    let v = json::parse(&bytes).map_err(|_| bad())?;
-    let Value::Obj(m) = &v else { return Err(bad()) };
-    let state = m.iter().find(|(k, _)| k == member::STATE).and_then(|(_, v)| if let Value::Str(s) = v { Some(s.as_str()) } else { None });
-    let missing = m.iter().find(|(k, _)| k == member::MISSING).and_then(|(_, v)| if let Value::Int(n) = v { Some(*n as usize) } else { None });
-    match (state, missing) {
-        (Some(word::UNFETCHED), _) => Ok(Some(State::Unfetched)),
-        (Some(word::NEWER_ELSEWHERE), Some(n)) => Ok(Some(State::NewerElsewhere { missing: n })),
-        _ => Err(bad()),
-    }
+    Ok(Some(zikaron_seal::unfetched::of_plain(&bytes, &p.display().to_string())?))
 }
 
 /// Remove the mark (after the tail check passes).

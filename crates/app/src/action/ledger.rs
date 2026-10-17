@@ -175,6 +175,9 @@ pub(super) fn land_sealed(
     match ledger.append(&name, &sealed.bytes) {
         Ok(_) => {
             shell.flow.land = crate::anchorx::Step::Done;
+            // What landed, as written: a toast names the entry by this number, never by one guessed beforehand
+            // (another writer may have moved the head meanwhile).
+            shell.landed = Some((sealed.id.clone(), sealed.seq));
             // The ledger moved on: the last self-audit report describes the ledger before this entry.
             shell.book_changed();
         }

@@ -98,6 +98,32 @@ fn an_item_on_disk_whose_address_does_not_read_is_kept() {
     assert!(app::chainx::Endpoint::typed("1==https://a").is_err());
 }
 
+/// More kernel locks than this process may hold at once (`zikaron_os::LOCKS_MAX`): taking a home's writer lock
+/// at the app is refused by name (the limit said), never taken as a reader or as nothing; once one lock is let
+/// go, the same home is taken as its writer. Runs alone in its own process: it fills the process's lock list.
+#[test]
+fn a_lock_past_the_process_limit_is_refused_by_name_at_the_app() {
+    if super::alone_in(module_path!(), "a_lock_past_the_process_limit_is_refused_by_name_at_the_app") {
+        return;
+    }
+    vault_open();
+    let dir = std::env::temp_dir().join(format!("zk-b13-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = app::home::Home::open_or_create(&dir.join("home")).expect("a home");
+    std::fs::create_dir_all(dir.join("fill")).expect("fill");
+    let mut o = zikaron_os::Options::new();
+    o.create(true).read(true).write(true);
+    let mut fills: Vec<zikaron_os::LockFile> = (0..).map_while(|i| zikaron_os::LockFile::open(&o, &dir.join("fill").join(format!("{i}"))).ok()).collect();
+    assert!(!fills.is_empty() && fills.len() <= zikaron_os::LOCKS_MAX, "the list filled ({} more)", fills.len());
+    let refused = app::lock::take(&home).err().expect("refused while the list is full");
+    let said = format!("{} {}", refused.said(), refused.tail());
+    assert!(said.contains(&format!("more than {} held at once", zikaron_os::LOCKS_MAX)), "{said}");
+    drop(fills.pop());
+    assert_eq!(app::lock::take(&home).expect("taken once one is let go").mode(), app::lock::Mode::Writer);
+    drop(fills);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A home's writer lock released while children are being spawned on other threads (the system-proxy reading
 /// spawns one): the next take of the same home is a writer every time, never a reader blocked by a child's
 /// inherited copy of the lock. Children start through `zikaron_os::spawn`, as the product's do; the test runs

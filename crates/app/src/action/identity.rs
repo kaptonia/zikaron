@@ -21,7 +21,7 @@ pub(super) fn enter(shell: &mut Shell, row: &crate::identity::Row, seat: crate::
         shell.commit_settings(|s| s.role = seat)?;
     }
     shell.refresh_anchor()?;
-    shell.seat_identities(Some(crate::register::view(seat)?));
+    shell.seat_identities(Some(crate::register::view()?));
     Ok(())
 }
 
@@ -40,11 +40,10 @@ pub(super) fn confirm_identity(shell: &mut Shell, answers: &[(usize, crate::secr
     shell.new_label = Some(label.trim().to_string());
     let before = registered()?;
     let f = f.twin();
-    let role = shell.settings.role;
     let label = label.trim().to_string();
     Ok(vault(shell, move || {
         // Words confirmed by copying count as a backup.
-        let row = crate::register::change(role, |reg| {
+        let row = crate::register::change(|reg| {
             let row = crate::identity::add_words(reg, &f, true, &label)?;
             crate::identity::choose_network(reg, &row.id, &network)
         })?;
@@ -62,8 +61,8 @@ fn network_choice(name: &str) -> Result<String, crate::fault::Fault> {
     Ok(name.to_string())
 }
 
-/// The identity pass landed: enter its first occupied seat (key and home switch together) and report it
-/// created.
+/// The identity pass landed: enter the seat in use if the identity occupies it, else its first occupied seat
+/// (`Row::seat_here_or_first`; key and home switch together), and report it created.
 pub(super) fn identity_landed(shell: &mut Shell, row: crate::identity::Row, restored: bool, fresh: bool) -> Applied {
     if fresh {
         shell.new_words = None;
@@ -91,12 +90,12 @@ pub(super) fn identity_landed(shell: &mut Shell, row: crate::identity::Row, rest
     // written). A failure only leaves the identity unnamed, so it is reported without failing the landing.
     let mut row = row;
     if let Some(label) = shell.new_label.take().filter(|l| !l.trim().is_empty()) {
-        match crate::register::change(shell.settings.role, |reg| crate::identity::rename(reg, &row.id, &label)) {
+        match crate::register::change(|reg| crate::identity::rename(reg, &row.id, &label)) {
             Ok(fresh_row) => row = fresh_row,
             Err(f) => shell.faults.push(f),
         }
     }
-    let landed = row.first_seat();
+    let landed = row.seat_here_or_first(shell.settings.role);
     match enter(shell, &row, landed) {
         Ok(()) => {
             if mark_failed && shell.unfetched.is_none() {
@@ -152,7 +151,7 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
         // Importing from words: the person holds the words, which counts as a backup.
         ImportForm::Words(text) => {
             let f = crate::identity::from_words(text.expose())?;
-            crate::register::change(seat, |reg| {
+            crate::register::change(|reg| {
                 let row = crate::identity::add_words(reg, &f, true, label)?;
                 crate::identity::choose_network(reg, &row.id, network)
             })?
@@ -170,7 +169,7 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
             if let (Some(_), Some(addr)) = (&keyfile, s.address()) {
                 // The same register view the adding below sees (`register::change` reads it via
                 // `identity::view`; a machine with no register yet lists its account-base key).
-                let reg = crate::register::view(seat)?;
+                let reg = crate::register::view()?;
                 crate::identity::meets(&reg, &crate::identity::Keys::One { seat, addr }, label)?;
             }
             let landed = match keyfile {
@@ -181,7 +180,7 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
                 None if becomes_primary => return Err(Fault::known(Known::PrimaryNoKeyFile, String::new())),
                 None => None,
             };
-            crate::register::change(seat, |reg| {
+            crate::register::change(|reg| {
                 let row = crate::identity::add_existing(reg, &s, seat, landed.is_some(), label)?;
                 if let Some(at) = landed.as_deref() {
                     crate::identity::mark(reg, &row.id, false, true, Some(at))?;
@@ -194,7 +193,7 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
             let p = path.trim();
             let bytes = std::fs::read(p).map_err(|e| crate::fault::classify(&e, p))?;
             let s = crate::keystore::decrypt_typed(&bytes, &password)?;
-            crate::register::change(seat, |reg| {
+            crate::register::change(|reg| {
                 let row = crate::identity::add_existing(reg, &s, seat, true, label)?;
                 crate::identity::choose_network(reg, &row.id, network)
             })?
@@ -204,20 +203,20 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
 }
 
 pub(super) fn switch_identity(shell: &mut Shell, id: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
-    // Land on its first occupied seat, so an identity occupying only the user seat lands there.
-    let seat = crate::register::view(shell.settings.role)?
+    // Land on the seat in use if the identity occupies it, else on its first occupied seat
+    // (`Row::seat_here_or_first`), so an identity occupying only the user seat lands there.
+    let seat = crate::register::view()?
         .find(id)
-        .map(|r| r.first_seat())
+        .map(|r| r.seat_here_or_first(shell.settings.role))
         .unwrap_or(crate::roles::Role::Author);
-    let row = crate::register::change(seat, |reg| crate::identity::switch(reg, id, seat))?;
+    let row = crate::register::change(|reg| crate::identity::switch(reg, id, seat))?;
     enter(shell, &row, seat)?;
     Ok(row)
 }
 
 pub(super) fn delete_identity(shell: &mut Shell, id: &str) -> Result<String, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
-    let seat = shell.settings.role;
-    let reg = crate::register::view(seat)?;
+    let reg = crate::register::view()?;
     let row = reg.find(id).cloned().ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
     // The handover check covers the ledgers in every seat's home. Checking only the recorder seat would ignore a
     // succession in the user seat's ledger (held grants), which could never be signed again after deletion. So
@@ -239,12 +238,12 @@ pub(super) fn delete_identity(shell: &mut Shell, id: &str) -> Result<String, cra
             .filter_map(|s| row.address(s))
             .any(|a| crate::succeedx::handed_over(&items, Some(a)).is_some())
     };
-    let (gone, next) = crate::register::change(seat, |reg| crate::identity::delete(reg, id, handed))?;
+    let (gone, next) = crate::register::change(|reg| crate::identity::delete(reg, id, handed))?;
     match next {
         Some((r, s)) => enter(shell, &r, s)?,
         None => {
             shell.refresh_anchor()?;
-            shell.seat_identities(Some(crate::register::view(seat)?));
+            shell.seat_identities(Some(crate::register::view()?));
         }
     }
     Ok(gone.id)
@@ -295,7 +294,7 @@ pub(super) fn choose_network(shell: &mut Shell, name: &str) -> Result<bool, crat
     // The shell's identity table is reread too, since the wizard reads the current identity's choice from it.
     let recorded = crate::register::now_row_listed().and_then(|now| match now {
         Some((row, _)) => crate::register::change_listed(|reg| crate::identity::set_network(reg, &row.id, name))
-            .and_then(|_| crate::register::view(shell.settings.role))
+            .and_then(|_| crate::register::view())
             .map(|v| shell.seat_identities(Some(v))),
         None => Ok(()),
     });
@@ -351,10 +350,21 @@ pub(super) fn export_backup(shell: &mut Shell, password: crate::secret::Secret, 
     }
     let dir = crate::home::landing(dir)?;
     let now = (shell.clock)();
+    // The task's one exit: whatever fails inside it (the folder, collecting, sealing, writing, reading back, the
+    // bookkeeping) is recorded on this machine (`machine::backup_failed`) before it is reported, so the home
+    // light stays red until a backup counts.
     Ok(shell.tasks.spawn(Kind::Backup, move || {
-        std::fs::create_dir_all(&dir).map_err(|e| crate::fault::classify(&e, &dir.display().to_string()))?;
-        let done = crate::backup::export(&dir, password.expose(), now)?;
-        Ok(Done::BackupMade { path: done.path.display().to_string(), summary: done.summary })
+        let made = (|| {
+            std::fs::create_dir_all(&dir).map_err(|e| crate::fault::classify(&e, &dir.display().to_string()))?;
+            crate::backup::export(&dir, password.expose(), now)
+        })();
+        match made {
+            Ok(done) => Ok(Done::BackupMade { path: done.path.display().to_string(), summary: done.summary }),
+            Err(f) => {
+                let _ = crate::machine::update(|m| m.backup_failed = Some(now));
+                Err(f)
+            }
+        }
     }))
 }
 
@@ -366,29 +376,39 @@ pub(super) fn set_appearance(shell: &mut Shell, appearance: &str) -> Result<Stri
 }
 
 /// Writes this machine's proxy choice: `system`, `none`, or a proxy address parsed by the transport's own
-/// parser (`zikaron_net::proxy_of`); an address it rejects is refused by name before anything is written.
+/// parser (`zikaron_net::proxy_of`), kept with its credentials in the sealed machine settings; an address it
+/// rejects is refused by name before anything is written. An address given without a password keeps the saved
+/// password only when its kind, host, port and user name match the saved proxy (`proxycells::password_stays`,
+/// the same check the settings page uses to say a password is set, since it never shows one back). Returns the
+/// choice as it may be shown, never with the password.
 pub(super) fn set_proxy(shell: &mut Shell, choice: &str) -> Result<String, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let c = choice.trim();
+    let shown_typed = zikaron_net::proxy_text_shown(c).0;
     let written = match c {
         crate::machine::proxy::SYSTEM | crate::machine::proxy::NONE => c.to_string(),
         typed => match zikaron_net::proxy_of(typed) {
-            Ok(p) => p.spelled(),
-            Err(zikaron_net::NotAProxy::Credentials) => return Err(Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailProxyCredentials, &[typed]))),
-            Err(zikaron_net::NotAProxy::Shape) => return Err(Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailProxyShape, &[typed]))),
+            Ok(mut p) => {
+                let before = shell.machine.proxy.as_deref().and_then(|w| zikaron_net::proxy_of(w).ok()).filter(|b| crate::proxycells::password_stays(b, &p));
+                if let (Some(a), Some(b)) = (p.auth.as_mut(), before.and_then(|b| b.auth)) {
+                    a.pass = b.pass;
+                }
+                p.written()
+            }
+            Err(zikaron_net::NotAProxy::Credentials) => return Err(Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailProxyCredentials, &[&shown_typed]))),
+            Err(zikaron_net::NotAProxy::Shape) => return Err(Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailProxyShape, &[&shown_typed]))),
         },
     };
     shell.machine = crate::machine::update(|m| m.proxy = Some(written))?;
-    Ok(shell.machine.proxy.clone().unwrap_or_default())
+    Ok(shell.machine.proxy.as_deref().map(|w| zikaron_net::proxy_text_shown(w).0).unwrap_or_default())
 }
 
 pub(super) fn reveal_words(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     // One passcode check per reveal. The passcode is checked by the shared gate in `apply`
     // (`Action::pin_asked`).
-    let seat = shell.settings.role;
     // Only `identity::now_row` decides which row is current (the backup path uses it too).
-    let view = crate::register::view(seat)?;
+    let view = crate::register::view()?;
     let id = crate::identity::now_row(&view)
         .map(|(r, _)| r.id)
         .ok_or_else(|| Fault::known(Known::NoIdentity, String::new()))?;
@@ -398,9 +418,8 @@ pub(super) fn reveal_words(shell: &mut Shell) -> Result<(), crate::fault::Fault>
 
 /// Renames an identity. Changes only the register's label, which carries no meaning.
 pub(super) fn name_identity(shell: &mut Shell, id: &str, label: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
-    let seat = shell.settings.role;
-    let row = crate::register::change(seat, |reg| crate::identity::rename(reg, id, label))?;
-    shell.seat_identities(Some(crate::register::view(seat)?));
+    let row = crate::register::change(|reg| crate::identity::rename(reg, id, label))?;
+    shell.seat_identities(Some(crate::register::view()?));
     Ok(row)
 }
 
@@ -453,7 +472,7 @@ pub(super) fn backup_key(shell: &mut Shell, password: crate::secret::Secret, aga
     use crate::fault::{Fault, Known};
     let dir = key_file_checks(&password, again, dir)?;
     let seat = shell.settings.role;
-    let view = crate::register::view(seat)?;
+    let view = crate::register::view()?;
     let acct = crate::identity::account_now(&view)
         .ok_or_else(|| Fault::known(Known::SeatUnseated, crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string()))?;
     let secret = crate::key::load(Some(&acct))?.ok_or_else(|| Fault::known(Known::KeychainMissing, acct.clone()))?;

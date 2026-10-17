@@ -84,6 +84,19 @@ pub fn elide_mid(ui: &egui::Ui, s: &str, font: egui::FontId, max_w: f32) -> Stri
     }
 }
 
+/// One cell of the caller's layout, sized before anything in it is drawn, its parts laid inside it by `layout`.
+/// A widget that stands in a row, or alone, takes exactly this: it never opens a row or a column of its own in
+/// the layout it was handed. egui places a new row or column by its first, empty size and lets it grow from
+/// there, so in a centered row its top lands on the row's middle line and the whole of it hangs half its height
+/// low; one cell of a known size is centered like any other.
+pub fn cell<R>(ui: &mut egui::Ui, size: egui::Vec2, layout: egui::Layout, add: impl FnOnce(&mut egui::Ui) -> R) -> (R, egui::Response) {
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    // One fixed salt: the cell's id stays its parent's whatever was laid before it, so a field inside keeps its
+    // focus and state while the page around it changes (`input::field_id`).
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt("zikaron-cell").max_rect(rect).layout(layout));
+    (add(&mut child), resp)
+}
+
 /// A row whose trailing part (keys) is laid right to left first; the leading part takes what remains. Rows
 /// are as tall as a field.
 pub fn then<R, L>(ui: &mut egui::Ui, tail: impl FnOnce(&mut egui::Ui) -> R, lead: impl FnOnce(&mut egui::Ui, f32) -> L) -> (L, R) {

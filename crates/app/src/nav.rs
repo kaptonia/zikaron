@@ -1,17 +1,203 @@
-//! Navigation: one side rail per role, the views pages are merged into, the settings home and its sections, a
-//! page history per view, and an alias layer mapping old page names to their new places.
+//! This product's page table: one side rail per role, the views pages are merged into, the settings home and
+//! its sections, which history each place belongs to and what it stands on, the first-run wizard's steps, and
+//! an alias layer mapping old page names to their new places.
 //!
-//! This module has no egui dependency. The window draws the rail from it and the test driver's `show`
-//! resolves old and new names through it, so rail items, grouping, names and old-page mappings have a single
-//! source.
+//! This module has no egui dependency. The history and rail mechanism is the window shell's
+//! (`zikaron_ui::nav`, generic over the page type); this module only gives it this product's places and
+//! routes. The window draws the rail from it and the test driver's `show` resolves old and new names through
+//! it, so rail items, grouping, names and old-page mappings have a single source.
 //!
 //! The set of pages (`shell::Page`) is fixed, since test scripts and documentation refer to it. Views
 //! (`View`, the rail items) sit above pages: several pages merge into a view, each as a tab or section.
 
 use crate::lang::Key;
 use crate::roles::Role;
-use crate::shell::Page;
 use zikaron_ui::icons::Glyph;
+
+/// The pages. Only pages that exist are listed; a page not built is not in the navigation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Page {
+    /// First run: what this machine still needs.
+    #[default]
+    FirstRun,
+    /// Identity and keys.
+    Identity,
+    /// Archive and single writer.
+    Archive,
+    /// Mirror and chain.
+    Mirror,
+    /// Ledger view.
+    Ledger,
+    /// Disclosure kit output.
+    Kit,
+    /// Depth.
+    Depth,
+    /// Grant drafting.
+    Grant,
+    /// Grant ledger and double-sale guard.
+    Grants,
+    /// First-window checklist.
+    FirstWindow,
+    /// Revocation.
+    Revoke,
+    /// Adoption.
+    Adopt,
+    /// Succession.
+    Succeed,
+    /// Reading others' ledgers.
+    Reader,
+    /// Self-audit clock.
+    Audit,
+    /// Due diligence.
+    Diligence,
+    /// Record verification.
+    Verifier,
+    /// Checking a received record (a tab of the verify page).
+    Delivery,
+    /// Grant vault.
+    Vault,
+    /// Revocation sentinel.
+    Sentinel,
+    /// Multi-upstream ledger.
+    Upstreams,
+    /// Badges.
+    Badge,
+    /// Relicensing.
+    Relicense,
+    /// Grant check (shared, no identity needed).
+    Check,
+    /// Watch and notifications (shared).
+    Watch,
+    /// Anchoring desk.
+    Anchoring,
+    /// Anchor queue.
+    Queue,
+    /// Skeleton: this shell's own readings.
+    Skeleton,
+    /// About.
+    About,
+}
+
+impl Page {
+    /// Ordered by family: ledger and anchoring, grants, adoption and succession, disclosure and reading,
+    /// machine and settings. Icons follow the family (see [`Page::icon`]): one icon per family, so a repeated
+    /// icon marks pages of one family.
+    pub const ALL: [Page; 29] = [
+        // Ledger and anchoring.
+        Page::Ledger,
+        Page::Anchoring,
+        Page::Queue,
+        Page::Audit,
+        // Grants.
+        Page::Grant,
+        Page::Grants,
+        Page::Revoke,
+        Page::FirstWindow,
+        // Adoption and succession.
+        Page::Adopt,
+        Page::Succeed,
+        // Disclosure and reading.
+        Page::Kit,
+        Page::Depth,
+        Page::Reader,
+        // Shared.
+        Page::Check,
+        Page::Watch,
+        // Grantee.
+        Page::Diligence,
+        Page::Verifier,
+        Page::Delivery,
+        Page::Vault,
+        Page::Upstreams,
+        Page::Sentinel,
+        Page::Relicense,
+        Page::Badge,
+        // Machine and settings.
+        Page::FirstRun,
+        Page::Identity,
+        Page::Archive,
+        Page::Mirror,
+        Page::Skeleton,
+        Page::About,
+    ];
+
+    /// The name this page shows now. Page names come only from here (rail, header, tests).
+    ///
+    /// Kept separate from `key()` so "page names follow the language" can fail on its own: a broken string
+    /// table breaks every sentence, a break here only page names.
+    pub fn title(self) -> &'static str {
+        crate::lang::t(self.key())
+    }
+
+    /// The page name comes from the string table: no sentence is hard-coded in the interface.
+    pub fn key(self) -> crate::lang::Key {
+        match self {
+            Page::FirstRun => crate::lang::Key::PageFirstRun,
+            Page::Identity => crate::lang::Key::PageIdentity,
+            Page::Archive => crate::lang::Key::PageArchive,
+            Page::Mirror => crate::lang::Key::PageMirror,
+            Page::Ledger => crate::lang::Key::PageLedger,
+            Page::Kit => crate::lang::Key::PageKit,
+            Page::Depth => crate::lang::Key::PageDepth,
+            Page::Grant => crate::lang::Key::PageGrant,
+            Page::Grants => crate::lang::Key::PageGrants,
+            Page::FirstWindow => crate::lang::Key::PageFirstWindow,
+            Page::Revoke => crate::lang::Key::PageRevoke,
+            Page::Adopt => crate::lang::Key::PageAdopt,
+            Page::Succeed => crate::lang::Key::PageSucceed,
+            Page::Reader => crate::lang::Key::PageReader,
+            Page::Audit => crate::lang::Key::PageAudit,
+            Page::Diligence => crate::lang::Key::PageDiligence,
+            Page::Verifier => crate::lang::Key::PageVerifier,
+            Page::Delivery => crate::lang::Key::PageDelivery,
+            Page::Vault => crate::lang::Key::PageVault,
+            Page::Sentinel => crate::lang::Key::PageSentinel,
+            Page::Upstreams => crate::lang::Key::PageUpstreams,
+            Page::Badge => crate::lang::Key::PageBadge,
+            Page::Relicense => crate::lang::Key::PageRelicense,
+            Page::Check => crate::lang::Key::PageCheck,
+            Page::Watch => crate::lang::Key::PageWatch,
+            Page::Anchoring => crate::lang::Key::PageAnchoring,
+            Page::Queue => crate::lang::Key::PageQueue,
+            Page::Skeleton => crate::lang::Key::PageSkeleton,
+            Page::About => crate::lang::Key::PageAbout,
+        }
+    }
+
+    /// The page icon. One per family: pages of a family share a shape, so a repeat marks the family.
+    pub fn icon(self) -> zikaron_ui::icons::Icon {
+        use zikaron_ui::icons::Icon;
+        match self {
+            // Ledger and anchoring.
+            Page::Ledger | Page::Anchoring | Page::Queue | Page::Audit => Icon::Ledger,
+            // Grants.
+            Page::Grant | Page::Grants | Page::Revoke | Page::FirstWindow => Icon::Grant,
+            // Adoption and succession.
+            Page::Adopt | Page::Succeed => Icon::Anchor,
+            // Disclosure and reading.
+            Page::Kit | Page::Depth | Page::Reader => Icon::Kit,
+            // Grantee: verification and due diligence read bytes from the other party, like the disclosure
+            // family.
+            Page::Diligence | Page::Verifier | Page::Delivery => Icon::Kit,
+            // Shared: checking reads the other party's payload, like the disclosure family.
+            Page::Check => Icon::Kit,
+            Page::Watch => Icon::Ledger,
+            // Grantee credentials hold grants, like the grant family.
+            Page::Vault
+            | Page::Sentinel
+            | Page::Upstreams
+            | Page::Badge
+            | Page::Relicense => Icon::Grant,
+            // Machine and settings.
+            Page::FirstRun
+            | Page::Identity
+            | Page::Archive
+            | Page::Mirror
+            | Page::Skeleton
+            | Page::About => Icon::Gear,
+        }
+    }
+}
 
 /// Settings sections, in top-to-bottom order on the settings home.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -23,17 +209,21 @@ pub enum Section {
     Notify,
     /// Local data: encryption, the whole-machine backup, the ledger mirror (recorder), the data folder.
     Data,
+    /// The command line: the terminal command, how it may write this machine's data (through the desktop app or
+    /// with a credential), and how its anchoring is handled.
+    Cli,
     About,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Language,
         Section::Appearance,
         Section::Keys,
         Section::Network,
         Section::Notify,
         Section::Data,
+        Section::Cli,
         Section::About,
     ];
 
@@ -46,6 +236,7 @@ impl Section {
             Section::Network => Key::SetChain,
             Section::Notify => Key::SetCadence,
             Section::Data => Key::SetData,
+            Section::Cli => Key::SetCliGroup,
             Section::About => Key::PageAbout,
         }
     }
@@ -62,6 +253,7 @@ impl Section {
                 Role::Grantee => Key::SetNoteNotifyGrantee,
             },
             Section::Data => Key::SetNoteData,
+            Section::Cli => Key::SetNoteCli,
             Section::About => Key::SetNoteAbout,
         }
     }
@@ -75,6 +267,7 @@ impl Section {
             Section::Network => "network",
             Section::Notify => "notify",
             Section::Data => "data",
+            Section::Cli => "cli",
             Section::About => "about",
         }
     }
@@ -171,19 +364,13 @@ pub enum Place {
 }
 
 /// One rail item: place, name, glyph.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Item {
-    pub place: Place,
-    pub name: Key,
-    pub glyph: Glyph,
-}
+pub type Item = zikaron_ui::nav::Item<Place, Key>;
 
 /// One rail group: its optional title and its items.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Group {
-    pub title: Option<Key>,
-    pub items: &'static [Item],
-}
+pub type Group = zikaron_ui::nav::Group<Place, Key>;
+
+/// One view's page history.
+pub type History = zikaron_ui::nav::History<Route>;
 
 const fn it(place: Place, name: Key, glyph: Glyph) -> Item {
     Item { place, name, glyph }
@@ -407,6 +594,27 @@ impl Step {
     }
 }
 
+/// A wizard step's page. The identity step has two once words are made: copying them, then checking the copy;
+/// every other step has one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sub {
+    /// The step's first page (for the identity step: the words to copy).
+    First,
+    /// The identity step's check of the copied words.
+    Check,
+}
+
+/// Where "back" goes from `step` at `sub`, the one place it is decided: a later page of a step goes to the
+/// step's first page (the check of the words goes back to the words, unchanged), a first page to the step
+/// before it; `None` on the first step's first page.
+pub fn prev(step: Step, sub: Sub) -> Option<(Step, Sub)> {
+    if sub != Sub::First {
+        return Some((step, Sub::First));
+    }
+    let at = Step::ALL.iter().position(|s| *s == step)?;
+    at.checked_sub(1).map(|i| (Step::ALL[i], Sub::First))
+}
+
 /// Whether each wizard step is complete, read from real state rather than from which buttons were pressed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Progress {
@@ -542,66 +750,6 @@ impl Route {
     }
 }
 
-/// A view's history: pages behind, the page shown, pages ahead.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct History {
-    pub back: Vec<Route>,
-    pub cur: Route,
-    pub fwd: Vec<Route>,
-}
-
-impl History {
-    /// A history standing on a view's own page.
-    pub fn at(root: Place) -> History {
-        History { back: Vec::new(), cur: Route::Root(root), fwd: Vec::new() }
-    }
-
-    /// Go into a page: the current one goes behind, pages ahead are dropped.
-    pub fn push(&mut self, r: Route) {
-        let was = std::mem::replace(&mut self.cur, r);
-        self.back.push(was);
-        self.fwd.clear();
-    }
-
-    /// Back one page; false when there is none.
-    pub fn back(&mut self) -> bool {
-        match self.back.pop() {
-            Some(prev) => {
-                let was = std::mem::replace(&mut self.cur, prev);
-                self.fwd.insert(0, was);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Forward one page; false when there is none.
-    pub fn fwd(&mut self) -> bool {
-        if self.fwd.is_empty() {
-            return false;
-        }
-        let next = self.fwd.remove(0);
-        let was = std::mem::replace(&mut self.cur, next);
-        self.back.push(was);
-        true
-    }
-
-    /// Back to the view's own page, forgetting the history.
-    pub fn root(&mut self, root: Place) {
-        *self = History::at(root);
-    }
-
-    /// The view's own page at the bottom of the history (the first page behind, or the current one).
-    pub fn bottom(&self) -> &Route {
-        self.back.first().unwrap_or(&self.cur)
-    }
-
-    /// Whether there is anything behind or ahead.
-    pub fn has_history(&self) -> bool {
-        !self.back.is_empty() || !self.fwd.is_empty()
-    }
-}
-
 /// Which history a place belongs to.
 pub fn stack_of(place: Place) -> Stack {
     match place {
@@ -620,7 +768,24 @@ pub fn history_of(place: Place, role: Role) -> (Stack, History) {
         Place::View(View::Works, tab::WORKS_KIT) => History { back: vec![Route::Root(Place::View(View::Works, tab::WORKS_ALL))], cur: Route::Kit, fwd: Vec::new() },
         Place::View(View::Grants, tab::GRANTS_NEW) => History { back: vec![Route::Root(Place::View(View::Grants, tab::GRANTS_LIST))], cur: Route::NewGrant, fwd: Vec::new() },
         Place::View(View::MyGrants, tab::HELD_RELICENSE) => History { back: vec![Route::Root(Place::View(View::MyGrants, 0))], cur: Route::Relicense, fwd: Vec::new() },
-        other => History::at(other),
+        other => History::at(Route::Root(other)),
     };
     (stack_of(place), h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// "Back" from every page of every step: a later page of a step goes to that step's first page (the words'
+    /// check to the words), a first page to the step before; nothing before the first step's first page.
+    #[test]
+    fn back_goes_to_the_page_before_then_the_step_before() {
+        assert_eq!(prev(Step::Key, Sub::Check), Some((Step::Key, Sub::First)));
+        assert_eq!(prev(Step::Pin, Sub::First), None);
+        for pair in Step::ALL.windows(2) {
+            assert_eq!(prev(pair[1], Sub::First), Some((pair[0], Sub::First)), "{:?}", pair[1]);
+            assert_eq!(prev(pair[1], Sub::Check), Some((pair[1], Sub::First)), "{:?}", pair[1]);
+        }
+    }
 }

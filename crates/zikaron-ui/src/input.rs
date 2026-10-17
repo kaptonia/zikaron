@@ -48,6 +48,8 @@ pub struct Look {
     pub search: bool,
     /// Red frame: the text is wrong.
     pub bad: bool,
+    /// The text (and its hint) centred in the field: a short number in a small cell.
+    pub centred: bool,
 }
 
 /// Single-line field, full width.
@@ -125,6 +127,7 @@ pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Loo
             .hint_text(egui::RichText::new(hint).font(t.font()).color(c(C::Ink3)))
             .frame(false)
             .desired_width(inner.width())
+            .horizontal_align(if look.centred { egui::Align::Center } else { egui::Align::Min })
             .vertical_align(egui::Align::Center),
     );
     let edge = if look.bad {

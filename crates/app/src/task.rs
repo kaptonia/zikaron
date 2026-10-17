@@ -392,45 +392,9 @@ impl Kind {
     }
 }
 
-/// A batch's transaction not included by the end of a receipt wait: every transaction of the batch, oldest
-/// first, and the latest as the chain holds it (nonce, recipient, call data and fees), with the current price.
-/// Read where the wait ended, never in the frame; the "resend with higher fees" button and its card read only
-/// this.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Stuck {
-    pub txs: Vec<String>,
-    pub chain: u64,
-    /// The account the transactions were sent from (a resend is signed by the same key or refused).
-    pub from: [u8; 20],
-    pub nonce: u64,
-    pub to: [u8; 20],
-    pub input: Vec<u8>,
-    /// The last transaction's fee cap, priority fee and gas limit.
-    pub sent: zikaron_anchor::send::Fees,
-    /// What may be done now.
-    pub offer: Offer,
-    /// The nodes the current price was not read from because they serve another chain, each named (as on the
-    /// send card).
-    pub left: Vec<String>,
-}
-
-/// Whether a stuck batch may be resent with higher fees, and at what.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Offer {
-    /// The current price (the head's base fee) is above the last transaction's cap: a resend carries these fees
-    /// (the current fee rule, at least the pools' replacement bump above the last, `Fees::replacing`).
-    Resend { fees: zikaron_anchor::send::Fees, base_now: u64 },
-    /// The current price is not above the cap: the transaction can still be included as is; waiting continues.
-    NotAbove { base_now: u64 },
-    /// The current price could not be read: nothing is offered (waiting continues).
-    PriceUnread,
-    /// Already resent [`crate::queue::RESENDS_MAX`] times: waiting continues, nothing more is offered.
-    Spent,
-    /// No node holds any transaction of the batch any more (dropped from the pools) and its nonce is still
-    /// unused on chain: the batch as recorded here (its entries, at its nonce) may be sent again at the current
-    /// price with these fees (gas as the node estimates now; nothing is replaced, so no bump is needed).
-    Unheld { fees: zikaron_anchor::send::Fees, base_now: u64 },
-}
+/// A batch's transaction not included by the end of a receipt wait, and whether it may be resent with higher fees:
+/// the sender's (`zikaron_send::batch`). The "resend with higher fees" button and its card read only these.
+pub use zikaron_send::batch::{Offer, Stuck};
 
 /// What a task returns. The background returns only these, and the screen renders by kind.
 #[derive(Clone, Debug)]
@@ -596,6 +560,8 @@ pub enum Done {
         /// another transaction: the batch is void and its entries are back in the queue (reported as
         /// `Known::BatchVoided`).
         voided: bool,
+        /// How long the receipt wait actually ran, in whole seconds (measured, not the wait it was given).
+        waited: u64,
     },
     /// One due-diligence pass: all four panels.
     Diligence(Box<crate::diligx::Read>),
@@ -665,6 +631,9 @@ pub enum Keystore {
 /// The result of a task. The only shape that returns to the UI thread.
 pub struct Outcome {
     pub kind: Kind,
+    /// The serial this task got when it started ([`Tasks::serial_of`]): who asked for it reads its own result
+    /// by this, never by its kind (another task of the kind may have started since).
+    pub serial: u64,
     pub result: Result<Done, Fault>,
     /// The epoch of the ledger's source when this task started (see `Tasks::new_epoch`).
     pub epoch: u64,
@@ -735,6 +704,9 @@ pub struct Tasks {
     serial: u64,
     flying_serial: std::collections::BTreeMap<Kind, u64>,
     hands: Vec<(Kind, u64, JoinHandle<()>)>,
+    /// Kinds in flight that hold no writer's turn although they write local data ([`Tasks::spawn_turnless`]: a
+    /// send's receipt wait, which takes the lock itself only to settle).
+    turnless: std::collections::BTreeSet<Kind>,
 }
 
 impl Default for Tasks {
@@ -762,6 +734,7 @@ impl Tasks {
             serial: 0,
             flying_serial: std::collections::BTreeMap::new(),
             hands: Vec::new(),
+            turnless: std::collections::BTreeSet::new(),
         }
     }
 
@@ -775,6 +748,24 @@ impl Tasks {
 
     pub fn flying(&self) -> Vec<Kind> {
         self.flying.keys().copied().collect()
+    }
+
+    /// Whether anything in flight writes local data holding the writer's turn (every kind that writes local
+    /// data, but a send's receipt wait, [`Tasks::spawn_turnless`]): while the command line writes alone, the
+    /// writer lock is let go only when nothing is.
+    pub fn holds_turn(&self) -> bool {
+        self.flying.keys().any(|k| k.writes_local() && !self.turnless.contains(k))
+    }
+
+    /// [`Tasks::spawn`] for work that holds no writer's turn while it runs although its kind writes local data: a
+    /// send's receipt wait, which writes nothing while it waits and takes the home's writer lock itself only to
+    /// settle (`lock::settling`), so another sender may send meanwhile.
+    pub fn spawn_turnless(&mut self, kind: Kind, work: impl FnOnce() -> Result<Done, Fault> + Send + 'static) -> Spawned {
+        let s = self.spawn(kind, work);
+        if s == Spawned::Started {
+            self.turnless.insert(kind);
+        }
+        s
     }
 
     /// Move to a new epoch. Kinds that follow the source: tasks in flight from the old epoch run to
@@ -810,6 +801,12 @@ impl Tasks {
         self.in_flight(k) && self.hands.iter().any(|(x, s, h)| *x == k && s == serial && h.is_finished())
     }
 
+    /// The serial of the task of this kind in flight now (`None` when none is): taken right after starting one,
+    /// it names that task's outcome ([`Outcome::serial`]).
+    pub fn serial_of(&self, k: Kind) -> Option<u64> {
+        self.flying_serial.get(&k).copied().filter(|_| self.in_flight(k))
+    }
+
     /// How many times this kind has landed (the stamp for [`Tasks::answered_since`]).
     pub fn landings(&self, k: Kind) -> u64 {
         self.landings.get(&k).copied().unwrap_or(0)
@@ -832,6 +829,7 @@ impl Tasks {
         if self.in_flight(kind) {
             return Spawned::InFlight;
         }
+        self.turnless.remove(&kind);
         self.flying.insert(kind, self.epoch);
         self.serial += 1;
         let serial = self.serial;
@@ -859,7 +857,7 @@ impl Tasks {
             };
             stage_clear(kind);
             // Sending fails only when the UI side is gone, and then nobody wants the result.
-            let _ = tx.send(Outcome { kind, result, epoch, stale: false, earlier: false });
+            let _ = tx.send(Outcome { kind, serial, result, epoch, stale: false, earlier: false });
         });
         match started {
             Ok(h) => self.hands.push((kind, serial, h)),
@@ -869,7 +867,7 @@ impl Tasks {
             Err(e) => {
                 stage_clear(kind);
                 let f = Fault::unknown(crate::lang::filln(crate::lang::Key::Tail236, &[&crate::lang::filln(crate::lang::Key::Tail219, &[&kind.as_str().to_string()]), &e.to_string()]));
-                let _ = failed_tx.send(Outcome { kind, result: Err(f), epoch, stale: false, earlier: false });
+                let _ = failed_tx.send(Outcome { kind, serial, result: Err(f), epoch, stale: false, earlier: false });
             }
         }
         Spawned::Started
@@ -888,6 +886,7 @@ impl Tasks {
                 Ok(mut o) => {
                     if self.flying.get(&o.kind) == Some(&o.epoch) {
                         self.flying.remove(&o.kind);
+                        self.turnless.remove(&o.kind);
                     }
                     o.earlier = o.epoch != self.epoch;
                     o.stale = o.kind.follows_source() && o.earlier;

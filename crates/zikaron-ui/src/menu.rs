@@ -103,14 +103,15 @@ pub fn set(ctx: &egui::Context, id: egui::Id, open: bool) {
 }
 
 /// Draw an open menu under `anchor` (aligned to its left edge when `left`, its right edge otherwise), at
-/// least `min_w` wide. Returns the picked row's index.
+/// least `min_w` wide, inside the window (an anchor drawn on no ui of its own). Returns the picked row's index.
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
-    show_from(ctx, None, id, anchor, left, min_w, items)
+    show_from(ctx, None, id, anchor, ctx.content_rect(), left, min_w, items)
 }
 
 /// As [`show`], for a menu whose anchor lies in `parent` (an overlay it then hangs above; see
-/// [`crate::layer::under`]).
-pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
+/// [`crate::layer::under`]), inside `bounds` (the anchor's ui clip: [`crate::layer::drop_card`]).
+#[allow(clippy::too_many_arguments)]
+pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     if !is_open(ctx, id) {
         return None;
     }
@@ -155,7 +156,7 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
         })
         .sum::<f32>()
         + 10.0;
-    let drop = crate::layer::drop_card(ctx, anchor, vec2(w, h), left);
+    let drop = crate::layer::drop_card(ctx, anchor, bounds, vec2(w, h), left);
     let (rect, origin) = (drop.rect, drop.origin);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     let scale = 0.97 + 0.03 * e;
@@ -273,7 +274,7 @@ pub fn menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, left: bool, min_w
     if resp.clicked() {
         toggle(ui.ctx(), id);
     }
-    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, left, min_w, items)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), left, min_w, items)
 }
 
 /// A key without a caret that opens a menu (the "recent addresses" key beside a field).
@@ -283,7 +284,7 @@ pub fn plain_key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, l
     if resp.clicked() {
         toggle(ui.ctx(), id);
     }
-    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, left, min_w, items)
+    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), left, min_w, items)
 }
 
 /// One plain row drawn in `rr` (menus and the pickers share it): hovered rows fill with blue and their words

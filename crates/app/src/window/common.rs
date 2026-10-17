@@ -3,6 +3,16 @@
 
 use super::*;
 
+/// The language switch the first-run wizard and the passcode gate carry (drawn before any home is open), the
+/// same choice as the settings page's. Returns the language picked when it differs from the current one; the
+/// caller applies it through `Action::SetLang`, which keeps it on this machine.
+pub(super) fn lang_pick(ui: &mut egui::Ui, id_salt: &str) -> Option<crate::lang::Lang> {
+    let langs = crate::lang::Lang::ALL;
+    let cur = langs.iter().position(|l| *l == crate::lang::lang()).unwrap_or(0);
+    let cells: Vec<zikaron_ui::seg::Cell> = langs.iter().map(|l| zikaron_ui::seg::Cell::from(l.label())).collect();
+    zikaron_ui::seg::seg(ui, id_salt, &cells, cur).filter(|i| *i != cur).map(|i| langs[i])
+}
+
 /// A field: its label (14, second ink, 8 above the control; an optional word after it in the quiet ink),
 /// then the control.
 pub(super) fn field<R>(ui: &mut egui::Ui, label: &str, optional: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {

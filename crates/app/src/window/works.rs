@@ -46,7 +46,7 @@ impl Win {
         let mut range = self.ux.range.get("works").cloned().unwrap_or_default();
         let today = (self.shell.clock)();
         stagger(ui, 0, |ui| {
-            let d = drop::zone(ui, "works-new", Some(Glyph::Inbox), &[t(Key::V2NewAnchor), t(Key::DropClickAny)], None, 84.0, drop::Shape::Row, true);
+            let d = drop::zone(ui, "works-new", Some(Glyph::Inbox), &[t(Key::WbDropTitle), t(Key::DropClickAny)], None, 84.0, drop::Shape::Row, true);
             new_record = self.drop_or_pick(ui.ctx(), "works-new", &d, crate::platform::Pick::FileOrFolder, now);
         });
         stagger(ui, 1, |ui| search_row(ui, "works", &mut query, t(Key::SearchWorks), &mut range, today));

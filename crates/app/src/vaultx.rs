@@ -256,16 +256,17 @@ pub fn held_rows(home: &Home) -> Result<Vec<(String, Vec<u8>)>, Fault> {
                     .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/"))
                     .unwrap_or_default();
                 let bytes = std::fs::read(&p).map_err(|x| crate::fault::classify(&x, &p.display().to_string()))?;
-                // Opened and named by its logical name (the keyed on-disk name means nothing to a reader of
-                // the bundle).
+                // A local kind is opened and named by its logical name (the keyed on-disk name means nothing to a
+                // reader of the bundle); one that is not sealed is refused where it is opened (`NotSealed`), never
+                // carried as it lies. Files of no local kind go as they are.
                 let (rel, bytes) = match held_doc(&rel) {
-                    Some(doc) if crate::local::is_sealed(&bytes) => {
+                    Some(doc) => {
                         let plain = crate::local::open_with(&key, &crate::local::expect_at(&p, doc)?, &bytes, &rel)?;
                         let room = format!("{}/", Slot::GrantsHeld.as_str());
                         let logical = crate::local::logical_rel(doc, &format!("{room}{rel}"), &plain)?;
                         (logical.strip_prefix(&room).map(str::to_string).unwrap_or(logical), plain)
                     }
-                    _ => (rel, bytes),
+                    None => (rel, bytes),
                 };
                 out.push((rel, bytes));
             }

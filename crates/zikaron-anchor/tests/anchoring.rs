@@ -391,7 +391,7 @@ fn an_incomplete_receipt_is_an_answer_so_the_deadline_says_not_yet() {
         fn call(&mut self, method: &str, _params: &Value) -> Result<W, Trouble> {
             match method {
                 "eth_getTransactionReceipt" => Ok(w("{\"transactionHash\":\"0x0000000000000000000000000000000000000000000000000000000000000001\"}")),
-                _ => Err(Trouble::Transport("不问这一句".into())),
+                _ => Err(Trouble::Transport(zikaron_anchor::rpc::Broke::Said("not asked here".into()))),
             }
         }
         fn name(&self) -> String {
@@ -424,7 +424,7 @@ fn a_broadcast_transaction_keeps_its_hash_even_when_the_endpoint_goes_quiet() {
                     // placeholder, and the assertions below only check that the hash survives.
                     Ok(w("\"0x0000000000000000000000000000000000000000000000000000000000000000\""))
                 }
-                _ => Err(Trouble::Transport("端点半路断了".into())),
+                _ => Err(Trouble::Transport(zikaron_anchor::rpc::Broke::Said("the endpoint broke off".into()))),
             }
         }
         fn name(&self) -> String {

@@ -34,11 +34,6 @@ pub enum Step {
     Anchor,
 }
 
-/// Names of steps removed from the checklist, as found in files written by older versions. Such lines are
-/// skipped and the remaining lines are checked in the current order, so an older file resumes at the step
-/// after the last one ticked. Removing a step only adds its name here.
-pub const RETIRED: [&str; 2] = ["bond", "undertaking"];
-
 impl Step {
     pub const ALL: [Step; 2] = [Step::Terms, Step::Anchor];
 
@@ -138,9 +133,7 @@ impl Wizard {
                 return Err(Fault::known(Known::SettingsShape, p.display().to_string()));
             };
             let step = match rm.iter().find(|(k, _)| k == member::STEP) {
-                // Lines in older files for removed steps (`RETIRED`) are skipped; the rest are checked in the
-                // current order.
-                Some((_, Value::Str(s))) if RETIRED.contains(&s.as_str()) => continue,
+                // A step this version does not have is refused by name (never skipped).
                 Some((_, Value::Str(s))) => Step::parse(s),
                 _ => None,
             };
@@ -193,4 +186,23 @@ pub mod member {
     pub const MARKS: &str = "marks";
     pub const SAID: &str = "said";
     pub const STEP: &str = "step";
+}
+
+/// The payment request the gas step's code carries (EIP-681): this address on the chain of the network the
+/// wizard chose (`ethereum:<address>@<chain id>`), so a wallet set to another network asks to switch rather than
+/// paying on that one.
+pub fn gas_request(address: &str, chain_id: u64) -> String {
+    format!("ethereum:{address}@{chain_id}")
+}
+
+#[cfg(test)]
+mod gas_request_tests {
+    /// The code names the address and the chain, in EIP-681's form: a wallet on another network is asked to
+    /// switch to this one, never left to pay on its own.
+    #[test]
+    fn the_gas_code_names_the_chosen_networks_chain() {
+        let a = "0x5d5a0de8ac3b41b649e0985c141d1735832cbf8f";
+        assert_eq!(super::gas_request(a, 11_155_111), "ethereum:0x5d5a0de8ac3b41b649e0985c141d1735832cbf8f@11155111");
+        assert_eq!(super::gas_request(a, 1), "ethereum:0x5d5a0de8ac3b41b649e0985c141d1735832cbf8f@1");
+    }
 }

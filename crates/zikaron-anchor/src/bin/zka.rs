@@ -4,6 +4,9 @@
 //! shape and the report belong to the core's `audit`, the endpoint rule lives in `endpoints`, proof kits in
 //! `kit`.
 
+// `unsafe` lives in the platform piece (`zikaron-os`) alone: here it does not compile.
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 use zikaron::json::{canon_bytes, Value};
 use zikaron_anchor::wire::{self, Body, W};

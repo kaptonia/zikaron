@@ -197,7 +197,7 @@ impl Win {
                         ui.set_min_height(TOP_H - tk::CARD_PAD_Y * 2.0);
                         ui.spacing_mut().item_spacing.y = 10.0;
                         card_title(ui, t(Key::WbCheckTitle));
-                        egui::ScrollArea::vertical().id_salt("home-code").max_height(52.0).show(ui, |ui| input::area(ui, &mut self.typed.ck_typed, 2));
+                        zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("home-code").max_height(52.0), |ui| input::area(ui, &mut self.typed.ck_typed, 2));
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = tk::S3;
                             if self.long_key(ui, t(Key::DoCheck), Role::Primary, !self.typed.ck_typed.trim().is_empty(), crate::task::Kind::Check) {

@@ -151,7 +151,7 @@ fn stuck_at(base: u64, cap: u64, left: Vec<String>) -> Stuck {
         input: vec![0xab],
         sent: fees(10),
         offer: Offer::Resend { fees: fees(cap), base_now: base * GWEI },
-        left,
+        left: left.into_iter().map(zikaron_send::Why::Text).collect(),
     }
 }
 
@@ -338,8 +338,8 @@ fn press_during_check(lands: Lands) -> (app::shell::Shell, Frame, Vec<String>) {
     let seen = Seen { release_on: Some(t(Key::U3BumpWaiting).to_string()), ..Default::default() };
     let (released, returned) = (seen.released.clone(), seen.returned.clone());
     let done = match lands {
-        Lands::Included => Done::Anchored { tx: TX.to_string(), chain: 31337, confirmed: true, state: "1".to_string(), sent: 1, dropped: 0, queue: Vec::new(), gas: None, calldata: String::new(), stuck: None, voided: false },
-        Lands::Offer(s) => Done::Anchored { tx: TX.to_string(), chain: 31337, confirmed: false, state: String::new(), sent: 0, dropped: 0, queue: Vec::new(), gas: None, calldata: String::new(), stuck: Some(s), voided: false },
+        Lands::Included => Done::Anchored { tx: TX.to_string(), chain: 31337, confirmed: true, state: "1".to_string(), sent: 1, dropped: 0, queue: Vec::new(), gas: None, calldata: String::new(), stuck: None, voided: false, waited: 0 },
+        Lands::Offer(s) => Done::Anchored { tx: TX.to_string(), chain: 31337, confirmed: false, state: String::new(), sent: 0, dropped: 0, queue: Vec::new(), gas: None, calldata: String::new(), stuck: Some(s), voided: false, waited: 0 },
     };
     let started = shell.tasks.spawn(Kind::Anchor, move || {
         while !released.load(Ordering::SeqCst) {

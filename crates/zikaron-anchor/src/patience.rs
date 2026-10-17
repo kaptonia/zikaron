@@ -49,7 +49,7 @@ const RANGE_WORDS: [&str; 3] = ["range", "results", "blocks"];
 
 /// Which class a trouble is. A rate limit is a 429 or a node's words with a rate-limit marker
 /// (`said::says_rate_limited`; the code alone is not enough) naming no range; a server error is a status from
-/// 500 to 599; a timeout is the deadline passing (`rpc::is_late`). A cut before the answer is the transport's
+/// 500 to 599; a timeout is the deadline passing (`rpc::Broke::Late`). A cut before the answer is the transport's
 /// and never comes here: what does come is its failure after its one more ask, which is not waited out.
 pub fn class_of(t: &Trouble) -> Class {
     let range = match t {
@@ -63,8 +63,8 @@ pub fn class_of(t: &Trouble) -> Class {
         return Class::RateLimited;
     }
     match t {
-        Trouble::Transport(e) if rpc::status_of(e).is_some_and(|s| (500..600).contains(&s)) => Class::ServerError,
-        Trouble::Transport(e) if rpc::is_late(e) => Class::Timeout,
+        Trouble::Transport(_) if rpc::status_of(t).is_some_and(|s| (500..600).contains(&s)) => Class::ServerError,
+        Trouble::Transport(rpc::Broke::Late { .. }) => Class::Timeout,
         _ => Class::Other,
     }
 }

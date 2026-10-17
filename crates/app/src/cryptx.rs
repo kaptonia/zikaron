@@ -1,7 +1,8 @@
 //! The only app module allowed to use third-party cryptography.
 //!
-//! Allowed crates (closed list): RustCrypto's `scrypt`, `aes`, `ctr`, `hmac`, `pbkdf2`, `sha2`, `k256`,
-//! `chacha20poly1305` (XChaCha variant) and `hkdf`, plus `bip39` (English word list and checksum only).
+//! Allowed crates (closed list): RustCrypto's `hmac`, `pbkdf2`, `sha2`, `k256`, plus `bip39` (English word list
+//! and checksum only). scrypt, AES-128-CTR, HKDF, HMAC-SHA256 and XChaCha20-Poly1305 are the sealed layer's
+//! (`zikaron_seal::crypto`) and re-exported here.
 //! No other module imports them; a test enforces this for `bip39`. TLS lives in `zikaron_net`, and the app
 //! reaches https nodes and remote files only through it (`chainx::Https`).
 //!
@@ -29,87 +30,21 @@ use crate::family::ENTROPY_BYTES;
 
 type HmacSha512 = Hmac<Sha512>;
 
-/// Zeroes a byte range with volatile writes, so the compiler cannot drop them as dead stores.
-fn wipe(b: &mut [u8]) {
-    for x in b.iter_mut() {
-        unsafe { std::ptr::write_volatile(x, 0) };
-    }
-}
+/// Zeroes a byte range in place: the platform piece's one wipe (`zikaron_os::wipe`).
+use zikaron_os::wipe;
 
-thread_local! {
-    /// How many password derivations ([`scrypt`], [`pbkdf2_sha256`]) this thread has run. Observation only:
-    /// tests read it to confirm a refusal came before the expensive work. Per thread, so work on other
-    /// threads is not counted.
-    static DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// The derivations this thread has run so far ([`DERIVATIONS`]).
-pub fn derivations() -> usize {
-    DERIVATIONS.with(|d| d.get())
-}
-
-fn derived_once() {
-    DERIVATIONS.with(|d| d.set(d.get() + 1));
-}
-
-/// scrypt (RFC 7914). `n` must be a power of two; invalid parameters return false, never panic.
-pub fn scrypt(password: &[u8], salt: &[u8], n: usize, r: usize, p: usize, out: &mut [u8]) -> bool {
-    if n < 2 || n & (n - 1) != 0 || r == 0 || p == 0 || r > u32::MAX as usize || p > u32::MAX as usize {
-        return false;
-    }
-    derived_once();
-    let Ok(params) = scrypt::Params::new(n.trailing_zeros() as u8, r as u32, p as u32, out.len()) else {
-        return false;
-    };
-    scrypt::scrypt(password, salt, &params, out).is_ok()
-}
+/// The derivation counter and the primitives of keystore V3 and of sealing are the sealed layer's
+/// (`zikaron_seal::crypto`), shared with the command line; this module adds the phrase and key derivation.
+pub use zikaron_seal::crypto::{aes128_ctr, derivations, hkdf_sha256, hmac_sha256, scrypt, xchacha_open, xchacha_seal};
 
 /// PBKDF2 with HMAC-SHA256 (RFC 8018), `c` rounds, into `out`. A zero round count returns false, never panics.
 pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], c: u32, out: &mut [u8]) -> bool {
     if c == 0 {
         return false;
     }
-    derived_once();
+    zikaron_seal::crypto::derived_once();
     pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password, salt, c, out);
     true
-}
-
-/// AES-128-CTR with the whole 16-byte block as a big-endian counter, as keystore V3 implementations use it.
-/// Encrypts or decrypts in place.
-pub fn aes128_ctr(key: &[u8; 16], iv: &[u8; 16], buf: &mut [u8]) {
-    use ctr::cipher::{KeyIvInit, StreamCipher};
-    let mut c = ctr::Ctr128BE::<aes::Aes128>::new(key.into(), iv.into());
-    c.apply_keystream(buf);
-}
-
-/// HKDF-SHA256 (RFC 5869) with no salt: `ikm` expanded under `info` into `out`. False only when `out` is longer
-/// than HKDF allows (never for the 32 bytes asked here).
-pub fn hkdf_sha256(ikm: &[u8], info: &[u8], out: &mut [u8]) -> bool {
-    hkdf::Hkdf::<sha2::Sha256>::new(None, ikm).expand(info, out).is_ok()
-}
-
-/// HMAC-SHA256 of `msg` under `key`.
-pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    use hmac::Mac;
-    let mut m = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key).expect("HMAC takes a key of any length");
-    m.update(msg);
-    m.finalize().into_bytes().into()
-}
-
-/// XChaCha20-Poly1305 sealing: `plain` under `key` and a 24-byte `nonce`, with `aad` bound in. The result is the
-/// ciphertext followed by the 16-byte tag.
-pub fn xchacha_seal(key: &[u8; 32], nonce: &[u8; 24], aad: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
-    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-    let c = chacha20poly1305::XChaCha20Poly1305::new(key.into());
-    c.encrypt(nonce.into(), Payload { msg: plain, aad }).ok()
-}
-
-/// XChaCha20-Poly1305 opening. `None` when the key, the nonce, the additional data or one byte of the
-/// ciphertext differs: nothing is decrypted without the tag passing first.
-pub fn xchacha_open(key: &[u8; 32], nonce: &[u8; 24], aad: &[u8], sealed: &[u8]) -> Option<Vec<u8>> {
-    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-    let c = chacha20poly1305::XChaCha20Poly1305::new(key.into());
-    c.decrypt(nonce.into(), Payload { msg: sealed, aad }).ok()
 }
 
 /// The two ways a phrase cannot be recognized.
@@ -181,7 +116,7 @@ pub fn derive(entropy: &[u8; ENTROPY_BYTES], path: &[u32]) -> Option<[u8; 32]> {
     let mut seed = [0u8; 64];
     pbkdf2::pbkdf2_hmac::<Sha512>(phrase.as_bytes(), b"mnemonic", 2048, &mut seed);
     // This copy of the phrase is zeroed once used.
-    unsafe { wipe(phrase.as_bytes_mut()) };
+    zikaron_os::wipe_string(&mut phrase);
     let out = walk(&seed, path, |k| {
         k256::SecretKey::from_slice(k).ok().map(|sk| sk.public_key().to_encoded_point(true).as_bytes().to_vec())
     });

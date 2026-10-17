@@ -145,12 +145,14 @@ pub fn show<T, B, F>(ctx: &egui::Context, spec: Spec, state: &mut T, body: impl 
                 _ => 0.0,
             };
             let slide_a = if matches!(st.slide, Slide::Forward | Slide::Back) && step_p < 1.0 { Curve::Ease.at(step_p) } else { 1.0 };
-            let (b, content_h) = egui::ScrollArea::vertical()
-                .id_salt(("zikaron-sheet-scroll", spec.id))
-                .scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL })
-                .max_height(body_room)
-                .auto_shrink([false, true])
-                .show(&mut bui, |ui| {
+            let (b, content_h) = crate::scroll::nested(
+                &mut bui,
+                egui::ScrollArea::vertical()
+                    .id_salt(("zikaron-sheet-scroll", spec.id))
+                    .scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL })
+                    .max_height(body_room)
+                    .auto_shrink([false, true]),
+                |ui| {
                     let r = egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 22, bottom: 4 }).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing.y = tokens::S3;

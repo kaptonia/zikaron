@@ -12,6 +12,8 @@ members = [
   "crates/zikaron-anchor",
   "crates/zikaron-cli",
   "crates/zikaron-glue",
+  "crates/zikaron-seal",
+  "crates/zikaron-send",
   "crates/zikaron-ui",
   "crates/app",
 ]
@@ -23,21 +25,6 @@ license = "MIT"
 [profile.release]
 strip = "symbols"
 lto = "thin"
-
-# Debug builds and tests derive keys at the shipped scrypt level (a whole-machine backup is always sealed at it).
-# Unoptimized, one such derivation takes about a minute, so the scrypt crates are optimized in debug builds too.
-# Release builds are unchanged.
-[profile.dev.package.scrypt]
-opt-level = 3
-
-[profile.dev.package.salsa20]
-opt-level = 3
-
-[profile.dev.package.pbkdf2]
-opt-level = 3
-
-[profile.dev.package.sha2]
-opt-level = 3
-
-[profile.dev.package.hmac]
-opt-level = 3
+# Every build, test and shipped binary is a release build, and a release build checks integer overflow: an
+# overflow stops the program by name instead of wrapping into a wrong number.
+overflow-checks = true

@@ -8,6 +8,9 @@
 //! from its six checks, ledger completeness from the core's audit, and on-chain anchoring from the anchoring
 //! crate's scan; answers are passed on unchanged. Every public entry point emits the kit output trace mark.
 
+// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
+#![forbid(unsafe_code)]
+
 /// The component code of kit output in the diagnostic trace.
 pub const V2: &str = "V2";
 
@@ -16,14 +19,19 @@ pub fn seam_v2() {
     zikaron::trace::mark(V2);
 }
 
+pub mod anchoredon;
+pub mod basis;
 pub mod container;
 pub mod door;
 pub mod grantfile;
+pub mod kitnames;
 pub mod landing;
 pub mod mirror;
 pub mod names;
+pub mod onefile;
 pub mod pack;
 pub mod read;
+pub mod recordcheck;
 pub mod recording;
 pub mod retraction;
 pub mod sealed;

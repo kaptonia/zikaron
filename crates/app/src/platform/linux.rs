@@ -1,7 +1,7 @@
 //! Linux: the file dialog goes through the XDG desktop portal (`rfd`, portal backend only, no GTK); the rest is
 //! shared with macOS (`unix.rs`); the temporary directory is `$XDG_RUNTIME_DIR`, else `/tmp`.
 
-pub(super) use super::unix::{lock_now, lock_wait, say_without_window, zone_rules};
+pub(super) use super::unix::{say_without_window, zone_rules};
 
 /// Detects dialog failures. `rfd` returns "nothing chosen" for both a cancel and a failure, and reports
 /// failures only through `log`, so this logger watches `rfd`'s records: a warning means it is moving to its

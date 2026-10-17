@@ -6,7 +6,13 @@
 //! | same bytes | every method not named below | the answers must be byte for byte the same |
 //! | named facts | a pinned block (`eth_getBlockByNumber` at a number), the fee history, a transaction, a receipt | only the named members are compared; a node lacking one of them differs |
 //! | least | the head (`eth_blockNumber`) | the smallest height (a block every node has reached) |
-//! | most | the pending nonce (`eth_getTransactionCount`), the latest block (`eth_getBlockByNumber` at `latest`) | the largest |
+//! | most | the pending nonce (`eth_getTransactionCount`), the latest block (`eth_getBlockByNumber` at `latest`), the gas estimate (`eth_estimateGas`) | the largest |
+//!
+//! A fact of the chain (its id, a head, a receipt, a balance, a log) is the same on every honest node, so a
+//! difference is a disagreement. A gas estimate is not a fact: each node works it out by running the call
+//! itself, and two honest nodes at one block can give different amounts. It is a quantity, read by the largest
+//! (a limit set above what the call uses costs nothing; one below it fails on chain); an estimate above the
+//! most a transaction carries is refused after the reading (`send::estimate_gas`, `NoGas::OverCap`).
 //!
 //! Every rule shares four rules of its own:
 //! - a node that does not answer is passed over: the reading still comes, from the others, and says which did
@@ -81,6 +87,7 @@ pub fn rule_of(method: &str, params: &Value) -> Rule {
     match method {
         "eth_blockNumber" => Rule::Least,
         "eth_getTransactionCount" => Rule::Most(None),
+        "eth_estimateGas" => Rule::Most(None),
         "eth_getBlockByNumber" if matches!(first, Some(Value::Str(s)) if s == "latest") => Rule::Most(Some("number")),
         "eth_getBlockByNumber" => Rule::Facts(&BLOCK_FACTS),
         "eth_feeHistory" => Rule::Facts(&FEE_HISTORY_FACTS),

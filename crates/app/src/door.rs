@@ -44,9 +44,10 @@ fn one(q: &Request, f: &str) -> String {
 }
 
 /// The closed table of door verbs, in the command line's verb order. A verb not listed is not accepted through
-/// the door (the command line refuses `--home` with it), and a flag not in its row is not accepted.
+/// the door (the command line refuses `--home` with it), and a flag not in its row is not accepted. Handing the
+/// ledger to another key (`succeed`) is not listed: final and rare, it is done on the desktop by hand only.
 /// `CLI-SCHEMA.md` §11 documents it (checked by the tests).
-const ROWS: [Row; 11] = [
+const ROWS: [Row; 10] = [
     Row { flags: &["statement"], make: |q| Action::Genesis { statement: one(q, "statement") } },
     Row { flags: &["file", "note"], make: |q| Action::RecordWork { note_md: one(q, "note"), files: vec![one(q, "file")], for_: None } },
     Row {
@@ -74,12 +75,15 @@ const ROWS: [Row; 11] = [
         make: |q| Action::AdoptAnchors { rows: anchor_rows(&one(q, "anchors")), attestor: one(q, "attestor"), attestation: one(q, "attestation") },
     },
     Row { flags: &[], make: |_| Action::AttestFor { text: String::new(), pin: crate::secret::Secret::default() } },
-    Row { flags: &["to", "kind", "effective", "statement"], make: |q| Action::Succeed { to: one(q, "to"), kind: one(q, "kind"), effective: one(q, "effective"), statement_md: one(q, "statement") } },
     Row { flags: &["subject", "note"], make: |q| Action::Annotate { subject: one(q, "subject"), note_md: one(q, "note") } },
     Row { flags: &["subject", "note"], make: |q| Action::Retract { subject: one(q, "subject"), note_md: one(q, "note") } },
     // Sending the queue: whether it is sent or left for the user depends on the setting ([`turn_of`]).
     Row { flags: &[], make: |_| Action::SendBatch { count: 0 } },
-    Row { flags: &["entry", "note", "out"], make: |q| Action::ExportKit { from: String::new(), to: String::new(), ids: q.many("entry").join("\n"), attach: String::new(), note: one(q, "note"), out: one(q, "out") } },
+    // `--as`: the form's word as given (`folder`, `file`; none is one file), judged by the action layer.
+    Row {
+        flags: &["entry", "note", "out", "as"],
+        make: |q| Action::ExportKit { from: String::new(), to: String::new(), ids: q.many("entry").join("\n"), attach: String::new(), note: one(q, "note"), out: one(q, "out"), form: one(q, "as") },
+    },
 ];
 
 /// Converts the JSON array from a `--anchors` file into the adoption page's rows, one line per element:
@@ -162,16 +166,19 @@ impl Door {
     }
 }
 
-/// What the request in progress waits for before it is answered (its background half).
+/// What the request in progress waits for before it is answered (its background half): the task this request
+/// started, by its serial (`Tasks::serial_of`), never by its kind; its own outcome answers it, whatever else of
+/// the kind lands meanwhile.
 pub enum Doing {
     /// A batch of records (`Kind::Record`), answered from what it says when it lands.
-    Record { answer: Sender<Reply> },
+    Record { answer: Sender<Reply>, serial: u64 },
     /// A record package (`Kind::Kit`).
-    Kit { answer: Sender<Reply> },
+    Kit { answer: Sender<Reply>, serial: u64 },
     /// The estimate before sending (`Kind::Gas`), followed by the send, as the send key does.
-    Estimate { answer: Sender<Reply>, count: usize },
-    /// The sending and its receipt wait (`Kind::Anchor`), answered at the receipt.
-    Send { answer: Sender<Reply> },
+    Estimate { answer: Sender<Reply>, count: usize, serial: u64 },
+    /// The sending, then the receipt wait it starts (`Kind::Anchor`): `serial` is the one awaited now. Answered
+    /// at the receipt.
+    Send { answer: Sender<Reply>, serial: u64 },
 }
 
 /// What a request turns into in this shell.
@@ -193,21 +200,31 @@ pub fn turn_of(shell: &Shell, q: &Request) -> Result<Turn, Fault> {
         return Err(Fault::known(Known::DoorUnread, q.verb.clone()));
     };
     let act = (row.make)(q);
-    // Send everything sendable in the queue, as the queue page's send key does. An empty queue is reported by
-    // the action's own rule, whatever the setting says.
+    // Send everything sendable in the queue, as the queue page's send key does, by the switch's one judgement
+    // (`zikaron_seal::machine::turn`, the credential road's too). Left queued, and an empty queue, are reported
+    // by the action's own rule.
     if let Action::SendBatch { .. } = act {
         let count = shell.queue.sendable();
-        return Ok(match (shell.machine.cli_anchor, count) {
-            (crate::machine::CliAnchor::Send, 1..) => Turn::Send { count },
-            _ => Turn::Act(Action::SendAsked { count }),
+        return Ok(match zikaron_seal::machine::turn(shell.machine.cli_anchor, count) {
+            zikaron_seal::machine::Turn::Send => Turn::Send { count },
+            zikaron_seal::machine::Turn::Leave | zikaron_seal::machine::Turn::Nothing => Turn::Act(Action::SendAsked { count }),
         });
     }
     Ok(Turn::Act(act))
 }
 
 /// A refusal as the door reports it: the code, the evidence, whether it is a network refusal (no answer
-/// rather than a negative one, `Known::NETWORK`), and its message in both languages.
+/// rather than a negative one, `Known::NETWORK`), and its message in both languages. The sender's "already on
+/// chain" goes as its own reply, its evidence as values (the hashes, the earliest transaction and block), so
+/// both of the command line's roads answer it alike.
 pub fn refused(f: &Fault) -> Reply {
+    if let Some((names, tx, block)) = f.on_chain() {
+        return Reply::OnChain { names: names.clone(), tx: tx.clone(), block: *block };
+    }
+    // A send whose batch is out though the broadcast failed is no refusal: no node answered for its transaction.
+    if let Some(tx) = f.out() {
+        return Reply::Unheard { tx: tx.to_string(), detail: f.tail().to_string() };
+    }
     let (code, network, (zh, en)) = match f.which() {
         Some(k) => (k.as_str().to_string(), Known::NETWORK.contains(&k), crate::lang::both(f.what_key().unwrap_or(k.what()))),
         None => (f.class().as_str().to_string(), false, (f.said(), f.said())),
@@ -255,10 +272,13 @@ fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<
 }
 
 impl Shell {
-    /// The home whose door should be open now: unlocked, a home open, and this instance its writer.
+    /// The home whose door should be open now: unlocked, a home open, this instance its writer, and the
+    /// command line's path through the desktop (`machine::CliPath::Desktop`: "writes through the desktop" on,
+    /// "writes alone" off).
     fn door_wanted(&self) -> Option<PathBuf> {
         let writer = self.lock.as_ref().map(|l| l.mode() == crate::lock::Mode::Writer).unwrap_or(false);
-        if self.door_off || !self.unlocked() || !writer {
+        let through = self.machine.cli_path() == crate::machine::CliPath::Desktop;
+        if self.door_off || !self.unlocked() || !writer || !through {
             return None;
         }
         self.home.as_ref().map(|h| h.root().to_path_buf())
@@ -345,9 +365,9 @@ impl Shell {
         match turn {
             Turn::Send { count } => {
                 let got = crate::action::apply(self, Action::EstimateGas { count });
-                match got {
-                    Applied::Started(Kind::Gas) => self.door_doing = Some(Doing::Estimate { answer, count }),
-                    other => self.door_answer(answer, other),
+                match (got, self.tasks.serial_of(Kind::Gas)) {
+                    (Applied::Started(Kind::Gas), Some(serial)) => self.door_doing = Some(Doing::Estimate { answer, count, serial }),
+                    (other, _) => self.door_answer(answer, other),
                 }
             }
             Turn::Act(act) => {
@@ -357,10 +377,10 @@ impl Shell {
                     return;
                 }
                 let got = crate::action::apply(self, act);
-                match got {
-                    Applied::Started(Kind::Record) => self.door_doing = Some(Doing::Record { answer }),
-                    Applied::Started(Kind::Kit) => self.door_doing = Some(Doing::Kit { answer }),
-                    other => self.door_answer(answer, other),
+                match (got, self.tasks.serial_of(Kind::Record), self.tasks.serial_of(Kind::Kit)) {
+                    (Applied::Started(Kind::Record), Some(serial), _) => self.door_doing = Some(Doing::Record { answer, serial }),
+                    (Applied::Started(Kind::Kit), _, Some(serial)) => self.door_doing = Some(Doing::Kit { answer, serial }),
+                    (other, _, _) => self.door_answer(answer, other),
                 }
             }
         }
@@ -393,8 +413,7 @@ impl Shell {
             | Applied::Recorded { id, .. }
             | Applied::Granted { id, .. }
             | Applied::Revoked { id, .. }
-            | Applied::Adopted { id, .. }
-            | Applied::Succeeded { id, .. } => wrote(id),
+            | Applied::Adopted { id, .. } => wrote(id),
             Applied::RecordedBatch { ids, stopped, .. } => match (ids.first(), stopped) {
                 (Some(id), _) => wrote(id),
                 (None, Some((_, _, f))) => refused(f),
@@ -421,89 +440,76 @@ impl Shell {
         }
     }
 
-    /// Advances the request in progress on what landed; `None` once it is answered.
+    /// Advances the request in progress on what landed; `None` once it is answered. Only the outcome of the task
+    /// this request started counts (by serial), and each of its landings has its own reply: a send broadcast
+    /// whose receipt wait does not start (the vault locking meanwhile) is "not yet included" with its
+    /// transaction; a task whose home left before it landed is answered as the door closing.
     fn door_step(&mut self, doing: Doing, landed: &[Outcome]) -> Option<Doing> {
-        let gone = |shell: &Shell, k: Kind| !shell.tasks.in_flight(k) && !shell.tasks.flying().contains(&k);
-        let lost = |k: Kind| refused(&Fault::known(Known::OutcomeLost, k.as_str().to_string()));
+        let mine = |serial: u64| landed.iter().find(|o| o.serial == serial);
+        let unexpected = |k: Kind| refused(&Fault::known(Known::OutcomeLost, k.as_str().to_string()));
         match doing {
-            Doing::Record { answer } => match self.said.remove(&Kind::Record) {
-                Some(got) => {
-                    self.door_answer(answer, got);
-                    None
+            Doing::Record { answer, serial } => {
+                if mine(serial).is_none() {
+                    return Some(Doing::Record { answer, serial });
                 }
-                None if gone(self, Kind::Record) => {
-                    self.door_send(&answer, lost(Kind::Record));
-                    None
+                // Its answer is in `said` (`action::landed`); none when it landed for a home no longer open.
+                match self.said.remove(&Kind::Record) {
+                    Some(got) => self.door_answer(answer, got),
+                    None => self.door_send(&answer, Reply::Closed),
                 }
-                None => Some(Doing::Record { answer }),
-            },
-            Doing::Kit { answer } => match landed.iter().find(|o| o.kind == Kind::Kit) {
-                Some(o) => {
-                    let reply = match &o.result {
-                        Ok(Done::Kit { path, kit_id, entries, files, dropped, .. }) => {
-                            Reply::Kit { kit_id: kit_id.clone(), path: path.clone(), entries: *entries as u64, files: *files as u64, dropped: dropped.clone() }
-                        }
-                        Ok(_) => lost(Kind::Kit),
-                        Err(f) => refused(f),
-                    };
-                    self.door_send(&answer, reply);
-                    None
-                }
-                None if gone(self, Kind::Kit) => {
-                    self.door_send(&answer, lost(Kind::Kit));
-                    None
-                }
-                None => Some(Doing::Kit { answer }),
-            },
-            Doing::Estimate { answer, count } => match self.said.remove(&Kind::Gas) {
-                // The estimate is in: send the batch it is for, as the send key does next.
-                Some(Applied::Gas { .. }) => match crate::action::apply(self, Action::SendBatch { count }) {
-                    Applied::Started(Kind::Anchor) => Some(Doing::Send { answer }),
-                    other => {
-                        self.door_answer(answer, other);
-                        None
+                None
+            }
+            Doing::Kit { answer, serial } => {
+                let Some(o) = mine(serial) else { return Some(Doing::Kit { answer, serial }) };
+                let reply = match &o.result {
+                    Ok(Done::Kit { path, kit_id, entries, files, dropped, .. }) => {
+                        Reply::Kit { kit_id: kit_id.clone(), path: path.clone(), entries: *entries as u64, files: *files as u64, dropped: dropped.clone() }
                     }
-                },
-                Some(other) => {
-                    self.door_answer(answer, other);
-                    None
+                    Ok(_) => unexpected(Kind::Kit),
+                    Err(f) => refused(f),
+                };
+                self.door_send(&answer, reply);
+                None
+            }
+            Doing::Estimate { answer, count, serial } => {
+                if mine(serial).is_none() {
+                    return Some(Doing::Estimate { answer, count, serial });
                 }
-                None if gone(self, Kind::Gas) => {
-                    self.door_send(&answer, lost(Kind::Gas));
-                    None
+                match self.said.remove(&Kind::Gas) {
+                    // The estimate is in: send the batch it is for, as the send key does next.
+                    Some(Applied::Gas { .. }) => match (crate::action::apply(self, Action::SendBatch { count }), self.tasks.serial_of(Kind::Anchor)) {
+                        (Applied::Started(Kind::Anchor), Some(serial)) => return Some(Doing::Send { answer, serial }),
+                        (other, _) => self.door_answer(answer, other),
+                    },
+                    Some(other) => self.door_answer(answer, other),
+                    None => self.door_send(&answer, Reply::Closed),
                 }
-                None => Some(Doing::Estimate { answer, count }),
-            },
-            Doing::Send { answer } => {
-                for o in landed.iter().filter(|o| o.kind == Kind::Anchor) {
-                    match &o.result {
-                        // Broadcast: the receipt wait continues in the shell; keep waiting.
-                        Ok(Done::Submitted { .. }) => {}
-                        Ok(Done::Anchored { tx, state, voided, .. }) => {
-                            let reply = match crate::action::receipt_of(state) {
-                                // Void (no node holds it and its nonce was used by another transaction):
-                                // reported as void with its entries back in the queue, never as "not yet".
-                                _ if *voided => Reply::Voided { tx: tx.clone() },
-                                Some((1, block)) => Reply::Anchored { tx: tx.clone(), block },
-                                Some((status, _)) => Reply::Reverted { tx: tx.clone(), status },
-                                None if crate::action::receipt_unheard(state) => Reply::Unheard { tx: tx.clone(), detail: state.clone() },
-                                None => Reply::NotYet { tx: tx.clone(), waited: self.anchor_wait.as_secs() },
-                            };
-                            self.door_send(&answer, reply);
-                            return None;
-                        }
-                        Ok(_) => {}
-                        Err(f) => {
-                            self.door_send(&answer, refused(f));
-                            return None;
-                        }
-                    }
-                }
-                if gone(self, Kind::Anchor) {
-                    self.door_send(&answer, lost(Kind::Anchor));
-                    return None;
-                }
-                Some(Doing::Send { answer })
+                None
+            }
+            Doing::Send { answer, serial } => {
+                let Some(o) = mine(serial) else { return Some(Doing::Send { answer, serial }) };
+                let reply = match &o.result {
+                    // Broadcast: the receipt wait it started is awaited next. None started (the vault is locking,
+                    // or the home left): broadcast and not yet waited for.
+                    Ok(Done::Submitted { tx, .. }) => match self.tasks.serial_of(Kind::Anchor) {
+                        Some(next) if next != serial => return Some(Doing::Send { answer, serial: next }),
+                        _ => Reply::NotYet { tx: tx.clone(), waited: 0 },
+                    },
+                    Ok(Done::Anchored { tx, state, voided, waited, .. }) => match crate::action::receipt_of(state) {
+                        // Void (no node holds it and its nonce was used by another transaction): reported as
+                        // void with its entries back in the queue, never as "not yet".
+                        _ if *voided => Reply::Voided { tx: tx.clone() },
+                        Some((1, block)) => Reply::Anchored { tx: tx.clone(), block },
+                        Some((status, _)) => Reply::Reverted { tx: tx.clone(), status },
+                        None if crate::action::receipt_unheard(state) => Reply::Unheard { tx: tx.clone(), detail: state.clone() },
+                        // How long the receipt wait ran, as measured: never the wait it was given.
+                        None => Reply::NotYet { tx: tx.clone(), waited: *waited },
+                    },
+                    Ok(_) => unexpected(Kind::Anchor),
+                    Err(f) => refused(f),
+                };
+                self.door_send(&answer, reply);
+                None
             }
         }
     }
@@ -512,7 +518,7 @@ impl Shell {
 impl Doing {
     fn answer(&self) -> &Sender<Reply> {
         match self {
-            Doing::Record { answer } | Doing::Kit { answer } | Doing::Estimate { answer, .. } | Doing::Send { answer } => answer,
+            Doing::Record { answer, .. } | Doing::Kit { answer, .. } | Doing::Estimate { answer, .. } | Doing::Send { answer, .. } => answer,
         }
     }
 }

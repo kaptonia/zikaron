@@ -86,11 +86,14 @@ pub fn value(ui: &mut egui::Ui, v: &Val) {
             });
         }
         Val::Mark(m, s) => {
-            ui.horizontal_top(|ui| {
+            // One cell (`width::cell`): the mark in a slot a line high, the words wrapping beside it, both from the top.
+            let words = crate::paint::wrapped(ui, s, Type::Body.font(), c(C::Ink), Type::Body.line(), room - tokens::MARK - tokens::S2);
+            let size = egui::vec2(tokens::MARK + tokens::S2 + words.size().x, words.size().y.max(Type::Body.line()));
+            crate::width::cell(ui, size, egui::Layout::left_to_right(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.x = tokens::S2;
                 let (slot, _) = ui.allocate_exact_size(egui::vec2(tokens::MARK, Type::Body.line()), egui::Sense::hover());
                 mark::paint_mark(ui.ctx(), ui.painter(), slot.center(), *m, tokens::MARK);
-                wrap(ui, s, Type::Body, c(C::Ink), room - tokens::MARK - tokens::S2);
+                ui.add(egui::Label::new(words));
             });
         }
     }

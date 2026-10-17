@@ -1,6 +1,7 @@
 //! Shell state, shared by the window and the test hooks. This layer does not know the zikaron/1 law: it
 //! knows the build, fonts, channels and pages, plus identities and the archive.
 
+use crate::queue::Kept as _;
 use crate::fault::{Fault, Known};
 use crate::feature::Feature;
 use crate::home::Home;
@@ -72,189 +73,8 @@ impl Banner {
     }
 }
 
-/// The pages. Only pages that exist are listed; a page not built is not in the navigation.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Page {
-    /// First run: what this machine still needs.
-    FirstRun,
-    /// Identity and keys.
-    Identity,
-    /// Archive and single writer.
-    Archive,
-    /// Mirror and chain.
-    Mirror,
-    /// Ledger view.
-    Ledger,
-    /// Disclosure kit output.
-    Kit,
-    /// Depth.
-    Depth,
-    /// Grant drafting.
-    Grant,
-    /// Grant ledger and double-sale guard.
-    Grants,
-    /// First-window checklist.
-    FirstWindow,
-    /// Revocation.
-    Revoke,
-    /// Adoption.
-    Adopt,
-    /// Succession.
-    Succeed,
-    /// Reading others' ledgers.
-    Reader,
-    /// Self-audit clock.
-    Audit,
-    /// Due diligence.
-    Diligence,
-    /// Record verification.
-    Verifier,
-    /// Checking a received record (a tab of the verify page).
-    Delivery,
-    /// Grant vault.
-    Vault,
-    /// Revocation sentinel.
-    Sentinel,
-    /// Multi-upstream ledger.
-    Upstreams,
-    /// Badges.
-    Badge,
-    /// Relicensing.
-    Relicense,
-    /// Grant check (shared, no identity needed).
-    Check,
-    /// Watch and notifications (shared).
-    Watch,
-    /// Anchoring desk.
-    Anchoring,
-    /// Anchor queue.
-    Queue,
-    /// Skeleton: this shell's own readings.
-    Skeleton,
-    /// About.
-    About,
-}
-
-impl Page {
-    /// Ordered by family: ledger and anchoring, grants, adoption and succession, disclosure and reading,
-    /// machine and settings. Icons follow the family (see [`Page::icon`]): one icon per family, so a repeated
-    /// icon marks pages of one family.
-    pub const ALL: [Page; 29] = [
-        // Ledger and anchoring.
-        Page::Ledger,
-        Page::Anchoring,
-        Page::Queue,
-        Page::Audit,
-        // Grants.
-        Page::Grant,
-        Page::Grants,
-        Page::Revoke,
-        Page::FirstWindow,
-        // Adoption and succession.
-        Page::Adopt,
-        Page::Succeed,
-        // Disclosure and reading.
-        Page::Kit,
-        Page::Depth,
-        Page::Reader,
-        // Shared.
-        Page::Check,
-        Page::Watch,
-        // Grantee.
-        Page::Diligence,
-        Page::Verifier,
-        Page::Delivery,
-        Page::Vault,
-        Page::Upstreams,
-        Page::Sentinel,
-        Page::Relicense,
-        Page::Badge,
-        // Machine and settings.
-        Page::FirstRun,
-        Page::Identity,
-        Page::Archive,
-        Page::Mirror,
-        Page::Skeleton,
-        Page::About,
-    ];
-
-    /// The name this page shows now. Page names come only from here (rail, header, tests).
-    ///
-    /// Kept separate from `key()` so "page names follow the language" can fail on its own: a broken string
-    /// table breaks every sentence, a break here only page names.
-    pub fn title(self) -> &'static str {
-        crate::lang::t(self.key())
-    }
-
-    /// The page name comes from the string table: no sentence is hard-coded in the interface.
-    pub fn key(self) -> crate::lang::Key {
-        match self {
-            Page::FirstRun => crate::lang::Key::PageFirstRun,
-            Page::Identity => crate::lang::Key::PageIdentity,
-            Page::Archive => crate::lang::Key::PageArchive,
-            Page::Mirror => crate::lang::Key::PageMirror,
-            Page::Ledger => crate::lang::Key::PageLedger,
-            Page::Kit => crate::lang::Key::PageKit,
-            Page::Depth => crate::lang::Key::PageDepth,
-            Page::Grant => crate::lang::Key::PageGrant,
-            Page::Grants => crate::lang::Key::PageGrants,
-            Page::FirstWindow => crate::lang::Key::PageFirstWindow,
-            Page::Revoke => crate::lang::Key::PageRevoke,
-            Page::Adopt => crate::lang::Key::PageAdopt,
-            Page::Succeed => crate::lang::Key::PageSucceed,
-            Page::Reader => crate::lang::Key::PageReader,
-            Page::Audit => crate::lang::Key::PageAudit,
-            Page::Diligence => crate::lang::Key::PageDiligence,
-            Page::Verifier => crate::lang::Key::PageVerifier,
-            Page::Delivery => crate::lang::Key::PageDelivery,
-            Page::Vault => crate::lang::Key::PageVault,
-            Page::Sentinel => crate::lang::Key::PageSentinel,
-            Page::Upstreams => crate::lang::Key::PageUpstreams,
-            Page::Badge => crate::lang::Key::PageBadge,
-            Page::Relicense => crate::lang::Key::PageRelicense,
-            Page::Check => crate::lang::Key::PageCheck,
-            Page::Watch => crate::lang::Key::PageWatch,
-            Page::Anchoring => crate::lang::Key::PageAnchoring,
-            Page::Queue => crate::lang::Key::PageQueue,
-            Page::Skeleton => crate::lang::Key::PageSkeleton,
-            Page::About => crate::lang::Key::PageAbout,
-        }
-    }
-
-    /// The page icon. One per family: pages of a family share a shape, so a repeat marks the family.
-    pub fn icon(self) -> zikaron_ui::icons::Icon {
-        use zikaron_ui::icons::Icon;
-        match self {
-            // Ledger and anchoring.
-            Page::Ledger | Page::Anchoring | Page::Queue | Page::Audit => Icon::Ledger,
-            // Grants.
-            Page::Grant | Page::Grants | Page::Revoke | Page::FirstWindow => Icon::Grant,
-            // Adoption and succession.
-            Page::Adopt | Page::Succeed => Icon::Anchor,
-            // Disclosure and reading.
-            Page::Kit | Page::Depth | Page::Reader => Icon::Kit,
-            // Grantee: verification and due diligence read bytes from the other party, like the disclosure
-            // family.
-            Page::Diligence | Page::Verifier | Page::Delivery => Icon::Kit,
-            // Shared: checking reads the other party's payload, like the disclosure family.
-            Page::Check => Icon::Kit,
-            Page::Watch => Icon::Ledger,
-            // Grantee credentials hold grants, like the grant family.
-            Page::Vault
-            | Page::Sentinel
-            | Page::Upstreams
-            | Page::Badge
-            | Page::Relicense => Icon::Grant,
-            // Machine and settings.
-            Page::FirstRun
-            | Page::Identity
-            | Page::Archive
-            | Page::Mirror
-            | Page::Skeleton
-            | Page::About => Icon::Gear,
-        }
-    }
-}
+/// The pages: this product's page table (`crate::nav`), named here as the shell records the page shown.
+pub use crate::nav::Page;
 
 /// Whether this pass actually got an answer from the chain. Only results that carry chain readings count;
 /// those that turn unreachability into "unknown" (a review with an empty fragment, a check whose basis was
@@ -626,8 +446,6 @@ pub struct Shell {
     pub proofs_rows: Option<String>,
     /// Chain time read back on a chain round trip (see `note_chain_time`).
     pub chain_time: Option<u64>,
-    /// The primary identity settled by the first unlock after an upgrade (shown once, then taken).
-    pub primary_settled: Option<String>,
     /// The primary identity and its kind (the vault header, readable while locked; read with `vault`, never in
     /// the frame). The lock screen offers words or a key file by it; the identity menus mark it.
     pub primary: Option<(String, crate::keybox::PrimaryKind)>,
@@ -664,6 +482,29 @@ pub struct Shell {
     /// "Enable command line": what is at its install path, as last read (`Action::ReadCliPath`, and after
     /// turning it on or off); `None` until read.
     pub cli_path: Option<zikaron_os::cli_path::State>,
+    /// The command line's credential as last read or issued (`None`: none on this machine), for its expiry line
+    /// and the expiry check at every drain ([`Shell::credential_tick`]).
+    pub credential: Option<zikaron_seal::credential::Term>,
+    /// How many entry files this home's ledger had when this instance last accounted for it (`None`: not counted
+    /// yet): when it let its writer lock go, when it moved the ledger itself, and at each look at the disk. A
+    /// different count means another writer (the command line) wrote meanwhile, and the copies are read again
+    /// ([`Shell::take_turn`], [`Shell::follow_disk`]).
+    pub seen_entries: Option<usize>,
+    /// The queue file as this instance last accounted for it, by the digest of its bytes on disk (`None`: not
+    /// looked at yet; `Some(None)`: no file), at the same moments as [`Shell::seen_entries`]. Another writer may
+    /// change the queue alone (mark a batch sent, put entries on chain, follow the chain) without writing an
+    /// entry; a different digest reads the queue again ([`Shell::follow_disk`]).
+    pub seen_queue: Option<Option<[u8; 32]>>,
+    /// When this instance last looked at the disk for another writer's entries (the interface clock).
+    pub followed_at: f64,
+    /// The ledger's mark when the home's reading (`archive`) last landed or was asked again: a moved mark makes
+    /// it due again where it is shown ([`Shell::take_measure_due`]).
+    pub archive_mark: Option<u64>,
+    /// The entry this instance last wrote, as written (its id and sequence number): what a toast names.
+    pub landed: Option<(String, u64)>,
+    /// Another writer's entries were seen on the disk and read in since the window last looked: the window does
+    /// with them what it does after a write of its own (with "auto anchor" on, the send card opens).
+    pub followed: bool,
 }
 
 impl Shell {
@@ -681,8 +522,9 @@ impl Shell {
             faults.push(f);
         }
         // Unreadable machine settings fall back to the default lock (fifteen minutes), with the refusal on
-        // screen; never silently "never lock".
-        let machine = match crate::machine::read() {
+        // screen; never silently "never lock". Locked at start, only the plain part is in hand; the sealed part
+        // is read once unlocked (`after_unlock`).
+        let machine = match crate::machine::read_face() {
             Ok(m) => m,
             Err(f) => {
                 faults.push(f);
@@ -696,7 +538,7 @@ impl Shell {
         trace::mark(Feature::H1);
 
         Shell {
-            page: Page::FirstRun,
+            page: Default::default(),
             resume_blocked: None,
             tasks: Tasks::new(),
             fonts: found,
@@ -797,7 +639,6 @@ impl Shell {
             chain_read_at: None,
             proofs_rows: None,
             chain_time: None,
-            primary_settled: None,
             primary: primary_reading(),
             rekeying: false,
             swapping: false,
@@ -813,6 +654,13 @@ impl Shell {
             door_off: false,
             door_answered: 0,
             cli_path: None,
+            credential: None,
+            seen_entries: None,
+            seen_queue: None,
+            followed_at: f64::NEG_INFINITY,
+            archive_mark: None,
+            landed: None,
+            followed: false,
         }
     }
 
@@ -857,13 +705,26 @@ impl Shell {
         // What the passes right after opening found (`local::after_open`, run in the unlock's own task).
         if let Some(o) = crate::local::take_opened() {
             self.faults.extend(o.troubles);
-            if o.primary.is_some() {
-                self.primary_settled = o.primary;
-            }
         }
         // Local data opens only now: the home is closed while locked, so land on the seat and open its home as
         // the window does at start.
         let opened_now = self.home.is_none() && self.unlocked();
+        // The sealed machine settings (auto-lock, proxy, the command line's switches, backup records) are in
+        // hand only now.
+        if self.unlocked() {
+            match crate::machine::read() {
+                Ok(m) => {
+                    // The count since the last backup was measured against the record in hand: another record (a
+                    // restore's) makes it unknown until measured again, never an old number against a new record.
+                    if m.backup != self.machine.backup {
+                        self.items_now = None;
+                    }
+                    self.machine = m;
+                }
+                Err(f) => self.faults.push(f),
+            }
+            self.reread_credential();
+        }
         if opened_now {
             let _ = crate::action::boot_home(self);
             if let Some(l) = self.settings.lang {
@@ -874,13 +735,118 @@ impl Shell {
         if let Err(f) = self.refresh_anchor() {
             self.faults.push(f);
         }
-        match crate::register::view(self.settings.role) {
+        match crate::register::view() {
             Ok(v) => self.seat_identities(Some(v)),
             Err(f) => self.faults.push(f),
         }
         // Background work stopped while locked: catch up once now (`Action::CatchUp`).
         if opened_now {
             let _ = crate::action::apply(self, crate::action::Action::CatchUp);
+        }
+    }
+
+    /// Read the command line's credential against the vault now open: one that expired, or that holds another
+    /// master key than this vault's (a new master key took effect), is removed and writing alone turned off with
+    /// the reason said; with writing alone on and no credential left (the command line removed an expired one),
+    /// the switch goes off too.
+    pub fn reread_credential(&mut self) {
+        use crate::keybox::Credential;
+        match crate::keybox::credential_now(crate::lastread::now_secs()) {
+            Ok(Credential::Live(t)) => self.credential = Some(t),
+            Ok(Credential::Expired) => crate::action::cli_alone_ended(self, Known::CredentialExpired),
+            Ok(Credential::Stale) => crate::action::cli_alone_ended(self, Known::CliAloneDropped),
+            Ok(Credential::None) => {
+                self.credential = None;
+                if self.machine.cli_alone.is_some() {
+                    crate::action::cli_alone_ended(self, Known::CredentialMissing);
+                }
+            }
+            Err(f) => self.faults.push(f),
+        }
+    }
+
+    /// Take the home's writer lock for a write while the command line writes alone: with that off, as a reader,
+    /// or already holding the lock, nothing to do. Once taken, the ledger is counted first: if the command line
+    /// wrote meanwhile, the ledger, queue and settings are read again before this write. If it cannot be taken,
+    /// the write is not done and the person is told the command line is writing (`CLI_WRITING`).
+    pub fn take_turn(&mut self) -> Result<(), Fault> {
+        if self.machine.cli_alone.is_none() {
+            return Ok(());
+        }
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return Ok(()) };
+        let home = crate::home::Home::bare(root.clone());
+        let Some(lock) = self.lock.as_mut() else { return Ok(()) };
+        if !lock.mode().writable() || lock.held() {
+            return Ok(());
+        }
+        if !lock.regain(&home)? {
+            return Err(match lock.mode() {
+                crate::lock::Mode::Writer => Fault::known(Known::CliWriting, root.display().to_string()),
+                _ => Fault::known(Known::ReadOnly, crate::lang::filln(crate::lang::Key::Tail006, &[&lock.holder().to_string()])),
+            });
+        }
+        if self.seen_entries != Some(entry_files(&home)) {
+            self.reread_home_files(&home);
+        } else if self.seen_queue != Some(queue_mark(&home)) {
+            self.reread_queue(&home);
+        }
+        Ok(())
+    }
+
+    /// The copies of what the command line writes (the ledger, the queue) and the settings, read again from the
+    /// disk: the ledger's rows are reloaded, the queue and settings read now.
+    fn reread_home_files(&mut self, home: &crate::home::Home) {
+        self.stale_rows();
+        self.book_changed();
+        self.rooted = crate::ledgerx::head(home).map(|h| h.is_some()).unwrap_or(false);
+        self.reread_queue(home);
+        match Settings::read(home) {
+            Ok(s) => self.settings = s,
+            Err(f) => self.faults.push(f),
+        }
+    }
+
+    /// The queue read again from the disk (its lamps follow it), and accounted for.
+    fn reread_queue(&mut self, home: &crate::home::Home) {
+        self.seen_queue = Some(queue_mark(home));
+        match crate::queue::Queue::read(home) {
+            Ok(q) => self.queue = q,
+            Err(f) => self.faults.push(f),
+        }
+        self.stale_rows();
+    }
+
+    /// At every drain: while the command line writes alone, a writer lets the lock go once nothing in flight
+    /// holds its turn (a send's receipt wait does not: it settles under the lock on its own, `lock::settling`),
+    /// counting the ledger as it leaves it; with writing alone off, it takes the lock again and keeps it (the
+    /// command line holding it a moment longer is retried at the next drain).
+    pub fn turn_sync(&mut self) {
+        let alone = self.machine.cli_alone.is_some();
+        let writing = self.tasks.holds_turn();
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
+        let home = crate::home::Home::bare(root);
+        let Some(lock) = self.lock.as_mut() else { return };
+        if !lock.mode().writable() {
+            return;
+        }
+        if alone {
+            if lock.held() && !writing {
+                lock.release();
+                self.seen_entries = Some(entry_files(&home));
+                self.seen_queue = Some(queue_mark(&home));
+            }
+        } else if !lock.held() {
+            if let Err(f) = lock.regain(&home) {
+                self.faults.push(f);
+            }
+        }
+    }
+
+    /// At every drain while unlocked: a credential whose time is up is removed and writing alone turned off, said
+    /// once. While locked the command line removes an expired one itself, and the unlock reads where it stands.
+    pub fn credential_tick(&mut self) {
+        if self.unlocked() && self.credential.is_some_and(|t| t.expired(crate::lastread::now_secs())) {
+            crate::action::cli_alone_ended(self, Known::CredentialExpired);
         }
     }
 
@@ -1129,6 +1095,97 @@ impl Shell {
     /// here: once the mark changes, the last report describes an older ledger and `audit_stale` becomes true.
     pub fn book_changed(&mut self) {
         self.book_mark = self.book_mark.wrapping_add(1);
+        // Accounted for: the disk's count now is this instance's, not news at the next look (`follow_disk`).
+        if let Some(h) = self.home.as_ref() {
+            self.seen_entries = Some(entry_files(h));
+        }
+    }
+
+    /// At every drain, at most once a [`FOLLOW_EVERY`]: what the disk holds now is what this instance shows,
+    /// whoever wrote it and by whichever way. Another writer's entries (the command line writing alone) change
+    /// the ledger's count of entry files; seen, the ledger, the queue and the settings are read again, so the
+    /// table, the pending count, the cards and the anchoring that follows them move with the disk. Only names are
+    /// listed; nothing is read while nothing changed.
+    pub fn follow_disk(&mut self, now: f64) {
+        if now - self.followed_at < FOLLOW_EVERY || self.swapping || !self.unlocked() {
+            return;
+        }
+        self.followed_at = now;
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
+        let home = crate::home::Home::bare(root);
+        let count = entry_files(&home);
+        let queue = queue_mark(&home);
+        match self.seen_entries {
+            Some(seen) if seen != count => {
+                self.reread_home_files(&home);
+                self.followed |= count > seen;
+            }
+            // Only the queue changed (another writer sent, or followed the chain): it alone is read again.
+            Some(_) if self.seen_queue.is_some_and(|was| was != queue) => self.reread_queue(&home),
+            _ => {}
+        }
+        self.seen_entries = Some(count);
+        self.seen_queue = Some(queue);
+    }
+
+    /// When the next look at the disk ([`Shell::follow_disk`]) falls due, in seconds from `now`, while the window
+    /// is to wake for it: a home open, unlocked, and the command line writing alone (another writer then writes
+    /// while this window may be idle). At other times `None`: no frame is asked for the disk's sake (the window still
+    /// looks at the disk at the frames it draws for anything else).
+    pub fn follow_wake(&self, now: f64) -> Option<f64> {
+        let wanted = self.home.is_some() && self.unlocked() && !self.swapping && self.machine.cli_path() == crate::machine::CliPath::Alone;
+        wanted.then(|| (self.followed_at + FOLLOW_EVERY - now).max(0.0))
+    }
+
+    /// Whether the home's reading (sizes, counts, the mirror's state) describes an older ledger: the ledger's mark
+    /// moved since it landed, whoever moved it. What shows that reading (the local data page, the backup card)
+    /// asks for it again (`Action::Measure`) when this says so; taking it records the attempt, so it is not due
+    /// again until the ledger moves once more (one at a time; the walk runs in the background).
+    pub fn take_measure_due(&mut self) -> bool {
+        let due = self.home.is_some() && self.archive_mark.is_some_and(|at| at != self.book_mark) && !self.tasks.in_flight(crate::task::Kind::Archive) && !self.swapping;
+        if due {
+            self.archive_mark = Some(self.book_mark);
+        }
+        due
+    }
+
+    /// The anchor queue is exactly the ledger's entries the chain does not hold yet, whoever wrote them, by
+    /// whichever way, and whoever put them on chain. Read off the table just landed, against its report: entries
+    /// the report finds on chain that still wait here, none of their transactions out (the command line anchored
+    /// them), leave the queue recorded as anchored; with a report about this very ledger, every node answering,
+    /// entries neither queued, nor on chain, nor kept local (an adopted ledger's, written before it came here)
+    /// join it. Written under the writer's turn; not this time when the turn is the command line's or this home
+    /// is only read (the next table tries again).
+    fn queue_follows_ledger(&mut self) {
+        use crate::ledgerx::Lamp;
+        let Some((rows, _)) = self.rows.as_ref() else { return };
+        let fresh = self.audit.as_ref().is_some_and(|a| a.mark == self.book_mark && crate::auditx::whole(&a.label, a.asked, &a.unanswered));
+        let on_chain: Vec<String> = rows
+            .iter()
+            .filter(|r| r.lamp == Lamp::Anchored && self.queue.step_of(&r.id).is_some_and(|s| !s.in_flight()))
+            .map(|r| r.id.clone())
+            .collect();
+        let owed: Vec<String> = if fresh { rows.iter().filter(|r| r.lamp == Lamp::Landed).map(|r| r.id.clone()).collect() } else { Vec::new() };
+        if on_chain.is_empty() && owed.is_empty() {
+            return;
+        }
+        if !self.lock.as_ref().is_some_and(|l| l.mode().writable()) || self.take_turn().is_err() {
+            return;
+        }
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
+        match crate::queue::follow(&crate::home::Home::bare(root), &on_chain, &owed, (self.clock)()) {
+            Ok(q) => {
+                // The table in hand stays: an entry found on chain already shows anchored (the report comes
+                // first), and one that joined the queue now shows queued, as `ledgerx::lamp_of` would read it.
+                if let Some((rows, _)) = self.rows.as_mut() {
+                    for r in rows.iter_mut().filter(|r| owed.contains(&r.id)) {
+                        r.lamp = crate::ledgerx::lamp_of(&r.id, false, &q);
+                    }
+                }
+                self.queue = q;
+            }
+            Err(f) => self.faults.push(f),
+        }
     }
 
     /// Whether a self-audit can start: home open, a root, basis and endpoints configured, none of its kind in
@@ -1264,6 +1321,13 @@ impl Shell {
                 },
             ));
         }
+        // A ledger handed off to another place is not written here until a handoff after it comes back
+        // (`zikaron_seal::pens`, read from disk at each write: the command line hands it off and takes it back).
+        if let Some(home) = self.home.as_ref() {
+            if let Some(root) = crate::ledgerx::root_of(home).ok().and_then(|r| zikaron::hexfmt::decode(&r)).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) {
+                zikaron_seal::pens::may_write(&crate::home::machine_dir()?, &root)?;
+            }
+        }
         Ok(())
     }
 
@@ -1281,6 +1345,11 @@ impl Shell {
             .iter()
             .filter_map(|spec| Endpoint::parse(spec))
             .collect();
+        // What the disk holds is marked as seen before it is read (`follow_disk`): another writer's change after this
+        // moment differs from the mark, so the next look reads it again; marked after the read, a change landing in
+        // between would be taken as seen and never read.
+        self.seen_entries = Some(entry_files(home));
+        self.seen_queue = Some(queue_mark(home));
         // The two local bookkeeping files do not block opening when malformed, but the problem is shown.
         // Reading them as empty silently would lose queued entries; refusing to open would block the
         // broken-chain recovery path, which needs the home open. So the fault goes to the screen and an empty
@@ -1463,7 +1532,6 @@ impl Shell {
             vetted: _,
             vault: _,
             vault_recoverable: _,
-            primary_settled: _,
             primary: _,
             rekeying: _,
             swapping: _,
@@ -1481,6 +1549,15 @@ impl Shell {
             door_answered: _,
             // What is at the command-line install path belongs to the machine, not to a ledger's source.
             cli_path: _,
+            // The command line's credential belongs to the machine.
+            credential: _,
+            // Counted against the home whose lock is held; a new home starts uncounted (cleared below).
+            seen_entries,
+            seen_queue,
+            followed_at: _,
+            archive_mark,
+            landed,
+            followed,
             // The passcode answer and machine settings follow the machine; results held while the test hooks
             // wait follow the session.
             vault_said: _,
@@ -1596,6 +1673,14 @@ impl Shell {
         // The usage reading includes the entry count: invalidated when the ledger changes; the caller
         // measures again.
         *archive = None;
+        *archive_mark = None;
+        // Another home's count says nothing about this one: counted afresh at the first look.
+        if home {
+            *seen_entries = None;
+            *seen_queue = None;
+        }
+        *landed = None;
+        *followed = false;
         if !home {
             return;
         }
@@ -1688,6 +1773,7 @@ impl Shell {
         if let Some(f) = trace::take_full() {
             self.faults.push(f);
         }
+        self.credential_tick();
         let mut got = self.tasks.drain_at(now);
         for o in got.iter_mut() {
             // Passcode tasks: the frame-side half runs here and its answer goes to `vault_said`; a refusal is
@@ -1718,9 +1804,13 @@ impl Shell {
                 if o.kind == crate::task::Kind::Migrate {
                     self.swapping = false;
                 }
-                // An estimate started before its chain, registry or nodes changed describes the old setup.
+                // An estimate started before its chain, registry or nodes changed describes the old setup: it is
+                // answered as one, by name (the batch has no estimate for the setup now), never dropped.
                 let behind = o.kind == crate::task::Kind::Gas && self.gas_out_of_date();
-                if o.stale || behind {
+                if behind && !o.stale {
+                    let f = crate::fault::Fault::known(crate::fault::Known::GasNotShown, crate::lang::t(crate::lang::Key::TailGasBehind).to_string());
+                    self.said.insert(o.kind, crate::action::Applied::Trouble(f));
+                } else if o.stale {
                     if let Err(f) = &o.result {
                         self.faults.push(f.clone());
                     }
@@ -1796,6 +1886,7 @@ impl Shell {
                 Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) => {}
                 Ok(Done::Check(r)) => self.last = Some(r.clone()),
                 Ok(Done::Archive { bytes, items, skipped, mirror, records, machine_items }) => {
+                    self.archive_mark = Some(self.book_mark);
                     self.archive = Some(ArchiveRead {
                         bytes: *bytes,
                         items: *items,
@@ -1873,6 +1964,7 @@ impl Shell {
                     if *r#gen == self.rows_gen {
                         self.rows = Some((rows.clone(), *strays));
                         self.handed = handed.clone();
+                        self.queue_follows_ledger();
                     } else {
                         self.tasks.forget(crate::task::Kind::Ledger);
                     }
@@ -1991,15 +2083,15 @@ impl Shell {
                     self.reread_kits();
                     self.kit = Some(d.clone())
                 }
-                Ok(Done::Keystore(crate::task::Keystore::BackedUp { id, seat, path, .. })) => {
+                Ok(Done::Keystore(crate::task::Keystore::BackedUp { id, path, .. })) => {
                     // The location is recorded with the flag: the flag says it was done, the location says
                     // where, so whether the backup is really on disk can be asked (`identity::backup_seen`).
                     if let Some(id) = id {
-                        if let Err(f) = crate::register::change(*seat, |reg| crate::identity::mark(reg, id, false, true, Some(path))) {
+                        if let Err(f) = crate::register::change(|reg| crate::identity::mark(reg, id, false, true, Some(path))) {
                             self.faults.push(f);
                         }
                     }
-                    match crate::register::view(*seat) {
+                    match crate::register::view() {
                         Ok(v) => self.seat_identities(Some(v)),
                         Err(f) => self.faults.push(f),
                     }
@@ -2141,6 +2233,11 @@ impl Shell {
             self.tasks.forget(crate::task::Kind::Held);
             let _ = crate::action::apply(self, crate::action::Action::ListHeld);
         }
+        // The writer lock follows the command line's switch: let go between writes while it writes alone, held
+        // again once it does not.
+        self.turn_sync();
+        // What is shown follows the disk: another writer's entries are read in.
+        self.follow_disk(now);
         // The command-line channel: the request in progress advances with what landed, and newly arrived
         // requests are handled in this turn.
         self.door_turn(&got);
@@ -2293,4 +2390,23 @@ fn primary_reading() -> Option<(String, crate::keybox::PrimaryKind)> {
 /// What a gas estimate and its fees are read from: this home's chain, registry contract and nodes (as a set).
 fn gas_source(s: &Settings) -> (Option<u64>, Option<crate::key::Address>, std::collections::BTreeSet<&str>) {
     (s.chain_id, s.registry, s.endpoints.iter().map(String::as_str).collect())
+}
+
+/// How often, at most, this instance looks at the disk for another writer's entries (seconds of the interface
+/// clock): a name listing of one directory.
+pub const FOLLOW_EVERY: f64 = 1.0;
+
+/// How many entry files a home's ledger holds now (names only, nothing opened): what the writer turn and the look
+/// at the disk compare.
+/// The queue file's bytes on disk, by their digest (`None`: no file, or one that does not read); only compared,
+/// never opened.
+fn queue_mark(home: &crate::home::Home) -> Option<[u8; 32]> {
+    std::fs::read(home.dir(crate::home::Slot::Settings).join(crate::queue::FILE)).ok().map(|b| zikaron::cryptox::sha256(&b))
+}
+
+fn entry_files(home: &crate::home::Home) -> usize {
+    let dir = home.dir(crate::home::Slot::Ledger);
+    std::fs::read_dir(&dir)
+        .map(|d| d.flatten().filter(|e| zikaron_store::layout::classify(&e.file_name().to_string_lossy()) == zikaron_store::Kind::Entry).count())
+        .unwrap_or(0)
 }

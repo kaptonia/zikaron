@@ -1,8 +1,9 @@
 //! The first-run wizard: a full-window cover with six steps on the left (done ones checked, optional ones
 //! dashed) and one card per step on the right that slides in by direction. A finished step shows a check
-//! and "done" (its value under details); the genesis confirmation sheet floats above. A way out (and Esc)
-//! sits under the steps except on a true first run: it returns to the seat and page the wizard was opened
-//! from; finished steps stay finished and the three required ones stay required.
+//! and "done" (its value under details); the genesis confirmation sheet floats above. The left column's foot
+//! holds the language and, once this machine has a passcode and an identity, the way out ("Exit setup", or
+//! Esc): it returns to the seat and page the wizard was opened from; finished steps stay finished and the three
+//! required ones stay required.
 
 use super::*;
 
@@ -24,11 +25,16 @@ impl Win {
         let dir = if was == at { dir } else if at > was { 1.0 } else { -1.0 };
         ctx.data_mut(|d| d.insert_temp(dir_id, (at, dir)));
         let (mut move_to, mut close, mut confirm, mut copied, mut open_import) = (None, false, false, false, false);
-        let (mut open_restore, mut open_export, mut exit) = (false, false, false);
+        let (mut open_restore, mut open_export, mut exit, mut open_adopt) = (false, false, false, false);
         let exit_shown = self.wizard_exit_shown();
         let mut act: Option<Action> = None;
         let fresh = self.shell.new_words.as_ref().map(|f| (f.words(), f.picks));
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
+        // This step's page and where "back" goes from it (`nav::prev`, the one place that decides).
+        let sub = if step == Step::Key && fresh.is_some() && self.ux.id_confirming { crate::nav::Sub::Check } else { crate::nav::Sub::First };
+        let back = crate::nav::prev(step, sub);
+        let mut go_back = false;
+        let mut lang_to: Option<crate::lang::Lang> = None;
         full::cover(ctx, "wizard", |ui, drop| {
             let screen = ui.max_rect();
             let side = egui::Rect::from_min_size(screen.min, egui::vec2(260.0, screen.height()));
@@ -49,11 +55,17 @@ impl Win {
             if let Some(i) = full::steps(&mut left, &rows, at) {
                 move_to = Some(i);
             }
-            // The way out, under the steps (not on a true first run).
-            if exit_shown {
-                left.add_space(24.0);
-                exit = key::key(&mut left, t(Key::WizExit), Role::Plain, true).clicked();
-            }
+            // The column's foot, from the bottom edge up: the way out (once a passcode and an identity are here), drawn
+            // the way the main rail's foot draws "Lock", then the language (switchable from the first step on, kept on
+            // this machine). With no way out the language keeps to the foot.
+            left.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.add_space(22.0);
+                if exit_shown {
+                    exit = rail::foot_item(ui, Glyph::Back, t(Key::WizExit), false, "esc").clicked();
+                    ui.add_space(10.0);
+                }
+                lang_to = lang_pick(ui, "wiz-lang");
+            });
             // The right column: this step's card.
             let main = egui::Rect::from_min_max(egui::pos2(side.right(), screen.top()), screen.max).shrink(40.0);
             // The gas step's card holds the key's address and a code side by side, so its column is as wide as they
@@ -81,11 +93,11 @@ impl Win {
                 let w = ui.available_width();
                 let later = t(if last { Key::WizLaterDo } else { Key::WizLater });
                 let later_on = step.deferrable(role) && !done;
-                let lead: Vec<(&str, Role)> = [(at > 0).then_some((t(Key::WizPrev), Role::Secondary)), later_on.then_some((later, Role::Plain))].into_iter().flatten().collect();
-                let lead_keys = |ui: &mut egui::Ui, move_to: &mut Option<usize>, close: &mut bool| {
+                let lead: Vec<(&str, Role)> = [back.is_some().then_some((t(Key::WizPrev), Role::Secondary)), later_on.then_some((later, Role::Plain))].into_iter().flatten().collect();
+                let lead_keys = |ui: &mut egui::Ui, move_to: &mut Option<usize>, close: &mut bool, go_back: &mut bool| {
                     ui.spacing_mut().item_spacing.x = tk::S2;
-                    if at > 0 && key::key(ui, t(Key::WizPrev), Role::Secondary, true).clicked() {
-                        *move_to = Some(at - 1);
+                    if back.is_some() && key::key(ui, t(Key::WizPrev), Role::Secondary, true).clicked() {
+                        *go_back = true;
                     }
                     if later_on && key::key(ui, later, Role::Plain, true).clicked() {
                         if last {
@@ -121,7 +133,7 @@ impl Win {
                                         act = Some(Action::NewIdentity);
                                     }
                                     open_import = key::key(ui, t(Key::IdDoImportExisting), Role::Secondary, true).clicked();
-                                    open_restore = key::key(ui, t(Key::DoRestoreBackup), Role::Secondary, !busy).clicked();
+                                    open_restore = key::key(ui, t(Key::BackupRestoreTitle), Role::Secondary, !busy).clicked();
                                 }
                                 (Some(_), false) => {
                                     copied = page::Page::new().primary_with(ui, t(Key::IdDoCopied), self.ux.id_words_seen).1.clicked();
@@ -146,7 +158,12 @@ impl Win {
                                     move_to = Some(at + 1);
                                 }
                             }
-                            Step::Genesis => confirm = page::Guide::key(ui, t(Key::WizGenesisTitle), self.shell.home.is_some()).clicked(),
+                            // Beside creating the ledger, adopting one that exists (the same adoption as Settings > Local
+                            // data): offered while this place has no ledger, which is while this step is not done.
+                            Step::Genesis => {
+                                confirm = page::Guide::key(ui, t(Key::WizGenesisTitle), self.shell.home.is_some()).clicked();
+                                open_adopt = key::key(ui, t(Key::AdoptGroup), Role::Secondary, self.shell.home.is_some()).clicked();
+                            }
                             Step::Gas => {
                                 if self.long_key(ui, t(Key::WizSent), Role::Primary, true, crate::task::Kind::Chain) {
                                     act = Some(Action::ReadChain);
@@ -155,7 +172,7 @@ impl Win {
                                     self.ux.wiz_gas_not_seen = false;
                                 }
                             }
-                            Step::Backup => open_export = page::Page::new().primary_with(ui, t(Key::DoExportBackup), self.shell.unlocked()).1.clicked(),
+                            Step::Backup => open_export = page::Page::new().primary_with(ui, t(Key::BackupExportTitle), self.shell.unlocked()).1.clicked(),
                         }
                     }
                     // "Back" and "later" share the row when the space left by the right keys fits them; otherwise
@@ -163,17 +180,35 @@ impl Win {
                     let lead_w: f32 = lead.iter().map(|(text, role)| key::size_of(ui, &key::Key::new(text, *role)).x).sum::<f32>() + tk::S2 * lead.len().saturating_sub(1) as f32;
                     lead_below = !lead.is_empty() && lead_w > ui.available_width() - tk::S2;
                     if !lead_below {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close));
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close, &mut go_back));
                     }
                 });
                 if lead_below {
                     ui.add_space(tk::S2);
-                    ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close));
+                    ui.allocate_ui_with_layout(egui::vec2(w, tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| lead_keys(ui, &mut move_to, &mut close, &mut go_back));
                 }
             });
         });
         if confirm {
             self.ux.confirm_genesis = true;
+        }
+        if open_adopt {
+            self.ux.confirm_adopt = true;
+        }
+        if let Some(lang) = lang_to {
+            let _ = self.act(Action::SetLang { lang }, now);
+        }
+        // "Back" lands where `nav::prev` says: the words' check goes back to the same words (the check cells
+        // emptied), anything else to the step before.
+        if let (true, Some((to, to_sub))) = (go_back, back) {
+            if to == step {
+                self.ux.id_confirming = to_sub == crate::nav::Sub::Check;
+                for c in self.ux.id_confirm.iter_mut() {
+                    *c = crate::secret::Secret::default();
+                }
+            } else {
+                move_to = Step::ALL.iter().position(|s| *s == to);
+            }
         }
         if copied {
             // Moving on to the three check cells: mask the words again first.
@@ -366,7 +401,9 @@ impl Win {
                     _ => t(Key::SetNotRead).to_string(),
                 };
                 let addr = self.shell.anchor.map(|a| a.hex());
-                gas_face(ui, addr.as_deref(), &gas, gas_side);
+                // No code until the chain is known: a code without it lets a wallet pay on whichever network it is on.
+                let code = addr.as_deref().zip(self.shell.settings.chain_id).map(|(a, chain)| crate::wizard::gas_request(a, chain));
+                gas_face(ui, addr.as_deref(), code.as_deref(), &gas, gas_side);
                 self.stage_line(ui, crate::task::Kind::Chain);
                 if self.ux.wiz_gas_not_seen {
                     hint(ui, t(Key::WizGasNotSeen));
@@ -407,6 +444,37 @@ impl Win {
         } else if go {
             self.ux.confirm_genesis = false;
             self.act(Action::Genesis { statement: self.ux.wiz_statement.clone() }, now);
+        }
+    }
+
+    /// Adopt an existing ledger at the step that creates one: a ledger folder or a ledger mirror, through the same
+    /// adoption as Settings > Local data (`Action::Adopt`: its entries checked one by one and sealed into this data
+    /// folder; another ledger's, or entries that are not one whole ledger, refused by name). Adopted, this place has
+    /// its root and the step stands done, as after creating the ledger. Floats above the wizard.
+    pub(super) fn wizard_adopt_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.ux.confirm_adopt {
+            return;
+        }
+        let (mut go, mut close) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("wizard-adopt", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::AdoptGroup), "");
+                states::note_box(ui, t(Key::WizAdoptNote));
+                field(ui, t(Key::WizAdoptFolder), None, |ui| pick_path(ui, &mut me.ux.wiz_adopt, crate::platform::Pick::Folder));
+            },
+            |ui, me| {
+                go = page::Pen::new().press(ui, t(Key::DoAdopt), !me.ux.wiz_adopt.trim().is_empty()).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+            },
+        );
+        if close || out.esc {
+            self.ux.confirm_adopt = false;
+        } else if go {
+            self.ux.confirm_adopt = false;
+            self.act(Action::Adopt { dir: self.ux.wiz_adopt.trim().to_string() }, now);
         }
     }
 }
@@ -468,11 +536,12 @@ fn gas_text(ui: &egui::Ui, s: &str, t: Type, colour: egui::Color32, wrap: Option
     (g, base)
 }
 
-/// The key's address (two equal lines) and balance on the left; the code a wallet scans to pay on the right
-/// with its caption under it. Both groups are centered on one middle line, each key on its value's first
-/// baseline. When the column is too narrow for both side by side (`side`, decided by the caller from the
-/// window), the code goes under the words (nothing overlaps or is cut).
-fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
+/// The key's address (two equal lines) and balance on the left; the code a wallet scans to pay (`code`, the
+/// payment request; none while the chain is not known) on the right with its caption under it. Both groups are
+/// centered on one middle line, each key on its value's first baseline. When the column is too narrow for both
+/// side by side (`side`, decided by the caller from the window), the code goes under the words (nothing overlaps
+/// or is cut).
+fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, code: Option<&str>, gas: &str, side: bool) {
     let addr_said = match addr {
         Some(a) => a.to_string(),
         None => t(Key::SetNoKey).to_string(),
@@ -528,8 +597,8 @@ fn gas_face(ui: &mut egui::Ui, addr: Option<&str>, gas: &str, side: bool) {
     }
     let code_rect = egui::Rect::from_min_size(code_at, egui::vec2(code_w, code_h));
     let mut code_ui = ui.new_child(egui::UiBuilder::new().max_rect(code_rect).layout(egui::Layout::top_down(egui::Align::Center)));
-    if let Some(a) = addr {
-        qr_plate(&mut code_ui, &format!("ethereum:{a}"));
+    if let Some(code) = code {
+        qr_plate(&mut code_ui, code);
     } else {
         code_ui.add_space(code_w);
     }
@@ -569,7 +638,7 @@ mod gas_address {
             ..Default::default()
         };
         ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| gas_face(ui, Some(ADDR), "0.0000 ETH", true));
+            egui::CentralPanel::default().show(ctx, |ui| gas_face(ui, Some(ADDR), Some(&crate::wizard::gas_request(ADDR, 11_155_111)), "0.0000 ETH", true));
         })
     }
 

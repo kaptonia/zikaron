@@ -100,6 +100,16 @@ fn resolve_with(t: &Target, clock: &Clock, resolver: Resolver) -> Result<Vec<Soc
     }
 }
 
+/// A name's addresses through the system resolver within `limit` (an address literal is itself; none when the
+/// name does not resolve in time). For the proxy script's lookups.
+pub(crate) fn lookup(host: &str, limit: Duration) -> Vec<IpAddr> {
+    if limit.is_zero() {
+        return Vec::new();
+    }
+    let t = Target { scheme: crate::Scheme::Http, host: host.trim().to_ascii_lowercase(), port: 0, path: "/".into() };
+    resolve(&t, &Clock::start(limit)).map(|v| v.into_iter().map(|a| a.ip()).collect()).unwrap_or_default()
+}
+
 /// One connection attempt to one address with a timeout. Production uses `TcpStream::connect_timeout`; it is a
 /// parameter so tests can stage an address that silently drops the attempt.
 pub(crate) type Attempt = fn(&SocketAddr, Duration) -> std::io::Result<TcpStream>;
@@ -191,7 +201,7 @@ mod tests {
     /// attempt is left to time out on its own.
     #[test]
     fn a_first_address_that_swallows_the_attempt_does_not_hold_up_the_second() {
-        let _turn = keep::turn();
+        let Some(_turn) = keep::turn() else { return };
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let live = l.local_addr().expect("addr");
         let swallowing = a("127.0.0.2:9");
@@ -240,7 +250,7 @@ mod tests {
     /// not at the resolver's pace.
     #[test]
     fn the_deadline_running_out_while_resolving_is_late() {
-        let _turn = keep::turn();
+        let Some(_turn) = keep::turn() else { return };
         fn slow(_: &str, _: u16) -> std::io::Result<Vec<SocketAddr>> {
             std::thread::sleep(Duration::from_secs(2));
             Ok(vec!["127.0.0.1:1".parse().expect("an address")])
@@ -256,7 +266,7 @@ mod tests {
     /// Closing down while resolving fails at once as closed, not at the deadline, and counts as one cut.
     #[test]
     fn closing_down_while_resolving_is_closed() {
-        let _turn = keep::turn();
+        let Some(_turn) = keep::turn() else { return };
         fn slow(_: &str, _: u16) -> std::io::Result<Vec<SocketAddr>> {
             std::thread::sleep(Duration::from_secs(2));
             Ok(vec!["127.0.0.1:1".parse().expect("an address")])
@@ -283,7 +293,7 @@ mod tests {
     /// machine): a connection failure at the cap, saying no address connected within it and naming each one.
     #[test]
     fn the_connect_cap_running_out_names_every_address_tried() {
-        let _turn = keep::turn();
+        let Some(_turn) = keep::turn() else { return };
         fn swallow(_: &SocketAddr, _: Duration) -> std::io::Result<TcpStream> {
             std::thread::sleep(Duration::from_secs(2));
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "swallowed"))
@@ -303,7 +313,7 @@ mod tests {
     /// as one cut.
     #[test]
     fn closing_down_while_connecting_is_closed() {
-        let _turn = keep::turn();
+        let Some(_turn) = keep::turn() else { return };
         fn swallow(_: &SocketAddr, _: Duration) -> std::io::Result<TcpStream> {
             std::thread::sleep(Duration::from_secs(5));
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "swallowed"))

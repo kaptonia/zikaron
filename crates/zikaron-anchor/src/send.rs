@@ -9,7 +9,7 @@
 //! module signs bytes in the chain's form; where the key comes from and whether to send are decided above.
 
 use crate::rlp;
-use crate::rpc::{Endpoint, Trouble};
+use crate::rpc::{Broke, Endpoint, Trouble};
 use crate::tx;
 use zikaron::cryptox;
 use zikaron::hexfmt;
@@ -67,13 +67,14 @@ pub fn estimate_call(from: &[u8; 20], to: &[u8; 20], data: &[u8]) -> Value {
     ])
 }
 
-/// One gas estimate, the one rule the app and the command line both take; each brings its own way of asking
-/// (the app its endpoints' agreement, the command line its one node). The estimate is asked at one pinned
-/// block, `head` (the app's smallest head every endpoint has reached): asked at `latest`, two endpoints a block
-/// apart estimate over two different states and disagree over a call neither refuses. A failure the caller
-/// judges of the network kind says nothing about the call; any other refusal means the call would revert. The
-/// answer is read as a quantity of at most 128 bits, and one above [`GAS_LIMIT`] is refused by the node's own
-/// number before anything is shown or sent.
+/// One gas estimate, the one rule the app and the command line both take; each brings its own way of asking (the app
+/// its endpoints, whose estimates the judging table reads by the largest: an estimate is a quantity each node works
+/// out, not a fact, `judge::rule_of`; the command line its one node). The estimate is asked at one pinned block,
+/// `head` (the app's smallest head every endpoint has reached): asked at `latest`, two endpoints a block apart
+/// estimate over two different states and disagree over a call neither refuses. A failure the caller judges of the
+/// network kind says nothing about the call; any other refusal means the call would revert. The answer is read as a
+/// quantity of at most 128 bits, and one above [`GAS_LIMIT`] is refused by the node's own number before anything is
+/// shown or sent.
 pub fn estimate_gas<E>(
     head: impl FnOnce() -> Result<u64, E>,
     ask: impl FnOnce(&Value) -> Result<Value, E>,
@@ -231,6 +232,25 @@ pub fn read_fees(ep: &mut dyn Endpoint) -> Fees {
     let base = ask("eth_getBlockByNumber", &block).and_then(|b| base_fee_of(&b));
     let tip = ask("eth_feeHistory", &tip_params(head)).and_then(|h| tip_of(&h));
     Fees::of(base, tip)
+}
+
+/// The head one node says (`eth_blockNumber`, read as its question's decision reads it, as [`read_fees`] reads
+/// it); `None` when it does not answer, or answers in another shape. The command line's `scan` of a home takes its
+/// window's last block from here.
+pub fn read_head(ep: &mut dyn Endpoint) -> Option<u64> {
+    head_of(ep).ok()
+}
+
+/// [`read_head`] with what stopped it: the node's trouble as it came, or an answer that does not read as a height
+/// (`Broke::Unread`).
+pub fn head_of(ep: &mut dyn Endpoint) -> Result<u64, Trouble> {
+    crate::seam();
+    let params = Value::Arr(vec![]);
+    let w = crate::patience::ask(ep, "eth_blockNumber", &params)?;
+    crate::judge::read_as_decided("eth_blockNumber", &params, &w)
+        .as_ref()
+        .and_then(|v| v.as_str().and_then(quantity))
+        .ok_or_else(|| Trouble::Transport(Broke::Unread { method: "eth_blockNumber".into() }))
 }
 
 /// A `0x` quantity that fits in 64 bits.
@@ -410,8 +430,11 @@ pub fn anchor(
 pub enum NotSent {
     /// The estimate gave no gas figure ([`estimate_gas`]): nothing was broadcast.
     Gas(NoGas<Trouble>),
-    /// The nonce could not be read, or signing failed: nothing was broadcast.
+    /// The nonce could not be asked, or signing failed: nothing was broadcast.
     Send(Trouble),
+    /// The node answered the nonce question with something that is not a quantity (that answer as a law value, for
+    /// the caller to say in its own words; `None` when it is not one): nothing was broadcast.
+    Nonce(Option<Value>),
     /// The signed transaction's hash could not be landed where the caller keeps it (the caller's words):
     /// nothing was broadcast, so a rerun never meets a transaction it has no record of.
     Land(String),
@@ -465,18 +488,18 @@ pub fn anchor_landed(
 ) -> Result<(Sent, u64), NotSent> {
     crate::seam();
     let fees = read_fees(ep);
-    let from = cryptox::address_of_privkey(key).ok_or(NotSent::Send(Trouble::Transport("私钥不在曲线的范围里".into())))?;
+    let from = cryptox::address_of_privkey(key).ok_or(NotSent::Send(Trouble::Transport(Broke::KeyRange)))?;
     let (to, data) = target(form, registry, hashes, calldata_override.clone(), from).map_err(NotSent::Send)?;
     let call = estimate_call(&from, &to, &data);
     let gas = {
         let mut ask = |method: &str, params: &Value| -> Result<Value, Trouble> {
             let w = crate::patience::ask(ep, method, params)?;
-            crate::judge::read_as_decided(method, params, &w).ok_or_else(|| Trouble::Transport(format!("{method} 的答读不成")))
+            crate::judge::read_as_decided(method, params, &w).ok_or_else(|| Trouble::Transport(Broke::Unread { method: method.to_string() }))
         };
         // The head is not the call: a node that will not give it says nothing about the call either.
         let head = match ask("eth_blockNumber", &Value::Arr(vec![])) {
-            Ok(v) => v.as_str().and_then(quantity).ok_or_else(|| Trouble::Transport("链头读不出".into())),
-            Err(Trouble::Node(m)) => Err(Trouble::Transport(m)),
+            Ok(v) => v.as_str().and_then(quantity).ok_or_else(|| Trouble::Transport(Broke::Unread { method: "eth_blockNumber".into() })),
+            Err(Trouble::Node(m)) => Err(Trouble::Transport(Broke::Said(m))),
             Err(t) => Err(t),
         };
         // Read by the one judgement the app takes too (`said::refuses_the_call`): only a refusal about the
@@ -490,7 +513,7 @@ pub fn anchor_landed(
         Some(n) => n,
         None => {
             let v = crate::patience::ask(ep, "eth_getTransactionCount", &nonce_params(&from)).map_err(NotSent::Send)?;
-            tx::hex_qty(&v).ok_or(NotSent::Send(Trouble::Transport("nonce 读不出".into())))?
+            tx::hex_qty(&v).ok_or_else(|| NotSent::Nonce(crate::wire::to_core(&v)))?
         }
     };
     let (raw, hash) = sign_at(key, chain_id, form, registry, hashes, calldata_override, fees, nonce).map_err(NotSent::Send)?;
@@ -563,7 +586,7 @@ pub fn earlier(ep: &mut dyn Endpoint, from: &[u8; 20], sent: &[(u64, [u8; 32])])
         }
         match (tx::qty_u64(&w, "status"), tx::qty_u64(&w, "blockNumber")) {
             (Some(s), Some(b)) => Ok(Some((s, b))),
-            _ => Err("收据里没有状态或块号".into()),
+            _ => Err(Broke::Unread { method: "eth_getTransactionReceipt".into() }.evidence()),
         }
     };
     for (_, h) in sent {
@@ -647,9 +670,9 @@ pub fn sign_for(
     fees: Fees,
 ) -> Result<(Vec<u8>, [u8; 32]), Trouble> {
     crate::seam();
-    let from = cryptox::address_of_privkey(key).ok_or(Trouble::Transport("私钥不在曲线的范围里".into()))?;
+    let from = cryptox::address_of_privkey(key).ok_or(Trouble::Transport(Broke::KeyRange))?;
     let v = crate::patience::ask(ep, "eth_getTransactionCount", &nonce_params(&from))?;
-    let nonce = tx::hex_qty(&v).ok_or(Trouble::Transport("nonce 读不出".into()))?;
+    let nonce = tx::hex_qty(&v).ok_or(Trouble::Transport(Broke::Unread { method: "eth_getTransactionCount".into() }))?;
     sign_at(key, chain_id, form, registry, hashes, calldata_override, fees, nonce)
 }
 
@@ -672,7 +695,7 @@ pub fn sign_at(
     fees: Fees,
     nonce: u64,
 ) -> Result<(Vec<u8>, [u8; 32]), Trouble> {
-    let from = cryptox::address_of_privkey(key).ok_or(Trouble::Transport("私钥不在曲线的范围里".into()))?;
+    let from = cryptox::address_of_privkey(key).ok_or(Trouble::Transport(Broke::KeyRange))?;
     let (to, data) = target(form, registry, hashes, calldata_override, from)?;
     let unsigned = Unsigned {
         chain_id,
@@ -684,7 +707,7 @@ pub fn sign_at(
         value: 0,
         data,
     };
-    unsigned.sign(key).ok_or(Trouble::Transport("签不出来".into()))
+    unsigned.sign(key).ok_or(Trouble::Transport(Broke::Unsigned))
 }
 
 /// Where this transaction goes and what it carries: a registry's `anchor`/`anchorMany`, or to oneself with the
@@ -693,7 +716,7 @@ pub fn sign_at(
 pub fn target(form: Form, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], calldata_override: Option<Vec<u8>>, from: [u8; 20]) -> Result<([u8; 20], Vec<u8>), Trouble> {
     Ok(match form {
         Form::Registry => {
-            let r = registry.ok_or(Trouble::Transport("登记形制要一个合约地址".into()))?;
+            let r = registry.ok_or(Trouble::Transport(Broke::NoRegistry))?;
             (r, calldata_override.unwrap_or_else(|| registry_calldata(hashes)))
         }
         Form::Bare => (from, calldata_override.unwrap_or_else(|| bare_calldata(hashes))),
@@ -707,7 +730,7 @@ pub fn submit(ep: &mut dyn Endpoint, raw: &[u8], hash: &[u8; 32]) -> Result<(), 
     let sent = ep.call("eth_sendRawTransaction", &Value::Arr(vec![Value::Str(hexfmt::encode(raw))]))?;
     let echoed = sent.as_str().and_then(hexfmt::decode).unwrap_or_default();
     if echoed != hash {
-        return Err(Trouble::Transport("节点回的交易哈希不是我们签的那一笔".into()));
+        return Err(Trouble::Transport(Broke::EchoNotOurs));
     }
     Ok(())
 }
@@ -727,15 +750,16 @@ pub const RECEIPT_BACKOFF: [std::time::Duration; 4] = [
 ];
 
 /// Ask each endpoint for the same receipt, round after round until the caller's deadline. A receipt counts when
-/// every endpoint that answered gives it, alike (block and status, `judge::RECEIPT_FACTS`); an endpoint that
-/// does not answer is passed over. When some give it and others say "not yet", it is asked again after each
-/// of the judging table's pauses (`judge::not_yet_pauses`), and still split after the last it is
-/// [`Confirm::Split`], naming both sides: one node's word alone does not anchor anything. A round in which
-/// every endpoint fails (rate limited, down for a moment) is not an answer: the transaction is already out, and
-/// a node that refuses one round may give the receipt the next, so the rounds go on, paused by `backoff` (the
-/// product's is [`RECEIPT_BACKOFF`]; a test gives its own so no wall clock is waited; an empty list does not
-/// pause). At the deadline it is "not yet" when any endpoint ever answered (it did not know the receipt), and
-/// "out of sight" (with the last sentence) when none ever did. Asking only the endpoint that took the broadcast
+/// every endpoint that answered gives it, alike (block and status, `judge::RECEIPT_FACTS`); an endpoint that does
+/// not answer is passed over. When some give it and others say "not yet" (nodes a block or two apart), it is asked
+/// again round after round like "not yet", and still split at the deadline it is [`Confirm::Split`], naming both
+/// sides: one node's word alone does not anchor anything, and a split is no outcome while the wait lasts. With no
+/// wait (one round) it is asked again after each of the judging table's pauses (`judge::not_yet_pauses`) instead. A
+/// round in which every endpoint fails (rate limited, down for a moment) is not an answer: the transaction is
+/// already out, and a node that refuses one round may give the receipt the next, so the rounds go on, paused by
+/// `backoff` (the product's is [`RECEIPT_BACKOFF`]; a test gives its own so no wall clock is waited; an empty list
+/// does not pause). At the deadline it is "not yet" when any endpoint ever answered (it did not know the receipt),
+/// and "out of sight" (with the last sentence) when none ever did. Asking only the endpoint that took the broadcast
 /// would wait forever once that endpoint went down.
 ///
 /// The wait is one deadline over every question: each question is given only the wait left
@@ -744,7 +768,7 @@ pub const RECEIPT_BACKOFF: [std::time::Duration; 4] = [
 /// endpoint within its own deadline.
 pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::time::Duration, backoff: &[std::time::Duration]) -> Confirm {
     if eps.is_empty() {
-        return Confirm::Unreachable("没有可问的端点".into());
+        return Confirm::Unreachable(Broke::NoEndpoint.evidence());
     }
     let deadline = std::time::Instant::now() + wait;
     let q = Value::Arr(vec![Value::Str(hexfmt::encode(hash))]);
@@ -753,6 +777,9 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
     let mut round = 0usize;
     let split_pauses = crate::judge::not_yet_pauses();
     let mut split_rounds = 0usize;
+    // The last whole round's split, when it was one: with a deadline, nodes a block or two apart are ordinary, so
+    // a split is asked again until the deadline and named only if it still stands then.
+    let mut split: Option<(Vec<String>, Vec<String>)> = None;
     loop {
         // This round's receipts (by node) and the nodes that said "not yet".
         let mut has: Vec<(String, (u64, u64))> = Vec::new();
@@ -781,7 +808,7 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                     // sight"); note the sentence and ask the next one.
                     _ => {
                         ever_answered = true;
-                        last = Some("收据里没有状态或块号".into());
+                        last = Some(Broke::Unread { method: "eth_getTransactionReceipt".into() }.evidence());
                     }
                 },
                 Ok(_) => {
@@ -791,32 +818,39 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                 Err(e) => last = Some(format!("{e:?}")),
             }
         }
+        if !cut {
+            split = None;
+        }
         if let Some((_, first)) = has.first().filter(|_| !cut) {
             let alike = has.iter().all(|(_, r)| r == first);
             let (status, block_number) = *first;
             match (alike, not_yet.is_empty()) {
                 (true, true) => return Confirm::Included { status, block_number },
-                // Split: asked again after the judging table's pauses, then named.
-                (true, false) => match split_pauses.get(split_rounds) {
+                // Split with no wait: asked again after the judging table's pauses, then named.
+                (true, false) if wait.is_zero() => match split_pauses.get(split_rounds) {
                     Some(pause) => {
                         split_rounds += 1;
-                        let left = deadline.saturating_duration_since(std::time::Instant::now());
                         if !pause.is_zero() {
-                            std::thread::sleep((*pause).min(left));
+                            std::thread::sleep(*pause);
                         }
                         continue;
                     }
                     None => return Confirm::Split { has: has.into_iter().map(|(n, _)| n).collect(), not_yet },
                 },
+                // Split within a wait: asked again like "not yet" until the deadline.
+                (true, false) => split = Some((has.into_iter().map(|(n, _)| n).collect(), not_yet)),
                 // Receipts that differ: no reading this round.
                 (false, _) => {}
             }
         }
         let now = std::time::Instant::now();
         if now >= deadline {
+            if let Some((has, not_yet)) = split {
+                return Confirm::Split { has, not_yet };
+            }
             return match ever_answered {
                 true => Confirm::NotYet,
-                false => Confirm::Unreachable(last.unwrap_or_else(|| "没有可问的端点".into())),
+                false => Confirm::Unreachable(last.unwrap_or_else(|| Broke::NoEndpoint.evidence())),
             };
         }
         if let Some(pause) = backoff.get(round.min(backoff.len().saturating_sub(1))) {
@@ -909,4 +943,82 @@ mod fee_tests {
         assert_eq!(base_fee_of(&Value::Obj(Vec::new())), None);
         assert_eq!(Fees::of(base_fee_of(&b("0x8000000000000000")), Some(1)).max_fee, u64::MAX, "doubled saturates");
     }
+}
+
+/// One anchor the chain already holds: the hash, the transaction that carried it, and its block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OnChain {
+    pub hash: [u8; 32],
+    pub tx: [u8; 32],
+    pub block: u64,
+}
+
+/// Why one node did not say whether it holds the anchors ([`on_chain`]): its head question failed (the node's
+/// trouble as it came, or an answer that is not a height), or the registry's logs over the window were not read
+/// (the scan's refusal). Structure, as every other failure to read the chain: each road classifies it by the one
+/// table and says it in its own words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotSaid {
+    Head(Trouble),
+    Logs(crate::scan::Refusal),
+}
+
+impl NotSaid {
+    /// The node's own failure under it: what the head question met, or what the log question met (the node's word,
+    /// or the way's structure). `None` for a log window refused for its shape or cut short.
+    pub fn trouble(&self) -> Option<Trouble> {
+        use crate::scan::{Asked, Refusal};
+        match self {
+            NotSaid::Head(t) => Some(t.clone()),
+            NotSaid::Logs(Refusal::Unanswered { asked: Asked::Declined { said, .. }, .. }) => Some(Trouble::Node(said.clone())),
+            NotSaid::Logs(Refusal::Unanswered { asked: Asked::Broke { broke, .. }, .. }) => Some(Trouble::Transport(broke.clone())),
+            NotSaid::Logs(_) => None,
+        }
+    }
+
+    /// The machine form: the question and what it met.
+    pub fn evidence(&self) -> String {
+        match self {
+            NotSaid::Head(t) => format!("eth_blockNumber {t:?}"),
+            NotSaid::Logs(r) => format!("{}:{}", r.code(), r.detail()),
+        }
+    }
+}
+
+/// Which of `hashes` the sender `from` already anchored through `registry` on chain `chain`, as the registry's
+/// logs say from block `start` to the head: the anchor scan's own reader (`scan::logs_over_window`: asked with
+/// patience, the range shrunk where the node limits it, never fewer logs than asked), every log judged here again
+/// (the registry, topic 0, this sender, one of these hashes; the node's filtering is not trusted). Each hash once,
+/// with the transaction and block of its earliest log. A head that does not read, or a range the node does not
+/// answer, is [`NotSaid`], with what the node met: whether a hash is on chain is never guessed, so nothing is to be
+/// sent on a guess.
+pub fn on_chain(ep: &mut dyn Endpoint, chain: u64, registry: &[u8; 20], from: &[u8; 20], hashes: &[[u8; 32]], start: u64) -> Result<Vec<OnChain>, NotSaid> {
+    crate::seam();
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let head = head_of(ep).map_err(NotSaid::Head)?;
+    let mut sender = [0u8; 32];
+    sender[12..].copy_from_slice(from);
+    let t0 = crate::scan::topic0();
+    let filter = crate::scan::LogFilter { addresses: vec![*registry], topics: vec![crate::scan::Topic::One(t0), crate::scan::Topic::One(sender), crate::scan::Topic::AnyOf(hashes.to_vec())] };
+    let logs = crate::scan::logs_over_window(ep, chain, &filter, start.min(head), head).map_err(NotSaid::Logs)?;
+    let h32 = |w: Option<&crate::wire::W>| -> Option<[u8; 32]> { hexfmt::decode(w?.as_str()?)?.try_into().ok() };
+    let mut found: Vec<OnChain> = Vec::new();
+    for log in &logs {
+        let address = log.member("address").and_then(|a| a.as_str()).and_then(hexfmt::decode);
+        let topics = log.member("topics").and_then(|t| t.as_arr()).unwrap_or(&[]);
+        let (Some(t), Some(s), Some(hash)) = (h32(topics.first()), h32(topics.get(1)), h32(topics.get(2))) else { continue };
+        if address.as_deref() != Some(&registry[..]) || t != t0 || s != sender || !hashes.contains(&hash) {
+            continue;
+        }
+        let (Some(tx), Some(block)) = (h32(log.member("transactionHash")), log.member("blockNumber").and_then(|b| b.as_str()).and_then(quantity)) else { continue };
+        match found.iter_mut().find(|f| f.hash == hash) {
+            Some(f) if f.block <= block => {}
+            Some(f) => *f = OnChain { hash, tx, block },
+            None => found.push(OnChain { hash, tx, block }),
+        }
+    }
+    found.sort_by_key(|f| (f.block, f.hash));
+    Ok(found)
 }

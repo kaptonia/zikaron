@@ -31,10 +31,10 @@ pub(super) fn check_payload(
     // Endpoints: the page's if filled; otherwise the home's configured ones (read-only).
     let mut eps: Vec<crate::chainx::Endpoint> = Vec::new();
     let mut bad: Vec<String> = Vec::new();
-    // A refused line is reported as `Endpoint::typed` words it, never echoing the line itself, which may carry
+    // A refused line is reported as `chainx::typed` words it, never echoing the line itself, which may carry
     // a node's API key. One sentence per line.
     for line in endpoints.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        match crate::chainx::Endpoint::typed(line) {
+        match crate::chainx::typed(line) {
             Ok(e) => eps.push(e),
             Err(said) => bad.push(said),
         }

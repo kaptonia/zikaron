@@ -106,7 +106,7 @@ fn marked(err: &str) -> Option<Refusal> {
 pub fn says_rate_limited(t: &Trouble) -> bool {
     match t {
         Trouble::Node(e) => marked(e) == Some(Refusal::RateLimited),
-        Trouble::Transport(e) => rpc::status_of(e) == Some(429),
+        Trouble::Transport(_) => rpc::status_of(t) == Some(429),
         Trouble::NotServed(_) | Trouble::Contradiction(_) => false,
     }
 }
@@ -134,7 +134,7 @@ fn refusal_at(status: u16, said: &str) -> Refusal {
 pub fn refusal(t: &Trouble) -> Option<Refusal> {
     match t {
         Trouble::Node(e) => Some(refusal_of(e)),
-        Trouble::Transport(e) => rpc::status_of(e).map(|s| refusal_at(s, e)),
+        Trouble::Transport(b) => rpc::status_of(t).map(|s| refusal_at(s, &b.evidence())),
         Trouble::NotServed(_) | Trouble::Contradiction(_) => None,
     }
 }
@@ -301,7 +301,7 @@ mod tests {
                 other => panic!("{s}: {other:?}"),
             }
         }
-        for t in [Trouble::Transport(rpc::NOT_JSON.into()), rpc::shapeless("https://n.example"), rpc::late("u", std::time::Duration::from_secs(1)), Trouble::NotServed("k".into())] {
+        for t in [Trouble::Transport(rpc::Broke::NotJson), rpc::shapeless("https://n.example"), rpc::late("u", std::time::Duration::from_secs(1)), Trouble::NotServed("k".into())] {
             assert_eq!(refusal(&t), None, "{t:?}");
         }
     }

@@ -22,6 +22,7 @@ impl Win {
             || self.ux.u4.confirm.is_some()
             || self.ux.id_modal.is_some()
             || self.ux.confirm_genesis
+            || self.ux.confirm_adopt
     }
 
     /// Close every sheet; the wizard stays.
@@ -42,8 +43,10 @@ impl Win {
             self.ux.id_close();
         }
         self.ux.confirm_genesis = false;
+        self.ux.confirm_adopt = false;
         self.ux.sheet_shake = None;
         self.ux.bk_clear();
+        self.cli_close();
     }
 
     /// Whether any sheet is up (Esc belongs to it, not to the layer under it).
@@ -51,6 +54,7 @@ impl Win {
         self.ux.id_modal.is_some()
             || self.ux.bk.is_some()
             || self.ux.confirm_genesis
+            || self.ux.confirm_adopt
             || self.ux.wiz_exit_ask
             || self.ux.u3.new_anchor.is_some()
             || self.ux.u3.confirm.is_some()
@@ -95,19 +99,17 @@ impl Win {
         self.layers_clear();
         // Remember where the wizard was opened from: its way out returns to that seat and page.
         if self.ux.wizard.is_none() {
-            self.ux.wiz_from = Some((self.shell.settings.role, self.ux.stack, self.ux.place, self.ux.hist.get(&self.ux.stack).cloned()));
-            // Whether this is a true first run (`firstrun::fresh_machine`) is recorded once as the wizard opens and
-            // holds for the whole run (setting the passcode in step 1 must not make a way out appear halfway
-            // through).
-            self.ux.wiz_fresh = crate::firstrun::fresh_machine(&self.shell);
+            self.ux.wiz_from = Some((self.shell.settings.role, self.ux.nav.stack, self.ux.nav.place, self.ux.nav.hist.get(&self.ux.nav.stack).cloned()));
         }
         self.ux.wizard = Some(step);
     }
 
-    /// Whether the wizard offers a way out: always, except when it was opened on a true first run (no passcode
-    /// and no identity), where there is nothing to go back to.
+    /// Whether the wizard offers a way out: once a passcode and an identity are both on this machine, judged now
+    /// (on the first run as soon as both are set, and the same after a restart); before that there is nothing to
+    /// go back to.
     pub(super) fn wizard_exit_shown(&self) -> bool {
-        !self.ux.wiz_fresh
+        let identity = self.shell.identities.as_ref().map(|r| !r.rows.is_empty()).unwrap_or(false);
+        !self.shell.vault.absent() && identity
     }
 
     /// Leave the wizard, back to the seat and page it was opened from. Finished steps stay finished, and the
@@ -120,17 +122,21 @@ impl Win {
         self.ux.wiz_exit_ask = false;
         self.ux.wizard = None;
         self.ux.confirm_genesis = false;
+        self.ux.confirm_adopt = false;
         if let Some((role, stack, place, hist)) = self.ux.wiz_from.take() {
-            if self.shell.settings.role != role && !self.shell.seat_unseated() {
+            // Back to the seat it was opened on only when that seat has a key now (a first run records the default
+            // seat before any identity exists): never onto an empty seat.
+            let seated = self.shell.identities.as_ref().and_then(|r| r.now()).map(|(row, _)| row.address(role).is_some()).unwrap_or(false);
+            if self.shell.settings.role != role && seated {
                 self.act(Action::SwitchRole, now);
             }
-            self.ux.stack = stack;
+            self.ux.nav.stack = stack;
             if let Some(p) = place {
                 self.go(p, now);
             }
             // Back to the exact page it was opened on (a settings section, a detail page), with its history.
             if let Some(h) = hist {
-                self.ux.hist.insert(stack, h);
+                self.ux.nav.hist.insert(stack, h);
             }
         }
     }
@@ -254,6 +260,7 @@ impl Win {
         if self.shell.vault.gate_up() {
             return;
         }
+        self.cli_sheet(ctx, now);
         self.estimate_due(ctx);
         self.new_anchor_sheet(ctx, now);
         self.conflict_sheet(ctx, now);
@@ -279,6 +286,7 @@ impl Win {
         self.relicense_sheet(ctx, now);
         self.id_sheets(ctx, now);
         self.genesis_sheet(ctx, now);
+        self.wizard_adopt_sheet(ctx, now);
     }
 
     /// Start the send sheet's gas estimate once the sheet is up. A failed estimate is reported on the sheet
@@ -686,7 +694,7 @@ impl Win {
                 kv::kv(ui, &rows);
                 // Name each node the current price was not read from (it serves another chain).
                 if !stuck.left.is_empty() {
-                    states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &stuck.left.join(" · ")));
+                    states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &stuck.left.iter().map(crate::chainx::said_of).collect::<Vec<_>>().join(" · ")));
                 }
                 states::note_box(ui, &fill1(if unheld { Key::U3UnheldNote } else { Key::U3BumpNote }, &crate::queue::RESENDS_MAX.to_string()));
                 details(ui, "bump-details", &[(t(Key::U3GasEstimate), Val::mono(stuck.sent.gas_limit.to_string())), (t(Key::CfWhere), Val::mono(stuck.txs.join(" ")))]);
@@ -933,9 +941,8 @@ impl Win {
                             }
                         },
                         |ui, room| {
-                            ui.horizontal(|ui| {
+                            width::cell(ui, egui::vec2(room, Type::Note.line().max(Type::Small.line())), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = tk::S1;
-                                ui.set_max_width(room);
                                 paint::text(ui, title, Type::Note, c(C::Ink2));
                                 paint::text(ui, &fill2(Key::U3AdCount, &chain_name, &rows.len().to_string()), Type::Small, c(C::Ink3));
                             });

@@ -27,7 +27,7 @@ fn panicking() -> Option<SystemProxies> {
 fn slow_socks() -> Option<SystemProxies> {
     READS.fetch_add(1, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(300));
-    Some(SystemProxies { socks: Some(("127.0.0.1".into(), 1)), ..Default::default() })
+    Some(SystemProxies { socks: Some(zikaron_net::Proxy { kind: zikaron_net::Kind::Socks5, host: "127.0.0.1".into(), port: 1, auth: None }), ..Default::default() })
 }
 
 fn t() -> zikaron_net::Target {

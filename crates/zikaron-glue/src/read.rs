@@ -22,3 +22,26 @@ pub fn kit_entries(dir: &std::path::Path) -> Result<Vec<Vec<u8>>, String> {
     }
     Ok(items)
 }
+
+/// A single-file kit read out into a folder of its own in the system's temporary place, removed when this is
+/// dropped. The folder is a kit folder for the kit core's `verify_kit`, read as any kit folder is.
+pub struct Unpacked {
+    pub dir: std::path::PathBuf,
+}
+
+impl Drop for Unpacked {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Read the single-file kit at `file` out into a fresh folder, streaming (`container::unpack_to`: every check of
+/// the layout, no total bound); its refusal is returned as it is and nothing is left behind.
+pub fn unpack(file: &std::path::Path) -> Result<Unpacked, crate::container::Bad> {
+    crate::seam_v2();
+    let mut n = [0u8; 8];
+    zikaron_os::fill_random(&mut n).map_err(|e| crate::container::Bad::Io(format!("read {}: {e}", zikaron_os::ENTROPY_SOURCE)))?;
+    let dir = std::env::temp_dir().join(format!("zikaron-kit-{}", zikaron::hexfmt::encode(&n).trim_start_matches("0x")));
+    crate::container::unpack_to(file, &dir)?;
+    Ok(Unpacked { dir })
+}

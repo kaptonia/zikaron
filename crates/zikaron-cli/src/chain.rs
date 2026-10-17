@@ -19,6 +19,8 @@ pub struct Refused {
     pub reason: Reason,
     pub code: String,
     pub detail: String,
+    /// The line for people, when this refusal has one of its own (a window too wide for the node's span).
+    pub line: Option<out::Said>,
 }
 
 /// `--endpoint <chain>=<url>`, several per chain allowed (the endpoint rule), each with its place among the
@@ -147,6 +149,7 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
                     reason: Reason::Scan,
                     code: "E_RECORDING".to_string(),
                     detail: format!("{e:?}"),
+                    line: None,
                 })
             }
         }
@@ -158,15 +161,29 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
     finish(scan::run(&basis_bytes, &adoptions, &mut eps))
 }
 
-/// Scan live endpoints once.
+/// A basis file's bytes, read whole (misuse when it is not JSON).
+pub fn basis_bytes(path: &str) -> Vec<u8> {
+    wire_of(path).0
+}
+
+/// The lowest head the endpoints of `chain` say (`send::read_head`, each asked once); `None` when none answers.
+pub fn least_head(specs: &[(u64, String)], chain: u64) -> Option<u64> {
+    crate::seam();
+    specs
+        .iter()
+        .filter(|(c, _)| *c == chain)
+        .filter_map(|(_, url)| rpc::Http::new(url).and_then(|mut h| zikaron_anchor::send::read_head(&mut h)))
+        .min()
+}
+
+/// Scan live endpoints once, under the basis given as its bytes.
 pub fn live_fragment(
-    basis_path: &str,
+    basis_src: &[u8],
     adoptions_path: Option<&str>,
     specs: &[(u64, String)],
     round: usize,
 ) -> Result<(String, Value), Refused> {
     crate::seam();
-    let (basis_src, _) = wire_of(basis_path);
     let adoptions = match adoptions_path {
         Some(p) => adoptions_of(&wire_of(p).1),
         None => Vec::new(),
@@ -191,7 +208,7 @@ pub fn live_fragment(
         .iter_mut()
         .map(|(c, h)| (*c, h as &mut dyn rpc::Endpoint))
         .collect();
-    finish(scan::run(&basis_src, &adoptions, &mut eps)).map(|v| (names.join(","), v))
+    finish(scan::run(basis_src, &adoptions, &mut eps)).map(|v| (names.join(","), v))
 }
 
 /// The three scan outcomes in one place: a refusal means no answer; no label is the core's answer, passed on
@@ -204,6 +221,7 @@ fn finish(
             reason: Reason::Scan,
             code: refusal.code().to_string(),
             detail: refusal.detail(),
+            line: matches!(refusal, scan::Refusal::Unanswered { asked: scan::Asked::TooWide { .. }, .. }).then_some(out::Said::ScanTooWide),
         }),
         Ok(Err(no_label)) => Ok(no_label),
         Ok(Ok(s)) => Ok(scan::fragment(&s)),

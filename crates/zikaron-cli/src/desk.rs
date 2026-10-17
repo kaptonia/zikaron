@@ -12,7 +12,9 @@
 //!
 //! The door is found where the desktop opens it: in this user's machine folder (`zikaron_os::machine`), named
 //! by that folder and the home (`zikaron_glue::door::place`). No door there means the desktop is absent
-//! (`E_DESKTOP`, exit 4: locked, that home not open, or not running); this path never writes anything.
+//! (`E_DESKTOP`, exit 4: locked, that home not open, or not running), unless this machine writes alone: then the
+//! desktop keeps the endpoint closed on purpose, and the answer says so (`ALONE`, write without `--home`). This path
+//! never writes anything.
 
 use crate::args::Args;
 use crate::codes::{Door, Key, Reason};
@@ -33,6 +35,8 @@ pub fn ask(a: &Args) -> Answer {
         Ok(d) => d,
         Err(e) => {
             return match e.kind() {
+                // No endpoint: closed because this machine writes alone (its credential is there), or no desktop.
+                std::io::ErrorKind::NotFound if writes_alone(&machine) => absent(Door::Alone, Said::DoorAlone),
                 std::io::ErrorKind::NotFound => absent(Door::NotOpen, Said::DesktopLocked),
                 std::io::ErrorKind::InvalidInput => absent(Door::PathTooLong, Said::DoorPathLong),
                 std::io::ErrorKind::PermissionDenied => absent(Door::NotYou, Said::DoorNotYou),
@@ -45,9 +49,21 @@ pub fn ask(a: &Args) -> Answer {
     }
     // The desktop answers when what it does is done (a send waits for its receipt): no deadline here.
     match zikaron_glue::door::take(&mut door).ok().and_then(|b| Reply::of_bytes(&b)) {
-        Some(r) => answer_of(r),
+        Some(r) => answer_of(r, a.verb()),
         None => absent(Door::Broken, Said::DoorBroken),
     }
+}
+
+/// Whether this machine writes alone: a command-line credential is in its folder (the desktop keeps one exactly
+/// while that switch is on, and keeps its endpoint closed meanwhile).
+fn writes_alone(machine: &std::path::Path) -> bool {
+    !matches!(zikaron_seal::credential::find(machine), Err(t) if t.code == zikaron_seal::Code::CredentialMissing)
+}
+
+/// "This must be done on the desktop": refused, exit 1, nothing written (the desktop's answer for an action that
+/// asks its passcode, and this crate's own for a verb the desktop does by hand only).
+pub fn on_desktop() -> Answer {
+    out::denied(Reason::OnDesktop, vec![]).telling(Said::OnDesktop.text().to_string())
 }
 
 /// Each flag the verb takes beside `--home`, in its row's order (a repeatable flag's values in the order given),
@@ -101,8 +117,9 @@ fn absent(why: Door, said: Said) -> Answer {
     out::unanswered(Reason::Desktop, vec![(Key::Detail, s(why.as_str()))]).telling(said.text().to_string())
 }
 
-/// The command line's answer to what the desktop said, by the verb's own answers.
-fn answer_of(r: Reply) -> Answer {
+/// The command line's answer to what the desktop said for `verb`, by the verb's own answers. `anchor` answers as
+/// with the credential (`sealedsend`): already on chain `E_ON_CHAIN`, any other refusal `E_SEND_REFUSED`.
+fn answer_of(r: Reply, verb: &str) -> Answer {
     match r {
         // The desktop writes the entry itself: it is written (never "already there") when it says so.
         Reply::Wrote { entry_id, ledger, seq } => verbs::wrote(&entry_id, &ledger, seq, true),
@@ -111,10 +128,12 @@ fn answer_of(r: Reply) -> Answer {
         Reply::NotYet { tx, waited } => verbs::tx_not_yet(&tx, waited),
         Reply::Unheard { tx, detail } => verbs::tx_unheard(&tx, &detail),
         Reply::Voided { tx } => verbs::tx_void(&tx),
+        Reply::OnChain { names, tx, block } => verbs::on_chain(&names, &tx, block),
         // Under `--home` a package takes no proof bundles (they are chosen on the desktop).
         Reply::Kit { kit_id, path, entries, files, dropped } => verbs::kit_written(&dropped, entries, files, &kit_id, &path, 0),
-        Reply::Queued { count } => out::partial(Reason::Queued, vec![(Key::Count, zikaron::json::Value::Int(count))]).telling(Said::Queued.text().to_string()),
-        Reply::OnDesktop => out::denied(Reason::OnDesktop, vec![]).telling(Said::OnDesktop.text().to_string()),
+        Reply::Queued { count } => verbs::queued(count),
+        Reply::OnDesktop => on_desktop(),
+        Reply::Refused { code, tail, network, zh, en } if verb == "anchor" => crate::sealedsend::send_refused(&code, &tail, network, out::pick(zh, en)),
         Reply::Refused { code, tail, network, zh, en } => {
             let members = vec![(Key::Token, s(&code)), (Key::Detail, s(&tail))];
             // A network refusal is the absence of an answer (`zikaron/1` §9.4), never a negative one.

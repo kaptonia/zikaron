@@ -54,7 +54,7 @@ impl Base {
 /// address. An address ending in `…/manifest.json` steps back to its directory.
 pub fn base_of(typed: &str) -> Result<Base, Fault> {
     let typed = typed.trim();
-    let Some(h) = crate::chainx::Https::new(typed) else {
+    let Some(h) = crate::chainx::https(typed) else {
         // Say why when the port or shape is wrong. A publish address is where a kit is published, not a node,
         // so it is echoed as typed (node addresses are echoed only via `zikaron_net::sayable`).
         use crate::lang::{filln, Key};
@@ -117,7 +117,7 @@ fn trouble(url: &str, t: &zikaron_anchor::rpc::Trouble) -> Fault {
 
 /// An address's origin (for same-origin comparison).
 fn origin(url: &str) -> Option<(String, u16)> {
-    let h = crate::chainx::Https::new(url)?;
+    let h = crate::chainx::https(url)?;
     let (host, port, _) = h.parts();
     Some((host.to_ascii_lowercase(), port))
 }
@@ -135,7 +135,7 @@ pub fn get_one(url: &str) -> Result<One, Fault> {
     let home = origin(url).ok_or_else(|| Fault::known(Known::RemoteNotHttps, url.to_string()))?;
     let mut at = url.to_string();
     for _ in 0..=MAX_HOPS {
-        let h = crate::chainx::Https::new(&at).ok_or_else(|| Fault::known(Known::RemoteNotHttps, at.clone()))?;
+        let h = crate::chainx::https(&at).ok_or_else(|| Fault::known(Known::RemoteNotHttps, at.clone()))?;
         let got = h.get(&limits()).map_err(|t| trouble(&at, &t))?;
         match got.status {
             200 => {

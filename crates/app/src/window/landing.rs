@@ -15,6 +15,12 @@ impl Win {
     /// Take this frame's landings and dispatch each according to its kind's registry row.
     pub(super) fn land(&mut self, ctx: &egui::Context, now: f64) {
         let landed = self.shell.drain_at(now);
+        // Another writer's entries read in (the command line writing alone): with "auto anchor" on, the send card
+        // opens for them as after a write of this instance's own.
+        if std::mem::take(&mut self.shell.followed) && self.shell.settings.auto_anchor && self.shell.queue.sendable() > 0 && self.ux.u3.confirm.is_none() {
+            let n = self.shell.queue.sendable();
+            self.u3_open_confirm(U3Confirm::Send { count: n });
+        }
         // File dialog answers go to the place that asked (`Back::Path`).
         self.paths_landed(ctx, &landed);
         // Follow-ups after a successful landing (`Then`): an anchoring that reached the node (included or receipted)

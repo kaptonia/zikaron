@@ -136,6 +136,8 @@ fn the_judging_table_names_one_rule_per_method() {
     let at = |s: &str| Value::Arr(vec![Value::Str(s.into()), Value::Bool(false)]);
     assert_eq!(judge::rule_of("eth_blockNumber", &no_params()), Rule::Least);
     assert_eq!(judge::rule_of("eth_getTransactionCount", &no_params()), Rule::Most(None));
+    // The gas estimate is a quantity each node works out itself, not a fact of the chain.
+    assert_eq!(judge::rule_of("eth_estimateGas", &no_params()), Rule::Most(None));
     assert_eq!(judge::rule_of("eth_getBlockByNumber", &at("latest")), Rule::Most(Some("number")));
     assert_eq!(judge::rule_of("eth_getBlockByNumber", &at("0x40")), Rule::Facts(&judge::BLOCK_FACTS));
     assert_eq!(judge::rule_of("eth_feeHistory", &no_params()), Rule::Facts(&judge::FEE_HISTORY_FACTS));
@@ -338,4 +340,47 @@ fn a_receipt_one_node_has_and_another_not_yet_is_split_naming_both_sides() {
     let (mut a, mut b) = (Receipts("http://has", receipt), Receipts("http://has2", receipt));
     let mut eps: Vec<&mut dyn Endpoint> = vec![&mut a, &mut b];
     assert!(matches!(confirm_each(&mut eps, &[0xab; 32], Duration::ZERO, &[]), Confirm::Included { status: 1, block_number: 5 }));
+}
+
+/// A node that says "not yet" to its first `late` receipt questions and gives the receipt from then on.
+struct Behind {
+    late: usize,
+    asked: usize,
+}
+
+impl Endpoint for Behind {
+    fn call(&mut self, _m: &str, _p: &Value) -> Result<W, Trouble> {
+        self.asked += 1;
+        Ok(w(if self.asked > self.late { "{\"status\":\"0x1\",\"blockNumber\":\"0x5\",\"logs\":[]}" } else { "null" }))
+    }
+    fn name(&self) -> String {
+        "http://behind".into()
+    }
+    fn place(&self) -> String {
+        self.name()
+    }
+}
+
+/// Within a wait, a split is no outcome: a node a few rounds behind that then has the receipt makes it
+/// included, long before the deadline; a split that still stands at the deadline is named then, not sooner.
+#[test]
+fn within_a_wait_a_split_is_asked_again_until_the_deadline() {
+    use zikaron_anchor::send::{confirm_each, Confirm};
+    zero_waits();
+    let receipt = "{\"status\":\"0x1\",\"blockNumber\":\"0x5\",\"logs\":[]}";
+    let pause = [Duration::from_millis(10)];
+    let (mut a, mut b) = (Receipts("http://has", receipt), Behind { late: 5, asked: 0 });
+    let mut eps: Vec<&mut dyn Endpoint> = vec![&mut a, &mut b];
+    let began = std::time::Instant::now();
+    assert!(matches!(confirm_each(&mut eps, &[0xab; 32], Duration::from_secs(5), &pause), Confirm::Included { status: 1, block_number: 5 }));
+    assert!(began.elapsed() < Duration::from_secs(5), "included as soon as the node behind had it");
+    let (mut a, mut b) = (Receipts("http://has", receipt), Receipts("http://not-yet", "null"));
+    let mut eps: Vec<&mut dyn Endpoint> = vec![&mut a, &mut b];
+    let wait = Duration::from_millis(300);
+    let began = std::time::Instant::now();
+    match confirm_each(&mut eps, &[0xab; 32], wait, &pause) {
+        Confirm::Split { has, not_yet } => assert_eq!((has, not_yet), (vec!["http://has".to_string()], vec!["http://not-yet".to_string()])),
+        x => panic!("{x:?}"),
+    }
+    assert!(began.elapsed() >= wait, "a split is named at the deadline, not before: {:?}", began.elapsed());
 }

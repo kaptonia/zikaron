@@ -117,7 +117,11 @@ fn each_reply_is_answered_by_the_verbs_own_answer() {
         ("anchor", vec![], Reply::Queued { count: 3 }, 3, r#"{"count":3,"ok":false,"reason":"E_QUEUED"}"#),
         ("attest", vec![], Reply::OnDesktop, 1, r#"{"ok":false,"reason":"E_ON_DESKTOP"}"#),
         ("annotate", vec![], Reply::Refused { code: "READ_ONLY".into(), tail: "t".into(), network: false, zh: "只读".into(), en: "read only".into() }, 1, r#"{"detail":"t","ok":false,"reason":"E_DESKTOP_REFUSED","token":"READ_ONLY"}"#),
-        ("anchor", vec![], Reply::Refused { code: "UNREACHABLE".into(), tail: "t".into(), network: true, zh: "连不上".into(), en: "unreachable".into() }, 4, r#"{"detail":"t","ok":false,"reason":"E_DESKTOP_REFUSED","token":"UNREACHABLE"}"#),
+        // `anchor` answers its refusals as the credential's road does: before anything went out, `E_SEND_REFUSED`
+        // (4 for the network's absence of an answer, 1 otherwise); already on chain, `E_ON_CHAIN` with its values.
+        ("anchor", vec![], Reply::Refused { code: "UNREACHABLE".into(), tail: "t".into(), network: true, zh: "连不上".into(), en: "unreachable".into() }, 4, r#"{"detail":"t","ok":false,"reason":"E_SEND_REFUSED","token":"UNREACHABLE"}"#),
+        ("anchor", vec![], Reply::Refused { code: "QUEUE_EMPTY".into(), tail: "t".into(), network: false, zh: "队列空".into(), en: "queue empty".into() }, 1, r#"{"detail":"t","ok":false,"reason":"E_SEND_REFUSED","token":"QUEUE_EMPTY"}"#),
+        ("anchor", vec![], Reply::OnChain { names: vec!["0xh".into()], tx: "0xt".into(), block: 5 }, 1, r#"{"blockNumber":5,"names":["0xh"],"ok":false,"reason":"E_ON_CHAIN","tx":"0xt"}"#),
         ("annotate", vec![], Reply::Closed, 4, r#"{"detail":"CLOSED","ok":false,"reason":"E_DESKTOP"}"#),
     ];
     for (verb, flags, reply, code, want) in replies {
@@ -136,6 +140,7 @@ fn each_reply_is_answered_by_the_verbs_own_answer() {
         match &reply {
             Reply::Queued { .. } => assert_eq!(line, "Queued; waiting for the user to send it from the desktop"),
             Reply::OnDesktop => assert_eq!(line, "This action must be done on the desktop"),
+            Reply::OnChain { .. } => assert_eq!(line, "The chain already holds this anchor (put on chain elsewhere); nothing was sent"),
             Reply::Refused { en, .. } => assert_eq!(&line, en),
             Reply::Closed => assert_eq!(line, "The desktop locked, closed this data folder or quit before it answered"),
             _ => assert!(err.is_empty(), "{reply:?}: {err}"),
@@ -157,7 +162,6 @@ fn the_request_carries_each_flag_as_read() {
         (vec!["grant".into(), "--grantee".into(), "0xg".into(), "--window-from".into(), "+5".into(), "--window-to".into(), "9".into(), "--scope".into(), "s".into()], vec![("grantee", "0xg".into()), ("window-from", "5".into()), ("window-to", "9".into()), ("scope", "s".into())]),
         (vec!["history".into(), "--file".into(), file.display().to_string(), "--note".into(), "n".into()], vec![("file", std::fs::canonicalize(&file).unwrap().display().to_string()), ("note", "n".into())]),
         (vec!["kit-export".into(), "--entry".into(), "ab".repeat(32), "--entry".into(), format!("0x{}", "cd".repeat(32)), "--out".into(), "rel/out".into()], vec![("entry", format!("0x{}", "ab".repeat(32))), ("entry", format!("0x{}", "cd".repeat(32))), ("out", std::path::absolute("rel/out").unwrap().display().to_string())]),
-        (vec!["succeed".into(), "--to".into(), "0xt".into(), "--effective".into(), "12".into()], vec![("to", "0xt".into()), ("effective", "12".into())]),
         // The anchors file is sent as the JSON it holds, in canonical bytes.
         (vec!["adopt".into(), "--anchors".into(), anchors.display().to_string(), "--attestor".into(), "0xa".into()], vec![("anchors", r#"[{"chainId":1,"content":"0xc","payloadKind":"bare","tx":"0xt"}]"#.into()), ("attestor", "0xa".into())]),
     ];
@@ -255,7 +259,8 @@ fn a_door_that_breaks_or_cannot_be_reached_is_named() {
 #[test]
 fn the_cli_schema_lists_the_verbs_done_through_the_desktop() {
     let doc = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md")).expect("CLI-SCHEMA.md");
-    let section = doc.split("## 11 · `--home`").nth(1).expect("section 11");
+    // Section 11 alone: it ends where the next section begins.
+    let section = doc.split("## 11 · `--home`").nth(1).expect("section 11").split("\n## ").next().unwrap_or_default();
     let table = section.split("| Verb | Flags beside `--home` |").nth(1).expect("the verb table");
     let rows: Vec<(String, Vec<String>)> = table
         .lines()
@@ -268,4 +273,21 @@ fn the_cli_schema_lists_the_verbs_done_through_the_desktop() {
         .collect();
     let real: Vec<(String, Vec<String>)> = zikaron_cli::verbs::HOME.iter().map(|(v, fl)| (v.to_string(), fl.iter().map(|f| f.to_string()).collect())).collect();
     assert_eq!(rows, real);
+}
+
+/// Handing the ledger to another key is done on the desktop by hand only: `succeed --home` with a desktop
+/// listening for that home answers `E_ON_DESKTOP` (exit 1) in either language, the desktop is asked nothing,
+/// and nothing is written into the home.
+#[test]
+fn succeed_through_the_desktop_is_done_on_the_desktop_only() {
+    let b = Bench::new("succeed");
+    let (closer, rx) = desktop(&b.place(), |_| Some(Reply::Wrote { entry_id: "0xe".into(), ledger: "/l".into(), seq: 1 }.to_bytes()));
+    for (lang, line) in [(EN, "This action must be done on the desktop"), (ZH, "此动作须在桌面上做")] {
+        let (code, out, err) = b.run(&["succeed", "--home", b.home.to_str().unwrap(), "--to", &format!("0x{}", "11".repeat(20)), "--kind", "rekey", "--effective", "5"], lang);
+        assert_eq!((code, String::from_utf8_lossy(&out).to_string()), (1, r#"{"ok":false,"reason":"E_ON_DESKTOP"}"#.to_string()), "{lang}: {err}");
+        assert_eq!(err.lines().next(), Some(line), "{lang}");
+    }
+    closer.close();
+    assert!(rx.try_recv().is_err(), "the desktop was asked nothing");
+    assert_eq!(std::fs::read_dir(&b.home).expect("home").count(), 0, "nothing written into the home");
 }

@@ -128,13 +128,6 @@ pub(super) fn badge_tone(b: crate::grantx::Badge) -> PillTone {
     }
 }
 
-pub(super) fn step_name(s: crate::wizard::Step) -> Key {
-    match s {
-        crate::wizard::Step::Terms => Key::StepTerms,
-        crate::wizard::Step::Anchor => Key::StepAnchor,
-    }
-}
-
 /// An address in head-tail form (`0xc294…08a3`): menus of recent addresses only need it recognizable.
 pub(super) fn head_tail(a: &str) -> String {
     if a.len() <= 12 {
@@ -308,12 +301,6 @@ pub(super) fn id_kind_key(k: crate::identity::Kind) -> Key {
     }
 }
 
-/// Open the window. Returns the exit code. The shipped build takes this path: starts at home, and opens the
-/// first-run wizard by itself when the anchor key is missing or the author seat has no ledger yet.
-pub fn run() -> i32 {
-    run_at(Start::Place(Place::Home, false))
-}
-
 /// The line standard error gets when the window takes arguments (the misuse exit, code 2).
 pub const ARGS_LINE: &str = "E_ARGS the window takes no arguments";
 
@@ -328,24 +315,19 @@ pub fn refuse_arguments() -> i32 {
 /// Say why there is no window through the platform interface (`platform::say_without_window`), the sentence
 /// in the language this machine last chose: the window never came up to set it, so it is read from the
 /// machine settings here.
-fn without_window(line: &str, sentence: String) {
+pub(super) fn without_window(line: &str, sentence: String) {
     crate::platform::say_without_window(line, &sentence);
 }
 
 /// Speak the language this machine last chose (`machine.json`'s `lang`; unreadable or never chosen: the
 /// build's default), before any window or home has set it.
-fn speak_this_machines_language() {
-    if let Some(l) = crate::machine::read().ok().and_then(|m| m.lang) {
+pub(super) fn speak_this_machines_language() {
+    if let Some(l) = crate::machine::read_face().ok().and_then(|m| m.lang) {
         crate::lang::set(l);
     }
 }
 
-/// Open the window on a given page. The shipped binary has no path that calls it; only the test hooks do.
-pub fn run_on(start: Page) -> i32 {
-    run_at(Start::Page(start))
-}
-
-fn fresh_win(shell: Shell, typed: Typed, ux: Ux) -> Win {
+pub(super) fn fresh_win(shell: Shell, typed: Typed, ux: Ux) -> Win {
     Win {
         shell,
         toasts: Toasts::new(),
@@ -358,92 +340,6 @@ fn fresh_win(shell: Shell, typed: Typed, ux: Ux) -> Win {
         faults_told: 0,
         ux,
         asker: crate::platform::ask_path,
-    }
-}
-
-/// Open the window at a given place (the test hooks use it; the shipped build only goes through `run`).
-pub fn run_at(start: Start) -> i32 {
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(t(Key::AppName))
-            // Matches the installed desktop entry (`zikaron-desk.desktop`) so the desktop shows the app's icon.
-            .with_app_id("zikaron-desk")
-            .with_icon(std::sync::Arc::new(egui::IconData {
-                rgba: include_bytes!("../../assets/icon-256.rgba").to_vec(),
-                width: 256,
-                height: 256,
-            }))
-            .with_inner_size([W, H])
-            .with_min_inner_size([MIN_W, MIN_H])
-            // The side rail reaches the top and the window buttons float over it; no separate title bar.
-            .with_fullsize_content_view(true)
-            .with_title_shown(false)
-            .with_titlebar_shown(false),
-        ..Default::default()
-    };
-    // The window system the platform interface chose (on Linux, X11 when there is an X display: files are
-    // dropped on the window there).
-    #[cfg(target_os = "linux")]
-    let opts = {
-        let mut opts = opts;
-        if crate::platform::window_backend() == crate::platform::Backend::X11 {
-            opts.event_loop_builder = Some(Box::new(|b| {
-                use winit::platform::x11::EventLoopBuilderExtX11;
-                b.with_x11();
-            }));
-        }
-        opts
-    };
-    match eframe::run_native(
-        t(Key::AppName),
-        opts,
-        Box::new(|cc| {
-            let dressed = skin::dress(&cc.egui_ctx);
-            // Settle the machine directory once; if settling fails the window still opens, and the error is shown
-            // (never silent).
-            let settled = crate::home::settle_machine();
-            let mut shell = Shell::boot(dressed);
-            if let Err(f) = settled {
-                shell.faults.push(f);
-            }
-            // A request on the command-line channel wakes a frame (even when minimized or covered: the frame then
-            // drains, and the channel's turn handles the request).
-            let wake = cc.egui_ctx.clone();
-            shell.door_waker = Some(std::sync::Arc::new(move || wake.request_repaint()));
-            // The product builds its own preconditions: local data is sealed and the vault starts locked, so the
-            // home opens, its lock is taken, the key is asked for and the home measured right after unlocking
-            // (`Shell::after_unlock`). A vault already open here (only the test hooks start that way) opens it now.
-            let root = crate::action::start(&mut shell);
-            if let Some(l) = shell.speaks() {
-                crate::lang::set(l);
-            }
-            crate::when::set(shell.settings.zone.unwrap_or(crate::when::Zone::Utc));
-            let mut ux = Ux::default();
-            match start {
-                Start::Page(p) => shell.page = p,
-                Start::Place(place, wizard) => {
-                    if let Place::Page(p) = place {
-                        shell.page = p;
-                    }
-                    let (stack, h) = crate::nav::history_of(place, shell.settings.role);
-                    ux.stack = stack;
-                    ux.hist.insert(stack, h);
-                    ux.wizard_forced = wizard;
-                }
-            }
-            let typed = Typed { home: root, ..Default::default() };
-            Ok(Box::new(fresh_win(shell, typed, ux)))
-        }),
-    ) {
-        Ok(()) => 0,
-        Err(e) => {
-            // The standard-error line in the language set so far; the message in this machine's language.
-            let why = e.to_string();
-            let line = fill1(Key::SaidWindowFailed, &why);
-            speak_this_machines_language();
-            without_window(&line, fill1(Key::SaidNoWindowFailed, &why));
-            1
-        }
     }
 }
 
@@ -483,156 +379,6 @@ impl SendProbe {
     pub fn shell(&mut self) -> &mut Shell {
         &mut self.win.shell
     }
-}
-
-/// Draw one page in a few windowless frames and measure its layout at a `width × height` viewport (no window,
-/// no wall clock: frame time is given here). The caller prepares the shell and gets it back unchanged. The
-/// first-run wizard and passcode gate are not opened here (this measures the page layer).
-pub fn probe_face(ctx: &egui::Context, shell: Shell, place: Place, width: f32, height: f32) -> (Shell, FaceReading) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, events: Vec<egui::Event>, step: f64| -> egui::FullOutput {
-        t += step;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), events, ..Default::default() };
-        ctx.run(input, |c| win.draw(c))
-    };
-    let edges = |out: &egui::FullOutput| -> (f32, f32) {
-        let widgets = ctx.viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, ws)| ws.iter().map(|w| w.rect.max.x)).fold(0.0_f32, f32::max));
-        let mut text = 0.0_f32;
-        for c in &out.shapes {
-            if let egui::Shape::Text(s) = &c.shape {
-                text = text.max(s.visual_bounding_rect().max.x);
-            }
-        }
-        (widgets, text)
-    };
-    // Frames until the page has settled: the first sets the layout, the next set equal-cell heights, and the
-    // entrance (at most 240 ms plus a 200 ms stagger) is over by the last.
-    for _ in 0..5 {
-        let _ = run(&mut win, Vec::new(), 0.1);
-    }
-    let out = run(&mut win, Vec::new(), 0.1);
-    let (right_widget, right_text) = edges(&out);
-    let texts: Vec<(egui::Rect, usize, bool)> = out
-        .shapes
-        .iter()
-        .filter_map(|c| match &c.shape {
-            egui::Shape::Text(s) => Some((s.visual_bounding_rect(), s.galley.rows.len(), s.galley.job.justify)),
-            _ => None,
-        })
-        .collect();
-    let justified_texts = texts.iter().filter(|(_, _, j)| *j).count();
-    let cells: Vec<CellFit> = zikaron_ui::probe::cells(ctx)
-        .into_iter()
-        .map(|r| {
-            let inside: Vec<(egui::Rect, usize)> = texts
-                .iter()
-                .filter(|(t, _, _)| t.min.x >= r.min.x - 0.5 && t.min.x < r.max.x && r.y_range().contains(t.center().y))
-                .map(|(t, n, _)| (*t, *n))
-                .collect();
-            CellFit {
-                width: r.width(),
-                over: inside.iter().filter(|(t, _)| t.width() > r.width() + 0.5 || t.max.x > r.max.x + 0.5).count(),
-                wrapped: inside.iter().filter(|(_, n)| *n > 1).count(),
-            }
-        })
-        .collect();
-    let tiles = zikaron_ui::probe::tiles(ctx);
-    let rows = zikaron_ui::probe::rows(ctx);
-    let route = zikaron_ui::probe::route_drawn(ctx);
-    let words: Vec<String> = out
-        .shapes
-        .iter()
-        .filter_map(|c| match &c.shape {
-            egui::Shape::Text(s) => Some(s.galley.job.text.clone()),
-            _ => None,
-        })
-        .collect();
-    let (inner, inner_right, inner_head, inner_head_keys, inner_history, inner_route) = match rows.first() {
-        None => (None, None, None, None, None, None),
-        Some(r) => {
-            let at = r.center();
-            let _ = run(&mut win, vec![egui::Event::PointerMoved(at)], 0.1);
-            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-            let _ = run(&mut win, vec![press(true), press(false)], 0.1);
-            let _ = run(&mut win, vec![egui::Event::PointerGone], 0.1);
-            for _ in 0..4 {
-                let _ = run(&mut win, Vec::new(), 0.1);
-            }
-            let out = run(&mut win, Vec::new(), 0.1);
-            let shown = zikaron_ui::probe::inner_shown(ctx);
-            let (a, b) = edges(&out);
-            (
-                Some(shown),
-                Some(a.max(b)),
-                zikaron_ui::probe::inner_head_said(ctx),
-                Some(zikaron_ui::probe::head_keys_shown(ctx)),
-                Some(zikaron_ui::probe::history_shown(ctx)),
-                Some(zikaron_ui::probe::route_drawn(ctx)),
-            )
-        }
-    };
-    (
-        win.shell,
-        FaceReading { width, right_widget, right_text, rows: rows.len(), inner, inner_right, inner_head, inner_head_keys, inner_history, route, inner_route, texts: words, cells, justified_texts, tiles },
-    )
-}
-
-/// Walk a list page's history: settle, open the first row, go back (⌘[), go forward (⌘]). After each: the
-/// route drawn and whether back and forward were shown.
-pub fn probe_history(ctx: &egui::Context, shell: Shell, place: Place, width: f32, height: f32) -> (Shell, Vec<(String, bool, bool)>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, events: Vec<egui::Event>| {
-        t += 0.1;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), events, modifiers: egui::Modifiers::NONE, ..Default::default() };
-        let _ = ctx.run(input, |c| win.draw(c));
-    };
-    let settle = |win: &mut Win, run: &mut dyn FnMut(&mut Win, Vec<egui::Event>)| {
-        for _ in 0..5 {
-            run(win, Vec::new());
-        }
-    };
-    let said = || {
-        let (b, f) = zikaron_ui::probe::history_shown(ctx);
-        (zikaron_ui::probe::route_drawn(ctx), b, f)
-    };
-    let mut out = Vec::new();
-    settle(&mut win, &mut run);
-    out.push(said());
-    if let Some(r) = zikaron_ui::probe::rows(ctx).first().copied() {
-        let at = r.center();
-        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        run(&mut win, vec![egui::Event::PointerMoved(at)]);
-        run(&mut win, vec![press(true), press(false)]);
-        run(&mut win, vec![egui::Event::PointerGone]);
-        settle(&mut win, &mut run);
-        out.push(said());
-        let key = |k: egui::Key| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
-        run(&mut win, vec![key(egui::Key::OpenBracket)]);
-        settle(&mut win, &mut run);
-        out.push(said());
-        run(&mut win, vec![key(egui::Key::CloseBracket)]);
-        settle(&mut win, &mut run);
-        out.push(said());
-    }
-    (win.shell, out)
 }
 
 /// One frame of a file-dialog walk ([`probe_paths`]): which places ask (by name) and with what, which take
@@ -697,82 +443,12 @@ pub fn probe_paths(ctx: &egui::Context, shell: Shell, asker: crate::platform::As
     (win.shell, out)
 }
 
-/// Drive the window shell's own input over `place` in windowless frames, after a few empty ones to settle:
-/// each step is one frame, `dt` seconds after the one before, with its events. After each step: the route
-/// drawn and the window commands sent in that frame (`Debug` words of egui's viewport commands).
-pub fn probe_shell_input(ctx: &egui::Context, shell: Shell, place: Place, steps: Vec<(f64, Vec<egui::Event>)>, width: f32, height: f32) -> (Shell, Vec<(String, Vec<String>)>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, events: Vec<egui::Event>, dt: f64| -> Vec<String> {
-        t += dt;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), events, modifiers: egui::Modifiers::NONE, ..Default::default() };
-        let out = ctx.run(input, |c| win.draw(c));
-        out.viewport_output.values().flat_map(|v| v.commands.iter().map(|c| format!("{c:?}"))).collect()
-    };
-    for _ in 0..5 {
-        run(&mut win, Vec::new(), 0.1);
-    }
-    let mut out = Vec::new();
-    for (dt, events) in steps {
-        let sent = run(&mut win, events, dt);
-        out.push((zikaron_ui::probe::route_drawn(ctx), sent));
-    }
-    (win.shell, out)
-}
-
 /// What the window said when the watch rang: the toast's words and tone, and whether it asked for the
 /// system's attention.
 pub struct RangReading {
     pub toast: Option<String>,
     pub tone: Option<zikaron_ui::toast::Tone>,
     pub attention: bool,
-}
-
-/// Ring `notices` over `place` in a few windowless frames, with the first-run wizard open at `wizard` or not.
-pub fn probe_rang(ctx: &egui::Context, shell: Shell, place: Place, notices: Vec<crate::watchx::Notice>, wizard: Option<crate::nav::Step>, width: f32, height: f32) -> (Shell, RangReading) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut attention = false;
-    let mut run = |win: &mut Win| {
-        t += 0.1;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        let out = ctx.run(input, |c| win.draw(c));
-        out.viewport_output.values().any(|v| v.commands.iter().any(|c| matches!(c, egui::ViewportCommand::RequestUserAttention(_))))
-    };
-    // Only this call's ringing is read: what rang before is dropped, and the wizard (when asked for)
-    // is open from the first frame.
-    win.shell.fresh.clear();
-    win.shell.rung.clear();
-    win.shell.attention = false;
-    if let Some(step) = wizard {
-        win.wizard_open(step);
-    }
-    for _ in 0..3 {
-        let _ = run(&mut win);
-    }
-    win.shell.fresh = notices;
-    win.shell.attention = true;
-    for _ in 0..3 {
-        attention |= run(&mut win);
-    }
-    let reading = RangReading { toast: win.toasts.showing().map(str::to_string), tone: win.toasts.showing_tone(), attention };
-    (win.shell, reading)
 }
 
 /// One text drawn: its words, its rectangle, its rows, and its first baseline (absolute).
@@ -785,34 +461,6 @@ pub struct Drawn {
     pub baseline: f32,
 }
 
-/// The first-run wizard open at `step` over `place`, settled in windowless frames: every text drawn and every QR
-/// plate.
-pub fn probe_wizard_step(ctx: &egui::Context, shell: Shell, place: Place, step: crate::nav::Step, width: f32, height: f32) -> (Shell, Vec<Drawn>, Vec<egui::Rect>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win| {
-        t += 0.1;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        ctx.run(input, |c| win.draw(c))
-    };
-    win.wizard_open(step);
-    for _ in 0..6 {
-        let _ = run(&mut win);
-    }
-    let out = run(&mut win);
-    let texts = texts_of(&out);
-    let plates = zikaron_ui::probe::qrs(ctx);
-    (win.shell, texts, plates)
-}
-
 /// One frame of the wizard: the step it stood on, every text drawn with where, and how far a drawn check has
 /// gone (see [`check_points`]).
 pub struct WizFrame {
@@ -823,7 +471,7 @@ pub struct WizFrame {
 
 /// How far the drawn check of a finished step has gone this frame: the points of the longest open line in
 /// the success colour (it only ever grows while the check draws; back to few means it started again).
-fn check_points(o: &egui::FullOutput) -> usize {
+pub(super) fn check_points(o: &egui::FullOutput) -> usize {
     let ok = c(C::Ok);
     let mut most = 0usize;
     let mut look = |s: &egui::Shape| {
@@ -842,117 +490,7 @@ fn check_points(o: &egui::FullOutput) -> usize {
     most
 }
 
-/// The wizard open at `from`, settled; then turned to `to` the way its "next" button turns it (`ux.wizard`),
-/// and read every 20 ms for `frames` frames.
-pub fn probe_wizard_walk(ctx: &egui::Context, shell: Shell, place: Place, from: crate::nav::Step, to: crate::nav::Step, frames: usize, width: f32, height: f32) -> (Shell, Vec<WizFrame>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, step: f64| {
-        t += step;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        ctx.run(input, |c| win.draw(c))
-    };
-    win.wizard_open(from);
-    for _ in 0..8 {
-        let _ = run(&mut win, 0.1);
-    }
-    win.ux.wizard = Some(to);
-    let mut out = Vec::new();
-    for _ in 0..frames {
-        let o = run(&mut win, 0.02);
-        out.push(WizFrame { step: win.ux.wizard.map(|s| format!("{s:?}")).unwrap_or_default(), texts: texts_of(&o), check: check_points(&o) });
-    }
-    (win.shell, out)
-}
-
-/// The wizard on the ledger step with its confirmation sheet up; then "create" pressed the way the sheet's
-/// button presses it, and read every 20 ms for `frames` frames: how far the drawn check has gone.
-pub fn probe_wizard_genesis(ctx: &egui::Context, shell: Shell, place: Place, frames: usize, width: f32, height: f32) -> (Shell, Vec<usize>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, step: f64| {
-        t += step;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        (t, ctx.run(input, |c| win.draw(c)))
-    };
-    win.wizard_open(crate::nav::Step::Genesis);
-    for _ in 0..6 {
-        let _ = run(&mut win, 0.1);
-    }
-    win.ux.confirm_genesis = true;
-    let mut now = 0.0;
-    for _ in 0..6 {
-        now = run(&mut win, 0.1).0;
-    }
-    win.ux.confirm_genesis = false;
-    win.act(Action::Genesis { statement: win.ux.wiz_statement.clone() }, now);
-    let mut out = Vec::new();
-    for _ in 0..frames {
-        let (_, o) = run(&mut win, 0.02);
-        out.push(check_points(&o));
-    }
-    (win.shell, out)
-}
-
-/// The wizard on the ledger step; its confirmation sheet opened, then closed the way its "back" button closes
-/// it. Every 20 ms from opening: the opacity (0–255) of the sheet's own note `said` in that frame, as drawn
-/// (0 when not drawn).
-pub fn probe_sheet_leave(ctx: &egui::Context, shell: Shell, place: Place, said: &str, open_frames: usize, close_frames: usize, width: f32, height: f32) -> (Shell, Vec<u8>, Vec<u8>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, step: f64| {
-        t += step;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        ctx.run(input, |c| win.draw(c))
-    };
-    let alpha_of = |o: &egui::FullOutput| -> u8 {
-        o.shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Text(s) if s.galley.job.text == said => {
-                    s.galley.rows.iter().flat_map(|r| r.visuals.mesh.vertices.iter()).map(|v| v.color.a()).max().map(|a| (a as f32 * s.opacity_factor) as u8)
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-    };
-    win.wizard_open(crate::nav::Step::Genesis);
-    for _ in 0..6 {
-        let _ = run(&mut win, 0.1);
-    }
-    win.ux.confirm_genesis = true;
-    let opening: Vec<u8> = (0..open_frames).map(|_| alpha_of(&run(&mut win, 0.02))).collect();
-    win.ux.confirm_genesis = false;
-    let closing: Vec<u8> = (0..close_frames).map(|_| alpha_of(&run(&mut win, 0.02))).collect();
-    (win.shell, opening, closing)
-}
-
-fn texts_of(out: &egui::FullOutput) -> Vec<Drawn> {
+pub(super) fn texts_of(out: &egui::FullOutput) -> Vec<Drawn> {
     out.shapes
         .iter()
         .filter_map(|c| match &c.shape {
@@ -968,40 +506,8 @@ fn texts_of(out: &egui::FullOutput) -> Vec<Drawn> {
         .collect()
 }
 
-/// Leave `from` for `to` through the rail's own path (`go`), and read every frame from the first one after:
-/// the texts drawn in the toolbar band.
-pub fn probe_title_swap(ctx: &egui::Context, shell: Shell, from: Place, to: Place, width: f32, height: f32) -> (Shell, Vec<Vec<String>>) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(from, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, step: f64| {
-        t += step;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
-        (t, ctx.run(input, |c| win.draw(c)))
-    };
-    for _ in 0..5 {
-        let _ = run(&mut win, 0.1);
-    }
-    let (now, _) = run(&mut win, 0.1);
-    win.go(to, now);
-    let mut frames = Vec::new();
-    // Every 20 ms, covering a full crossfade (90 ms out, 120 ms in) and beyond.
-    for _ in 0..15 {
-        let (_, out) = run(&mut win, 0.02);
-        let band: Vec<String> = texts_of(&out).into_iter().filter(|d| d.rect.top() < tk::TOOLBAR_H && d.rect.left() > tk::RAIL_W && d.text.trim().len() > 0).map(|d| d.text).collect();
-        frames.push(band);
-    }
-    (win.shell, frames)
-}
-
 /// What the window did with files dropped on it as a whole.
+#[derive(Clone, Debug)]
 pub struct DropReading {
     /// The route drawn after the drop.
     pub route: String,
@@ -1014,42 +520,9 @@ pub struct DropReading {
     pub verify_path: String,
     /// The toast on screen.
     pub toast: Option<String>,
-}
-
-/// Drop `paths` on the window over `place` in a few windowless frames. A place without its own drop area (the
-/// records page, say) leaves the drop to the window as a whole.
-pub fn probe_drop(ctx: &egui::Context, shell: Shell, place: Place, paths: &[String], width: f32, height: f32) -> (Shell, DropReading) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, dropped: Vec<egui::DroppedFile>| {
-        t += 0.1;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), dropped_files: dropped, ..Default::default() };
-        let _ = ctx.run(input, |c| win.draw(c));
-    };
-    for _ in 0..3 {
-        run(&mut win, Vec::new());
-    }
-    run(&mut win, paths.iter().map(|p| egui::DroppedFile { path: Some(p.into()), ..Default::default() }).collect());
-    for _ in 0..4 {
-        run(&mut win, Vec::new());
-    }
-    let reading = DropReading {
-        route: zikaron_ui::probe::route_drawn(ctx),
-        sheet: win.ux.u3.new_anchor,
-        taken: win.shell.content.as_ref().map(|c| c.subject.clone()),
-        name: win.typed.work_note.clone(),
-        verify_path: win.typed.vf_path.clone(),
-        toast: win.toasts.showing().map(|s| s.to_string()),
-    };
-    (win.shell, reading)
+    /// Whether the page drawn declared that it takes drops in its own zones (`Win::takes_drops`), so the
+    /// whole-window drop stood aside.
+    pub page_drops: bool,
 }
 
 /// What the wizard's way out did.
@@ -1072,79 +545,110 @@ pub struct WizardExit {
     pub place_after: String,
 }
 
-/// Open the wizard at `step` over `place`, then press Esc in a few windowless frames. With new words in hand
-/// (made first), Esc asks first; this then leaves the way the prompt's leave button does.
-pub fn probe_wizard_exit(ctx: &egui::Context, shell: Shell, place: Place, step: crate::nav::Step, width: f32, height: f32) -> (Shell, WizardExit) {
-    let role = shell.settings.role;
-    let mut ux = Ux::default();
-    let (stack, h) = crate::nav::history_of(place, role);
-    ux.stack = stack;
-    ux.hist.insert(stack, h);
-    ux.wizard_asked = true;
-    let mut win = fresh_win(shell, Typed::default(), ux);
-    win.faults_told = usize::MAX;
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-    let mut t = 0.0;
-    let mut run = |win: &mut Win, events: Vec<egui::Event>| -> (f64, egui::FullOutput) {
-        t += 0.1;
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), events, ..Default::default() };
-        (t, ctx.run(input, |c| win.draw(c)))
-    };
-    for _ in 0..4 {
-        let _ = run(&mut win, Vec::new());
-    }
-    let before = zikaron_ui::probe::route_drawn(ctx);
-    win.wizard_open(step);
-    for _ in 0..4 {
-        let _ = run(&mut win, Vec::new());
-    }
-    let opened = win.ux.wizard.is_some();
-    let offered = win.wizard_exit_shown();
-    let wiz_from = win.ux.wiz_from.as_ref().map(|(r, s, p, _)| format!("{}:{s:?}:{p:?}", r.as_str())).unwrap_or_default();
-    let had_words = win.shell.new_words.is_some();
-    let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
-    let _ = run(&mut win, vec![esc]);
-    let mut last = None;
-    for _ in 0..4 {
-        last = Some(run(&mut win, Vec::new()));
-    }
-    let asked = had_words && win.ux.wiz_exit_ask;
-    let said_void = last
-        .as_ref()
-        .map(|(_, out)| out.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Text(s) if s.galley.job.text.contains(t_void()))))
-        .unwrap_or(false);
-    if asked {
-        let now = last.as_ref().map(|(n, _)| *n).unwrap_or(0.0);
-        win.wizard_exit(now);
-        for _ in 0..4 {
-            let _ = run(&mut win, Vec::new());
-        }
-    }
-    let reading = WizardExit {
-        before,
-        opened,
-        after: zikaron_ui::probe::route_drawn(ctx),
-        offered,
-        still_open: win.ux.wizard.is_some(),
-        asked,
-        said_void,
-        words_dropped: had_words && win.shell.new_words.is_none(),
-        wiz_from,
-        place_after: format!("{}:{:?}:{:?}", win.shell.settings.role.as_str(), win.ux.stack, win.ux.place),
-    };
-    (win.shell, reading)
+/// What pressing the wizard's "back" key did, read from the window's own state after each press.
+#[derive(Clone, Debug, Default)]
+pub struct WizardBack {
+    /// Whether the key was drawn (and so pressed) on the words' check page.
+    pub pressed_on_check: bool,
+    /// The step and whether the words' check was showing after that press.
+    pub step_after_check: String,
+    pub checking_after: bool,
+    /// Whether the new words in hand were the same before and after (none dropped, none made anew).
+    pub same_words: bool,
+    /// Whether the key was drawn on the words' page, and the step after pressing it there.
+    pub pressed_on_words: bool,
+    pub step_after_words: String,
 }
 
-fn t_void() -> &'static str {
+/// What the wizard's "adopt existing ledger folder" did at "create the ledger" (`probe_wizard_adopt`).
+#[derive(Clone, Debug, Default)]
+pub struct WizardAdopt {
+    /// Whether the key was drawn beside "create the ledger" (and so pressed), and whether its sheet then showed.
+    pub key_drawn: bool,
+    pub sheet_drawn: bool,
+    /// Whether the sheet's "adopt in place" was drawn (and so pressed) with the folder chosen.
+    pub adopt_pressed: bool,
+    /// The step the wizard stood at afterwards, and whether that step was done then (read from the shell).
+    pub step_after: String,
+    pub done_after: bool,
+    /// Whether the step's "next" key, and the adopt key again, were drawn afterwards.
+    pub next_drawn_after: bool,
+    pub key_drawn_after: bool,
+    /// The sentence the window showed for it, and the window's most recent trouble's sentences (first, next), if
+    /// it was refused.
+    pub toast: Option<String>,
+    pub refused: Option<(String, String)>,
+}
+
+/// What clicking the other language on the first-run wizard's or the passcode gate's switch did.
+#[derive(Clone, Debug, Default)]
+pub struct LangPick {
+    /// Whether the other language's cell was drawn (and so clicked).
+    pub drawn: bool,
+    /// The language spoken before and after the click (`lang::lang`), and the one this machine keeps after it.
+    pub before: String,
+    pub after: String,
+    pub machine_after: String,
+    /// Whether the wizard (or the gate) was still up after the click.
+    pub still_up: bool,
+}
+
+/// What the "write alone" sheet did when its validity cells were typed into and its switch clicked
+/// (`probe_cli_sheet`).
+#[derive(Clone, Debug, Default)]
+pub struct CliSheet {
+    /// The days cell after "400" was typed into it, and whether the line under the switch said days are at
+    /// most 365 (in red).
+    pub days_typed: String,
+    pub over_said: bool,
+    /// The days cell after it was cleared and "2" typed, and whether the line then said when it expires.
+    pub days_fixed: String,
+    pub expiry_said: bool,
+    /// Whether the switch was on after its title was clicked; the days cell after "9" was typed into it while
+    /// on (not taken: unchanged); and whether the line under the switch was empty then.
+    pub never_on: bool,
+    pub days_while_never: String,
+    pub quiet_while_never: bool,
+    /// Whether the sheet said, as it opened, that the command line may spend this identity's gas while
+    /// putting on chain from the command line sends automatically.
+    pub gas_said: bool,
+}
+
+/// What typing at the passcode gate did, with nothing over it and with the lock screen's restore sheet over it.
+#[derive(Clone, Debug, Default)]
+pub struct TypedUnder {
+    /// Characters the gate's passcode row held after three were typed with nothing over it.
+    pub bare: usize,
+    /// Whether the restore sheet was drawn over the gate, and its title pressed (a press on no control).
+    pub sheet_up: bool,
+    pub pressed: bool,
+    /// Characters the gate's passcode row held after three were typed with the sheet over it.
+    pub under: usize,
+    /// Whether the vault stayed locked throughout.
+    pub locked: bool,
+}
+
+/// One rail item walked by [`probe_rail_walk`]: its label and the route drawn after each move (`None` where the
+/// page has no row to open, or its first row leads to another view).
+#[derive(Clone, Debug, Default)]
+pub struct RailWalk {
+    pub item: String,
+    /// The item was drawn on the rail and pressed.
+    pub pressed: bool,
+    /// After pressing it.
+    pub entered: String,
+    /// The page's first row leads to another view: the route drawn there.
+    pub link: Option<String>,
+    /// After opening the page's first row (a page of the same view).
+    pub detail: Option<String>,
+    /// After going back from that row (⌘[).
+    pub out: Option<String>,
+    /// After opening the row again and pressing the same rail item.
+    pub rail_again: Option<String>,
+}
+
+pub(super) fn t_void() -> &'static str {
     t(Key::WizExitWords)
-}
-
-/// Whether a rail item is the lit one (views ignore tabs).
-pub(super) fn same_item(lit: Place, item: Place) -> bool {
-    match (lit, item) {
-        (Place::View(a, _), Place::View(b, _)) => a == b,
-        (a, b) => a == b,
-    }
 }
 
 /// A record row's state pill: deleted grey, confirmed green, on its way amber, failed red.
@@ -1218,47 +722,6 @@ pub(super) fn summary_in(rows: &[crate::ledgerx::Row], row: &crate::ledgerx::Row
         }
         E::Succession => t(Key::SumHandedToNewKey).to_string(),
         _ => human_summary(row),
-    }
-}
-
-/// The page shell records for a view's tab (`shell.page`: tests and the trace channel read it).
-pub(super) fn view_page(v: crate::nav::View, tab: u8, role: crate::roles::Role) -> Page {
-    use crate::nav::{tab as T, View};
-    match v {
-        View::Works => match tab {
-            T::WORKS_PENDING => Page::Queue,
-            T::WORKS_KIT => Page::Kit,
-            _ => Page::Anchoring,
-        },
-        View::Grants => match tab {
-            T::GRANTS_NEW => Page::Grant,
-            _ => Page::Grants,
-        },
-        View::Verify => match tab {
-            T::VERIFY_WORK => Page::Verifier,
-            T::VERIFY_OTHERS => match role {
-                crate::roles::Role::Author => Page::Reader,
-                crate::roles::Role::Grantee => Page::Diligence,
-            },
-            _ => Page::Check,
-        },
-        View::Log => Page::Ledger,
-        View::Alerts => Page::Watch,
-        View::MyGrants => match tab {
-            T::HELD_RELICENSE => Page::Relicense,
-            _ => Page::Vault,
-        },
-    }
-}
-
-/// The text of a verify tab.
-pub(super) fn tab_key(v: crate::nav::View, tab: u8) -> Key {
-    use crate::nav::{tab as T, View};
-    match (v, tab) {
-        (View::Verify, T::VERIFY_WORK) => Key::V2TabVerifyWork,
-        (View::Verify, T::VERIFY_OTHERS) => Key::V2TabOthers,
-        (View::Verify, _) => Key::V2TabCheckGrant,
-        (_, _) => v.key(),
     }
 }
 

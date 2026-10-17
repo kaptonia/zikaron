@@ -134,7 +134,7 @@ fn the_contract_answer_is_what_the_tables_say() {
     let verbs = listed(&v);
     let names: Vec<&str> = verbs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, zikaron_cli::verbs::VERBS.to_vec());
-    assert_eq!(names.len(), 22);
+    assert_eq!(names.len(), 25);
     for (name, fl) in &verbs {
         let row: Vec<String> = zikaron_cli::verbs::accepts(name, false).expect("动词没有行").iter().map(|x| x.to_string()).collect();
         assert_eq!(fl, &row, "{name} 的旗单与表不一");
@@ -155,7 +155,9 @@ fn the_contract_answer_is_what_the_tables_say() {
         let row = zikaron_cli::verbs::HOME.iter().find(|(v, _)| *v == name).map(|(_, fl)| fl.iter().map(|f| f.to_string()).collect::<Vec<_>>());
         assert_eq!(home, row, "{name} 的 homeFlags 与 verbs::HOME 不一");
         let flags: Vec<String> = arr(member(x, Contract::Flags)).iter().map(text).collect();
-        assert_eq!(flags.iter().any(|f| f == zikaron_cli::verbs::HOME_FLAG), row.is_some(), "{name}: home 在旗单里当且仅当它经桌面做");
+        let by_hand = zikaron_cli::verbs::BY_HAND.contains(&name.as_str());
+        assert!(!(by_hand && row.is_some()), "{name}: 经桌面做与只在桌面亲手做两表不交");
+        assert_eq!(flags.iter().any(|f| f == zikaron_cli::verbs::HOME_FLAG), row.is_some() || by_hand, "{name}: home 在旗单里当且仅当它经桌面做或只在桌面亲手做");
     }
     // Every member name the answer prints is in the closed table (or `ok`), and every one in the table is
     // printed.
@@ -225,14 +227,16 @@ fn every_verb_takes_exactly_the_flags_the_contract_lists() {
             asked += 1;
         }
     }
-    assert_eq!(asked, 22 * 58);
+    assert_eq!(asked, 25 * 61);
     let _ = std::fs::remove_dir_all(&w);
 }
 
 /// With `--home`, a desktop-served verb accepts only `home` and its `verbs::HOME` row: a flag from its own row
 /// that the desktop does not take is refused as `not taken together with --home`, any other as not this verb's;
-/// a verb the desktop does not serve refuses `--home` itself. Checked on the real binary for every verb and
-/// flag; refusal comes before any request (nothing on stdout).
+/// a verb done on the desktop by hand only (`verbs::BY_HAND`) takes its own flags and answers `E_ON_DESKTOP`
+/// (exit 1) without asking anyone, any other flag being not this verb's; a verb the desktop does not serve
+/// refuses `--home` itself. Checked on the real binary for every verb and flag; misuse comes before any request
+/// (nothing on stdout).
 #[test]
 fn with_home_a_verb_takes_exactly_its_home_row() {
     let w = scratch("homeclose");
@@ -245,6 +249,14 @@ fn with_home_a_verb_takes_exactly_its_home_row() {
             let first = err.lines().next().unwrap_or_default().to_string();
             let second = err.lines().nth(1).unwrap_or_default().to_string();
             asked += 1;
+            if zikaron_cli::verbs::BY_HAND.contains(&verb) {
+                if own.contains(&f) || (f == zikaron_cli::args::KEY_FILE && own.contains(&"key")) {
+                    assert_eq!((code, String::from_utf8_lossy(&out).trim()), (1, r#"{"ok":false,"reason":"E_ON_DESKTOP"}"#), "{verb} --home --{f}: done on the desktop by hand: {err}");
+                } else {
+                    assert_eq!((code, first.as_str(), second.as_str()), (2, format!("E_ARGS --{f}").as_str(), "not among this verb's flags"), "{verb} --home --{f}: {err}");
+                }
+                continue;
+            }
             assert_eq!(code, 2, "{verb} --home --{f}: {err}");
             assert!(out.is_empty(), "{verb} --home --{f}: misuse writes nothing to stdout");
             match &home_row {
@@ -257,7 +269,7 @@ fn with_home_a_verb_takes_exactly_its_home_row() {
             }
         }
     }
-    assert_eq!(asked, 22 * 55);
+    assert_eq!(asked, 25 * 58);
     let _ = std::fs::remove_dir_all(&w);
 }
 

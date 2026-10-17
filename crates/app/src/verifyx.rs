@@ -328,33 +328,12 @@ fn facts(v: zikaron_kit::kitdir::KitVerdict) -> KitFacts {
     }
 }
 
-/// The original file of a record in the kit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Original {
-    /// The manifest's `contents` row matches, and the sha256 of the kit's file equals this record's
-    /// `content`.
-    Match,
-    /// The row matches, but the file's bytes hash to another digest.
-    Mismatch,
-    /// The manifest has no `contents` row for this record, or the kit lacks the file in that row.
-    Missing,
-}
+/// The original file of a record in the package, and whether the record is anchored, as decided by the shared
+/// record check (`zikaron_glue::recordcheck`, which the command line's `kit-verify` uses too).
+pub use zikaron_glue::recordcheck::{contents_of, originals_in_dir, originals_in_pairs, OnChain, Original};
 
-/// Whether this record is anchored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnChain {
-    /// An anchor counted by this audit reaches it; `first_at` is the earliest block time among the anchors
-    /// that reach it (kit law §8.2, read the same way as the depth reading's "first anchored":
-    /// `zikaron_kit::reading::bounds`).
-    Anchored { first_at: u64 },
-    /// The chain was read and no counted anchor reaches it.
-    NotAnchored,
-    /// The chain was not read (no network configured, chain unreachable), or this pass left out a network that
-    /// could hold its anchor ([`unread_where_missed`]): never shown as "not anchored".
-    Unread,
-}
-
-/// One row of record bundle verification: one record (`history`).
+/// One row of record package verification: one record (`history`), as the shared check reports it, plus the
+/// record's name for the page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordRow {
     /// Entry id (record hash).
@@ -370,88 +349,23 @@ pub struct RecordRow {
     pub first: Option<crate::auditx::FirstAnchor>,
 }
 
-/// Kit law §7.3's `contents` rows: (content, path), read from the manifest unchanged (empty when the
-/// manifest is unreadable).
-pub fn contents_of(manifest: &[u8]) -> Vec<(String, String)> {
-    // Manifest member names come from the kit writer's name table (`zikaron_glue::names::Field`); no literal
-    // is written here.
-    use zikaron_glue::names::Field;
-    let Ok(v) = zikaron::json::parse(manifest) else { return Vec::new() };
-    let Some(Value::Arr(rows)) = v.member(Field::Contents.as_str()) else { return Vec::new() };
-    rows.iter()
-        .filter_map(|r| {
-            let content = match r.member(Field::Content.as_str()) {
-                Some(Value::Str(s)) => s.to_ascii_lowercase(),
-                _ => return None,
-            };
-            let path = match r.member(Field::Path.as_str()) {
-                Some(Value::Str(s)) => s.clone(),
-                _ => return None,
-            };
-            Some((content, path))
-        })
-        .collect()
-}
-
-/// The file each `contents` row points to in a kit directory: (content, bytes; `None` when the kit lacks it).
-pub fn originals_in_dir(dir: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    let manifest = std::fs::read(dir.join(zikaron_glue::names::MANIFEST)).unwrap_or_default();
-    contents_of(&manifest)
-        .into_iter()
-        .map(|(content, path)| {
-            let bytes = std::fs::read(dir.join(&path)).or_else(|_| std::fs::read(dir.join(zikaron_glue::names::FILES_DIR).join(&path))).ok();
-            (content, bytes)
-        })
-        .collect()
-}
-
-/// As [`originals_in_dir`], from a file list (a grant file, or a kit fetched from a publish address).
-pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Vec<u8>>)> {
-    let manifest = pairs.iter().find(|(p, _)| p == zikaron_glue::names::MANIFEST).map(|(_, b)| b.clone()).unwrap_or_default();
-    let files_prefixed = |path: &str| format!("{}/{}", zikaron_glue::names::FILES_DIR, path);
-    contents_of(&manifest)
-        .into_iter()
-        .map(|(content, path)| {
-            let bytes = pairs.iter().find(|(p, _)| *p == path || *p == files_prefixed(&path)).map(|(_, b)| b.clone());
-            (content, bytes)
-        })
-        .collect()
-}
-
-/// Verify a record bundle record by record: one row per record (`history`) in the bundle. Original: the
-/// `contents` row for this record's `content`, with the kit's file hashed with sha256 and compared. Anchored
-/// and first-anchor block time: on this audit's fragment (`None` when the chain was not read), the core
-/// produces the audit result and the kit crate computes each record's bounds (`reading::bounds`, as for
-/// depth), once for all records. Kit format, kit law and the audit report format are unchanged.
+/// Verify a record package record by record (`zikaron_glue::recordcheck::records`, on the audit outcome of these
+/// entries with `fragment` when the chain was read), each row given the record's name.
 pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], fragment: Option<&Value>) -> Vec<RecordRow> {
     crate::trace::mark(crate::feature::Feature::D2);
-    let times = fragment.and_then(|f| crate::auditx::first_anchored(bytes, f));
-    let firsts = fragment.and_then(|f| crate::auditx::first_anchors(bytes, f)).unwrap_or_default();
-    bytes
-        .iter()
-        .filter_map(|b| zikaron::entry::check(b).ok())
-        .filter_map(|e| crate::ledgerx::work_of(e.kind, &e.body).map(|c| (e.id_hex(), c.to_ascii_lowercase(), crate::ledgerx::facts_of(&e).note)))
-        .map(|(id, content, name)| {
-            let mine: Vec<&Option<Vec<u8>>> = originals.iter().filter(|(c, _)| *c == content).map(|(_, b)| b).collect();
-            let original = if mine.iter().any(|b| b.as_ref().map(|x| zikaron::hexfmt::encode(&crate::anchorx::file_digest(x)).eq_ignore_ascii_case(&content)).unwrap_or(false)) {
-                Original::Match
-            } else if mine.iter().any(|b| b.is_some()) {
-                Original::Mismatch
-            } else {
-                Original::Missing
-            };
-            let chain = match &times {
-                None => OnChain::Unread,
-                Some(at) => match at.iter().find(|(h, _)| *h == id).map(|(_, t)| *t) {
-                    Some(t) => OnChain::Anchored { first_at: t },
-                    None => OnChain::NotAnchored,
-                },
-            };
-            let first = match chain {
-                OnChain::Anchored { .. } => firsts.iter().find(|(h, _)| *h == id).map(|(_, f)| f.clone()),
-                _ => None,
-            };
-            RecordRow { id, content, name, original, chain, first }
+    let outcome = fragment.and_then(|f| crate::auditx::outcome_of(bytes, f).ok());
+    let read = outcome.as_ref().and_then(|o| fragment.map(|f| (o, f)));
+    let names: Vec<(String, Option<String>)> =
+        bytes.iter().filter_map(|b| zikaron::entry::check(b).ok()).map(|e| (e.id_hex(), crate::ledgerx::facts_of(&e).note)).collect();
+    zikaron_glue::recordcheck::records(bytes, originals, read)
+        .into_iter()
+        .map(|r| RecordRow {
+            name: names.iter().find(|(id, _)| *id == r.id).and_then(|(_, n)| n.clone()),
+            id: r.id,
+            content: r.content,
+            original: r.original,
+            chain: r.chain,
+            first: r.first,
         })
         .collect()
 }

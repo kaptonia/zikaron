@@ -101,7 +101,7 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
             });
         }
     });
-    set_choice(Choice::Manual(Proxy { kind: Kind::Http, host: "127.0.0.1".into(), port: proxy }));
+    set_choice(Choice::Manual(Proxy { kind: Kind::Http, host: "127.0.0.1".into(), port: proxy, auth: None }));
     let t = parse("http://node.invalid:8545/").expect("address");
     let asking = std::thread::spawn(move || {
         let began = Instant::now();

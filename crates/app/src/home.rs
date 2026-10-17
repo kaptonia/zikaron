@@ -12,14 +12,12 @@
 //! The machine directory, one per machine, holds the key vault, identity registry, `machine.json` and the kit
 //! index `kits/index.json`. It is found through the pointer `~/.zikaron-desk` (one line: the machine
 //! directory's absolute path, trailing newline, mode 0600, written to a temporary name and renamed
-//! atomically); without a pointer, the default is `~/.zikaron-desk.d/`. Older versions kept it in
-//! `~/Library/Application Support/ZIKARON`, with the chosen home in its `where.json`; that layout is migrated
-//! once by [`settle_machine`] (the old home pointer moves into [`PICKED`]), and once the new pointer is
-//! written the old files are never read again. Companion apps read this pointer and index (read-only).
+//! atomically); without a pointer, the default is `~/.zikaron-desk.d/`. No other place is looked at. Companion
+//! apps read this pointer and index (read-only).
 //!
-//! Resolving and settling are separate: [`machine_dir`] only reads; the pointer, migration and empty index
-//! are written only by [`settle_machine`], called once when the window starts (tests call it separately in a
-//! temporary place).
+//! Resolving and settling are separate: [`machine_dir`] only reads; the pointer and empty index are written
+//! only by [`settle_machine`], called once when the window starts (tests call it separately in a temporary
+//! place).
 
 use crate::fault::{classify, Fault, Known};
 use std::path::{Path, PathBuf};
@@ -38,10 +36,10 @@ impl Slot {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Slot::Ledger => "ledger",
-            Slot::Kits => "kits",
-            Slot::GrantsHeld => "grants-held",
-            Slot::Settings => "settings",
+            Slot::Ledger => zikaron_seal::envelope::LEDGER_DIR,
+            Slot::Kits => zikaron_seal::envelope::KITS_DIR,
+            Slot::GrantsHeld => zikaron_seal::envelope::GRANTS_HELD_DIR,
+            Slot::Settings => zikaron_seal::envelope::SETTINGS_DIR,
         }
     }
 }
@@ -52,12 +50,7 @@ pub const APP_DIR: &str = zikaron_os::machine::APP_DIR;
 pub const POINTER: &str = zikaron_os::machine::POINTER;
 /// Default home name when nobody chose a place (under the machine directory), defined once.
 pub const DEFAULT_HOME: &str = "default";
-/// The older machine directory (these three segments under the user's home) and its file recording the chosen
-/// home. Read only during the one migration.
-pub const LEGACY_DIR: [&str; 3] = zikaron_os::machine::LEGACY_DIR;
-pub const LEGACY_POINTER: &str = "where.json";
-/// The file in the machine directory recording the chosen home (`{"home": absolute path}`, the same shape as
-/// the old `where.json`), defined once.
+/// The file in the machine directory recording the chosen home (`{"home": absolute path}`), defined once.
 pub const PICKED: &str = "picked-home.json";
 /// Environment variable naming a home explicitly (used by tools and tests to start a home in a temporary
 /// place).
@@ -188,80 +181,56 @@ pub fn put_at(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), Fault> {
     if crate::task::ticket_void() {
         return Err(crate::task::void_ticket_fault(dir));
     }
-    use std::io::Write;
-    let dir = dir.to_path_buf();
-    std::fs::create_dir_all(&dir).map_err(|e| classify(&e, &dir.display().to_string()))?;
-    // The temporary name must be unique: two paths in one process may write the same file at once (queueing
-    // in the frame, dequeuing in the background), and a shared temporary name would mix their bytes.
-    let tmp = dir.join(put_tmp_name(name));
-    let p = dir.join(name);
-    {
-        let mut f = open_owner_only(&tmp)?;
-        f.write_all(bytes).map_err(|e| classify(&e, &tmp.display().to_string()))?;
-        f.sync_all().map_err(|e| classify(&e, &tmp.display().to_string()))?;
-    }
-    replace_lasting(&tmp, &p)
+    zikaron_os::put_at(dir, name, &put_tmp_name()?, bytes).map_err(unput)
 }
 
-/// Renames `from` over `to` in one step, then syncs the directory (`zikaron_os::sync_dir`) so the new name
-/// survives a power cut; otherwise the directory could still name the old file and the last write of a
-/// setting, queue or pointer would come back as the one before. A failed rename is reported with the target,
-/// a failed sync with the directory (the file is in place, but the write is not taken as done). The app's
-/// only rename-and-sync: [`put_at`] and [`rename_over`] both end here.
-fn replace_lasting(from: &Path, to: &Path) -> Result<(), Fault> {
-    zikaron_os::replace(from, to).map_err(|e| classify(&e, &to.display().to_string()))?;
-    let dir = to.parent().unwrap_or_else(|| Path::new("."));
-    zikaron_os::sync_dir(dir, to).map_err(|e| classify(&e, &dir.display().to_string()))
+/// A write that did not land, as a fault said with the path the platform piece names.
+fn unput(u: zikaron_os::Unput) -> Fault {
+    classify(&u.error, &u.at.display().to_string())
 }
 
-/// The temporary name [`put_at`] writes beside its target: `.{name}.{pid}.{nanoseconds}.tmp`.
-fn put_tmp_name(name: &str) -> String {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    format!(".{name}.{}.{nanos}{PUT_TMP_SUFFIX}", std::process::id())
+/// The temporary name [`put_at`] writes beside its target: the product's one temporary shape
+/// (`zikaron_store::layout::tmp_file_name`), with sixteen hex digits from the system entropy source. Two paths
+/// writing one file at once (queueing in the frame, dequeuing in the background) get two names; a collision is
+/// refused by `create_new`, never mixed.
+fn put_tmp_name() -> Result<String, Fault> {
+    Ok(zikaron_seal::land::tmp_name()?)
 }
 
-const PUT_TMP_SUFFIX: &str = ".tmp";
-
-/// Whether a name is one [`put_tmp_name`] writes, by the name alone.
-fn is_put_tmp(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix('.').and_then(|r| r.strip_suffix(PUT_TMP_SUFFIX)) else { return false };
-    let mut parts = rest.rsplitn(3, '.');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(nanos), Some(pid), Some(base)) => {
-            !base.is_empty() && !nanos.is_empty() && nanos.bytes().all(|b| b.is_ascii_digit()) && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
-        }
-        _ => false,
-    }
-}
-
-/// Whether a file name is one of this product's temporary names, by the name alone: what [`put_at`], the glue
-/// crate's landing (`landing::is_beside_name`) and the store crate's archive writes (`layout::tmp_shaped`)
-/// put beside a target before renaming it over. A leftover one is from a write cut short. A file staged for a
-/// later commit (`keybox::NEXT`) is not temporary: it is settled at the next start.
+/// Whether a file name is this product's temporary name, by the name alone: the one shape every write puts
+/// beside its target before renaming it over (`zikaron_store::layout::tmp_shaped`: this crate's `put_at`, the
+/// glue crate's landings and the store's archive writes alike). A leftover one is from a write cut short. A file
+/// staged for a later commit (`keybox::NEXT`) is not temporary: it is settled at the next start.
 pub fn is_temp_name(name: &str) -> bool {
-    is_put_tmp(name) || zikaron_glue::landing::is_beside_name(name) || zikaron_store::layout::tmp_shaped(name)
+    zikaron_store::layout::tmp_shaped(name)
 }
 
-/// Moves a file written beside its place (a staged `.zk-next` or a sealed copy, itself written by [`put_at`])
-/// over that place in one rename. The only rename of a written file outside `put_at`: the vault change, the
-/// settling of staged files and the plain-file migration all go through it.
+/// Removes every leftover temporary file under a home (regular files of [`is_temp_name`]'s shape, at any depth;
+/// links are not followed). Run by the writer when it opens the home, under its lock: no other process writes
+/// there, so whatever temporary file is found was cut short. Returns how many went; one that cannot be removed
+/// stays, and a strict read that meets it names it.
+pub fn sweep_temps(root: &Path) -> usize {
+    fn walk(dir: &Path, gone: &mut usize) {
+        let Ok(listing) = std::fs::read_dir(dir) else { return };
+        for item in listing.flatten() {
+            let Ok(kind) = item.file_type() else { continue };
+            if kind.is_dir() {
+                walk(&item.path(), gone);
+            } else if kind.is_file() && is_temp_name(&item.file_name().to_string_lossy()) && std::fs::remove_file(item.path()).is_ok() {
+                *gone += 1;
+            }
+        }
+    }
+    let mut gone = 0;
+    walk(root, &mut gone);
+    gone
+}
+
+/// Moves a file written beside its place (a staged `.zk-next`, itself written by [`put_at`]) over that place in
+/// one rename, the directory synced (`zikaron_os::rename_over`). The only rename of a written file outside
+/// `put_at`: the vault change and the settling of staged files go through it.
 pub fn rename_over(from: &Path, to: &Path) -> Result<(), Fault> {
-    replace_lasting(from, to)
-}
-
-/// Creates a new file readable and writable by its owner only.
-///
-/// Used for this machine's private files: the key vault (key ciphertext and recovery seals), the identity
-/// registry, the queue, the checklist, settings. A plain create follows the system's defaults, often
-/// readable by other accounts; the files hold no plaintext, but this is one more layer. The owner-only mode is
-/// set at creation (`zikaron_os::owner_only`), so there is no moment when others may read the file, and
-/// replacing keeps it. `create_new` refuses a name collision instead of truncating someone else's file (the
-/// temporary name already carries pid and nanoseconds).
-fn open_owner_only(tmp: &Path) -> Result<std::fs::File, Fault> {
-    let mut o = zikaron_os::Options::new();
-    o.write(true).create_new(true);
-    zikaron_os::owner_only(&mut o);
-    o.open(tmp).map_err(|e| classify(&e, &tmp.display().to_string()))
+    zikaron_os::rename_over(from, to).map_err(unput)
 }
 
 /// An archive directory.
@@ -321,18 +290,41 @@ impl Home {
     }
 }
 
+/// The bytes under `p`, which must be there. A home is live while it is measured (a write's temporary file comes
+/// and goes), so an entry listed and gone by the time it is looked at counts nothing, not an error: gone as the
+/// look itself says (not found), or as the entry's own state says when the look failed otherwise
+/// (`zikaron_os::going`: not there, or being deleted).
 fn walk_size(p: &Path) -> Result<u64, Fault> {
-    let md = std::fs::symlink_metadata(p).map_err(|e| classify(&e, &p.display().to_string()))?;
+    size_of(p, false)
+}
+
+fn size_of(p: &Path, listed: bool) -> Result<u64, Fault> {
+    let gone = |e: &std::io::Error| listed && (e.kind() == std::io::ErrorKind::NotFound || zikaron_os::going(p));
+    let md = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) if gone(&e) => return Ok(0),
+        Err(e) => return Err(classify(&e, &p.display().to_string())),
+    };
     if md.is_file() {
         return Ok(md.len());
     }
     if !md.is_dir() {
         return Ok(0);
     }
+    let listing = match std::fs::read_dir(p) {
+        Ok(l) => l,
+        Err(e) if gone(&e) => return Ok(0),
+        Err(e) => return Err(classify(&e, &p.display().to_string())),
+    };
     let mut n = 0;
-    for e in std::fs::read_dir(p).map_err(|e| classify(&e, &p.display().to_string()))? {
-        let e = e.map_err(|e| classify(&e, &p.display().to_string()))?;
-        n += walk_size(&e.path())?;
+    for e in listing {
+        let e = match e {
+            Ok(e) => e,
+            // The folder went while its entries were read: what is left of it is not there.
+            Err(e) if gone(&e) => return Ok(n),
+            Err(e) => return Err(classify(&e, &p.display().to_string())),
+        };
+        n += size_of(&e.path(), true)?;
     }
     Ok(n)
 }
@@ -390,11 +382,6 @@ pub fn pointer_dir(user_home: &Path) -> PathBuf {
     crate::platform::app_data_dir(user_home)
 }
 
-/// Where the older machine directory is (as above).
-pub fn legacy_dir() -> Result<Option<PathBuf>, Fault> {
-    Ok(user_home()?.map(|u| LEGACY_DIR.iter().fold(u, |p, s| p.join(s))))
-}
-
 /// Which level the machine directory was resolved from. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layer {
@@ -402,9 +389,6 @@ pub enum Layer {
     Placed,
     /// The pointer `~/.zikaron-desk`.
     Pointer,
-    /// No pointer, and the older machine directory is on disk: a machine not yet migrated (the migration is
-    /// written by [`settle_machine`]).
-    Legacy,
     /// The default `~/.zikaron-desk.d/`.
     Default,
 }
@@ -414,16 +398,15 @@ impl Layer {
         match self {
             Layer::Placed => "placed",
             Layer::Pointer => "pointer",
-            Layer::Legacy => "legacy",
             Layer::Default => "default",
         }
     }
 }
 
 /// Where the machine directory is and which level it came from. Reads only. Order: set through `places`,
-/// then the pointer, then the older machine directory (not migrated), then the default. A pointer that is not
-/// one absolute path line is refused with `MACHINE_SHAPE`, never silently replaced by the default (which
-/// would leave the key vault and registry behind).
+/// then the pointer, then the default. A pointer that is not one absolute path line is refused with
+/// `MACHINE_SHAPE`, never silently replaced by the default (which would leave the key vault and registry
+/// behind).
 pub fn machine_at() -> Result<(PathBuf, Layer), Fault> {
     if let Some(p) = crate::places::get().machine_dir.clone() {
         return Ok((p, Layer::Placed));
@@ -435,7 +418,6 @@ pub fn machine_at() -> Result<(PathBuf, Layer), Fault> {
     use zikaron_os::machine::{self, Unread};
     match machine::of(&u) {
         Ok((p, machine::Layer::Pointer)) => Ok((p, Layer::Pointer)),
-        Ok((p, machine::Layer::Legacy)) => Ok((p, Layer::Legacy)),
         Ok((p, machine::Layer::Default)) => Ok((p, Layer::Default)),
         Err(Unread::PointerShape(ptr)) => Err(Fault::known(Known::MachineShape, ptr.display().to_string())),
         Err(Unread::Pointer(ptr, e)) => Err(classify(&e, &ptr.display().to_string())),
@@ -450,8 +432,8 @@ pub fn machine_dir() -> Result<PathBuf, Fault> {
 }
 
 /// Where this machine's home is: named by the environment, then the choice recorded in the machine directory
-/// ([`PICKED`]), then the old pointer on a machine not yet migrated, then the default home under the machine
-/// directory. An unreadable record is refused by name; no path is ever guessed.
+/// ([`PICKED`]), then the default home under the machine directory. An unreadable record is refused by name;
+/// no path is ever guessed.
 pub fn where_is() -> Result<PathBuf, Fault> {
     if let Some(p) = std::env::var_os(HOME_ENV) {
         let p = PathBuf::from(p);
@@ -459,7 +441,7 @@ pub fn where_is() -> Result<PathBuf, Fault> {
             return Ok(p);
         }
     }
-    let (machine, layer) = machine_at()?;
+    let machine = machine_dir()?;
     // An unreadable recorded choice is refused by name: silently opening the default home would make the
     // ledger look lost, and the next home change would write the wrong path back.
     let picked = machine.join(PICKED);
@@ -468,24 +450,7 @@ pub fn where_is() -> Result<PathBuf, Fault> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(classify(&e, &picked.display().to_string())),
     }
-    if layer == Layer::Legacy {
-        if let Some(p) = legacy_pick(&machine)? {
-            return Ok(p);
-        }
-    }
     Ok(machine.join(DEFAULT_HOME))
-}
-
-/// The home the old pointer records on a machine not yet migrated. `None` without an old pointer; an
-/// unreadable one is refused by name (falling back to the default would make the ledger look lost and make
-/// the migration record "none" permanently).
-fn legacy_pick(machine: &Path) -> Result<Option<PathBuf>, Fault> {
-    let p = machine.join(LEGACY_POINTER);
-    match std::fs::read(&p) {
-        Ok(b) => read_pointer(&b).map(Some).ok_or_else(|| Fault::known(Known::MachineShape, p.display().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(classify(&e, &p.display().to_string())),
-    }
 }
 
 /// One pointer line: the machine directory's absolute path followed by exactly one newline (parsed in
@@ -526,8 +491,6 @@ pub struct Settled {
     pub layer: Layer,
     /// Whether this run wrote the pointer.
     pub pointer_written: bool,
-    /// The home the old pointer recorded, moved into [`PICKED`] this run (only during migration).
-    pub migrated_home: Option<PathBuf>,
     /// Whether this run wrote an empty index.
     pub index_written: bool,
 }
@@ -535,34 +498,18 @@ pub struct Settled {
 /// Settles the machine directory once when the window starts (tests call it separately in a temporary
 /// place):
 ///
-/// 1. With no pointer and the older machine directory on disk, that stays the machine directory (key vault
-///    and registry stay where they are), and the home recorded in the old `where.json` moves into
-///    [`PICKED`] (a one-time migration);
-/// 2. the machine directory is created and the pointer written to it (not rewritten when unchanged);
-/// 3. an empty kit index is written when missing.
-///
-/// Once the pointer exists the old locations ([`LEGACY_DIR`], [`LEGACY_POINTER`]) are never read again:
-/// [`machine_at`] sees the pointer first.
+/// 1. the machine directory is created and the pointer written to it (not rewritten when unchanged);
+/// 2. an empty kit index is written when missing.
 pub fn settle_machine() -> Result<Settled, Fault> {
     let (machine, layer) = machine_at()?;
     let before = pointer_path()?.and_then(|p| std::fs::read(p).ok());
-    let mut migrated_home = None;
-    if layer == Layer::Legacy {
-        if let Some(p) = legacy_pick(&machine)? {
-            if !machine.join(PICKED).exists() {
-                // The home is recorded only through `write_pointer` (which also writes the machine pointer).
-                write_pointer(&p)?;
-                migrated_home = Some(p);
-            }
-        }
-    }
     std::fs::create_dir_all(&machine).map_err(|e| classify(&e, &machine.display().to_string()))?;
     if layer != Layer::Placed {
         write_machine_pointer(&machine)?;
     }
     let pointer_written = pointer_path()?.and_then(|p| std::fs::read(p).ok()) != before;
     let index_written = crate::kitsindex::ensure(&machine)?;
-    Ok(Settled { machine, layer, pointer_written, migrated_home, index_written })
+    Ok(Settled { machine, layer, pointer_written, index_written })
 }
 
 /// Whether this home was named by the environment. Such a home was not chosen in the product: the pointer
@@ -834,8 +781,7 @@ pub fn write_pointer(home: &Path) -> Result<(), Fault> {
 /// The pointer's one member (`{"home": path}`).
 pub const POINTER_MEMBER: &str = "home";
 
-/// Reads the `{"home": path}` shape (used by [`PICKED`] and the old `where.json`; the old file is read only
-/// during migration and on machines not yet migrated).
+/// Reads the `{"home": path}` shape ([`PICKED`]).
 pub fn read_pointer(bytes: &[u8]) -> Option<PathBuf> {
     let v = zikaron::json::parse(bytes).ok()?;
     match v {
@@ -851,13 +797,13 @@ pub fn read_pointer(bytes: &[u8]) -> Option<PathBuf> {
 mod tests {
     #[test]
     fn every_temporary_name_this_product_writes_is_read_as_one() {
-        let put = super::put_tmp_name("settings.json");
+        let put = super::put_tmp_name().expect("a temporary name");
         let landing = zikaron_glue::landing::staging_beside(&std::env::temp_dir().join(std::path::Path::new("kit"))).expect("a temporary name").file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let store = zikaron_store::layout::tmp_file_name("0123456789abcdef");
         for n in [&put, &landing, &store] {
             assert!(super::is_temp_name(n), "{n} is ours");
         }
-        for n in ["settings.json", ".DS_Store", ".settings.json.12.tmp.bak", "a.tmp", ".kit.staging-x-0123456789abcdef", ".zks-tmp-xyz"] {
+        for n in ["settings.json", ".DS_Store", ".settings.json.12.34.tmp", "a.tmp", ".kit.staging-1-0123456789abcdef", ".zks-tmp-xyz"] {
             assert!(!super::is_temp_name(n), "{n} is not ours");
         }
     }

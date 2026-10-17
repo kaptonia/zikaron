@@ -78,8 +78,6 @@ pub enum Action {
     /// Shut down: reap every background task.
     Quit,
     // ── Identity and keys ──
-    /// Create the anchor key and put it in the local key vault. A legal action.
-    MakeAnchorKey,
     /// Switch seat. An existing-key identity switches view only (key and home unchanged); a recovery-word
     /// identity switches derived key and that seat's home.
     SwitchRole,
@@ -184,7 +182,8 @@ pub enum Action {
     // ── First run and adoption ──
     /// Write genesis. A legal action (verb `init`).
     Genesis { statement: String },
-    /// Adopt an existing ledger directory in place.
+    /// Adopt an existing ledger directory, or a ledger mirror, in place (a home that already has a root takes only
+    /// that same ledger).
     Adopt { dir: String },
     // Ledger view.
     /// Read the ledger table once (background): walk the ledger directory and read bytes into rows.
@@ -244,7 +243,7 @@ pub enum Action {
     PickKit { from: String, to: String, ids: String },
     /// Write a kit (background): pick, attach, hand to the kit output crate to lay out and self-verify; lands
     /// only on KIT_OK.
-    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String },
+    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String, form: String },
     /// Digest attachments first: each path dropped on the export page is digested in the background in
     /// content form.
     VetAttachments { paths: Vec<String> },
@@ -403,6 +402,16 @@ pub enum Action {
     /// Choose how the command line's `anchor` is handled when it goes through the desktop app (machine-wide,
     /// `machine.json`): sent as the send button would, or left in the queue for the user. Takes effect at once.
     SetCliAnchor { to: crate::machine::CliAnchor },
+    /// "Command line writes through the desktop" (machine-wide, sealed machine settings): whether the desktop
+    /// accepts command-line requests while unlocked. Refused by name while writing alone is on (`CLI_ALONE_ON`):
+    /// that switch outranks this one, so only one command-line path exists at any time.
+    SetCliDesktop { on: bool },
+    /// "Command line writes alone", on: after the passcode (the gate), issue the command line's credential
+    /// lasting `lasts` (`zikaron_seal::credential`) and record the switch; the desktop stops accepting
+    /// command-line requests.
+    SetCliAlone { lasts: crate::machine::Lasts, pin: crate::secret::Secret },
+    /// "Command line writes alone", off: remove the credential and record the switch.
+    CliAloneOff,
     /// The command line asked the desktop app to send the queue while sending is left to the user
     /// (`CliAnchor::Queue`): nothing is sent; the request is reported and the `count` entries wait in the queue
     /// for the user to send from the queue page. With nothing queued (either setting) it is refused like the
@@ -435,7 +444,8 @@ impl Action {
             | Action::DeleteIdentity { pin, .. }
             | Action::RevealWords { pin }
             | Action::AttestFor { pin, .. }
-            | Action::ExportBackup { pin, .. } => pin.clear(),
+            | Action::ExportBackup { pin, .. }
+            | Action::SetCliAlone { pin, .. } => pin.clear(),
             // The gate's own fields ([`Action::gate_pin`]), all of them.
             Action::SetPin { pin, again } | Action::RecoverWords { pin, again, .. } | Action::RecoverKeystore { pin, again, .. } => {
                 pin.clear();
@@ -488,6 +498,7 @@ impl Action {
             | Action::RevealWords { pin }
             | Action::AttestFor { pin, .. }
             | Action::ExportBackup { pin, .. }
+            | Action::SetCliAlone { pin, .. }
             | Action::SetPin { pin, .. }
             | Action::Unlock { pin }
             | Action::Reseal { pin }
@@ -521,7 +532,8 @@ impl Action {
             | Action::DeleteIdentity { pin, .. }
             | Action::RevealWords { pin }
             | Action::AttestFor { pin, .. }
-            | Action::ExportBackup { pin, .. } => Some(pin),
+            | Action::ExportBackup { pin, .. }
+            | Action::SetCliAlone { pin, .. } => Some(pin),
             // Making another identity primary and restoring from settings seal the new vault with the passcode
             // itself, so each opens the vault with it inside its own task (the same gate and failure count).
             Action::SetPrimary { .. } | Action::RestoreBackup { .. } => None,
@@ -561,16 +573,20 @@ impl Action {
             | Action::Cosign { .. }
             | Action::Succeed { .. }
             | Action::AttestFor { .. }
-            // The key actions themselves: create, build an identity, import, delete an identity, back up to a
-            // file, show the words.
-            | Action::MakeAnchorKey
+            // The key actions themselves: build an identity, import, delete an identity, back up to a file, show
+            // the words.
             | Action::SetPrimary { .. }
             | Action::ExportBackup { .. }
             | Action::RestoreBackup { how: RestoreHow::FirstRun | RestoreHow::Settings { .. }, .. }
             | Action::ConfirmIdentity { .. }
             | Action::ImportIdentity { .. }
             | Action::DeleteIdentity { .. }
-            | Action::BackupKey { .. } => true,
+            | Action::BackupKey { .. }
+            // The command line's switches are sealed machine settings, and writing alone hands out the master key
+            // sealed in a credential.
+            | Action::SetCliDesktop { .. }
+            | Action::SetCliAlone { .. }
+            | Action::CliAloneOff => true,
             // Showing the words is not in this table: its passcode is the unlock question itself (the
             // `pin_asked` gate), so a locked machine can still show the words once.
             Action::RevealWords { .. } => false,
@@ -693,8 +709,7 @@ impl Action {
     pub fn feature(&self) -> Feature {
         match self {
             Action::Show(_) | Action::SelfCheck | Action::Quit => Feature::H1,
-            Action::MakeAnchorKey
-            | Action::SwitchRole
+            Action::SwitchRole
             | Action::ReadIdentities
             | Action::NewIdentity
             | Action::ConfirmIdentity { .. }
@@ -765,7 +780,7 @@ impl Action {
             Action::ListHeld => Feature::D6,
             Action::SetReviewEvery { .. } => Feature::D7,
             Action::SetLang { .. } | Action::SetZone { .. } => Feature::H6,
-            Action::ReadCliPath | Action::SetCliPath { .. } => Feature::H6,
+            Action::ReadCliPath | Action::SetCliPath { .. } | Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff => Feature::H6,
             Action::SetAppearance { .. } => Feature::H0,
             Action::ExportBadge { .. } | Action::CopyGrantCode { .. } => Feature::D9,
             Action::ExportGrantFile { .. } => Feature::D6,
@@ -790,7 +805,6 @@ impl Action {
             Action::SelfCheck => None,
             Action::Measure => None,
             Action::Quit => None,
-            Action::MakeAnchorKey => None,
             Action::SwitchRole => None,
             Action::ReadIdentities => None,
             Action::NewIdentity => None,
@@ -900,6 +914,7 @@ impl Action {
             Action::SetCliAnchor { .. } => None,
             Action::ReadCliPath => None,
             Action::SetCliPath { .. } => None,
+            Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff => None,
             // Nothing leaves: the request is only reported.
             Action::SendAsked { .. } => None,
             Action::ExportBadge { .. } => Some(Exit::Badge),
@@ -928,6 +943,18 @@ impl Action {
                 | Action::ListHeld
                 | Action::Measure
         )
+    }
+
+    /// The actions that write what the command line writes too, the ledger and the anchor queue: while it writes
+    /// alone, each takes the home's writer lock for its turn, held until what it started has landed
+    /// (`Shell::take_turn`, `Shell::turn_sync`). Closed: the ledger writers ([`Action::writes_ledger`]), queueing,
+    /// resuming the awaited batches, catching up, adopting and fetching a ledger.
+    pub fn takes_turn(&self) -> bool {
+        self.writes_ledger()
+            || matches!(
+                self,
+                Action::QueueEntry { .. } | Action::Resume | Action::CatchUp | Action::Adopt { .. } | Action::FetchLedger { .. } | Action::FetchAside { .. }
+            )
     }
 
     /// What may run while old data is open (`ViewOldData`): reading it, coming back, and the vault gate.
@@ -962,8 +989,7 @@ impl Action {
     pub fn is_legal(&self) -> bool {
         matches!(
             self,
-            Action::MakeAnchorKey
-                | Action::Genesis { .. }
+            Action::Genesis { .. }
                 | Action::Annotate { .. }
                 | Action::Retract { .. }
                 | Action::RecordWork { .. }
@@ -979,7 +1005,6 @@ impl Action {
     /// The command-line verb this action is equivalent to. No legal action returns `None` (the tests check).
     pub fn verb(&self) -> Option<&'static str> {
         match self {
-            Action::MakeAnchorKey => Some("keygen"),
             Action::Genesis { .. } => Some("init"),
             Action::Annotate { .. } => Some("annotate"),
             Action::Retract { .. } => Some("retract"),
@@ -1019,8 +1044,6 @@ pub enum Applied {
     Started(Kind),
     Refused(Kind),
     Stopped(Reaped),
-    /// The anchor key is in place; its address.
-    AnchorKey(Address),
     /// Switched seat.
     Seated(crate::roles::Role),
     /// Read the identities; how many.
@@ -1177,6 +1200,10 @@ pub enum Applied {
     ProxySet(String),
     /// How the command line's `anchor` is handled through the desktop app, as written.
     CliAnchorSet(crate::machine::CliAnchor),
+    /// "Command line writes through the desktop" switched (on or off).
+    CliDesktopSet(bool),
+    /// "Command line writes alone" switched: on with its credential's expiry (`Some(None)`: never), or off.
+    CliAloneSet(Option<Option<u64>>),
     /// What is currently at the command line's location on the terminal's command path.
     CliPathRead(zikaron_os::cli_path::State),
     /// The command line asked to send; nothing was sent, and `count` entries wait for the user.
@@ -1282,23 +1309,25 @@ pub fn apply(shell: &mut Shell, a: Action) -> Applied {
     if let Some(k) = held_back(shell, &a) {
         return shell.trouble(crate::fault::Fault::known(k, String::new()));
     }
-    // Actions that carry a passcode pass `keybox::unlock` here: one gate, one failure count. Each failure is
-    // recorded on disk, and five lock the vault, leaving only recovery.
+    // Actions that carry a passcode pass `keybox::check_pin` here: one gate, one failure count. Each failure is
+    // recorded on disk, and five lock the vault, leaving only recovery. The check opens nothing: the vault is
+    // already open (a locked vault refuses these actions above), and a lock that comes while the passcode is
+    // being checked stays.
     //
     // This comes after the locked check: a locked vault still refuses every key-using action, and this gate
     // re-identifies the person on an open vault (someone at an unlocked machine cannot export the key or
     // delete an identity).
     //
-    // Key derivation runs in the background: the unlock runs in a `Kind::Vault` task, and only on success does
-    // the action body run where the result lands (`vault_landed`, then `body`); the passcode field is wiped
-    // before the action is handed on. The passcode is moved out of the action into the task (`hand_pin`), never
-    // copied: the action handed on carries none.
+    // Key derivation runs in the background: the check runs in a `Kind::Vault` task, and only on success does
+    // the action body run where the result lands (`vault_landed`, then `body`, after the same entry check as
+    // here); the passcode field is wiped before the action is handed on. The passcode is moved out of the
+    // action into the task (`hand_pin`), never copied: the action handed on carries none.
     if a.pin_asked().is_some() {
         let mut rest = a;
         let pin = rest.hand_pin().unwrap_or_default();
         rest.forget_pin();
         return vault(shell, move || {
-            crate::keybox::unlock(pin.expose())?;
+            crate::keybox::check_pin(pin.expose())?;
             Ok(crate::task::Vault::Gate(Box::new(rest)))
         });
     }
@@ -1336,8 +1365,17 @@ pub fn vault_landed(shell: &mut Shell, got: Result<crate::task::Vault, crate::fa
             shell.after_unlock();
             Applied::Recovered
         }
+        // The passcode was checked and nothing was opened. The vault may have locked while it was checked (the
+        // lock key, the idle lock, a lock waiting for a write): read where it stands now and pass the same entry
+        // check `apply` made; held back, the action is refused by name and not done.
         Ok(Vault::Gate(a)) => {
-            shell.after_unlock();
+            shell.reread_vault();
+            if shell.lock_pending {
+                return shell.trouble(crate::fault::Fault::known(crate::fault::Known::Locked, String::new()));
+            }
+            if let Some(k) = held_back(shell, &a) {
+                return shell.trouble(crate::fault::Fault::known(k, String::new()));
+            }
             body(shell, *a)
         }
         // A new master key took effect: every copy in hand was read under the old one, so the shell drops them
@@ -1508,7 +1546,14 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
     // anchoring actions are refused by name without touching the disk.
     if a.writes_ledger() {
         if let Some(s) = shell.unfetched {
-            return shell.trouble(s.fault());
+            return shell.trouble(crate::restorex::fault(s));
+        }
+    }
+    // While the command line writes alone, a write of the ledger or the queue takes the home's writer lock first
+    // (`Shell::take_turn`): the command line holding it is said by name and nothing is done.
+    if a.takes_turn() {
+        if let Err(f) = shell.take_turn() {
+            return shell.trouble(f);
         }
     }
     match a {
@@ -1548,15 +1593,11 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Applied::Stopped(shell.tasks.shutdown())
         }
 
-        Action::MakeAnchorKey => match make_anchor_key(shell) {
-            Ok(a) => Applied::AnchorKey(a),
-            Err(f) => shell.trouble(f),
-        },
         Action::SwitchRole => match switch_role(shell) {
             Ok(r) => Applied::Seated(r),
             Err(f) => shell.trouble(f),
         },
-        Action::ReadIdentities => match crate::register::view(shell.settings.role) {
+        Action::ReadIdentities => match crate::register::view() {
             Ok(r) => {
                 let n = r.rows.len();
                 shell.seat_identities(Some(r));
@@ -1616,8 +1657,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 crate::keybox::set_pin(pin.expose()).map(|_| crate::task::Vault::Opened)
             })
         }
-        // After opening, in the same task: staged files settle, plain files from older versions are sealed, and
-        // an older vault's primary identity is settled (`local::after_open`).
+        // After opening, in the same task: staged files of a master key change settle (`local::after_open`).
         Action::Unlock { pin } => vault(shell, move || {
             crate::keybox::unlock(pin.expose())?;
             crate::local::after_open();
@@ -2025,8 +2065,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
-        Action::ExportKit { from, to, ids, attach, note, out } => {
-            match export_kit(shell, &from, &to, &ids, &attach, &note, &out) {
+        Action::ExportKit { from, to, ids, attach, note, out, form } => {
+            match export_kit(shell, &from, &to, &ids, &attach, &note, &out, &form) {
                 Ok(s) => match s {
                     Spawned::Started => Applied::Started(Kind::Kit),
                     Spawned::InFlight => Applied::Refused(Kind::Kit),
@@ -2057,11 +2097,10 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                     crate::lang::t(crate::lang::Key::Tail004).to_string(),
                 ));
             };
-            let flags = shell.settings.exclusive.clone();
             let r#gen = shell.grants_gen;
             match shell.tasks.spawn(Kind::Grants, move || {
                 let home = crate::home::Home::open(&root)?;
-                Ok(Done::Grants { r#gen, rows: crate::grantx::table(&home, &flags)? })
+                Ok(Done::Grants { r#gen, rows: crate::grantx::table(&home)? })
             }) {
                 Spawned::Started => Applied::Started(Kind::Grants),
                 Spawned::InFlight => Applied::Refused(Kind::Grants),
@@ -2273,6 +2312,28 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             },
             None => shell.trouble(crate::fault::Fault::known(crate::fault::Known::CliPathUnsupported, String::new())),
         },
+        Action::SetCliDesktop { on } => {
+            // While writing alone is on, the desktop switch is greyed out, since writing alone outranks it
+            // (`Machine::cli_path` decides).
+            if shell.machine.cli_path() == crate::machine::CliPath::Alone {
+                return shell.trouble(crate::fault::Fault::known(crate::fault::Known::CliAloneOn, String::new()));
+            }
+            match crate::machine::update(|m| m.cli_desktop = on) {
+                Ok(m) => {
+                    shell.machine = m;
+                    Applied::CliDesktopSet(on)
+                }
+                Err(f) => shell.trouble(f),
+            }
+        }
+        Action::SetCliAlone { lasts, .. } => match cli_alone_on(shell, lasts) {
+            Ok(expires) => Applied::CliAloneSet(Some(expires)),
+            Err(f) => shell.trouble(f),
+        },
+        Action::CliAloneOff => match cli_alone_off(shell) {
+            Ok(()) => Applied::CliAloneSet(None),
+            Err(f) => shell.trouble(f),
+        },
         Action::SetCliAnchor { to } => match crate::machine::update(|m| m.cli_anchor = to) {
             Ok(m) => {
                 shell.machine = m;
@@ -2415,17 +2476,8 @@ pub struct Enqueued {
 
 // Anchor queue.
 
-/// The anchors of this batch and what is needed to send them (chain id, registry, endpoints on that chain).
-struct Batch {
-    ids: Vec<String>,
-    hashes: Vec<[u8; 32]>,
-    chain: u64,
-    registry: Address,
-    /// All of the chain's endpoints, in settings order.
-    urls: Vec<crate::chainx::NodeAddr>,
-    /// The retry backoff delays (a shell field tests may change).
-    backoff: Vec<std::time::Duration>,
-}
+/// The anchors of a batch and what is needed to send them: the sender's (`zikaron_send::batch::Batch`).
+use zikaron_send::batch::Batch;
 
 /// How long to wait for an anchor to be included. Not being included in time means "not yet", not a verdict,
 /// and the anchor stays queued.
@@ -2519,4 +2571,55 @@ fn cli_path_set(cli: &std::path::Path, on: bool) -> Result<Done, crate::fault::F
 /// A grant file was written, as the UI shows it.
 fn grant_file_exported(x: crate::grantfilex::Exported) -> Applied {
     Applied::GrantFileExported { path: x.path.display().to_string(), why: x.chosen.why, hops: x.hops, terms: x.terms, ledger: x.ledger, files: x.files }
+}
+
+/// Turn writing alone on (the passcode already passed the gate): the credential first, lasting `lasts` from now,
+/// then the switch; a switch that does not land takes the credential back. Returns when it expires.
+fn cli_alone_on(shell: &mut Shell, lasts: crate::machine::Lasts) -> Result<Option<u64>, crate::fault::Fault> {
+    if !lasts.ok() {
+        return Err(crate::fault::Fault::known(crate::fault::Known::MachineShape, crate::machine::member::CLI_ALONE.to_string()));
+    }
+    let issued = crate::lastread::now_secs();
+    let term = zikaron_seal::credential::Term { issued, expires: lasts.expires(issued) };
+    crate::keybox::issue_credential(term)?;
+    match crate::machine::update(|m| m.cli_alone = Some(lasts)) {
+        Ok(m) => shell.machine = m,
+        Err(f) => {
+            let _ = crate::keybox::drop_credential();
+            return Err(f);
+        }
+    }
+    shell.credential = Some(term);
+    Ok(term.expires)
+}
+
+/// Turn writing alone off: the credential goes first (the command line cannot open anything from then on),
+/// then the switch.
+fn cli_alone_off(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
+    crate::keybox::drop_credential()?;
+    shell.credential = None;
+    shell.machine = crate::machine::update(|m| m.cli_alone = None)?;
+    Ok(())
+}
+
+/// Writing alone ends without the switch being touched: its credential expired, or a new master key made it
+/// worthless (`why`: `CREDENTIAL_EXPIRED` or `CLI_ALONE_DROPPED`). The credential is removed, the switch turned
+/// off and the person told once. Nothing to do when writing alone is off and no credential is left.
+pub fn cli_alone_ended(shell: &mut Shell, why: crate::fault::Known) {
+    let had = match crate::keybox::drop_credential() {
+        Ok(had) => had,
+        Err(f) => {
+            shell.faults.push(f);
+            return;
+        }
+    };
+    shell.credential = None;
+    if shell.machine.cli_alone.is_none() && !had {
+        return;
+    }
+    match crate::machine::update(|m| m.cli_alone = None) {
+        Ok(m) => shell.machine = m,
+        Err(f) => shell.faults.push(f),
+    }
+    shell.faults.push(crate::fault::Fault::known(why, crate::places::credential_file()));
 }

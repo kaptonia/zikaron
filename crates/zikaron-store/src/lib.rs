@@ -11,6 +11,9 @@
 //! `HARNESS.md`) and passes it to the core's `audit`. A pile is always complete: a missing entry is refused,
 //! never dropped.
 
+// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
+#![forbid(unsafe_code)]
+
 pub mod codes;
 pub mod layout;
 pub mod ledger;

@@ -492,9 +492,13 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
         let _ = run(&ctx, &mut t, next(), click(p));
         let now = run(&ctx, &mut t, next(), Vec::new());
         if t.live() == 0 {
-            // That was "close": say it again and keep looking left of it.
+            // That was "close": say it again and keep looking left of it, once the closed one has left and the new
+            // one is in.
             let when = next();
             t.say_full("配的节点一处也连不上。", "检查网络,或在设置里换一处节点。", "UNREACHABLE · http://127.0.0.1:9", Tone::Bad, when);
+            for _ in 0..40 {
+                let _ = run(&ctx, &mut t, next(), Vec::new());
+            }
             continue;
         }
         if now.first().map(|r| r.height() > bad.height() + 1.0).unwrap_or(false) {
@@ -529,3 +533,127 @@ fn a_face_is_found_by_its_full_name() {
         }
     }
 }
+
+/// One place never holds two toasts in one frame: a new sentence waits while the one it replaces (here an error
+/// with its details open, the tallest) fades out, and drops in once it has left; its time starts then.
+#[test]
+fn a_new_toast_enters_once_the_one_it_replaces_has_left() {
+    use zikaron_ui::egui;
+    use zikaron_ui::toast::{Toasts, Tone};
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let mut t = Toasts::new();
+    t.set_labels("详情", "收起详情", "关闭");
+    let run = |ctx: &egui::Context, t: &mut Toasts, time: f64| {
+        let mut rects = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), ..Default::default() };
+        let _ = ctx.run(input, |ctx| rects = t.draw(ctx, 216.0).rects);
+        rects
+    };
+    t.say_full("无法与节点建立安全连接。", "请检查节点地址,或更换节点。", "NODE_TLS · TLS_CONNECT · via proxy http://127.0.0.1:9", Tone::Bad, 0.0);
+    assert_eq!(run(&ctx, &mut t, 1.0).len(), 1);
+    t.say("代理:跟随系统代理", Tone::Note, 2.0);
+    assert_eq!(t.showing(), Some("代理:跟随系统代理"), "the new sentence is the one on screen");
+    // Every frame while the old one fades: one toast drawn, never two.
+    let mut time = 2.0;
+    while time < 2.6 {
+        let rects = run(&ctx, &mut t, time);
+        assert!(rects.len() <= 1, "two toasts at {time}: {rects:?}");
+        time += 0.02;
+    }
+    assert_eq!(run(&ctx, &mut t, 2.7).len(), 1, "the new one is drawn once the old one has left");
+    // Its time started when it entered: still on screen 3.2 s after it was said, gone after it entered + 3.2 s.
+    let _ = run(&ctx, &mut t, 5.3);
+    assert_eq!(t.showing(), Some("代理:跟随系统代理"));
+    let _ = run(&ctx, &mut t, 5.6);
+    assert_eq!(t.showing(), None);
+}
+
+/// A full-window column taller than the window scrolls with its bar beside the column, never over it: the
+/// column keeps its width and its right edge stays clear of the bar's handle (shown while the pointer is over
+/// it).
+#[test]
+fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
+    use zikaron_ui::egui;
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 400.0));
+    let mut right = 0.0_f32;
+    let mut width = 0.0_f32;
+    let mut out = egui::FullOutput::default();
+    for (i, time) in [0.0, 0.5, 1.0, 1.5].into_iter().enumerate() {
+        // The pointer over the column's right part, so the floating bar shows.
+        let events = if i > 0 { vec![egui::Event::PointerMoved(egui::pos2(520.0, 200.0))] } else { Vec::new() };
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
+        out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                zikaron_ui::full::centered(ui, "bar-room", screen, 420.0, 0.0, |ui| {
+                    for _ in 0..20 {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 0.0, egui::Color32::from_rgb(200, 200, 200));
+                    }
+                    right = ui.min_rect().right();
+                    width = ui.min_rect().width();
+                });
+            });
+        });
+    }
+    assert!((width - 420.0).abs() < 0.5, "the column keeps its width: {width}");
+    // The bar's handle: a narrow, tall filled rectangle not of the rows' colour, right of the window's middle.
+    let mut handles = Vec::new();
+    fn walk(s: &egui::Shape, out: &mut Vec<egui::Rect>) {
+        match s {
+            egui::Shape::Rect(r) if r.rect.width() <= 12.0 && r.rect.height() >= 20.0 && r.fill != egui::Color32::from_rgb(200, 200, 200) => out.push(r.rect),
+            egui::Shape::Vec(v) => v.iter().for_each(|y| walk(y, out)),
+            _ => {}
+        }
+    }
+    for c in &out.shapes {
+        walk(&c.shape, &mut handles);
+    }
+    let handle = handles.iter().filter(|r| r.center().x > 350.0).last().copied().unwrap_or_else(|| panic!("the bar's handle is drawn: {handles:?}"));
+    assert!(handle.left() >= right - 0.5, "the bar {handle:?} lies over the column, whose right edge is {right}");
+}
+
+/// A centred field draws its text, and its hint while empty, on the field's middle; a field without it starts
+/// them at its left.
+#[test]
+fn a_centred_field_draws_its_number_and_its_hint_in_the_middle() {
+    use zikaron_ui::egui;
+    use zikaron_ui::input::{self, Look};
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let draw = |typed: &str, centred: bool| -> (egui::Rect, egui::Rect) {
+        let mut text = typed.to_string();
+        let mut field = egui::Rect::NOTHING;
+        let mut out = egui::FullOutput::default();
+        for time in [0.0, 0.1] {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))), time: Some(time), ..Default::default() };
+            out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    field = input::field(ui, &mut text, "0", 64.0, Look { mono: true, centred, ..Default::default() }).rect;
+                });
+            });
+        }
+        let want = if typed.is_empty() { "0" } else { typed };
+        let mut at = None;
+        fn walk(s: &egui::Shape, want: &str, at: &mut Option<egui::Rect>) {
+            match s {
+                egui::Shape::Text(x) if x.galley.job.text == want => *at = Some(x.visual_bounding_rect()),
+                egui::Shape::Vec(v) => v.iter().for_each(|y| walk(y, want, at)),
+                _ => {}
+            }
+        }
+        for c in &out.shapes {
+            walk(&c.shape, want, &mut at);
+        }
+        (field, at.unwrap_or_else(|| panic!("{want:?} is drawn")))
+    };
+    for typed in ["12", ""] {
+        let (field, text) = draw(typed, true);
+        assert!((text.center().x - field.center().x).abs() <= 1.5, "{typed:?}: drawn at {text:?} in {field:?}");
+        let (field, text) = draw(typed, false);
+        assert!(text.center().x < field.center().x - 4.0, "{typed:?} not centred: {text:?} in {field:?}");
+    }
+}
+

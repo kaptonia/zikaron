@@ -22,7 +22,13 @@ pub(super) fn export_kit(
     attach: &str,
     note: &str,
     out: &str,
+    form: &str,
 ) -> Result<Spawned, crate::fault::Fault> {
+    // The form's word: `folder`, `file`, or none for one file; any other word is refused by name.
+    let form = match form.trim() {
+        "" => zikaron_glue::pack::Form::File,
+        w => zikaron_glue::pack::Form::of(w).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::KitFormWord, w.to_string()))?,
+    };
     let root = shell
         .home
         .as_ref()
@@ -70,6 +76,7 @@ pub(super) fn export_kit(
             &kept,
             &note,
             std::path::Path::new(&out),
+            form,
         )?;
         Ok(Done::Kit {
             root,

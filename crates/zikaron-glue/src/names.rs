@@ -11,6 +11,8 @@ pub const PROOFS_DIR: &str = "proofs";
 pub const MANIFEST: &str = "manifest.json";
 /// Suffix of entry files in a kit (`entries/<64 hex>.zk1`, kit law §7.4).
 pub const ENTRY_SUFFIX: &str = ".zk1";
+/// A ledger handoff's note, under a handoff file's files room (the command line's `hand-over` writes it).
+pub const HANDOFF_NOTE: &str = "zikaron-handoff.txt";
 
 /// Member names of the manifest (kit law §7.3) and of entry bodies (law §6). Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

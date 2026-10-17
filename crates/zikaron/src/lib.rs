@@ -9,6 +9,9 @@
 //! - [`tokens`] closed sets of law constants (refusal tokens, finding names, labels, verdicts, domains).
 //! - [`trace`] trace channel: a trace mark when a public entry point is crossed (diagnostic, never a decision).
 
+// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
+#![forbid(unsafe_code)]
+
 pub mod audit;
 pub mod cryptox;
 pub mod entry;

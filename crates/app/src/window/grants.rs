@@ -171,7 +171,7 @@ impl Win {
         });
         if g.as_ref().map(|x| !x.revoked).unwrap_or(false) {
             stagger(ui, 4, |ui| {
-                if page::Guide::last(ui, t(Key::V2RevokeGrantDots), true).clicked() {
+                if page::Guide::last(ui, t(Key::PageRevoke), true).clicked() {
                     confirm = Some(U3Confirm::Revoke { grant: row.id.clone() });
                 }
             });
@@ -215,6 +215,8 @@ impl Win {
 
     /// The new-grant page.
     pub(super) fn grant_form_page(&mut self, ui: &mut egui::Ui, now: f64) {
+        // Its terms file zone takes dropped files.
+        self.takes_drops();
         self.grant_form(ui, None, now);
     }
 
@@ -229,7 +231,7 @@ impl Win {
         }
         // The double-sale check runs in the background as the user types, and only reruns when the record, the
         // validity, the register or the exclusive list changes.
-        let key = format!("{}|{}|{}|{}|{}", self.typed.g_work.trim(), self.typed.g_from.trim(), self.typed.g_to.trim(), self.shell.grants_gen, self.shell.settings.exclusive.join(","));
+        let key = format!("{}|{}|{}|{}", self.typed.g_work.trim(), self.typed.g_from.trim(), self.typed.g_to.trim(), self.shell.grants_gen);
         let whole = self.typed.g_from.trim().is_empty() == self.typed.g_to.trim().is_empty();
         if key != self.clash_key && self.shell.grants.is_some() {
             self.clash_key = key;

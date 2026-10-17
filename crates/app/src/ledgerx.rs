@@ -236,10 +236,7 @@ pub fn short(h: &str) -> String {
 
 /// The record (content digest, hex32) a history entry records, if any. Use this, not the summary.
 pub fn work_of(kind: EntryType, body: &Value) -> Option<String> {
-    if kind != EntryType::History {
-        return None;
-    }
-    text(body, "content").map(|s| s.to_string())
+    zikaron_glue::recordcheck::work_of(kind, body)
 }
 
 /// A one-line summary from the body members of each entry type; "—" for missing members.

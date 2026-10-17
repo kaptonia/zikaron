@@ -1,6 +1,7 @@
 //! The app's self-check suite. Checks the current tree: computed values, source scans, and the real binary
 //! started as a child process.
 
+use app::queue::Kept as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -27,6 +28,12 @@ fn output_of(cmd: &mut Command) -> std::io::Result<std::process::Output> {
 
 fn src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+/// One source file of a sibling crate the app wires (`zikaron-seal`, `zikaron-os`): the sealed layer and the
+/// platform piece hold what used to live in the app, and the app's structure pins read it there.
+fn read_crate_file(krate: &str, name: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(krate).join("src").join(name))
 }
 
 /// One app source file by module file name. A folder module (`x/mod.rs` and its children) reads as one text:
@@ -94,6 +101,37 @@ fn vault_open() {
     });
 }
 
+/// What signing needs: an identity (without a register there is none, and nothing signs). Without a current
+/// one, a fresh existing key becomes the current identity on the author seat. Its current seat's home moves
+/// to `home` (opened next by the caller); the shell reads the key back and the seat's address comes back.
+fn seated(shell: &mut app::shell::Shell, home: &Path) -> app::key::Address {
+    if app::register::now_row_listed().expect("the register").is_none() {
+        let s = app::key::generate().expect("a fresh key");
+        app::register::change(|reg| app::identity::add_existing(reg, &s, app::roles::Role::Author, false, "")).expect("an identity");
+    }
+    seat_home(home);
+    assert!(shell.refresh_anchor().expect("the key reads back"), "the key is in the vault");
+    let (row, seat) = app::register::now_row_listed().expect("the register").expect("an identity");
+    row.address(seat).expect("a seated key")
+}
+
+/// A new identity of its own for `home`: a fresh existing key becomes the current identity on the author
+/// seat, its author home at `home` (opened next by the caller). For tests that keep several homes on the
+/// machine at once, each counted as a seat's home.
+fn seated_anew(shell: &mut app::shell::Shell, home: &Path) -> app::key::Address {
+    let s = app::key::generate().expect("a fresh key");
+    app::register::change(|reg| app::identity::add_existing(reg, &s, app::roles::Role::Author, false, "")).expect("an identity");
+    seated(shell, home)
+}
+
+/// The current identity's current seat's home moves to `home`, the register following as after a moved home,
+/// so a home a test opens there is that seat's own.
+fn seat_home(home: &Path) {
+    let (row, seat) = app::register::now_row_listed().expect("the register").expect("an identity");
+    let old = row.home(seat).expect("a seated home");
+    app::register::change_listed(|reg| Ok(app::identity::rehome(reg, &old, home))).expect("the register follows");
+}
+
 /// This process's machine directory: under the temp directory, or `/tmp` when that path is long (the
 /// desktop's command-line door is a local socket there, and socket paths have a small limit).
 fn checks_machine() -> PathBuf {
@@ -107,6 +145,158 @@ fn code_only(s: &str) -> String {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// ───────────────────── Button words ─────────────────────
+
+/// No button says "more follows": every label a clickable widget draws from the language
+/// table (a key, shown or built, a link, a menu row, a navigation or danger row, a guide or pen key, a page's blue
+/// key, a file row's key, a path row's key, a picker) ends without "…" in either language. Read from every call of those widgets in the
+/// shipped source, so a button added later is judged the same; status lines and input hints are not drawn by
+/// them and are not read.
+#[test]
+fn no_button_word_ends_in_an_ellipsis() {
+    const CLICKABLE: [&str; 16] = [
+        "key::key(",
+        // A key built and shown (its busy words, `.busy_text`, are a status line: outside these parentheses).
+        "key::Key::new(",
+        "key::link(",
+        // The commit key that speaks while it waits: its first words are the key's, the second its status line.
+        ".press_long_saying(ui,",
+        "page::Guide::key(",
+        "page::Guide::last(",
+        ".press(ui,",
+        ".primary_with(ui,",
+        "menu::row(",
+        "f.row(ui,",
+        "f.danger(ui,",
+        "f.nav_big(ui,",
+        "drop::file_row(",
+        "self.long_key(ui,",
+        "pick::key(",
+        "path_row(ui,",
+    ];
+    let words: std::collections::BTreeMap<String, (&str, &str)> = app::lang::TABLE.iter().map(|(k, zh, en)| (format!("{k:?}"), (*zh, *en))).collect();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (name, text) in shipped() {
+        let code = code_only(&text);
+        for pat in CLICKABLE {
+            let mut from = 0;
+            while let Some(at) = code[from..].find(pat) {
+                let start = from + at + pat.len();
+                // The call's arguments, to its own closing parenthesis.
+                let mut depth = 1usize;
+                let mut end = start;
+                for (i, ch) in code[start..].char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = start + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let args = &code[start..end.max(start)];
+                let args = if pat == ".press_long_saying(ui," { args.split(',').next().unwrap_or(args) } else { args };
+                let mut rest = args;
+                while let Some(k) = rest.find("Key::") {
+                    let tail = &rest[k + 5..];
+                    let id: String = tail.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    if let Some((zh, en)) = words.get(&id) {
+                        assert!(!zh.ends_with('…') && !en.ends_with('…') && !en.ends_with("..."), "{name}: {pat} draws Key::{id} ({zh} / {en})");
+                        seen.insert(id.clone());
+                    }
+                    rest = &tail[id.len()..];
+                }
+                from = start;
+            }
+        }
+    }
+    // The scan reaches the buttons it guards (a menu row, a page's key, a navigation row, a picker's key).
+    for k in ["U3AdoptTitle", "PickFile", "ChangePinTitle", "V2DeleteWork", "BackupRestoreTitle", "NavVerifyView", "CheckRefetch", "U3SendGo"] {
+        assert!(seen.contains(k), "the scan did not reach Key::{k}");
+    }
+}
+
+// ───────────────────── Rows and scroll areas ─────────────────────
+
+/// The name of the call whose parentheses hold byte `at` of `code` (the path just before the nearest unclosed `(`).
+fn enclosing_call(code: &str, at: usize) -> String {
+    let b = code.as_bytes();
+    let mut depth = 0i32;
+    let mut i = at;
+    while i > 0 {
+        i -= 1;
+        match b[i] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => {
+                let head = &code[..i];
+                let start = head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':')).map(|k| k + 1).unwrap_or(0);
+                return head[start..].to_string();
+            }
+            b'(' => depth -= 1,
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+/// Every scroll area of the app goes in through the widget library's one way (`zikaron_ui::scroll`), saying
+/// whether it is a page's or a nested one: a nested one at its end keeps the wheel, so the page around it stays.
+#[test]
+fn every_scroll_area_goes_in_through_the_librarys_scroll() {
+    let mut seen = 0;
+    for (name, text) in shipped() {
+        let code = code_only(&text);
+        for (at, _) in code.match_indices("ScrollArea::") {
+            let call = enclosing_call(&code, at);
+            assert!(["scroll::page", "scroll::nested", "scroll::nested_rows"].iter().any(|w| call.ends_with(w)), "{name}: a scroll area shown by `{call}`, not through `zikaron_ui::scroll`");
+            seen += 1;
+        }
+    }
+    // The home page's code field, the record kit's picker list, the licence notices.
+    assert_eq!(seen, 3, "the scan reaches the app's three scroll areas");
+}
+
+/// Nothing laid in a row of `width::then`, `then_at` or `then_line` opens a row or a column of its own there: egui
+/// places a new one by its first, empty size, so in the row's centered layout it would hang half its height low.
+/// What stands there takes one cell (`width::cell`, `paint::lines`, the library's widgets).
+#[test]
+fn nothing_in_a_row_of_then_opens_a_layout_of_its_own() {
+    let mut rows = 0;
+    for (name, text) in shipped() {
+        let code = code_only(&text);
+        for call in ["width::then(", "width::then_at(", "width::then_line("] {
+            for (at, _) in code.match_indices(call) {
+                let open = at + call.len() - 1;
+                let b = code.as_bytes();
+                let (mut depth, mut end) = (0i32, open);
+                for (k, ch) in b.iter().enumerate().skip(open) {
+                    match ch {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = k;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let args = &code[open..=end];
+                for opener in [".horizontal(", ".horizontal_top(", ".horizontal_wrapped(", ".horizontal_centered(", ".vertical(", ".vertical_centered(", ".vertical_centered_justified("] {
+                    assert!(!args.contains(opener), "{name}: a row of `{call}` opens a layout ({opener}) inside it");
+                }
+                rows += 1;
+            }
+        }
+    }
+    assert!(rows >= 21, "the scan reaches the app's rows of `then` ({rows})");
 }
 
 // ───────────────────── Design values live in the widget library ─────────────────────
@@ -262,13 +452,12 @@ fn the_known_table_is_closed_and_each_member_has_a_sentence() {
 
 // ───────────────────── Actions and verbs ─────────────────────
 
-/// Every legal action names its equivalent CLI verb. Exactly the nine legal actions are passed in, each first
+/// Every legal action names its equivalent CLI verb. Exactly these eight legal actions are passed in, each first
 /// asserted legal, so the assertion cannot pass vacuously.
 #[test]
 fn every_legal_action_names_the_verb_it_equals() {
     use app::action::Action;
     let legal = [
-        Action::MakeAnchorKey,
         Action::Genesis { statement: "s".into() },
         Action::Annotate { subject: "0x00".into(), note_md: "n".into() },
         Action::RecordWork { note_md: "n".into(), files: Vec::new(), for_: None },
@@ -293,7 +482,7 @@ fn every_legal_action_names_the_verb_it_equals() {
         assert!(a.verb().is_some(), "{a:?} is a legal action but names no equivalent CLI verb");
         asked += 1;
     }
-    assert_eq!(asked, 9, "这一腿要真的问过九枚,不是一枚也没问");
+    assert_eq!(asked, 8, "这一腿要真的问过八枚,不是一枚也没问");
     // Conversely, actions that create no legal fact (landing place, local preferences) name no verb.
     for a in [Action::SelfCheck, Action::Quit] {
         assert!(!a.is_legal(), "{a:?} 不该是法律动作");
@@ -575,7 +764,8 @@ fn the_lock_is_the_kernels_and_nothing_deletes_it() {
     let text = read_src_file("lock.rs").expect("读不出 lock.rs");
     let code = code_only(&text);
     assert!(code.contains("crate::platform::lock_now("), "锁要向内核要(经平台接口)");
-    assert!(code_only(&read_src_file("platform.rs").expect("平台接口")).contains("fn flock("), "平台那一处向内核要 flock");
+    assert!(code_only(&read_src_file("platform.rs").expect("平台接口")).contains("zikaron_os::lock_now(file)"), "平台接口向平台件要锁");
+    assert!(code_only(&read_crate_file("zikaron-os", "unix.rs").expect("平台件")).contains("fn flock("), "平台件那一处向内核要 flock");
     for w in ["remove_file", "unlink", "stale", "陈旧", "pid ==", "SystemTime"] {
         assert!(!code.contains(w), "lock.rs 里有 {w}:陈旧锁的判词一旦出现,就是那条渐近线");
     }
@@ -606,10 +796,9 @@ fn nothing_inside_the_home_records_where_the_home_is() {
         path: "/somewhere/the/user/picked".into(),
         at: 1_700_000_000,
     });
-    // Fill the three tables too: endpoints, remembered addresses and exclusive flags all live in tables.
+    // Fill the two tables too: endpoints and remembered addresses live in tables.
     s.endpoints = vec!["31337=http://127.0.0.1:8545".to_string()];
     s.book = vec!["0x1111111111111111111111111111111111111111".to_string()];
-    s.exclusive = vec!["0x22".to_string()];
     s.write(&h).expect("写设置");
     // Settings are sealed local data: read the document through the one sealing entry point.
     let at = h.dir(app::home::Slot::Settings).join(app::settings::FILE);
@@ -620,8 +809,8 @@ fn nothing_inside_the_home_records_where_the_home_is() {
         "设置档里写了它自己在哪:{text}"
     );
     // Check every string cell for this home's path, walking the whole document including arrays: exempting a
-    // field named `path` would also exempt `repo`, and walking only objects would miss the `endpoints`, `book`
-    // and `exclusive` tables.
+    // field named `path` would also exempt `repo`, and walking only objects would miss the `endpoints` and
+    // `book` tables.
     let v = zikaron::json::parse(&bytes).expect("设置是 JSON");
     let mine = dir.display().to_string();
     let mut seen = 0usize;
@@ -733,7 +922,7 @@ fn every_legal_action_names_a_verb_that_the_contract_table_carries() {
         Action::Show(Page::FirstRun),
         Action::SelfCheck,
         Action::Quit,
-        Action::MakeAnchorKey,
+        Action::Genesis { statement: "s".into() },
         Action::SwitchRole,
         Action::OpenHome { root: "x".into() },
         Action::MigrateHome { to: "x".into() },
@@ -757,16 +946,16 @@ fn every_legal_action_names_a_verb_that_the_contract_table_carries() {
 /// `keybox::recoverable`, so the button never shows only to be refused.
 #[test]
 fn the_way_out_of_an_empty_locked_box_and_the_key_that_offers_it_ask_one_question() {
-    let keybox = read_src_file("keybox.rs").expect("读不出 keybox.rs");
+    let keybox = read_crate_file("zikaron-seal", "keybox.rs").expect("读不出封存层 keybox.rs");
     let kcode = code_only(&keybox);
     // The refusal asks the question itself instead of recounting slots and seals.
     assert!(
-        kcode.contains("pub fn reset_empty()") && kcode.contains("if recoverable()?"),
+        kcode.contains("pub fn reset_empty(v: &Vault)") && kcode.contains("if recoverable(v)?"),
         "`reset_empty` 要问 `recoverable()`,不许自己再拼一遍条件"
     );
     // It deletes the whole file, and always asks first.
-    let body = kcode.split("pub fn reset_empty()").nth(1).unwrap_or("");
-    let asked = body.find("recoverable()");
+    let body = kcode.split("pub fn reset_empty(v: &Vault)").nth(1).unwrap_or("");
+    let asked = body.find("recoverable(v)");
     let removed = body.find("remove_file");
     assert!(asked.is_some() && removed.is_some() && asked < removed, "`reset_empty` 要先问再删");
     // The window button's condition reads the same answer (the shell field is set from `recoverable` when the
@@ -874,10 +1063,10 @@ fn the_shipped_binary_cannot_move_where_the_anchor_key_lives() {
     // Vaults record their KDF level as written by `params()`, which the shipped build never lightens, so
     // shipped vaults are always standard; the level read back is bounds-checked, so a tampered file cannot
     // demand an absurd amount of memory.
-    let keybox = read_src_file("keybox.rs").expect("读不出 keybox.rs");
+    let keybox = read_crate_file("zikaron-seal", "keybox.rs").expect("读不出封存层 keybox.rs");
     let code = code_only(&keybox);
     assert!(code.contains("book.kdf = Some(params())"), "建库那一趟该把这一趟的取式档写进库档");
-    assert!(code.contains("crate::keystore::in_range(n, r, pp)"), "库档读回来那一节要现验界");
+    assert!(code.contains("crate::kdf::in_range(n, r, pp)"), "库档读回来那一节要现验界");
     assert!(code.contains("fn kdf_of(b: &Book)"), "开档那一侧该有「照这一本库那一档」的一处正主");
     assert_eq!(app::keybox::params(), app::keystore::Params::standard(), "没摆过轻档时跑的就是标准档");
 }
@@ -1026,10 +1215,13 @@ fn the_pen_is_granted_only_by_the_cores_own_label() {
 /// The single-source flag comes from the endpoint rule, not counted in this layer.
 #[test]
 fn the_single_source_column_comes_from_the_endpoint_law() {
-    let text = read_src_file("chainx.rs").expect("读不出 chainx.rs");
+    // The readings are the sender's (`zikaron_send::node`); the app only says them.
+    let text = read_crate_file("zikaron-send", "node.rs").expect("读不出发送器 node.rs");
     let code = code_only(&text);
     assert!(code.contains("single_source: r.single_source"), "单源那一栏要照抄端点法给的");
-    assert!(!code.contains("sources == 1"), "别在这一层自己判单源");
+    for (name, text) in [("node.rs", text.clone()), ("chainx.rs", read_src_file("chainx.rs").expect("读不出 chainx.rs"))] {
+        assert!(!code_only(&text).contains("sources == 1"), "{name}:别在这一层自己判单源");
+    }
 }
 
 // ═════════════════════ First run and adoption ═════════════════════
@@ -1158,7 +1350,6 @@ fn every_legal_action_names_a_verb_from_the_contract_six_table() {
         Action::SelfCheck,
         Action::Measure,
         Action::Quit,
-        Action::MakeAnchorKey,
         Action::SwitchRole,
         Action::OpenHome { root: String::new() },
         Action::MigrateHome { to: String::new() },
@@ -1198,6 +1389,7 @@ fn every_legal_action_names_a_verb_from_the_contract_six_table() {
             attach: String::new(),
             note: String::new(),
             out: String::new(),
+            form: "folder".into(),
         },
         Action::ReadDepth { work: String::new() },
         Action::DraftGrant {
@@ -1263,7 +1455,7 @@ fn every_legal_action_names_a_verb_from_the_contract_six_table() {
             assert!(verbs.iter().any(|x| x == v), "{a:?} 说的 {v:?} 不在契约 6 的表里");
         }
     }
-    assert!(legal >= 9, "法律动作只数出 {legal} 条");
+    assert!(legal >= 8, "法律动作只数出 {legal} 条");
     // These actions each name their verb.
     assert_eq!(Action::Annotate { subject: String::new(), note_md: String::new() }.verb(), Some("annotate"));
     assert_eq!(
@@ -1555,11 +1747,10 @@ fn the_first_window_checklist_refuses_a_skipped_step() {
     let put = |b: &[u8]| app::local::put(&home.dir(app::home::Slot::Settings), app::wizard::FILE, app::local::Doc::FirstWindow, b).expect("写得下");
     put(br#"{"marks":[{"said":"","step":"anchor"}]}"#);
     assert!(Wizard::read(&home).is_err(), "乱了次序的清单不许被读成一份清单");
-    // Older files with lines for removed steps (`bond`, `undertaking`): those lines are skipped and the rest
-    // continue in the current order.
+    // A line for a step this version does not have (`bond`, `undertaking`, steps an earlier version had) is
+    // refused by name, as any unknown step is.
     put(br#"{"marks":[{"said":"a","step":"terms"},{"said":"b","step":"bond"},{"said":"c","step":"undertaking"}]}"#);
-    let old = Wizard::read(&home).expect("留着撤下那几步的旧档照读得开");
-    assert_eq!((old.done(), old.next()), (1, Some(Step::Anchor)), "旧档停在原处");
+    assert!(Wizard::read(&home).is_err(), "清单里有本版没有的步骤即拒");
     assert!(Step::parse("undertaking").is_none(), "撤下的那一步认不出");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1780,32 +1971,52 @@ fn every_alias_name_resolves_to_a_place() {
     assert!(place_named("Settings.nowhere").is_none());
 }
 
-/// The language setting is saved to settings and read back after reopening; without a home it is refused by
-/// name and the language does not switch.
+/// The language is a machine preference: with no home open it is kept in this machine's settings and spoken
+/// at once (the first-run wizard and the passcode gate switch it before any home is open); with a home open and
+/// writable it is kept there too and read back; with a home open that cannot be written it is refused by name,
+/// and neither the language spoken nor this machine's choice changes. Runs in its own process ([`alone`]).
 #[test]
-fn the_language_choice_is_written_to_the_home_and_read_back() {
+fn the_language_choice_is_kept_on_the_machine_and_in_an_open_home() {
+    if alone("the_language_choice_is_kept_on_the_machine_and_in_an_open_home") {
+        return;
+    }
     vault_open();
     use app::action::{apply, Action, Applied};
-    use app::lang::{set, Lang};
+    use app::lang::{lang, set, Lang};
     let dir = std::env::temp_dir().join(format!("zk-test-lang-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
+    shell.home = None;
+    shell.lock = None;
     set(Lang::Zh);
-    match apply(&mut shell, Action::SetLang { lang: Lang::En }) {
-        Applied::Trouble(f) => assert!(f.said().starts_with("NO_HOME"), "没有家该具名拒:{}", f.said()),
-        other => panic!("没有家却换成了:{other:?}"),
-    }
-    assert_eq!(shell.settings.lang, None, "记不下来就不换");
-    let home = app::home::Home::open_or_create(&dir).expect("建家");
-    shell.lock = Some(app::lock::take(&home).expect("取锁"));
-    shell.home = Some(home);
+    // No home: kept on this machine, spoken at once.
     match apply(&mut shell, Action::SetLang { lang: Lang::En }) {
         Applied::Spoken(Lang::En) => {}
-        other => panic!("该换成英文:{other:?}"),
+        other => panic!("没有家也该换成英文:{other:?}"),
+    }
+    assert_eq!(lang(), Lang::En, "说的是英文");
+    assert_eq!(app::machine::read().expect("机器设置").lang, Some(Lang::En), "这台机器记着英文");
+    assert_eq!(shell.settings.lang, None, "没有家,家里那一份不动");
+    // A home open but not writable (no writer lock): refused by name, nothing changes.
+    let home = app::home::Home::open_or_create(&dir).expect("建家");
+    shell.home = Some(home);
+    match apply(&mut shell, Action::SetLang { lang: Lang::Zh }) {
+        Applied::Trouble(f) => assert!(f.said().starts_with("READ_ONLY"), "写不了的家该具名拒:{}", f.said()),
+        other => panic!("写不了的家却换成了:{other:?}"),
+    }
+    assert_eq!(lang(), Lang::En, "拒了就不换");
+    assert_eq!(app::machine::read().expect("机器设置").lang, Some(Lang::En), "机器那一份也不动");
+    // A home open and writable: kept on the machine and in the home, read back.
+    let lock = app::lock::take(shell.home.as_ref().unwrap()).expect("取锁");
+    shell.lock = Some(lock);
+    match apply(&mut shell, Action::SetLang { lang: Lang::Zh }) {
+        Applied::Spoken(Lang::Zh) => {}
+        other => panic!("该换成中文:{other:?}"),
     }
     let back = app::settings::Settings::read(shell.home.as_ref().unwrap()).expect("读回");
-    assert_eq!(back.lang, Some(Lang::En), "盘上那一份记着英文");
+    assert_eq!(back.lang, Some(Lang::Zh), "盘上那一份记着中文");
+    assert_eq!(app::machine::read().expect("机器设置").lang, Some(Lang::Zh), "这台机器也记着中文");
     set(Lang::Zh);
     drop(shell);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1870,7 +2081,7 @@ fn alone(test: &str) -> bool {
 }
 
 /// What came after the last whole-machine backup is counted one way everywhere (`machine::backup_behind`),
-/// including older or foreign indexes and after a restore; the read-only networks table round-trips.
+/// including an unreadable or foreign index and after a restore; the read-only networks table round-trips.
 #[test]
 fn what_came_after_the_backup_is_behind_it() {
     if alone("what_came_after_the_backup_is_behind_it") {
@@ -1884,10 +2095,11 @@ fn what_came_after_the_backup_is_behind_it() {
     let behind = |m: &app::machine::Machine| app::machine::backup_behind(m.backup.as_ref(), app::backup::measured(m.backup.as_ref()).ok());
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    assert!(matches!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_)));
-    // A home with one entry of its own (the first entry is recorded on the spot; no task to wait for).
+    // A home with one entry of its own (the first entry is recorded on the spot; no task to wait for), an
+    // identity's own.
     let home = |shell: &mut app::shell::Shell, name: &str| {
         let dir = base.join(name);
+        seated_anew(shell, &dir);
         assert!(matches!(apply(shell, Action::OpenHome { root: dir.display().to_string() }), Applied::Homed { .. }));
         let made = apply(shell, Action::Genesis { statement: format!("{name} 的开端") });
         assert!(matches!(made, Applied::Genesised { .. }), "{made:?}");
@@ -1901,7 +2113,7 @@ fn what_came_after_the_backup_is_behind_it() {
     let first = app::backup::export(&base.join("out"), "zikaron-backup-probe", 1_800_000_000).expect("备份");
     let m = app::machine::read().expect("机器设置");
     let last = m.backup.clone().expect("记下了这一次备份");
-    assert!(last.indexed && first.path.exists() && last.count == 2, "{last:?}");
+    assert!(first.path.exists() && last.count == 2, "{last:?}");
     assert_eq!(behind(&m), Some(0), "刚备份");
 
     home(&mut shell, "c");
@@ -1913,11 +2125,7 @@ fn what_came_after_the_backup_is_behind_it() {
     home(&mut shell, "d");
     assert_eq!(behind(&m), Some(2), "删去一处之后再记一条");
 
-    // An older backup record (no index): the old count, until the next backup (3 now against 2: one, not two).
     let now = app::backup::count_now().expect("现数");
-    let older = app::machine::Backed { indexed: false, ..last.clone() };
-    assert_eq!(app::backup::measured(Some(&older)).ok(), Some(now));
-    assert_eq!(app::machine::backup_behind(Some(&older), Some(now)), Some(1));
     // An index that does not read: the old count.
     let index_at = app::backup::index_path().expect("索引处");
     let index = std::fs::read(&index_at).expect("索引在");
@@ -1939,16 +2147,13 @@ fn what_came_after_the_backup_is_behind_it() {
     drop(shell);
     app::backup::restore(&first.path, "zikaron-backup-probe", app::backup::From::Settings("27618394")).expect("恢复");
     let m = app::machine::read().expect("恢复后的机器设置");
-    assert_eq!(m.backup.as_ref().map(|b| (b.at, b.indexed)), Some((1_800_000_000, true)));
+    assert_eq!(m.backup.as_ref().map(|b| b.at), Some(1_800_000_000));
     assert_eq!(behind(&m), Some(0), "恢复之后");
-    // The restored machine's index is sealed under the new key; no plain index sits beside the settings.
+    // The restored machine's index is sealed under the new key.
     let restored_index = std::fs::read(app::backup::index_path().expect("索引处")).expect("恢复写下了索引");
     assert!(app::local::is_sealed(&restored_index) && restored_index != index, "恢复之后的索引封在新钥下");
-    assert!(!machine_dir.join(app::backup::PLAIN_INDEX_FILE).exists());
     assert_eq!(app::readnets::read(&machine_dir).expect("表落回"), vec![net.clone()]);
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    // The anchoring key belongs to this machine, not the backup: it is made again for the restored vault.
-    assert!(matches!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_)));
     home(&mut shell, "e");
     assert_eq!(behind(&m), Some(1), "恢复之后再记一条");
     drop(shell);
@@ -1969,7 +2174,7 @@ fn a_backup_without_the_table_leaves_this_machines_table() {
     let machine_dir = app::home::machine_dir().expect("机器目录");
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    assert!(matches!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_)));
+    seated(&mut shell, &base.join("a"));
     assert!(matches!(apply(&mut shell, Action::OpenHome { root: base.join("a").display().to_string() }), Applied::Homed { .. }));
     assert!(matches!(apply(&mut shell, Action::Genesis { statement: "a".into() }), Applied::Genesised { .. }));
     assert!(!app::readnets::path_in(&machine_dir).exists());
@@ -1982,8 +2187,10 @@ fn a_backup_without_the_table_leaves_this_machines_table() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The proxy choice is saved by one action: `system`, `none`, or a parsed address in canonical spelling;
-/// unparseable addresses and credentials are refused and nothing is written.
+/// The proxy choice is saved by one action: `system`, `none`, or a parsed address in canonical spelling, kept
+/// with its credentials in the sealed settings and said back without the password; a user name typed again
+/// without its password keeps the saved one; unparseable addresses and credentials that do not read are
+/// refused (the refusal never repeats a typed password) and nothing is written.
 #[test]
 fn the_proxy_choice_is_saved_as_read_or_refused_untouched() {
     vault_open();
@@ -1991,32 +2198,37 @@ fn the_proxy_choice_is_saved_as_read_or_refused_untouched() {
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
     let on_disk = || std::fs::read(app::machine::path().expect("机器设置的路")).unwrap_or_default();
-    for (typed, written) in [
-        ("system", "system"),
-        ("  none  ", "none"),
-        (" SOCKS5://Proxy.Example:1080/ ", "socks5://proxy.example:1080"),
-        ("http://[::1]:7890", "http://[::1]:7890"),
-        ("HTTP://127.0.0.1:8080", "http://127.0.0.1:8080"),
+    for (typed, said, written) in [
+        ("system", "system", "system"),
+        ("  none  ", "none", "none"),
+        (" SOCKS5://Proxy.Example:1080/ ", "socks5://proxy.example:1080", "socks5://proxy.example:1080"),
+        ("http://[::1]:7890", "http://[::1]:7890", "http://[::1]:7890"),
+        ("HTTP://127.0.0.1:8080", "http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+        ("https://u:p%20w@proxy.example:443", "https://u@proxy.example:443", "https://u:p%20w@proxy.example:443"),
+        ("https://u@proxy.example:443", "https://u@proxy.example:443", "https://u:p%20w@proxy.example:443"),
+        ("socks4a://id@127.0.0.1:1080", "socks4://id@127.0.0.1:1080", "socks4://id@127.0.0.1:1080"),
     ] {
         match apply(&mut shell, Action::SetProxy { choice: typed.into() }) {
-            Applied::ProxySet(w) => assert_eq!(w, written, "{typed:?}"),
+            Applied::ProxySet(w) => assert_eq!(w, said, "{typed:?}"),
             other => panic!("{typed:?}: {other:?}"),
         }
         assert_eq!(app::machine::read().expect("读").proxy.as_deref(), Some(written));
     }
-    for (typed, tail_key) in [
-        ("proxy.example:8080", app::lang::Key::TailProxyShape),
-        ("https://127.0.0.1:1", app::lang::Key::TailProxyShape),
-        ("http://127.0.0.1", app::lang::Key::TailProxyShape),
-        ("", app::lang::Key::TailProxyShape),
-        ("http://u:p@127.0.0.1:1", app::lang::Key::TailProxyCredentials),
+    for (typed, shown, tail_key) in [
+        ("proxy.example:8080", "proxy.example:8080", app::lang::Key::TailProxyShape),
+        ("ftp://127.0.0.1:1", "ftp://127.0.0.1:1", app::lang::Key::TailProxyShape),
+        ("http://127.0.0.1", "http://127.0.0.1", app::lang::Key::TailProxyShape),
+        ("", "", app::lang::Key::TailProxyShape),
+        ("http://:secret@127.0.0.1:1", "http://@127.0.0.1:1", app::lang::Key::TailProxyCredentials),
+        ("socks4://id:secret@127.0.0.1:1", "socks4://id@127.0.0.1:1", app::lang::Key::TailProxyCredentials),
     ] {
         let before = on_disk();
         match apply(&mut shell, Action::SetProxy { choice: typed.into() }) {
             Applied::Trouble(f) => {
                 assert!(f.said().starts_with("SETTINGS_SHAPE"), "{typed:?}: {}", f.said());
                 let tails: Vec<String> = app::lang::TABLE.iter().filter(|(k, _, _)| *k == tail_key).flat_map(|(_, zh, en)| [zh.to_string(), en.to_string()]).collect();
-                assert!(tails.iter().any(|t| f.tail() == t.replace("{0}", typed)), "{typed:?}: {}", f.tail());
+                assert!(tails.iter().any(|t| f.tail() == t.replace("{0}", shown)), "{typed:?}: {}", f.tail());
+                assert!(!f.tail().contains("secret") && !f.said().contains("secret"), "{typed:?}");
             }
             other => panic!("{typed:?}: {other:?}"),
         }
@@ -2024,23 +2236,43 @@ fn the_proxy_choice_is_saved_as_read_or_refused_untouched() {
     }
 }
 
-/// The proxy line on the settings page says how a new connection goes and, when it goes direct, why.
+/// The proxy lines say how a connection goes (through which proxy, by its user name and never its password),
+/// and, when it goes direct, why; the system's script deciding, or not used and why, by name.
 #[test]
 fn the_proxy_line_says_the_way_and_why_it_is_straight() {
-    use zikaron_net::{Choice, Kind, Proxy, Reading, Way};
+    use zikaron_net::{Choice, Kind, PacTrouble, Proxy, Reading, Script, Way};
     let texts = |k: app::lang::Key| -> Vec<String> { app::lang::TABLE.iter().filter(|(x, _, _)| *x == k).flat_map(|(_, zh, en)| [zh.to_string(), en.to_string()]).collect() };
-    let plain = Reading { way: Way::Direct, choice: Choice::System, loopback: false, auto_config_ignored: false, system_unread: false };
-    let p = Proxy { kind: Kind::Socks5, host: "127.0.0.1".into(), port: 1080 };
-    let via = app::machine::proxy_said(&Reading { way: Way::Through(p), choice: Choice::Off, ..plain.clone() });
-    assert!(texts(app::lang::Key::ProxyNowVia).iter().any(|t| via == t.replace("{0}", "socks5://127.0.0.1:1080")), "{via}");
-    for (r, k) in [
-        (Reading { loopback: true, choice: Choice::Manual(Proxy { kind: Kind::Http, host: "p".into(), port: 1 }), ..plain.clone() }, app::lang::Key::ProxyNowLoopback),
+    let plain = Reading { way: Way::Direct, then: Vec::new(), choice: Choice::System, loopback: false, local: false, system_unread: false, script: Script::None };
+    let p = zikaron_net::proxy_of("socks5://me:secret@127.0.0.1:1080").expect("typed");
+    let via = app::machine::proxy_said(&Reading { way: Way::Through(p.clone()), choice: Choice::Off, ..plain.clone() });
+    assert!(texts(app::lang::Key::ProxyNowVia).iter().any(|t| via == t.replace("{0}", "socks5://me@127.0.0.1:1080")), "{via}");
+    assert!(!via.contains("secret"));
+    let manual = Choice::Manual(Proxy { kind: Kind::Http, host: "p".into(), port: 1, auth: None });
+    for (r, now) in [
+        (Reading { loopback: true, choice: manual.clone(), ..plain.clone() }, app::lang::Key::ProxyNowLoopback),
+        (Reading { local: true, choice: manual.clone(), ..plain.clone() }, app::lang::Key::ProxyNowLocal),
         (Reading { system_unread: true, ..plain.clone() }, app::lang::Key::ProxyNowUnread),
-        (Reading { auto_config_ignored: true, ..plain.clone() }, app::lang::Key::ProxyNowAutoConfig),
+        (Reading { script: Script::Pending, ..plain.clone() }, app::lang::Key::ProxyNowScriptPending),
         (plain.clone(), app::lang::Key::ProxyNowDirect),
     ] {
-        let said = app::machine::proxy_said(&r);
-        assert!(texts(k).contains(&said), "{k:?}: {said}");
+        assert!(texts(now).contains(&app::machine::proxy_said(&r)), "{now:?}");
+    }
+    let troubled = app::machine::proxy_said(&Reading { script: Script::Trouble(PacTrouble::Timeout), ..plain.clone() });
+    let direct = texts(app::lang::Key::ProxyNowDirect);
+    assert!(texts(app::lang::Key::ProxyScriptTrouble).iter().any(|t| direct.iter().any(|d| troubled == t.replace("{0}", d).replace("{1}", "PAC_TIMEOUT"))), "{troubled}");
+}
+
+/// A failure on the leg to a proxy is the proxy's, never the node's: whichever endpoint said it (the shared plain
+/// one, or the app's https one), it is refused as "the proxy cannot be reached", whose next step points at the
+/// proxy setting, and it is of the network kind (an estimate that never reached the node is no revert).
+#[test]
+fn a_failed_proxy_leg_is_said_as_the_proxys() {
+    let leg = zikaron_net::Fail::Proxy("via proxy http://127.0.0.1:9: 127.0.0.1:9 refused".into());
+    for t in [zikaron_anchor::rpc::transport_said("https://node.example/", &leg), zikaron_anchor::rpc::proxy_leg("http://node.example/", "via proxy socks5://127.0.0.1:1080: SOCKS5 refused")] {
+        let f = app::chainx::said_fault("https://node.example/", &t);
+        assert_eq!(f.which(), Some(app::fault::Known::ProxyUnreachable), "{t:?}");
+        assert!(app::fault::Known::NETWORK.contains(&app::fault::Known::ProxyUnreachable));
+        assert_ne!(f.next(), app::lang::t(app::lang::Key::FaultNextNodeTls));
     }
 }
 
@@ -2530,7 +2762,7 @@ fn a_subject_written_another_way_is_its_shape_not_its_absence() {
     let _ = std::fs::remove_dir_all(&base);
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    assert!(matches!(apply(&mut shell, Action::MakeAnchorKey), Applied::AnchorKey(_)));
+    seated(&mut shell, &base.join("home"));
     assert!(matches!(apply(&mut shell, Action::OpenHome { root: base.join("home").display().to_string() }), Applied::Homed { .. }));
     assert!(matches!(apply(&mut shell, Action::Genesis { statement: "subjects".into() }), Applied::Genesised { .. }));
     let file = base.join("work.txt");
@@ -2832,23 +3064,26 @@ fn the_three_actions_that_use_a_key_ask_the_one_passcode_gate() {
 /// owner-only (`zikaron_os::owner_only`), so no file ends up readable by other accounts through umask.
 #[test]
 fn every_small_file_this_desk_lands_is_owner_only() {
+    // The one write path is the platform piece's (`zikaron_os::put_at`), reached through `home::put_at`.
     let home = code_only(&read_src_file("home.rs").expect("读不出 home.rs"));
-    assert!(home.contains("zikaron_os::owner_only(&mut o)"), "落档那一句建临时档时即只本人可读写");
-    assert!(home.contains("create_new(true)"), "临时名撞上了即具名拒,不去截断别人那一份");
-    assert!(home.contains("open_owner_only(&tmp)") && home.contains("replace_lasting(&tmp, &p)"), "临时档建时即只本人,替换进位");
+    assert!(home.contains("zikaron_os::put_at(dir, name, &put_tmp_name()?, bytes)"), "家那一处落档经平台件那一口");
+    let os = code_only(&read_crate_file("zikaron-os", "lib.rs").expect("读不出 zikaron-os"));
+    assert!(os.contains("owner_only(&mut o)"), "落档那一句建临时档时即只本人可读写");
+    assert!(os.contains("create_new(true)"), "临时名撞上了即具名拒,不去截断别人那一份");
+    assert!(os.contains("open_owner_only(&tmp)") && os.contains("rename_over(&tmp, &p)"), "临时档建时即只本人,替换进位");
     // On this system, a file written through the one write path is owner-only on disk.
     let dir = std::env::temp_dir().join(format!("zk-owner-only-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     app::home::put_at(&dir, "probe.json", b"{}").expect("落得下");
     assert!(zikaron_os::is_owner_only(&dir.join("probe.json")).expect("读得回"), "落下的档只本人可读写");
     let _ = std::fs::remove_dir_all(&dir);
-    // The vault writes no files itself: `rename` and `File::create` appear nowhere in keybox.rs.
-    let keybox = code_only(&read_src_file("keybox.rs").expect("读不出 keybox.rs"));
+    // The vault writes no files itself: `rename` and `File::create` appear nowhere in the sealed layer's keybox.rs.
+    let keybox = code_only(&read_crate_file("zikaron-seal", "keybox.rs").expect("读不出封存层 keybox.rs"));
     for own in ["std::fs::rename", "File::create"] {
         assert!(!keybox.contains(own), "keybox.rs 里又自己落档了:{own}");
     }
-    assert!(keybox.contains("crate::home::put_at(&dir, name, &bytes)"), "库档(与摆在旁边的新库)该经落档那一处");
-    assert!(keybox.contains("crate::home::rename_over(&from, &to)"), "新库生效那一下改名也经家那一处");
+    assert!(keybox.contains("crate::land::put_at(&v.dir, name, &bytes)"), "库档(与摆在旁边的新库)该经落档那一处");
+    assert!(keybox.contains("zikaron_os::rename_over(&from, &to)"), "新库生效那一下改名也经平台件那一处");
 }
 
 /// One key, one seat: two seats with the same address cannot be constructed (enforced by the closed table
@@ -2885,13 +3120,11 @@ fn one_key_sits_on_one_seat_and_the_old_shape_cannot_be_built() {
     let both = Row { keys: Keys::Both { author: a, grantee: g }, author_home: "/x/a".into(), ..one.clone() };
     assert_eq!(both.kind(), app::identity::Kind::Words);
     assert_eq!(one.kind(), app::identity::Kind::Existing);
-    assert_eq!(both.slot(), app::identity::Slot::Own);
     // Canonical byte round trip: an empty seat's address and home cells are UNSEATED, and the row reads back
     // the same.
     let reg = Registry { current: Some((one.id.clone(), Role::Grantee)), rows: vec![one.clone()], left: Vec::new() };
     assert_eq!(Registry::parse(&reg.to_bytes()).expect("读得回"), reg);
-    // Rows written by older versions with both seats at one address and a home for each: read back, only the
-    // recorder seat is occupied and the user seat is left empty.
+    // A row with both seats at one address (no shape this version writes) is refused by name.
     let before_this_change = format!(
         concat!(
             "{{\"current\":{{\"identity\":\"{id}\",\"seat\":\"author\"}},",
@@ -2902,22 +3135,15 @@ fn one_key_sits_on_one_seat_and_the_old_shape_cannot_be_built() {
         ),
         id = a.hex()
     );
-    let back = Registry::parse(before_this_change.as_bytes()).expect("旧形读得回");
-    assert_eq!(back.rows.len(), 1);
-    assert_eq!(back.rows[0].keys, Keys::One { seat: Role::Author, addr: a }, "两席同址那一行读回来只占记录者那一席");
-    assert_eq!(back.rows[0].address(Role::Grantee), None, "使用方那一席就此留空");
-    assert_eq!(back.rows[0].label, app::identity::NO_LABEL);
-    assert_eq!(back.rows[0].created, app::identity::NO_CREATED);
-    assert_eq!(back.rows[0].backup_at, app::identity::NO_BACKUP_AT);
-    // Missing `label`, `created` and `backup.at` cells default without crashing.
-    let stripped = String::from_utf8(reg.to_bytes()).expect("utf8")
-        .replace("\"created\":\"\",", "")
-        .replace("\"label\":\"\",", "")
-        .replace("\"at\":\"\",", "");
-    let old_row = Registry::parse(stripped.as_bytes()).expect("缺三栏也读得回");
-    assert_eq!(old_row.rows[0].label, app::identity::NO_LABEL);
-    assert_eq!(old_row.rows[0].created, app::identity::NO_CREATED);
-    assert_eq!(old_row.rows[0].backup_at, app::identity::NO_BACKUP_AT);
+    assert!(Registry::parse(before_this_change.as_bytes()).is_err(), "两席同址那一行具名拒");
+    // A row missing any of the `label`, `created` and `backup.at` cells this version always writes is refused
+    // by name, each one alone.
+    let text = String::from_utf8(reg.to_bytes()).expect("utf8");
+    for cell in ["\"created\":\"\",", "\"label\":\"\",", "\"at\":\"\","] {
+        let stripped = text.replace(cell, "");
+        assert_ne!(stripped, text, "{cell}");
+        assert!(Registry::parse(stripped.as_bytes()).is_err(), "缺 {cell} 即拒");
+    }
     // The name cell carries no weight: changing it affects no check, only that cell's bytes.
     let named = Row { label: "工作室主号".into(), ..one.clone() };
     assert_eq!(named.kind(), one.kind());
@@ -3021,7 +3247,8 @@ fn opening_a_home_is_judged_in_one_place() {
     let mut set_lock = 0usize;
     for (name, text) in shipped() {
         let code = code_only(&text);
-        takes += code.matches("lock::take(").count();
+        // Opening a home asks the lock knowing whether the command line writes alone (`lock::take_as`).
+        takes += code.matches("lock::take_as(").count();
         set_home += code.matches("shell.home = Some(").count();
         set_lock += code.matches("shell.lock = Some(").count();
         let _ = name;
@@ -3081,22 +3308,23 @@ fn the_exported_key_file_is_for_its_owner_only_and_the_rest_are_not() {
 /// passcode attempt limit; `write_book` requires the lock by type.
 #[test]
 fn the_key_store_is_written_only_with_its_lock_in_hand() {
-    let code = code_only(&read_src_file("keybox.rs").expect("读不出 keybox.rs"));
+    let code = code_only(&read_crate_file("zikaron-seal", "keybox.rs").expect("读不出封存层 keybox.rs"));
     // The writer takes a reference to the lock, and the lock is taken in one place only.
-    assert!(code.contains("fn write_book(_held: &Held, b: &Book)"), "写库那一处该收手里那一把锁");
-    assert_eq!(code.matches("fn lock_book()").count(), 1, "取库锁那一句只许一处");
-    assert!(code.contains("crate::lock::grab_waiting("), "库档那一把要等得起(拿不到即等着)");
+    assert!(code.contains("fn write_book(v: &Vault, _held: &Held, b: &Book)"), "写库那一处该收手里那一把锁");
+    assert_eq!(code.matches("fn lock_book(v: &Vault)").count(), 1, "取库锁那一句只许一处");
+    assert!(code.contains("zikaron_os::lock_wait("), "库档那一把要等得起(拿不到即等着)");
     // Every vault writer has taken the lock earlier in the same function: count the "write" and "take lock" places.
-    let writes = code.matches("write_book(&held").count() + code.matches("write_book(held,").count();
+    let writes = code.matches("write_book(v, &held").count() + code.matches("write_book(v, held,").count();
     assert_eq!(code.matches("write_book(").count(), writes + 1, "有一处写库没有把手里那一把递进去(+1 是定义那一处)");
     // Every exit that changes the vault starts by taking the lock (lock-taking places equal the number of exits).
-    // Sixteen exits: set passcode, unlock, reseal at the lower bound, change passcode, recover, settle the
-    // primary of an older vault, upgrade an older vault's names, record recovery seal, remove recovery seal,
-    // place slot, remove slot, remove every slot, reset empty vault, stage a new vault, commit it, drop a staged one.
-    assert_eq!(code.matches("lock_book()?").count(), 16, "要改库的那几口各拿一次锁");
+    // Fifteen exits: set passcode, unlock, check the passcode (it counts tries), reseal at the lower bound,
+    // change passcode, recover, record recovery seals, remove recovery seals, place slot, remove slot, remove
+    // every slot, reset empty vault, stage a new vault, commit it, drop a staged one.
+    assert_eq!(code.matches("lock_book(v)?").count(), 15, "要改库的那几口各拿一次锁");
     // The vault lock and the home's writer lock are separate: the vault lock lives in the machine directory,
-    // named in one place by `places`.
-    assert!(code.contains("crate::places::keybox_lock_file()"), "锁座那一份档的名由 places 一处给");
+    // named in one place by `places` and handed in where the app wires the vault.
+    let wiring = code_only(&read_src_file("keybox.rs").expect("读不出 keybox.rs"));
+    assert!(wiring.contains("crate::places::keybox_lock_file()"), "锁座那一份档的名由 places 一处给");
     let places = code_only(&read_src_file("places.rs").expect("读不出 places.rs"));
     assert!(places.contains("fn keybox_lock_file()"), "锁座那一份档的名住 places");
     assert!(!code.contains("crate::lock::take("), "库那一把不许借家的写者锁那一口");
@@ -3128,7 +3356,7 @@ fn the_queue_remembers_what_it_anchored() {
     assert_eq!(q.push(&a, 4), Pushed::Anchored, "锚成过的一枚再也排不进来");
     assert_eq!(q.len(), 1, "另一枚照旧在队里");
     // There is one queueing entry point, and each of its three outcomes has a sentence (closed table).
-    let code = code_only(&read_src_file("queue.rs").expect("读不出 queue.rs"));
+    let code = code_only(&read_crate_file("zikaron-seal", "queue.rs").expect("读不出 queue.rs"));
     assert_eq!(code.matches("pub fn push(").count(), 1, "入队只此一处");
     assert_eq!(code.matches("pub fn drop_ids(").count(), 1, "只出队的那一口只此一处");
     assert_eq!(code.matches("pub fn anchored_out(").count(), 1, "出队并记事实的那一口只此一处");
@@ -3264,26 +3492,32 @@ fn which_identity_is_current_is_asked_in_two_named_places() {
 
 // ═════════════════════ Removal records its reason ═════════════════════
 
-/// Only a receipt records "anchored" (`Queue::anchored_out`); other removals use `Queue::drop_ids`, and
-/// re-queueing a deleted entry states the ledger fact, never a false chain fact.
+/// Only a chain fact records "anchored" (`Queue::anchored_out`, reached from a receipt and from a self-audit's
+/// reading through `Queue::seen_out`); other removals use `Queue::drop_ids`, and re-queueing a deleted entry
+/// states the ledger fact, never a false chain fact.
 #[test]
 fn only_the_receipt_path_records_that_an_entry_was_anchored() {
-    let queue = code_only(&read_src_file("queue.rs").expect("读不出 queue.rs"));
+    let queue = code_only(&read_crate_file("zikaron-seal", "queue.rs").expect("读不出 queue.rs"));
     assert_eq!(queue.matches("self.anchored.push(").count(), 1, "写「锚成过」那一句只许一处");
     let at = queue.find("pub fn anchored_out(").expect("收据那一路自己的口");
     let body = &queue[at..queue[at..].find("\n    }\n").map(|e| at + e).unwrap_or(queue.len())];
     assert!(body.contains("self.anchored.push("), "那一句住在收据那一路的口里");
+    let at = queue.find("pub fn seen_out(").expect("自审读到链上那一口");
+    let body = &queue[at..queue[at..].find("\n    }\n").map(|e| at + e).unwrap_or(queue.len())];
+    assert!(body.contains("self.anchored_out(") && !body.contains("self.anchored.push("), "自审那一口经收据那一路的口记事实");
     let at = queue.find("pub fn drop_ids(").expect("只出队那一口");
     let body = &queue[at..queue[at..].find("\n    }\n").map(|e| at + e).unwrap_or(queue.len())];
     assert!(!body.contains("anchored"), "只出队那一口一个字节也不碰 `anchored`");
-    // The receipt exit is called only by `settle`.
-    let at = queue.find("pub fn settle(").expect("出队的唯一一处判");
-    let body = &queue[at..queue[at..].find("\n}\n").map(|e| at + e).unwrap_or(queue.len())];
+    // The receipt exit is called only by `settle` (the sender's, one for every end; the model is the sealed layer's).
+    let keep = code_only(&read_crate_file("zikaron-send", "keep.rs").expect("读不出发送器 keep.rs"));
+    let at = keep.find("pub fn settle<").expect("出队的唯一一处判");
+    let body = &keep[at..keep[at..].find("\n}\n").map(|e| at + e).unwrap_or(keep.len())];
     assert!(body.contains("q.anchored_out(ids)"), "收据说成了那一路走记事实的那一口");
+    assert_eq!(keep.matches(".anchored_out(").count(), 1, "发送器里记「锚成过」只此一处");
+    for f in ["lib.rs", "node.rs", "agree.rs", "gate.rs", "batch.rs", "sent.rs"] {
+        assert!(!code_only(&read_crate_file("zikaron-send", f).expect("发送器源")).contains(".anchored_out("), "{f} 不是收据那一路,不许记「锚成过」");
+    }
     for (name, text) in shipped() {
-        if name == "queue.rs" {
-            continue;
-        }
         let code = code_only(&text);
         assert!(!code.contains(".anchored_out("), "{name} 不是收据那一路,不许记「锚成过」");
     }
@@ -3429,7 +3663,7 @@ fn deleting_an_identity_drops_its_recovery_seal_and_the_comment_says_so() {
     assert!(code_only(del).contains("crate::keybox::drop_recovery(&row.id)?"), "删身份要撤它的恢复封");
     assert!(code_only(del).contains("Known::PrimaryDelete"), "主身份不直接删");
     assert!(del.contains("may still hold a seal for it: dropped with it"), "删身份那一处的注释要说旧库里那一道封随之撤掉");
-    let kb = read_src_file("keybox.rs").expect("读不出 keybox.rs");
+    let kb = read_crate_file("zikaron-seal", "keybox.rs").expect("读不出封存层 keybox.rs");
     assert!(kb.contains("outside what this file can wipe"), "keybox 档头讲抹零那一句要写明它管不到的那几样");
 }
 
@@ -3450,27 +3684,39 @@ fn the_post_landing_test_hook_is_set_only_by_test_code() {
 /// node refusal codes come only from `chainx::said_fault` (the pre-send balance gate has its own place).
 #[test]
 fn what_the_node_said_is_dispatched_in_one_place() {
-    let sign = code_only(&read_src_file("sign.rs").expect("读不出 sign.rs"));
-    assert!(!sign.contains("Known::SendFailed"), "发锚那一路不许再把节点的话压成 SEND_FAILED");
-    assert!(sign.contains("crate::chainx::said_fault(url.for_transport(), &t)"), "发锚那一路按节点说的话分派");
+    // Anchoring is the sender's (`zikaron_send::batch`): its broadcast reads what the node said by the one table.
+    let batch = code_only(&read_crate_file("zikaron-send", "batch.rs").expect("读不出发送器 batch.rs"));
+    assert!(!batch.contains("SendFailed"), "发锚那一路不许再把节点的话压成 SEND_FAILED");
+    assert!(batch.contains("node::said_trouble(url.for_transport(), &e)"), "发锚那一路按节点说的话分派");
+    let sender: Vec<(&str, String)> = ["lib.rs", "node.rs", "agree.rs", "gate.rs", "keep.rs", "batch.rs", "sent.rs"]
+        .into_iter()
+        .map(|f| (f, code_only(&read_crate_file("zikaron-send", f).expect("读不出发送器源"))))
+        .collect();
     for k in [
         "NonceUsed", "AlreadyPending", "Underpriced", "GasTooLow", "ContractRefused", "RateLimited", "MethodMissing",
         "NodeAuth", "WrongChain", "NodeRefused", "NodeTls", "NodeTimeout", "AnswerTooLong", "AnswerNotJson",
     ] {
+        // The app says the sender's code (`fault::known_of_sent`) and dispatches none itself.
         let uses: Vec<String> = shipped()
             .into_iter()
             .filter(|(n, _)| n != "fault.rs")
             .filter(|(_, t)| code_only(t).contains(&format!("Known::{k}")))
             .map(|(n, _)| n)
             .collect();
-        assert_eq!(uses, vec!["chainx.rs".to_string()], "Known::{k} 只许由 chainx 那一处分派给出");
+        assert!(uses.is_empty(), "Known::{k} 只许由发送器那一处分派给出,应用里出现在 {uses:?}");
+        // In the sender, the one dispatch (`node::said_trouble`); `lib.rs` only defines the code and its family.
+        let given: Vec<&str> = sender.iter().filter(|(n, _)| *n != "lib.rs").filter(|(_, t)| t.contains(&format!("Code::{k}"))).map(|(n, _)| *n).collect();
+        assert_eq!(given, vec!["node.rs"], "Code::{k} 只许由 node::said_trouble 那一处分派给出");
     }
     // The node's answer is read in one place for the app and the command line (`rpc::ask_node`,
     // `rpc::read_answer`), and the refusal table is the shared one (`zikaron_anchor::said`), not a copy here.
+    let node = code_only(&read_crate_file("zikaron-send", "node.rs").expect("读不出发送器 node.rs"));
     let chainx = code_only(&read_src_file("chainx.rs").expect("读不出 chainx.rs"));
-    assert!(chainx.contains("rpc::ask_node("), "应用那一扇 https 端点经共用那一处问与读");
-    assert!(!chainx.contains("got.body") && !chainx.contains("member(\"result\")"), "应用不另读一份应答");
-    assert!(!chainx.contains("const MARKS"), "拒因表只一份,在共用层");
+    assert!(node.contains("rpc::ask_node("), "那一扇 https 端点经共用那一处问与读");
+    for (name, code) in [("node.rs", &node), ("chainx.rs", &chainx)] {
+        assert!(!code.contains("got.body") && !code.contains("member(\"result\")"), "{name}:不另读一份应答");
+        assert!(!code.contains("const MARKS"), "{name}:拒因表只一份,在共用层");
+    }
     // "Sent but failed on chain" is kept only for a receipt status other than 1.
     let window = code_only(&read_src_file("window.rs").expect("读不出 window.rs"));
     assert_eq!(window.matches("Known::SendFailed").count(), 1, "SEND_FAILED 只在收据失败那一处说");
@@ -3519,21 +3765,29 @@ fn what_the_node_said_reads_by_one_table_for_the_app_and_the_command_line() {
     assert_eq!(refused.which(), Some(Known::NodeRefused));
     assert!(refused.tail().contains("502"), "the status is in the refusal: {}", refused.tail());
     assert_eq!(said_fault(url, &rpc::shapeless(url)).which(), Some(Known::ChainShape));
-    assert_eq!(said_fault(url, &Trouble::Transport(rpc::NOT_JSON.into())).which(), Some(Known::AnswerNotJson));
+    assert_eq!(said_fault(url, &Trouble::Transport(rpc::Broke::NotJson)).which(), Some(Known::AnswerNotJson));
     // What sending does next, by the same members: rate limited retries the same node, the rest of the network
     // family moves on, a refusal about the call stops.
-    use app::chainx::{next_after, Layer, Next};
-    assert_eq!(next_after(&said_fault(url, &rpc::status(url, 429))), Next::Retry);
-    assert_eq!(next_after(&said_fault(url, &rpc::status(url, 502))), Next::NextEndpoint);
-    assert_eq!(next_after(&said_fault(url, &rpc::shapeless(url))), Next::NextEndpoint);
-    assert_eq!(next_after(&said_fault(url, &node("insufficient funds"))), Next::Stop);
+    // (The sender's rule, `zikaron_send::node::next_after`, on the same refusals.)
+    use app::chainx::Layer;
+    use zikaron_send::node::{next_after, said_trouble, Next};
+    assert_eq!(next_after(&said_trouble(url, &rpc::status(url, 429))), Next::Retry);
+    assert_eq!(next_after(&said_trouble(url, &rpc::status(url, 502))), Next::NextEndpoint);
+    assert_eq!(next_after(&said_trouble(url, &rpc::shapeless(url))), Next::NextEndpoint);
+    assert_eq!(next_after(&said_trouble(url, &node("insufficient funds"))), Next::Stop);
     // The four layer codes lead their sentences and read back as their layers; nothing else is a layer.
     for l in Layer::ALL {
         assert_eq!(Layer::of(&format!("{} · words", l.code())), Some(l));
     }
     assert_eq!(Layer::of(&format!("{url} 答 HTTP 403")), None);
-    // Every member here is one of the network family's fourteen, or a refusal about the call.
-    assert_eq!(Known::NETWORK.len(), 14);
+    // Every member here is one of the network family's seventeen (the proxy's leg, and a proxy asking for
+    // credentials none given or those given refused, among them), or a refusal about the call.
+    assert_eq!(Known::NETWORK.len(), 17);
+    // The sender's network family is this table's, member for member.
+    assert_eq!(zikaron_send::Code::NETWORK.len(), Known::NETWORK.len());
+    for c in zikaron_send::Code::NETWORK {
+        assert!(Known::NETWORK.contains(&app::fault::known_of_sent(c)), "{c:?}");
+    }
 }
 
 /// Passcodes allow letters and digits, case-sensitive; all-identical is refused for any passcode, and
@@ -3576,9 +3830,10 @@ fn every_legal_token_has_its_own_plain_sentence() {
     let scans = [
         R::ChainIdMismatch { declared: 1, served: "0x2".into() },
         R::NoEndpoint(1),
-        R::Unanswered { chain: 1, what: "x".into() },
+        R::Unanswered { chain: 1, asked: zikaron_anchor::scan::Asked::NotLogs },
+        R::Unanswered { chain: 1, asked: zikaron_anchor::scan::Asked::TooWide { span: 10, whole: 5000, asks: 64 } },
         R::TxNotItself("0x".into()),
-        R::Malformed("x".into()),
+        R::Malformed(zikaron_anchor::scan::Shape::Basis),
     ];
     let mut scan_keys: Vec<app::lang::Key> = Vec::new();
     for r in &scans {
@@ -3590,6 +3845,7 @@ fn every_legal_token_has_its_own_plain_sentence() {
         let f = app::fault::Fault::scan_refused(app::fault::Fault::scan_tail(r), std::slice::from_ref(r));
         assert_eq!(f.human(), app::lang::t(k));
         assert!(f.tail().starts_with(r.code()), "证据尾以拒因码起头");
+        assert!(!f.tail().chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "证据尾是机器形,不带哪一种话:{}", f.tail());
     }
 }
 
@@ -3615,10 +3871,11 @@ fn the_primary_key_reads_the_auto_anchor_setting_in_one_place() {
     assert!(!window.contains("anchor_queue_only"), "表单里那一枚内存态单选撤了");
 }
 
-/// The queue file's seven states read back from disk ("resent" with every transaction of its batch); files
-/// written by older versions, without state cells or block tables, still read as "queued".
+/// The queue file's seven states read back from disk ("resent" with every transaction of its batch); a file
+/// without the state cells, the block table or a signed batch's nonce, as earlier versions wrote, is refused by
+/// name.
 #[test]
-fn the_queue_file_keeps_each_step_and_reads_old_files() {
+fn the_queue_file_keeps_each_step_and_refuses_old_files() {
     vault_open();
     use app::queue::{Queue, Step};
     let dir = std::env::temp_dir().join(format!("zk-test-queue-steps-{}", std::process::id()));
@@ -3636,7 +3893,7 @@ fn the_queue_file_keeps_each_step_and_reads_old_files() {
     q.included_out(&[id(5)], &id(7), 11155111, 16);
     // Resent: every transaction of the batch, first sent first.
     q.push(&id(6), 6);
-    q.mark(&[id(6)], Step::Resent { txs: vec![id(10), id(11)], chain: 11155111, nonce: None });
+    q.mark(&[id(6)], Step::Resent { txs: vec![id(10), id(11)], chain: 11155111, nonce: Some(8) });
     q.write(&h).expect("写");
     let back = Queue::read(&h).expect("读");
     assert_eq!(back.step_of(&id(1)), Some(&Step::Queued));
@@ -3645,7 +3902,7 @@ fn the_queue_file_keeps_each_step_and_reads_old_files() {
     assert_eq!(back.step_of(&id(4)), Some(&Step::Refused { said: "INSUFFICIENT_FUNDS".into() }));
     assert_eq!(back.block_of(&id(5)).map(|b| b.block), Some(16));
     assert!(back.anchored_here(&id(5)) && !back.has(&id(5)));
-    assert_eq!(back.step_of(&id(6)), Some(&Step::Resent { txs: vec![id(10), id(11)], chain: 11155111, nonce: None }));
+    assert_eq!(back.step_of(&id(6)), Some(&Step::Resent { txs: vec![id(10), id(11)], chain: 11155111, nonce: Some(8) }));
     assert_eq!(back.submitted(), vec![(vec![id(9)], 11155111, vec![id(2)]), (vec![id(10), id(11)], 11155111, vec![id(6)])]);
     // In flight, submitted or resent: never picked for another batch, never counted as sendable.
     assert!(!back.take_ids(10).contains(&id(2)) && !back.take_ids(10).contains(&id(6)));
@@ -3657,13 +3914,16 @@ fn the_queue_file_keeps_each_step_and_reads_old_files() {
         app::local::put(&h.dir(app::home::Slot::Settings), app::queue::FILE, app::local::Doc::Queue, bad.as_bytes()).expect("写坏档");
         assert_eq!(Queue::read(&h).err().and_then(|f| f.which()), Some(app::fault::Known::QueueShape), "{n} transactions");
     }
-    // An older file: only `queued` and `anchored`, with no state cell in rows.
-    let old = format!("{{\"anchored\":[],\"queued\":[{{\"at\":1,\"id\":\"{}\"}}]}}", id(1));
-    // An older version's shape, sealed as the queue file is now (the shape is under test, not the seal).
-    app::local::put(&h.dir(app::home::Slot::Settings), app::queue::FILE, app::local::Doc::Queue, old.as_bytes()).expect("写旧档");
-    let old = Queue::read(&h).expect("旧档读得回");
-    assert_eq!(old.step_of(&id(1)), Some(&Step::Queued));
-    assert!(old.blocks.is_empty());
+    // Earlier versions' shapes, sealed as the queue file is now (the shape is under test, not the seal): rows
+    // with no state cell, no block table, a submitted row with no nonce.
+    for old in [
+        format!("{{\"anchored\":[],\"blocks\":[],\"queued\":[{{\"at\":1,\"id\":\"{}\"}}]}}", id(1)),
+        format!("{{\"anchored\":[],\"queued\":[{{\"at\":1,\"id\":\"{}\",\"state\":\"queued\"}}]}}", id(1)),
+        format!("{{\"anchored\":[],\"blocks\":[],\"queued\":[{{\"at\":1,\"chain\":1,\"id\":\"{}\",\"state\":\"submitted\",\"tx\":\"{}\"}}]}}", id(1), id(9)),
+    ] {
+        app::local::put(&h.dir(app::home::Slot::Settings), app::queue::FILE, app::local::Doc::Queue, old.as_bytes()).expect("写旧档");
+        assert_eq!(Queue::read(&h).err().and_then(|f| f.which()), Some(app::fault::Known::QueueShape), "{old}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3700,8 +3960,12 @@ fn each_landing_failure_says_its_own_sentence() {
 #[test]
 fn kit_names_are_judged_by_the_kit_law_in_one_place() {
     let kitx = code_only(&read_src_file("kitx.rs").expect("读不出 kitx.rs"));
-    assert!(body_of(&kitx, "pub fn kit_segment(").contains("kitdir::is_kit_path"));
-    assert!(body_of(&kitx, "pub fn attach(").contains("kit_rel("), "附件逐件走转写那一处");
+    // The transliteration lives in the glue (`kitnames`), where the command line's record package names by it too.
+    let names = code_only(&read_crate_file("zikaron-glue", "kitnames.rs").expect("读不出 kitnames.rs"));
+    assert!(body_of(&names, "pub fn kit_segment(").contains("kitdir::is_kit_path"));
+    assert!(body_of(&names, "pub fn put_original(").contains("kit_rel("), "原件逐件走转写那一处");
+    assert!(body_of(&kitx, "pub fn attach(").contains("put_original("), "附件逐件走转写那一处");
+    assert!(!kitx.contains("fn kit_segment("), "转写只此一处");
     let window = code_only(&read_src_file("window.rs").expect("读不出 window.rs"));
     assert!(window.contains("crate::kitx::preview_names("), "附件列表预览与出包同一处转写");
 }
@@ -3800,8 +4064,8 @@ fn every_grey_light_says_what_is_missing() {
     assert!(checkx.contains("if state != State::Unknown.as_str()"), "只对未定那一态答");
 }
 
-/// Exclusivity is written once at signing and read-only afterwards: no action flips the flag, only issuing
-/// writes it, and the older list in the settings file is read-only.
+/// Exclusivity is written once at signing and read-only afterwards: no action flips the flag, and only
+/// issuing writes it.
 #[test]
 fn the_exclusive_flag_is_written_once_at_signing() {
     let action = code_only(&read_src_file("action.rs").expect("读不出 action.rs"));
@@ -3812,12 +4076,10 @@ fn the_exclusive_flag_is_written_once_at_signing() {
         assert!(!t.contains("s.exclusive.push"), "{name} 还在写那份旧名单");
         assert!(!t.contains("exclusive.retain"), "{name} 还在改那份旧名单");
     }
-    // A three-state closed table: recorded at signing, the older list (no terms document), or none.
-    let legacy = vec!["0xaa".to_string()];
+    // A two-state closed table: recorded at signing, or none.
     let rec = app::termsx::Record { grant: "0xbb".into(), terms: "0xcc".into(), exclusive: true, doc: None, name: None };
-    assert_eq!(app::termsx::exclusive_of(&[rec.clone()], &legacy, "0xBB"), app::termsx::Exclusive::Signed);
-    assert_eq!(app::termsx::exclusive_of(&[], &legacy, "0xAA"), app::termsx::Exclusive::Legacy);
-    assert_eq!(app::termsx::exclusive_of(&[], &legacy, "0xdd"), app::termsx::Exclusive::No);
+    assert_eq!(app::termsx::exclusive_of(&[rec.clone()], "0xBB"), app::termsx::Exclusive::Signed);
+    assert_eq!(app::termsx::exclusive_of(&[rec], "0xdd"), app::termsx::Exclusive::No);
     // The document's in-kit path is assembled in one place and satisfies kit law §7.2.
     let rel = app::termsx::doc_rel("0xAB12", "授权条款.pdf").expect("拼得出");
     assert!(rel.starts_with(&format!("{}/ab12/", app::termsx::ROOM)) && zikaron_kit::kitdir::is_kit_path(&rel), "{rel}");
@@ -3870,7 +4132,7 @@ fn every_fetched_byte_goes_through_the_one_tls_client() {
     assert_eq!(app::fetchx::base_of("ftp://x.example/").err().and_then(|f| f.which()), Some(Known::RemoteNotHttps));
     assert_eq!(app::fetchx::base_of("https://x.example/k").expect("认得").at("manifest.json"), "https://x.example/k/manifest.json");
     let fetchx = code_only(&read_src_file("fetchx.rs").expect("读不出 fetchx.rs"));
-    assert!(fetchx.contains("chainx::Https::new("), "远取复用节点问答那一枚 TLS 客户端");
+    assert!(fetchx.contains("chainx::https("), "远取复用节点问答那一枚 TLS 客户端");
     // The app opens no connection and builds no TLS of its own: both live in the one transport.
     for (name, text) in shipped() {
         let t = code_only(&text);
@@ -3947,6 +4209,8 @@ fn the_solid_red_key_is_only_on_a_confirm_card() {
         "fn annotate_sheet(",
         "fn relicense_sheet(",
         "fn genesis_sheet(",
+        // Adopting an existing ledger at the wizard's step that creates one: "adopt in place".
+        "fn wizard_adopt_sheet(",
         "fn id_sheets(",
         "fn bk_sheets(",
         // A fetch found this home at odds with the fetched ledger: "fetch and replace".
@@ -4025,8 +4289,10 @@ fn every_action_answers_whether_it_is_an_exit() {
 /// gate makes after reading the chain, so the compiler rules out a bypass.
 #[test]
 fn every_exit_effect_takes_the_gates_pass() {
-    let effects: [(&str, &str); 5] = [
-        ("sign.rs", "pub fn anchor_send(\n    _pass: &crate::exitgate::Pass,"),
+    // A batch's broadcast is the sender's, and it takes the gate's pass too.
+    let batch = code_only(&read_crate_file("zikaron-send", "batch.rs").expect("读不出发送器 batch.rs"));
+    assert!(batch.contains("pub fn cast(_pass: &gate::Pass,"), "batch.rs:出口那一处效果不收闸的令牌");
+    let effects: [(&str, &str); 4] = [
         ("kitx.rs", "pub fn export(\n    _pass: &crate::exitgate::Pass,"),
         ("badgex.rs", "pub fn export(_pass: &crate::exitgate::Pass,"),
         ("mirror.rs", "pub fn export(_pass: &crate::exitgate::Pass,"),
@@ -4036,15 +4302,64 @@ fn every_exit_effect_takes_the_gates_pass() {
         let code = code_only(&read_src_file(file).unwrap_or_else(|_| panic!("读不出 {file}")));
         assert!(code.contains(sig), "{file}:出口那一处效果不收闸的令牌");
     }
-    // The pass is built only by the gate: its fields are private and its one struct literal is in `pass`.
-    let gate = code_only(&read_src_file("exitgate.rs").expect("exitgate"));
+    // The pass is built only by the gate (the sender's): its fields are private and its one struct literal is in
+    // `pass`; the app re-exports it and builds none.
+    let gate = code_only(&read_crate_file("zikaron-send", "gate.rs").expect("读不出发送器 gate.rs"));
     assert!(gate.contains("pub struct Pass {\n    reading: Reading,\n    root: PathBuf,\n}"), "令牌的成员须是私有的");
     assert_eq!(gate.matches("Pass { reading").count(), 1, "令牌只在闸里造一处");
-    for (name, text) in shipped().into_iter().filter(|(n, _)| n != "exitgate.rs") {
+    for (name, text) in shipped() {
         assert!(!code_only(&text).contains("Pass { reading"), "{name} 自造了令牌");
     }
-    let q = code_only(&read_src_file("action/queue.rs").expect("queue"));
-    assert!(q.find("funds_gate(&b, &secret, fees)").unwrap_or(usize::MAX) < q.find("crate::exitgate::pass(&ask)").unwrap_or(0), "发交易:余额那一判在出口闸之前");
+    for f in ["lib.rs", "node.rs", "agree.rs", "keep.rs", "batch.rs", "sent.rs"] {
+        assert!(!code_only(&read_crate_file("zikaron-send", f).expect("发送器源")).contains("Pass { reading"), "{f} 自造了令牌");
+    }
+    // A batch is sent in this order: asked whether the chain holds it, the balance, the exit gate, the signature,
+    // landed as in flight, then the broadcast.
+    let anchor = &batch[batch.find("pub fn anchor<").expect("发送那一口")..];
+    let anchor = &anchor[..anchor.find("\n}\n").expect("发送那一口的尾")];
+    let at = |needle: &str| anchor.find(needle).unwrap_or_else(|| panic!("发送那一口里没有 {needle}"));
+    let order = [at("on_chain(&b.urls"), at("funds_gate(&b, signer, fees"), at("gate::pass(&ask, end)"), at("sign_new(signer, &b, fees)"), at("Step::Submitted {"), at("cast(&pass,")];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "发交易:链上已有、余额、出口闸、签名、落在途、广播,依次:{order:?}");
+}
+
+/// The desktop reaches the sender (`zikaron_send`) only through its wiring (`chainx`, `sendx`, `exitgate`, `queue`,
+/// `auditx`, the queue actions, `sign`'s signing port, `task`'s re-export, `fault`'s table), and every way in that
+/// can open a node says this desktop's words for the connection layers first (`chainx::speak`), so no refusal is
+/// said without them.
+#[test]
+fn the_desktop_says_the_connection_layers_before_it_reaches_the_sender() {
+    let wiring = ["chainx.rs", "sendx.rs", "exitgate.rs", "queue.rs", "auditx.rs", "action.rs", "sign.rs", "task.rs", "fault.rs", "lib.rs"];
+    for (name, text) in shipped() {
+        let code = code_only(&text);
+        if code.contains("zikaron_send::") {
+            assert!(wiring.contains(&name.as_str()), "{name} reaches the sender outside its wiring");
+        }
+    }
+    let chainx = code_only(&read_src_file("chainx.rs").expect("chainx"));
+    for f in ["endpoint_at", "https", "ask", "ask_call", "tx_known", "tx_as_held", "head_block", "head_time", "serving", "balance", "fee_reading"] {
+        let body = body_of(&chainx, &format!("pub fn {f}("));
+        assert!(!body.is_empty(), "chainx::{f}");
+        assert!(body.contains("speak();"), "chainx::{f} says the layers first");
+    }
+    let sendx = code_only(&read_src_file("sendx.rs").expect("sendx"));
+    for f in ["pub fn open(", "pub fn of("] {
+        let at = sendx.find(f).unwrap_or_else(|| panic!("Desk {f}"));
+        let body = &sendx[at..at + sendx[at..].find("\n    }\n").expect("its end")];
+        assert!(body.contains("crate::chainx::speak();"), "Desk {f} says the layers first");
+    }
+    let auditx = code_only(&read_src_file("auditx.rs").expect("auditx"));
+    for f in ["pub fn scan_agreed_bytes_with(", "pub fn scan_first("] {
+        assert!(body_of(&auditx, f).contains("crate::chainx::speak();"), "auditx {f} says the layers first");
+    }
+    let action = code_only(&read_src_file("action.rs").expect("action"));
+    let at = action.find("pub(super) fn estimate_on(").expect("the estimate");
+    let estimate = &action[at..at + action[at..].find("\n}\n").expect("its end")];
+    assert!(estimate.contains("crate::chainx::speak();"), "the estimate says the layers first");
+    // The sender opens no node with words of its own: without the end's words, a layer's failure is the node and
+    // the system's detail.
+    let node = code_only(&read_crate_file("zikaron-send", "node.rs").expect("node.rs"));
+    assert_eq!(node.matches("LAYER_WORDS.set(").count(), 1, "the words are set in one place");
+    assert!(!node.contains("lang::"), "the sender holds no sentence");
 }
 
 /// The put-on-chain sheet closes when its broadcast lands, judged by the landing, never by the clock.
@@ -4438,10 +4753,10 @@ fn a_file_put_in_another_home_or_under_another_name_is_another_file() {
     let _ = std::fs::remove_dir_all(b.root());
 }
 
-/// A file in the first envelope format (written by older versions) reads, and reading rewrites nothing; only
-/// a write converts it to the second envelope.
+/// A file in the first envelope format (as earlier versions wrote) is not sealed by this version's terms: read,
+/// it is refused by name and left as it is; a write over it is refused too (never written over).
 #[test]
-fn an_older_envelope_reads_and_is_rewritten_only_by_a_write() {
+fn an_earlier_envelope_is_refused_and_never_written_over() {
     let home = labelled_home("old-env");
     let at = home.dir(app::home::Slot::Settings).join(app::settings::FILE);
     let key = app::keybox::local_key().expect("库开着");
@@ -4456,10 +4771,12 @@ fn an_older_envelope_reads_and_is_rewritten_only_by_a_write() {
     old.extend_from_slice(&nonce);
     old.extend_from_slice(&app::cryptx::xchacha_seal(key.bytes(), &nonce, &head, plain).unwrap());
     std::fs::write(&at, &old).unwrap();
-    assert_eq!(app::local::read(&at, app::local::Doc::Settings).expect("旧封照开"), Some(plain.to_vec()));
+    let read = app::local::read(&at, app::local::Doc::Settings).expect_err("旧封具名拒");
+    assert_eq!(app::local::Unread::of(&read), Some(app::local::Unread::NotSealed), "{read:?}");
     assert_eq!(std::fs::read(&at).unwrap(), old, "读不重写");
-    app::local::put(&at.parent().unwrap(), app::settings::FILE, app::local::Doc::Settings, b"{\"capBytes\":4}").expect("写");
-    assert!(std::fs::read(&at).unwrap().starts_with(app::local::MAGIC_V2), "写过即新版");
+    let wrote = app::local::put(&at.parent().unwrap(), app::settings::FILE, app::local::Doc::Settings, b"{\"capBytes\":4}").expect_err("不盖");
+    assert_eq!(app::local::Unread::of(&wrote), Some(app::local::Unread::NotSealed), "{wrote:?}");
+    assert_eq!(std::fs::read(&at).unwrap(), old, "写也不盖");
     let _ = std::fs::remove_dir_all(home.root());
 }
 
@@ -4525,9 +4842,12 @@ fn a_writer_labels_a_home_and_a_label_of_another_identity_is_refused() {
 }
 
 /// A background task whose source has moved on writes nothing and ends with `HOME_UNREACHABLE`; kinds that do
-/// not follow the source are not stopped.
+/// not follow the source are not stopped. Runs in its own process ([`alone`]): it makes an identity.
 #[test]
 fn a_task_whose_home_moved_on_writes_nothing() {
+    if alone("a_task_whose_home_moved_on_writes_nothing") {
+        return;
+    }
     vault_open();
     let dir = std::env::temp_dir().join(format!("zk-std-ticket-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -4568,7 +4888,7 @@ fn a_task_whose_home_moved_on_writes_nothing() {
         let _ = std::fs::remove_dir_all(&src);
         let ctx = zikaron_ui::egui::Context::default();
         let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-        let _ = apply(&mut shell, Action::MakeAnchorKey);
+        seated(&mut shell, &src);
         assert!(matches!(apply(&mut shell, Action::OpenHome { root: src.display().to_string() }), Applied::Homed { .. }));
         assert!(matches!(apply(&mut shell, Action::Genesis { statement: "票".into() }), Applied::Genesised { .. }));
         let got = shell.home.as_ref().and_then(|h| h.ledger().ok()).and_then(|l| l.pile().ok()).and_then(|p| p.items.first().cloned());
@@ -4606,8 +4926,8 @@ fn a_task_whose_home_moved_on_writes_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The ticket is checked only at the write gates (`home::put_at`, `home::land_numbered`, the ledger's append),
-/// never by a task.
+/// The ticket is checked only at the write gates (`home::put_at`, `home::land_numbered`, the ledger's append,
+/// and the key vault's changes where the app wires the sealed layer's vault), never by a task.
 #[test]
 fn the_ticket_is_asked_only_at_the_write_gates() {
     let mut at: Vec<String> = Vec::new();
@@ -4618,7 +4938,7 @@ fn the_ticket_is_asked_only_at_the_write_gates() {
         }
     }
     at.sort();
-    assert_eq!(at, vec!["home.rs".to_string(), "home.rs".to_string(), "local.rs".to_string(), "task.rs".to_string()], "查票只在写口");
+    assert_eq!(at, vec!["home.rs".to_string(), "home.rs".to_string(), "keybox.rs".to_string(), "local.rs".to_string(), "task.rs".to_string()], "查票只在写口");
     let home = code_only(&read_src_file("home.rs").unwrap());
     let put_at = home.split("pub fn put_at(").nth(1).and_then(|b| b.split("\npub fn ").next()).unwrap_or_default();
     assert!(put_at.contains("ticket_void()"), "put_at 收票");
@@ -4725,8 +5045,8 @@ fn the_window_has_a_least_size_and_every_page_fits_it() {
     use app::nav::{Place, Section, View};
     use zikaron_ui::tokens;
     assert_eq!(app::window::MIN_W, tokens::RAIL_W + 2.0 * tokens::PAGE_PAD + tokens::MAIN_MIN_W, "the least width is the layout's floors");
-    let faces = read_src_file("window/faces.rs").expect("faces");
-    assert_eq!(code_only(&faces).matches(".with_min_inner_size([MIN_W, MIN_H])").count(), 1, "the window asks the system for that least size, once");
+    let probes = read_src_file("window/probes.rs").expect("probes");
+    assert_eq!(code_only(&probes).matches(".with_min_inner_size([MIN_W, MIN_H])").count(), 1, "the window asks the system for that least size, once");
     let anywhere: usize = shipped().iter().map(|(_, t)| code_only(t).matches("with_min_inner_size").count()).sum();
     assert_eq!(anywhere, 1, "and nowhere else in what ships asks for another least size");
     let ctx = zikaron_ui::egui::Context::default();
@@ -4968,6 +5288,35 @@ fn alone_in(module: &str, test: &str) -> bool {
     true
 }
 
+/// Every test the family's component registry names (`family-components.json`, each `tests[]` path and name)
+/// is a function in that file now: a renamed or removed test is found here, not by a reader of the registry.
+#[test]
+fn every_registered_test_names_a_function_that_is_there() {
+    use zikaron::json::Value;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let v = zikaron::json::parse(&std::fs::read(root.join("family-components.json")).expect("the component registry")).expect("JSON");
+    let Some(Value::Arr(components)) = v.member("components") else { panic!("no components") };
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for c in components {
+        let Some(Value::Arr(tests)) = c.member("tests") else { continue };
+        for t in tests {
+            let (Some(Value::Str(path)), Some(Value::Str(name))) = (t.member("path"), t.member("name")) else {
+                missing.push(format!("{t:?}"));
+                continue;
+            };
+            seen += 1;
+            let code = std::fs::read_to_string(root.join(path)).map(|x| code_only(&x)).unwrap_or_default();
+            let there = code.match_indices(&format!("fn {name}")).any(|(i, m)| code[i + m.len()..].starts_with(['(', '<']));
+            if !there {
+                missing.push(format!("{path} {name}"));
+            }
+        }
+    }
+    assert!(seen > 0, "the registry names its tests");
+    assert!(missing.is_empty(), "registered tests that are not there: {missing:#?}");
+}
+
 #[path = "checks_more/gaps.rs"]
 mod gaps;
 #[path = "checks_more/gaps_b10m.rs"]
@@ -4996,3 +5345,58 @@ mod a8_send;
 mod a8_skeleton;
 #[path = "checks_more/gaps_r21b2.rs"]
 mod gaps_r21b2;
+#[path = "checks_more/local_writes.rs"]
+mod local_writes;
+#[path = "checks_more/gate_landing.rs"]
+mod gate_landing;
+#[path = "checks_more/seat_landing.rs"]
+mod seat_landing;
+#[path = "checks_more/unsafe_confined.rs"]
+mod unsafe_confined;
+#[path = "checks_more/recovery_seals.rs"]
+mod recovery_seals;
+#[path = "checks_more/window_habits.rs"]
+mod window_habits;
+#[path = "checks_more/cli_writes.rs"]
+mod cli_writes;
+#[path = "checks_more/handed_off.rs"]
+mod handed_off;
+#[path = "checks_more/proxy_locked.rs"]
+mod proxy_locked;
+#[path = "checks_more/door_serial.rs"]
+mod door_serial;
+#[path = "checks_more/mirror_adopt.rs"]
+mod mirror_adopt;
+#[path = "checks_more/wizard_way_out.rs"]
+mod wizard_way_out;
+#[path = "checks_more/send_r23.rs"]
+mod send_r23;
+#[path = "checks_more/walks_live.rs"]
+mod walks_live;
+
+/// A broken way to a node is said by the desktop's own table (both languages carry the kind), followed by its
+/// evidence in machine form: never a sentence made below the desktop, and the node named once.
+#[test]
+fn a_broken_way_is_said_in_the_desktops_words_with_machine_evidence() {
+    use zikaron_anchor::rpc::{Broke, Trouble};
+    let url = "https://node.example";
+    let words = |k: app::lang::Key| app::lang::TABLE.iter().find(|(key, _, _)| *key == k).map(|(_, zh, en)| (*zh, *en)).expect("a row");
+    let (wire_zh, wire_en) = words(app::lang::Key::Tail090);
+    let (node_zh, node_en) = words(app::lang::Key::Tail089);
+    assert!(!wire_zh.is_empty() && !wire_en.is_empty() && !node_zh.is_empty() && !node_en.is_empty());
+    let cjk = |x: &str| x.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    for (b, kind) in [
+        (Broke::Late { node: url.into(), deadline: std::time::Duration::from_secs(5) }, (wire_zh, wire_en)),
+        (Broke::Closed { node: url.into() }, (wire_zh, wire_en)),
+        (Broke::NotJson, (wire_zh, wire_en)),
+        (Broke::Status { node: url.into(), code: 503 }, (node_zh, node_en)),
+    ] {
+        let said = app::chainx::trouble_said(url, &Trouble::Transport(b.clone()));
+        let evidence = b.evidence();
+        assert!(said.ends_with(&evidence), "{said}");
+        assert!(!cjk(&evidence), "{evidence}");
+        let head = &said[..said.len() - evidence.len()];
+        assert!(head.contains(kind.0) || head.contains(kind.1), "the kind in the table's words: {said}");
+        assert_eq!(said.matches(url).count(), 1, "the node named once: {said}");
+    }
+}

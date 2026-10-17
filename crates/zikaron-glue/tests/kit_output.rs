@@ -441,3 +441,35 @@ fn a_bundle_never_clobbers_and_a_failed_landing_leaves_no_half_tree() {
         .collect();
     assert!(leftovers.is_empty(), "临时地留在盘上:{leftovers:?}");
 }
+
+/// The verification note every kit carries is for whoever receives it: the same four steps and the same counts
+/// in Chinese and in English, one section each, and the manifest's row for it is the digest of its bytes as they
+/// are written.
+#[test]
+fn the_verification_note_says_the_same_in_both_languages_and_its_row_is_its_digest() {
+    use zikaron_glue::pack::{enumerate, verification_note, Bundle};
+    let bundle = || Bundle { files: vec![("a.txt".into(), b"a".to_vec()), ("b/c.txt".into(), b"c".to_vec())], note: "n".into(), ..Default::default() };
+    let text = String::from_utf8(verification_note(&bundle())).expect("text");
+    let (zh, en) = text.split_once("# How to verify this kit").expect("an English section");
+    assert!(zh.starts_with("# 怎么核这一包"), "{zh}");
+    let steps = |x: &str| x.lines().filter(|l| l.len() > 2 && l.as_bytes()[0].is_ascii_digit() && l.as_bytes()[1] == b'.').count();
+    assert_eq!((steps(zh), steps(en)), (4, 4), "four steps in each");
+    let counts = |x: &str, head: &str| -> Vec<u64> {
+        let line = x.lines().find(|l| l.starts_with(head)).unwrap_or_else(|| panic!("no counts line {head}"));
+        line.split(|c: char| !c.is_ascii_digit()).filter(|w| !w.is_empty()).map(|w| w.parse().expect("a count")).collect()
+    };
+    assert_eq!(counts(zh, "本束"), vec![0, 3, 0], "entries, files (the note too), proofs");
+    assert_eq!(counts(en, "This kit"), counts(zh, "本束"), "the same counts in both");
+    let (pairs, _) = enumerate(bundle()).expect("a kit");
+    let note = pairs.iter().find(|(p, _)| p.ends_with("verify.md")).map(|(_, b)| b.clone()).expect("the note is in the kit");
+    assert_eq!(note, text.as_bytes(), "the note as written is the note");
+    let manifest = pairs.iter().find(|(p, _)| p == "manifest.json").map(|(_, b)| b.clone()).expect("a manifest");
+    let m = zikaron::json::parse(&manifest).expect("the manifest reads");
+    let rows = match m.member("files") {
+        Some(zikaron::json::Value::Arr(a)) => a.clone(),
+        other => panic!("{other:?}"),
+    };
+    let row = rows.iter().find(|r| matches!(r.member("path"), Some(zikaron::json::Value::Str(p)) if p.ends_with("verify.md"))).expect("its row");
+    let want = zikaron::hexfmt::encode(&zikaron_kit::doc::doc_id(&note));
+    assert!(matches!(row.member("sha256"), Some(zikaron::json::Value::Str(s)) if *s == want), "{row:?}");
+}

@@ -17,6 +17,9 @@
 //! or a declined scan is the absence of an answer ([`codes::Exit::Unanswered`]); only a failing subject is a
 //! negative answer ([`codes::Exit::Denied`]).
 
+// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
+#![forbid(unsafe_code)]
+
 /// The component code this crate carries in its trace marks.
 pub const V1: &str = "V1";
 
@@ -35,8 +38,12 @@ pub mod desk;
 pub mod docs;
 pub mod entropy;
 pub mod entry;
+pub mod handoff;
 pub mod kitout;
 pub mod ledger;
 pub mod out;
-pub mod sent;
+pub mod sealed;
+pub mod sealedsend;
+/// What the direct `anchor` sent, kept so a rerun asks about it first: the sender's record (`zikaron_send::sent`).
+pub use zikaron_send::sent;
 pub mod verbs;

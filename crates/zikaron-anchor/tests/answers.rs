@@ -96,7 +96,7 @@ fn ask_once(status: u16, body: &str) -> Result<W, Trouble> {
 }
 
 fn shapeless(t: &Result<W, Trouble>) -> bool {
-    matches!(t, Err(Trouble::Transport(e)) if rpc::is_shapeless(e))
+    matches!(t, Err(Trouble::Transport(rpc::Broke::Shapeless { .. })))
 }
 
 /// Eight answer forms: a JSON page without `result` or `error`, another request's `id`, or an array is a wrong
@@ -108,7 +108,7 @@ fn only_an_answer_to_this_question_is_the_nodes_word() {
     assert_eq!(ask_once(429, "{\"message\":\"Too Many Requests\"}").err().as_ref().and_then(said::refusal), Some(Refusal::RateLimited), "②");
     assert_eq!(ask_once(403, "<html>forbidden</html>").err().as_ref().and_then(said::refusal), Some(Refusal::Auth), "③");
     match ask_once(502, "<html>bad gateway</html>") {
-        Err(Trouble::Transport(e)) => assert_eq!(rpc::status_of(&e), Some(502), "④ {e}"),
+        Err(t @ Trouble::Transport(_)) => assert_eq!(rpc::status_of(&t), Some(502), "④ {t:?}"),
         other => panic!("④ {other:?}"),
     }
     assert!(shapeless(&ask_once(200, "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":\"0x1\"}")), "⑤");
@@ -128,9 +128,9 @@ fn only_an_answer_to_this_question_is_the_nodes_word() {
     // A well-formed error is the node's word whatever the status; a 2xx page that is not JSON is not JSON.
     assert!(matches!(ask_once(500, "{\"id\":{id},\"error\":{\"code\":-32000,\"message\":\"no\"}}"), Err(Trouble::Node(_))));
     assert!(matches!(ask_once(400, "{\"id\":{id},\"result\":\"0x2\"}"), Ok(_)));
-    assert!(matches!(ask_once(200, "<html>ok</html>"), Err(Trouble::Transport(e)) if rpc::is_not_json(&e)));
+    assert!(matches!(ask_once(200, "<html>ok</html>"), Err(Trouble::Transport(rpc::Broke::NotJson))));
     // A status without the node's word names the status, the gateway's JSON included.
-    assert_eq!(ask_once(503, "{\"message\":\"down\"}").err().and_then(|t| match t { Trouble::Transport(e) => rpc::status_of(&e), _ => None }), Some(503));
+    assert_eq!(ask_once(503, "{\"message\":\"down\"}").err().and_then(|t| rpc::status_of(&t)), Some(503));
 }
 
 /// The replay reads a recording as a live answer is read: an exchange holding neither `result` nor `error`

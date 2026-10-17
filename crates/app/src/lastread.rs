@@ -24,7 +24,7 @@ use zikaron::json::{self, Value};
 pub const ANCHORED_FILE: &str = "last-audit.json";
 
 /// The suffix of verdict file names (`grants-held/<id>.verdict.json`).
-pub const VERDICT_SUFFIX: &str = ".verdict.json";
+pub const VERDICT_SUFFIX: &str = zikaron_seal::envelope::VERDICT_SUFFIX;
 
 /// A cache older than this (seconds) is stale: the status dot turns gray (never yellow). The background check
 /// runs either way.
@@ -35,8 +35,7 @@ pub const STALE_SECS: u64 = 24 * 3600;
 pub struct Anchored {
     pub rows: Vec<(String, (u64, String))>,
     pub at: u64,
-    /// Whether that audit was complete (`auditx::whole`, recorded when saved). Files from older versions lack
-    /// this field and read as not complete.
+    /// Whether that audit was complete (`auditx::whole`, recorded when saved; required).
     pub whole: bool,
 }
 
@@ -50,8 +49,8 @@ impl Anchored {
 /// A cached grant verdict: the kit crate's overall verdict, the six checks (raw token/state pairs) and the
 /// verification time; plus the upstream ledger audit label and chain time (shown as "upstream" and
 /// "remaining" on the vault detail card), and the block time the grant was anchored at in its issuer's ledger
-/// (used by the vault's date filter after a restart, before any re-check). Files from older versions lack the
-/// last three fields, which read as empty.
+/// (used by the vault's date filter after a restart, before any re-check). The upstream label is required; the
+/// two times are absent when not known yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
     pub verdict: String,
@@ -130,10 +129,11 @@ pub fn load_anchored(home: &Home) -> Result<Option<Anchored>, Fault> {
         };
         out.push((id, (chain, tx)));
     }
-    // Older files lack "whole" and read as not complete, so they are never used to conclude an entry is absent.
-    let whole = match &v {
-        Value::Obj(m) => m.iter().any(|(k, x)| k == "whole" && *x == Value::Bool(true)),
-        _ => false,
+    // "whole" is required: a file without it is not one this version wrote, refused by name rather than read as
+    // either answer.
+    let whole = match v.member("whole") {
+        Some(Value::Bool(b)) => *b,
+        _ => return Err(Fault::known(Known::SettingsShape, p.display().to_string())),
     };
     Ok(Some(Anchored { rows: out, at, whole }))
 }
@@ -189,18 +189,6 @@ pub fn issuer_form(author: &str) -> String {
     grant_form(author)
 }
 
-/// Add the `grant` member to a verdict's bytes, for caches from older versions that named the grant only by
-/// file name. Bytes that already have it are returned unchanged.
-pub fn with_grant(bytes: &[u8], id: &str) -> Result<Vec<u8>, Fault> {
-    let v = json::parse(bytes).map_err(|t| Fault::known(Known::SettingsShape, format!("verdict {t:?}")))?;
-    let Value::Obj(mut m) = v else { return Err(Fault::known(Known::SettingsShape, "verdict".to_string())) };
-    if m.iter().any(|(k, _)| k == "grant") {
-        return Ok(bytes.to_vec());
-    }
-    m.push(("grant".to_string(), Value::Str(grant_form(id))));
-    Ok(json::canon_bytes(&Value::Obj(m)))
-}
-
 /// Read a verdict. `None` when absent; a malformed file is an error.
 pub fn load_verdict(home: &Home, id: &str) -> Result<Option<Verdict>, Fault> {
     let p = verdict_path(home, id)?;
@@ -216,7 +204,7 @@ pub fn load_verdict(home: &Home, id: &str) -> Result<Option<Verdict>, Fault> {
         };
         checks.push((tok, st));
     }
-    Ok(Some(Verdict { verdict, checks, at, upstream_label: str_of(&v, "upstream_label").unwrap_or_default(), chain_now: int_of(&v, "chain_now"), anchored_at: int_of(&v, "anchored_at") }))
+    Ok(Some(Verdict { verdict, checks, at, upstream_label: str_of(&v, "upstream_label").ok_or_else(|| Fault::known(Known::SettingsShape, p.display().to_string()))?, chain_now: int_of(&v, "chain_now"), anchored_at: int_of(&v, "anchored_at") }))
 }
 
 /// Read every verdict in the vault (for startup hydration): files under `grants-held/` ending in

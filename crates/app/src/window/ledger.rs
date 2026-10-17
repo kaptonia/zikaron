@@ -37,15 +37,17 @@ impl Win {
     /// note, sign a claim for someone).
     pub(super) fn ledger_acts(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_rows(now);
-        let items = [menu::row(t(Key::U3AdoptMenu)), menu::row(t(Key::U3SucceedMenu)), menu::row(t(Key::U3AnnotateMenu)), menu::row(t(Key::U3AttestMenu))];
+        let items = [menu::row(t(Key::U3AdoptTitle)), menu::row(t(Key::TagHandover)), menu::row(t(Key::U3AnnotateGo)), menu::row(t(Key::U3AttestTitle))];
         if let Some(i) = menu::menu_key(ui, "ledger-more", t(Key::NavMore), false, 190.0, &items) {
             self.u3_form_open([U3Form::Adopt, U3Form::Succeed, U3Form::Annotate, U3Form::Attest][i]);
         }
-        let cells = [seg::Cell::from(t(Key::U3FilterAll)), seg::Cell::from(t(Key::ItemUnanchored)), seg::Cell::from(t(Key::KindGrant))];
+        // "Unconfirmed": every entry the chain has not confirmed yet (`Lamp::confirmed`), a wider set than the
+        // queue the Records page counts as "Pending".
+        let cells = [seg::Cell::from(t(Key::U3FilterAll)), seg::Cell::from(t(Key::LedgerUnconfirmed)), seg::Cell::from(t(Key::KindGrant))];
         if let Some(i) = seg::seg(ui, "ledger-filter", &cells, self.ux.u3.led_filter) {
             self.ux.u3.led_filter = i;
-            self.ux.entry = motion::Entry::Fade;
-            self.ux.entry_key = self.ux.entry_key.wrapping_add(1);
+            self.ux.nav.entry = motion::Entry::Fade;
+            self.ux.nav.entry_key = self.ux.nav.entry_key.wrapping_add(1);
         }
     }
 
@@ -106,6 +108,15 @@ impl Win {
                 open = shown.get(i).map(|r| r.id.clone());
             }
         });
+        // The recorder's seat with no ledger here yet: "Create the ledger", named as the wizard's step it opens, the
+        // same key as on the sublicense page.
+        let mut set_up = false;
+        if read && !self.shell.rooted && self.shell.settings.role == crate::roles::Role::Author {
+            stagger(ui, 3, |ui| set_up = page::Page::new().primary(ui, t(Key::WizGenesisTitle)).1.clicked());
+        }
+        if set_up {
+            self.wizard_open(crate::nav::Step::Genesis);
+        }
         self.ux.search.insert("ledger", query);
         self.ux.range.insert("ledger", range);
         if let Some(id) = open {
@@ -228,6 +239,12 @@ impl Win {
         };
         let items = crate::auditx::items(&a.report);
         let convention = self.shell.rows.as_ref().map(|(r, _)| crate::retractx::read(r).count).unwrap_or(0);
+        // Whether an entry still needs anchoring is judged as the anchor queue and the alerts judge it
+        // (`Lamp::local`): a local deletion pair stays local by intent, so of the report's unanchored entries those
+        // are counted on a grey line of their own and never as owed (with the table not read yet, the report's
+        // own count stands).
+        let unanchored: Vec<String> = crate::auditx::rows_of(&a.report, T::Unanchored).iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let local: Option<usize> = self.shell.rows.as_ref().map(|(r, _)| unanchored.iter().filter(|id| r.iter().any(|x| x.lamp.local() && x.id.eq_ignore_ascii_case(id))).count());
         let lists: [(T, Key, bool); 12] = [
             (T::Anchored, Key::LampAnchored, true),
             (T::Unanchored, Key::U3AuUnanchored, false),
@@ -247,6 +264,10 @@ impl Win {
             .iter()
             .map(|(tok, k, good)| {
                 let n = items.iter().find(|i| i.key == tok.as_str()).and_then(|i| i.count);
+                let n = match (tok, n, local) {
+                    (T::Unanchored, Some(all), Some(l)) => Some(all.saturating_sub(l)),
+                    _ => n,
+                };
                 // This desk's own deletions are recognized by count and are not a fault; only extra ones are unknown.
                 if *tok == T::UnknownType && convention > 0 && n == Some(convention) {
                     return (Mark::Ok, fill1(Key::V2ConventionEntries, &convention.to_string()), None);
@@ -267,6 +288,13 @@ impl Win {
                 (m, t(*k).to_string(), Some(n.map(|x| x.to_string()).unwrap_or_else(|| t(Key::None_).to_string())))
             })
             .collect();
+        // Deleted locally: right under the unanchored line (the list is laid out two to a row), grey, never a
+        // warning.
+        let mut rows = rows;
+        if let Some(l) = local {
+            let at = rows.iter().position(|(_, label, _)| label == t(Key::U3AuUnanchored)).map(|i| (i + 2).min(rows.len())).unwrap_or(rows.len());
+            rows.insert(at, (Mark::Todo, t(Key::LampLocalDeletion).to_string(), Some(l.to_string())));
+        }
         states::checks(ui, &rows, true);
         hint(ui, &fill2(Key::U3AuditHint, &a.entries.to_string(), &self.shell.settings.audit_every.to_string()));
         let mut raw: Vec<(&str, Val)> = vec![(t(Key::AuditLabel), Val::mono(a.label.clone()))];
@@ -346,7 +374,7 @@ impl Win {
                         None => queue_it = key::key(ui, t(Key::U3QueueIt), Role::Secondary, true).clicked(),
                     }
                 } else if anchored && !matches!(row.kind, E::History) {
-                    annotate = key::key(ui, t(Key::U3AnnotateDots), Role::Secondary, true).clicked();
+                    annotate = key::key(ui, t(Key::U3AnnotateGo), Role::Secondary, true).clicked();
                 }
             });
         });
