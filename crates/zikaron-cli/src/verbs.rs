@@ -1,5 +1,5 @@
-//! The twenty-five verbs. Each does the same three steps: arrange arguments, call the public API below, render
-//! the returned state on one line.
+//! The twenty-six verbs. Each but `mcp` does the same three steps: arrange arguments, call the public API below,
+//! render the returned state on one line (`mcp` runs the others, `crate::mcp`).
 //!
 //! The shell only requires the flags it needs itself (where the ledger is, whose key, where to write).
 //! Body members the `zikaron/1` spec requires are enforced by the core: a `history` without `mode` or a `grant`
@@ -42,7 +42,7 @@ fn flags<'a>(base: &[&'a str], more: &[&'a str]) -> Vec<&'a str> {
 /// every verb's arguments by its row before the verb runs (the crate's one `close`), [`VERBS`] is this table's
 /// first column, and the `contract` verb prints it. `--key-file` is taken wherever `key` is
 /// (`args::STANDS_FOR`, read by `close`).
-const ACCEPTS: [(&str, &[&str], &[&str]); 25] = [
+const ACCEPTS: [(&str, &[&str], &[&str]); 26] = [
     ("keygen", &[], &[]),
     ("init", &[], &["ledger", "key", "statement", "home"]),
     ("history", &WRITE, &["content", "mark", "toolchain", "note", "file", "home"]),
@@ -62,19 +62,40 @@ const ACCEPTS: [(&str, &[&str], &[&str]); 25] = [
     ("fpm-sign", &[], &["key", "work", "grant", "note", "rows", "out"]),
     ("ack-sign", &[], &["key", "note", "fpm", "fpm-doc", "variant", "out"]),
     ("badge", &[], &["encode", "decode"]),
-    ("kit-export", &[], &["ledger", "root", "note", "out", "entry", "file", "proof", "as", "home"]),
-    ("kit-verify", &[], &["kit", "fragment", "unavailable"]),
+    ("kit-export", &[], &["ledger", "root", "note", "out", "entry", "file", "proof", "as", "home", "to", "to-key", "endpoint", "proxy", "originals"]),
+    ("kit-verify", &[], &["kit", "fragment", "unavailable", "originals-to", "home", "ledger", "key"]),
     ("hand-over", &[], &["ledger", "out"]),
     ("take-over", &[], &["ledger", "handoff"]),
     ("show", &[], &["ledger", "entry", "path"]),
     ("contract", &[], &[]),
+    // The Model Context Protocol on stdin and stdout (`mcp`, CLI-SCHEMA §13): it takes no flag.
+    ("mcp", &[], &[]),
+];
+
+/// The flags a verb takes more than once (read with `Args::many`), by verb: the readings that need to know
+/// whether a flag repeats (`mcp`'s tool parameters) read it here.
+pub const REPEATED: [(&str, &str); 14] = [
+    ("anchor", "hash"),
+    ("scan", "fixture"),
+    ("scan", "endpoint"),
+    ("audit", "unavailable"),
+    ("check-grant", "unavailable"),
+    ("chain-check", "unavailable"),
+    ("chain-check", "hop"),
+    ("depth", "unavailable"),
+    ("badge", "encode"),
+    ("kit-export", "entry"),
+    ("kit-export", "file"),
+    ("kit-export", "proof"),
+    ("kit-export", "endpoint"),
+    ("kit-verify", "unavailable"),
 ];
 
 /// The verbs the desktop does when `--home` names its home, and the flags each takes beside `--home` then (the
 /// desktop writes with its own identity, into its own ledger: the flags that name a key, a ledger or a link are
 /// not taken). Closed: a verb not here is not handed to the desktop (a verb in [`BY_HAND`] takes `--home` and is
 /// refused here). `CLI-SCHEMA.md` §11 is the readable form.
-pub const HOME: [(&str, &[&str]); 10] = [
+pub const HOME: [(&str, &[&str]); 11] = [
     ("init", &["statement"]),
     ("history", &["file", "note"]),
     ("grant", &["grantee", "work", "terms", "history", "window-from", "window-to", "scope", "upstream"]),
@@ -84,7 +105,8 @@ pub const HOME: [(&str, &[&str]); 10] = [
     ("annotate", &["subject", "note"]),
     ("retract", &["subject", "note"]),
     ("anchor", &[]),
-    ("kit-export", &["entry", "note", "out", "as"]),
+    ("kit-export", &["entry", "note", "out", "as", "to", "to-key", "originals"]),
+    ("kit-verify", &["kit", "originals-to"]),
 ];
 
 /// The verbs that take `--home` but are done on the desktop by hand only: a final, rare change of who holds the
@@ -112,10 +134,10 @@ const ALL_FLAGS: [&str; 34] = [
     "subject", "endpoint", "form", "registry", "hash", "calldata", "wait-secs",
 ];
 
-const MORE_FLAGS: [&str; 25] = [
+const MORE_FLAGS: [&str; 28] = [
     "fixture", "basis", "adoptions", "input", "fragment", "unavailable", "now", "hop", "entry",
     "path", "out", "file", "proof", "variant", "fpm", "fpm-doc", "rows", "encode", "decode", "proxy",
-    "key-file", "home", "as", "kit", "handoff",
+    "key-file", "home", "as", "kit", "handoff", "originals-to", "to-key", "originals",
 ];
 
 /// The way out for the verbs that reach nodes: `--proxy system` (or no flag) follows the terminal's proxy
@@ -183,6 +205,7 @@ pub fn run(a: &Args) -> Answer {
         "take-over" => crate::handoff::take_over(a),
         "show" => show(a),
         "contract" => contract(a),
+        "mcp" => crate::mcp::serve(a),
         // A verb not in the table is named by its place and length, never echoed (it may be anything pasted).
         other => out::misuse(Reason::Args, out::Subject::Placed { at: 1, bytes: other.len() }, out::Said::NotAVerb),
     }
@@ -794,7 +817,13 @@ fn scan(a: &Args) -> Answer {
     proxy_from(a);
     let fixtures = a.many("fixture");
     let endpoints_given = a.many("endpoint");
-    if fixtures.is_empty() == endpoints_given.is_empty() {
+    // A home's own nodes: `--ledger` names a home the desktop keeps and neither `--endpoint` nor `--fixture` is
+    // given; the nodes come from its settings (`home_nodes`).
+    let at_home = match a.one("ledger") {
+        Some(at) if fixtures.is_empty() && endpoints_given.is_empty() && crate::sealed::is_home(&at) => Some(at),
+        _ => None,
+    };
+    if at_home.is_none() && fixtures.is_empty() == endpoints_given.is_empty() {
         out::misuse(Reason::Args, out::Subject::Flags(vec!["fixture", "endpoint"]), out::Said::OneOf);
     }
     // A run over recordings reads no basis, no adoptions and no network: any of them given (once or more) is
@@ -835,7 +864,13 @@ fn scan(a: &Args) -> Answer {
             }
         }
     } else {
-        let specs = chain::endpoint_specs(&a.many_at("endpoint"));
+        let specs = match &at_home {
+            Some(at) => match home_nodes(at, a.one("proxy").is_none()) {
+                Ok(specs) => specs,
+                Err(answer) => return answer,
+            },
+            None => chain::endpoint_specs(&a.many_at("endpoint")),
+        };
         thin = chain::thin_chains(&specs);
         // The basis: the file `--basis` names, or the one a home the desktop keeps declares (`--ledger`).
         let basis = match (a.one("basis"), a.one("ledger")) {
@@ -909,6 +944,27 @@ fn scan(a: &Args) -> Answer {
 /// for the window's last block. A ledger folder that is not a home's has no settings to read (misuse, `--ledger`);
 /// a home whose settings name no chain or no registry has no basis (`E_SCAN`, `E_NO_BASIS`); no endpoint of that
 /// chain given, or none answering its head, is no answer (`E_UNREACHABLE`).
+/// A home's nodes for the chain its settings name, read with the credential as a send reads them
+/// (`sealedsend::nodes_of`), and, when `--proxy` was not given (`their_proxy`), this machine's proxy for the command
+/// line as a send takes it. No chain set is `E_NO_BASIS`, as for the basis; no node for that chain is no answer
+/// (`E_UNREACHABLE`), the nodes never said.
+fn home_nodes(at: &str, their_proxy: bool) -> Result<Vec<(u64, String)>, Answer> {
+    let r = crate::sealed::read(at, now_secs()).map_err(|t| crate::sealed::refused(&t))?;
+    let ground = r.ground().map_err(|t| crate::sealed::refused(&t))?;
+    let Some(chain) = ground.chain_id else {
+        return Err(out::unanswered(Reason::Scan, vec![(Key::Token, s("E_NO_BASIS")), (Key::Detail, s(at))]));
+    };
+    if their_proxy {
+        let cli = r.machine_settings().map_err(|t| crate::sealed::refused(&t))?;
+        zikaron_send::node::take_machine_route(cli.proxy.as_deref());
+    }
+    let nodes = crate::sealedsend::nodes_of(&ground, chain);
+    if nodes.is_empty() {
+        return Err(out::unanswered(Reason::Unreachable, vec![(Key::Detail, s(&format!("NO_ENDPOINT {chain}")))]));
+    }
+    Ok(nodes.iter().map(|e| (e.chain, e.url.for_transport().to_string())).collect())
+}
+
 fn home_basis(at: &str, specs: &[(u64, String)]) -> Result<Vec<u8>, Answer> {
     if !crate::sealed::is_home(at) {
         out::misuse(Reason::Args, out::Subject::flag("ledger"), out::Said::NotAHome);
@@ -1353,11 +1409,32 @@ fn form_of(a: &Args) -> kitout::Form {
     }
 }
 
+/// `--originals`: a home's chosen records' originals go in unless it is `none`, its one word; any other word is
+/// misuse. Judged here for both ways a home is named (`--ledger`, and `--home` before the desktop is asked).
+pub(crate) fn originals_wanted(a: &Args) -> bool {
+    match a.one("originals").as_deref() {
+        None => true,
+        Some("none") => false,
+        Some(_) => out::misuse(Reason::Args, out::Subject::flag("originals"), out::Said::OriginalsWord),
+    }
+}
+
 fn kit_export(a: &Args) -> Answer {
     let at = a.need("ledger");
     let form = form_of(a);
+    let out_dir = a.need("out");
+    // Whom the one file is sealed to, and where an address's key is looked for: arguments, judged before anything
+    // is read.
+    let at_home = crate::sealed::is_home(&at);
+    // A plain ledger folder has no index of signed files: its originals are each given with `--file`.
+    if !at_home && a.one("originals").is_some() {
+        out::misuse(Reason::Args, out::Subject::flag("originals"), out::Said::OriginalsHomeOnly);
+    }
+    let with_originals = originals_wanted(a);
+    let to = seal_to(a);
+    let seek = seek_of(a, to, at_home);
     // A home the desktop keeps sealed is read with the credential, as every read of it is (`sealed::read`).
-    let (items, home) = if crate::sealed::is_home(&at) {
+    let (items, home) = if at_home {
         match crate::sealed::read(&at, now_secs()) {
             Ok(r) => (r.items.clone(), Some(r)),
             Err(t) => return crate::sealed::refused(&t),
@@ -1443,14 +1520,39 @@ fn kit_export(a: &Args) -> Answer {
     };
     // From a home: the chosen records' originals as the desktop takes them, and the note's anchoring line.
     let taken = match &home {
-        Some(r) => match from_home(r, &root, &mut bundle) {
+        Some(r) => match from_home(r, &root, &mut bundle, with_originals) {
             Ok(x) => Some(x),
             Err(answer) => return answer,
         },
         None => None,
     };
-    let out_dir = a.need("out");
-    match kitout::export(std::path::Path::new(&out_dir), bundle, form) {
+    // The recipient's key: given, or an address's found on chain (its own proof); every refusal leaves zero bytes
+    // written.
+    let key = match (to, seek) {
+        (None, _) => None,
+        (Some(SealTo::Key(k)), _) => Some(k),
+        (Some(SealTo::Address(addr)), Some(seek)) => match key_by(seek, &addr, home.as_ref(), a.one("proxy").is_some()) {
+            Ok(k) => Some(k),
+            Err(answer) => return answer,
+        },
+        (Some(SealTo::Address(_)), None) => None,
+    };
+    let out_path = std::path::Path::new(&out_dir);
+    let landed = match key {
+        None => kitout::export(out_path, bundle, form).map_err(|t| kit_out_refused(&t)),
+        // Sealed: the plain one file laid out in a folder of its own and sealed into `--out`, the sealed layer's one
+        // way for both ends (`zikaron_seal::addressed::seal_out`).
+        Some(k) => {
+            use zikaron_seal::addressed::Sealing;
+            match zikaron_seal::addressed::seal_out(&k, out_path, |plain| kitout::export(plain, bundle, kitout::Form::File)) {
+                Ok((l, _)) => Ok(l),
+                Err(Sealing::Lay(t)) => Err(kit_out_refused(&t)),
+                Err(Sealing::Land(t)) => Err(kit_out_refused(&kitout::Trouble::from(t))),
+                Err(Sealing::Refused(r)) => Err(out::denied(Reason::Ledger, vec![(Key::Detail, said_detail("E_IO", Some(r.tail()))), (Key::Path, s(&out_dir))])),
+            }
+        }
+    };
+    match landed {
         Ok(l) => {
             let written = kit_written(&l.dropped, l.entries as u64, l.files as u64, &l.kit_id, &out_dir, l.proofs as u64);
             match taken {
@@ -1461,9 +1563,15 @@ fn kit_export(a: &Args) -> Answer {
                 None => written,
             }
         }
-        // When the kit core judges a kit invalid, `state` is the `zikaron.kit/1` verdict and `detail` its subject;
-        // disk failures carry `path`. The fields are read from the kit output crate's error in one place.
-        Err(t) => match (t.verdict(), t.path()) {
+        Err(answer) => answer,
+    }
+}
+
+/// A kit output failure as `kit-export` answers it, read from the kit output crate's error in one place: when the
+/// kit core judges a kit invalid, `state` is the `zikaron.kit/1` verdict and `detail` its subject; disk failures
+/// carry `path`.
+fn kit_out_refused(t: &kitout::Trouble) -> Answer {
+    match (t.verdict(), t.path()) {
             (Some(v), _) => out::denied(
                 Reason::Kit,
                 vec![
@@ -1483,8 +1591,141 @@ fn kit_export(a: &Args) -> Answer {
                 None => out::denied(Reason::Ledger, vec![(Key::Path, s(p))]),
             },
             _ => out::denied(Reason::Ledger, vec![(Key::Detail, s(&t.subject()))]),
-        },
     }
+}
+
+/// Whom `kit-export` seals its one file to: an address (`--to`), its key looked for on chain, or a key (`--to-key`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SealTo {
+    Address([u8; 20]),
+    Key([u8; 33]),
+}
+
+/// Whom `kit-export` seals to, judged as arguments before anything is read, on every road (the desktop's door
+/// too, `desk::read_args`): both ways given, or either with `--as folder`, is misuse in the words of the addressed
+/// package's one table (`zikaron_seal::addressed::words`); an address not in its form, or a key that is not a point
+/// of the curve (`zikaron_seal::addressed::key_text`, both ends' one reading), is misuse naming its flag. None given,
+/// the package is not sealed.
+pub(crate) fn seal_to(a: &Args) -> Option<SealTo> {
+    let (to, key) = (a.one("to"), a.one("to-key"));
+    let flag = match (&to, &key) {
+        (None, None) => return None,
+        (Some(_), Some(_)) => out::misuse(Reason::Args, out::Subject::Flags(vec!["to", "to-key"]), out::Said::AddressedBoth),
+        (Some(_), None) => "to",
+        (None, Some(_)) => "to-key",
+    };
+    if a.one("as").as_deref().and_then(kitout::Form::of) == Some(kitout::Form::Folder) {
+        out::misuse(Reason::Args, out::Subject::Flags(vec!["as", flag]), out::Said::AddressedFolder);
+    }
+    if let Some(t) = to {
+        return match zikaron_seal::identities::address(&t) {
+            Some(x) => Some(SealTo::Address(x)),
+            None => out::misuse(Reason::Args, out::Subject::flag("to"), out::Said::Not20),
+        };
+    }
+    match key.as_deref().and_then(zikaron_seal::addressed::key_text) {
+        Some(k) => Some(SealTo::Key(k)),
+        None => out::misuse(Reason::Args, out::Subject::flag("to-key"), out::Said::AddressedKeyShape),
+    }
+}
+
+/// Where `kit-export --to` looks for the address's key.
+enum Seek {
+    /// A home's ledger: the home's network and this machine's read-only networks, with the home's nodes and this
+    /// machine's proxy (`--proxy` given goes by it), as `scan --ledger` reads.
+    Home,
+    /// A plain ledger folder: the networks `--endpoint` gives, each chain's registry and start block from the known
+    /// deployments table.
+    Given(Vec<zikaron_send::recipient::Net>),
+}
+
+/// Where an address's key is looked for, judged as arguments: `--endpoint` and `--proxy` are taken only with
+/// `--to` (misuse otherwise, naming the flag); a home's ledger reads its own networks and takes no `--endpoint`; a
+/// plain ledger folder needs `--endpoint`, each chain one the known deployments table names
+/// (`zikaron_anchor::deploy`; another is misuse naming the value by its place). The way out is set here
+/// (`--proxy`, or the system's on a plain folder; a home without `--proxy` takes this machine's when its key is
+/// sought, `key_by`).
+fn seek_of(a: &Args, to: Option<SealTo>, at_home: bool) -> Option<Seek> {
+    let endpoints = a.many_at("endpoint");
+    let proxy_given = a.one("proxy").is_some();
+    if !matches!(to, Some(SealTo::Address(_))) {
+        for (flag, given) in [("endpoint", !endpoints.is_empty()), ("proxy", proxy_given)] {
+            if given {
+                out::misuse(Reason::Args, out::Subject::flag(flag), out::Said::OnlyWithTo);
+            }
+        }
+        return None;
+    }
+    if at_home {
+        if !endpoints.is_empty() {
+            out::misuse(Reason::Args, out::Subject::flag("endpoint"), out::Said::HomeSettingsSay);
+        }
+        if proxy_given {
+            proxy_from(a);
+        }
+        return Some(Seek::Home);
+    }
+    let specs = chain::endpoint_specs(&endpoints);
+    for (at, spec) in &endpoints {
+        let known = zikaron_anchor::rpc::endpoint_spec(spec).ok().map(|(c, _)| zikaron_anchor::deploy::ROWS.iter().any(|r| r.chain_id == c));
+        if known != Some(true) {
+            out::misuse(Reason::Args, out::unechoed_endpoint(*at, spec), out::Said::ChainNotDeployed);
+        }
+    }
+    let mut nets = Vec::new();
+    for c in chain::chains_of(&specs) {
+        let Some((row, registry)) = zikaron_anchor::deploy::ROWS.iter().find(|r| r.chain_id == c).and_then(|r| Some((r, zikaron_seal::identities::address(r.registry)?))) else {
+            out::misuse(Reason::Args, out::Subject::flag("endpoint"), out::Said::ChainNotDeployed);
+        };
+        let nodes = specs.iter().filter(|(x, _)| *x == c).map(|(_, u)| zikaron_send::node::NodeAddr::new(u.as_str())).collect();
+        nets.push(zikaron_send::recipient::Net { chain: c, registry, from_block: row.from_block, nodes });
+    }
+    proxy_from(a);
+    Some(Seek::Given(nets))
+}
+
+/// The key behind `address`, by the sender's one judgement for both ends (`zikaron_send::recipient::key_for`): on the
+/// networks given; or on a home's network (none set is a network not read) and this machine's read-only networks,
+/// each past its fingerprint gate, with the home's nodes, and this machine's proxy unless `--proxy` was given (set
+/// already, `seek_of`). Not found: `E_ADDRESSED` with the table's code, exit 4 when some network was not read
+/// through.
+fn key_by(seek: Seek, address: &[u8; 20], home: Option<&crate::sealed::Reading>, proxy_given: bool) -> Result<[u8; 33], Answer> {
+    use zikaron_send::recipient::Net;
+    let (nets, readonly, unread) = match (seek, home) {
+        (Seek::Given(nets), _) => (nets, Vec::new(), Vec::new()),
+        (Seek::Home, Some(r)) => {
+            let ground = r.ground().map_err(|t| crate::sealed::refused(&t))?;
+            if !proxy_given {
+                let cli = r.machine_settings().map_err(|t| crate::sealed::refused(&t))?;
+                zikaron_send::node::take_machine_route(cli.proxy.as_deref());
+            }
+            // A home's network with no chain set is no network to read (the sender's judgement counts it for nothing).
+            let mut nets = Vec::new();
+            if let (Some(chain), Some(registry)) = (ground.chain_id, ground.registry) {
+                nets.push(Net { chain, registry, from_block: ground.from_block, nodes: crate::sealedsend::nodes_of(&ground, chain).into_iter().map(|e| e.url).collect() });
+            }
+            let readonly = r
+                .read_networks()
+                .map_err(|t| crate::sealed::refused(&t))?
+                .into_iter()
+                .map(|n| Net { chain: n.chain_id, registry: n.registry, from_block: n.from_block, nodes: n.nodes.iter().map(|u| zikaron_send::node::NodeAddr::new(u.as_str())).collect() })
+                .collect();
+            (nets, readonly, Vec::new())
+        }
+        (Seek::Home, None) => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    zikaron_send::recipient::key_for(address, nets, &readonly, unread, zikaron_anchor::deploy::CODE_HASH).map_err(|(why, words)| addressed_refused(why, &words))
+}
+
+/// A record package addressed to one key, refused: `E_ADDRESSED` with the code of the addressed package's one table
+/// (`token`, as the desktop spells it) and its evidence (`detail`, never a recipient), in that table's words; exit 4
+/// for the one member that is no answer (`Why::unanswered`), 1 otherwise. Built here for every road this command
+/// line opens or seals a package on.
+pub(crate) fn addressed_refused(why: zikaron_seal::addressed::Why, evidence: &str) -> Answer {
+    let members = vec![(Key::Token, s(why.code())), (Key::Detail, s(evidence))];
+    let (zh, en) = why.words();
+    let a = if why.unanswered() { out::unanswered(Reason::Addressed, members) } else { out::denied(Reason::Addressed, members) };
+    a.telling(out::say(zh, en).to_string())
 }
 
 /// What a record package exported from a home takes besides its entries, as the desktop's export does: the
@@ -1493,8 +1734,9 @@ fn kit_export(a: &Args) -> Answer {
 /// (`zikaron_glue::kitnames`, renamed ones listed in its name table); the terms documents of its chosen grants
 /// (`zikaron_seal::terms`); and the home's anchoring point as the note's last line (`zikaron_glue::anchoredon`,
 /// from the home's settings). Returns the package paths of the originals taken and the paths of those left out
-/// (gone, no longer the recorded bytes, or with a name that cannot be made kit-legal).
-fn from_home(r: &crate::sealed::Reading, root: &str, b: &mut kitout::Bundle) -> Result<(Vec<String>, Vec<String>), Answer> {
+/// (gone, no longer the recorded bytes, or with a name that cannot be made kit-legal); both empty with
+/// `with_originals` false (`--originals none`), when no original is looked for.
+fn from_home(r: &crate::sealed::Reading, root: &str, b: &mut kitout::Bundle, with_originals: bool) -> Result<(Vec<String>, Vec<String>), Answer> {
     let rows = r.records().map_err(|t| crate::sealed::refused(&t))?;
     let chosen: Vec<String> = b
         .entries
@@ -1505,6 +1747,8 @@ fn from_home(r: &crate::sealed::Reading, root: &str, b: &mut kitout::Bundle) -> 
         .collect();
     let mut names: Vec<(String, String)> = Vec::new();
     let (mut taken, mut left_out, mut contents): (Vec<String>, Vec<String>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
+    // Left out (`--originals none`): no chosen record is looked up, so none is taken or left out.
+    let chosen = if with_originals { chosen } else { Vec::new() };
     for row in zikaron_seal::records::originals_for(&rows, root, &chosen) {
         let content = row.content.to_ascii_lowercase();
         if contents.contains(&content) {
@@ -1575,7 +1819,48 @@ fn kit_verify(a: &Args) -> Answer {
         v.member(Key::Fragment.as_str()).cloned().unwrap_or(v)
     });
     let unavailable: Vec<String> = a.many("unavailable");
-    let p = std::path::Path::new(&at);
+    // The ways a package addressed to one key opens: this machine's identities with the credential (`--ledger`
+    // naming a home the desktop keeps), or the key given (`--key`, `--key-file`); one way, not both.
+    let ledger = a.one("ledger");
+    let key_given = a.one("key").is_some() || a.one(args::KEY_FILE).is_some();
+    if let Some(l) = &ledger {
+        if key_given {
+            out::misuse(Reason::Args, out::Subject::Flags(vec!["key", args::KEY_FILE]), out::Said::SealedNoKey);
+        }
+        if !crate::sealed::is_home(l) {
+            out::misuse(Reason::Args, out::Subject::flag("ledger"), out::Said::LedgerNotHome);
+        }
+    }
+    let key = key_given.then(|| zikaron_seal::addressed::Bytes(a.key("key")));
+    // A package addressed to one key is opened first, into a plain one-file package of its own (removed when this
+    // returns), by the first key offered that is its recipient; that package is then verified, and its originals
+    // taken, as any other. No key opens it: refused by name, nothing opened kept.
+    let given = std::path::Path::new(&at);
+    let opened = if zikaron_glue::addressed::is_addressed_at(given) {
+        // A seat passed over because its slot did not read may be the recipient: when no key offered opens the
+        // package, its trouble is the answer, never "none of them is the recipient".
+        let mut passed: Option<zikaron_seal::Trouble> = None;
+        let keys: Vec<zikaron_seal::addressed::Bytes> = match (&ledger, key) {
+            (Some(l), _) => match crate::sealed::identity_keys(l, now_secs()) {
+                Ok((ks, p)) => {
+                    passed = p;
+                    ks.into_iter().map(zikaron_seal::addressed::Bytes).collect()
+                }
+                Err(t) => return crate::sealed::refused(&t),
+            },
+            (None, Some(k)) => vec![k],
+            (None, None) => out::misuse(Reason::Args, out::Subject::Flags(vec!["key", "ledger", "home"]), out::Said::AddressedNeedsKey),
+        };
+        let lent: Vec<&dyn zikaron_seal::addressed::Recipient> = keys.iter().map(|k| k as &dyn zikaron_seal::addressed::Recipient).collect();
+        match (zikaron_seal::addressed::open(given, &lent), passed) {
+            (Ok(o), _) => Some(o),
+            (Err(zikaron_seal::addressed::Refused::NotRecipient), Some(t)) => return crate::sealed::refused(&t),
+            (Err(r), _) => return addressed_open_refused(&r),
+        }
+    } else {
+        None
+    };
+    let p = opened.as_ref().map(|o| o.file.as_path()).unwrap_or(given);
     let unpacked = if zikaron_glue::container::is_container_at(p) {
         match zikaron_glue::read::unpack(p) {
             Ok(u) => Some(u),
@@ -1587,21 +1872,59 @@ fn kit_verify(a: &Args) -> Answer {
     let dir = unpacked.as_ref().map(|u| u.dir.as_path()).unwrap_or(p);
     let answer = records_of(dir, fragment.as_ref(), &unavailable);
     drop(unpacked);
+    let answer = match a.one("originals-to") {
+        Some(to) => originals_to(answer, p, std::path::Path::new(&to)),
+        None => answer,
+    };
+    drop(opened);
     answer
+}
+
+/// Opening a package addressed to one key, refused: in the addressed package's one table (`addressed_refused`); a
+/// disk or entropy failure, which has no code there, as unreadable with the system's words (`E_UNREADABLE`, exit 1,
+/// `token` `IO`).
+fn addressed_open_refused(r: &zikaron_seal::addressed::Refused) -> Answer {
+    match zikaron_seal::addressed::Why::of(r) {
+        Some(why) => addressed_refused(why, format!("{} {}", r.code(), r.tail()).trim()),
+        None => out::denied(Reason::Unreadable, vec![(Key::Token, s(r.code())), (Key::Detail, s(r.tail()))]),
+    }
+}
+
+/// `kit-verify --originals-to <folder>`: a package the kit law refuses gives nothing (its answer as it is);
+/// otherwise its originals are taken out into the folder by the one way the desktop takes them
+/// (`zikaron_glue::extract::take`: the package read again and judged, the matching originals placed all or nothing),
+/// and the records' answer says under which names (`taken`) and where (`path`). Not taken, nothing is written and
+/// the answer is `E_EXTRACT` with the refusal's code (`token`), the names it is about (`names`) and what it names
+/// besides (`detail`), its words those of `zikaron_glue::extract::words`; a package that no longer passes when read
+/// again is refused as the kit law refuses it.
+fn originals_to(records: Answer, kit: &std::path::Path, to: &std::path::Path) -> Answer {
+    use zikaron_glue::extract::Refused;
+    if records.value.member(Key::Reason.as_str()).and_then(|v| v.as_str()) == Some(Reason::Kit.as_str()) {
+        return records;
+    }
+    match zikaron_glue::extract::take(kit, to) {
+        Ok((_, landed)) => with_taken(records, &landed.names, &to.display().to_string()),
+        Err(Refused::Kit { verdict, subject }) => kit_refused(&verdict, subject.as_deref()),
+        Err(Refused::Unpack { code, subject }) => out::denied(Reason::Kit, vec![(Key::Detail, s(&subject)), (Key::State, s(&code))]),
+        Err(r) => {
+            let mut ms = vec![(Key::Token, s(&r.code()))];
+            if !r.names().is_empty() {
+                ms.push((Key::Names, Value::Arr(r.names().iter().map(|n| s(n)).collect())));
+            }
+            if let Some(d) = r.detail() {
+                ms.push((Key::Detail, s(&d)));
+            }
+            let words = r.words().map(|(zh, en)| out::say(zh, en).to_string()).unwrap_or_default();
+            out::denied(Reason::Extract, ms).telling(words)
+        }
+    }
 }
 
 /// The record verdicts of a record package folder (see [`kit_verify`]).
 fn records_of(dir: &std::path::Path, fragment: Option<&Value>, unavailable: &[String]) -> Answer {
-    use zikaron_glue::recordcheck::{OnChain, Original};
     let kit_id = match zikaron_kit::kitdir::verify_kit(dir) {
         zikaron_kit::kitdir::KitVerdict::Ok { kit_id, .. } => hexfmt::encode(&kit_id),
-        zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } => {
-            let mut ms = vec![(Key::State, s(verdict.as_str()))];
-            if let Some(x) = subject {
-                ms.push((Key::Detail, s(&x)));
-            }
-            return out::denied(Reason::Kit, ms);
-        }
+        zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } => return kit_refused(verdict.as_str(), subject.as_deref()),
     };
     let items = match zikaron_glue::read::kit_entries(dir) {
         Ok(x) => x,
@@ -1616,33 +1939,46 @@ fn records_of(dir: &std::path::Path, fragment: Option<&Value>, unavailable: &[St
         audit::audit_full(&input)
     });
     let read = outcome.as_ref().and_then(|o| fragment.map(|f| (o, f)));
-    let rows = zikaron_glue::recordcheck::records(&items, &originals, read);
-    let word_original = |o: Original| match o {
-        Original::Match => "match",
-        Original::Mismatch => "mismatch",
-        Original::Missing => "missing",
-    };
-    let word_chain = |c: OnChain| match c {
-        OnChain::Anchored { .. } => "anchored",
-        OnChain::NotAnchored => "notAnchored",
-        OnChain::Unread => "unread",
-    };
+    let rows: Vec<zikaron_glue::door::Record> = zikaron_glue::recordcheck::records(&items, &originals, read)
+        .into_iter()
+        .map(|r| zikaron_glue::door::Record { entry_id: r.id, content: r.content, original: r.original, chain: r.chain })
+        .collect();
+    records_answer(&kit_id, items.len() as u64, &rows)
+}
+
+/// A record package the kit law refuses: `E_KIT` with its verdict (`state`) and subject (`detail`). Built here for
+/// both roads (the package read here, and the desktop's word through `--home`).
+pub(crate) fn kit_refused(verdict: &str, subject: Option<&str>) -> Answer {
+    let mut ms = vec![(Key::State, s(verdict))];
+    if let Some(x) = subject {
+        ms.push((Key::Detail, s(x)));
+    }
+    out::denied(Reason::Kit, ms)
+}
+
+/// The answer of `kit-verify` from the record facts (`zikaron_glue::recordcheck`, the one judge): the package's id,
+/// how many entries it carries, each record's `entryId`, `content`, `original`, `anchored` and `firstAt`; exit 0
+/// when every original matches and every record is anchored, `E_RECORDS` exit 1 when an original is not the one
+/// recorded, `E_RECORDS` exit 3 otherwise. Built here for both roads (the package read here, and the desktop's facts
+/// through `--home`), so the two cannot answer in two shapes.
+pub(crate) fn records_answer(kit_id: &str, entries: u64, rows: &[zikaron_glue::door::Record]) -> Answer {
+    use zikaron_glue::recordcheck::{OnChain, Original};
     let listed: Vec<Value> = rows
         .iter()
         .map(|r| {
             let mut ms = vec![
-                (Key::EntryId.as_str().to_string(), s(&r.id)),
+                (Key::EntryId.as_str().to_string(), s(&r.entry_id)),
                 (Key::Content.as_str().to_string(), s(&r.content)),
-                (Key::Original.as_str().to_string(), s(word_original(r.original))),
-                (Key::Anchored.as_str().to_string(), s(word_chain(r.chain))),
+                (Key::Original.as_str().to_string(), s(r.original.word())),
+                (Key::Anchored.as_str().to_string(), s(r.chain.word())),
             ];
-            if let OnChain::Anchored { first_at } = r.chain {
+            if let Some(first_at) = r.chain.first_at() {
                 ms.push((Key::FirstAt.as_str().to_string(), Value::Int(first_at)));
             }
             Value::Obj(ms)
         })
         .collect();
-    let members = vec![(Key::KitId, s(&kit_id)), (Key::Entries, Value::Int(items.len() as u64)), (Key::Records, Value::Arr(listed))];
+    let members = vec![(Key::KitId, s(kit_id)), (Key::Entries, Value::Int(entries)), (Key::Records, Value::Arr(listed))];
     if rows.iter().any(|r| r.original == Original::Mismatch) {
         out::denied(Reason::Records, members).telling(out::Said::RecordsNotAll.text().to_string())
     } else if rows.iter().all(|r| r.original == Original::Match && matches!(r.chain, OnChain::Anchored { .. })) {
@@ -1650,6 +1986,11 @@ fn records_of(dir: &std::path::Path, fragment: Option<&Value>, unavailable: &[St
     } else {
         out::partial(Reason::Records, members).telling(out::Said::RecordsNotAll.text().to_string())
     }
+}
+
+/// The records' answer with the originals taken out: under which names (`taken`) and where (`path`).
+pub(crate) fn with_taken(records: Answer, names: &[String], to: &str) -> Answer {
+    records.with(vec![(Key::Taken, Value::Arr(names.iter().map(|n| s(n)).collect())), (Key::Path, s(to))])
 }
 
 /// The one rule for entry ids: strip at most one `0x`, then apply the storage crate's naming rule (64
@@ -1673,7 +2014,7 @@ fn show(a: &Args) -> Answer {
             // the core computes as `--entry`; not there is `E_ENTRY_ABSENT`.
             let at = a.need("ledger");
             let p = std::path::Path::new(&at);
-            if zikaron_glue::mirror::is_bundle(p) || zikaron_glue::read::is_kit(p) || zikaron_glue::container::is_container_at(p) || crate::sealed::is_home(&at) {
+            if zikaron_glue::mirror::is_bundle(p) || zikaron_glue::read::is_kit(p) || zikaron_glue::container::is_container_at(p) || zikaron_glue::addressed::is_addressed_at(p) || crate::sealed::is_home(&at) {
                 let items = match ledger::read_any(&at, now_secs()) {
                     Ok(x) => x,
                     Err(r) => return read_refused(r),
@@ -2000,6 +2341,10 @@ fn read_refused(r: ledger::ReadRefused) -> Answer {
         // A record package in one file: the layout's code is the kit's state, as a kit the kit law refused.
         ledger::ReadRefused::File(b) => out::denied(Reason::Kit, vec![(Key::Detail, s(&b.subject())), (Key::State, s(b.code()))]),
         ledger::ReadRefused::Sealed(t) => crate::sealed::refused(&t),
+        // The addressed package's code; the line for people says where this command line opens it.
+        ledger::ReadRefused::Addressed => {
+            out::denied(Reason::Addressed, vec![(Key::Token, s(zikaron_seal::addressed::Why::Elsewhere.code())), (Key::Detail, Value::Str(String::new()))]).telling(out::Said::AddressedElsewhere.text().to_string())
+        }
     }
 }
 
@@ -2050,7 +2395,7 @@ pub fn flag_named(x: &str) -> Option<&'static str> {
     ALL_FLAGS.iter().chain(MORE_FLAGS.iter()).find(|f| **f == x).copied()
 }
 
-/// The twenty-two verbs: the first column of [`ACCEPTS`], in its order.
+/// The twenty-six verbs: the first column of [`ACCEPTS`], in its order.
 pub const VERBS: [&str; ACCEPTS.len()] = {
     let mut names = [""; ACCEPTS.len()];
     let mut i = 0;

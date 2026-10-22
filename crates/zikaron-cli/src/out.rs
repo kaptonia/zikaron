@@ -11,7 +11,9 @@
 //! - [`misuse`] writes stderr only and exits.
 //!
 //! So every run ends either through `misuse` with exit 2 and zero bytes on stdout, or through `emit` with
-//! exactly one canonical value and the table's exit code. An answer may carry one line for people
+//! exactly one canonical value and the table's exit code. One verb is the exception (CLI-SCHEMA §1 rule 7):
+//! `mcp` writes one message per line through [`frame`], which returns so the next can follow, and ends through
+//! [`finish`] when its input closes; no other verb calls either. An answer may carry one line for people
 //! ([`Answer::told`]), which `emit` writes to stderr before stdout; it is not part of the contract, and stdout and
 //! the exit code are the same with or without it. The tests also scan that stdout is written only in
 //! this file and that `Exit::Misuse` appears only here and in `codes.rs`.
@@ -171,6 +173,31 @@ pub fn emit(a: Answer) -> ! {
     let _ = out.flush();
     drop(out);
     std::process::exit(code as i32)
+}
+
+/// One message of `mcp` (CLI-SCHEMA §1 rule 7, §13): one canonical value and a line end, flushed. It returns, so
+/// the next message can follow. Only `mcp` calls it.
+///
+/// JSON-RPC's error codes are negative and the law's integers are not: a message's error code is written with its
+/// sign here, the one byte of a message outside the law's form. Canonical members are in order, so an error's
+/// code is the first member of the first member (`error`).
+pub fn frame(v: &Value) {
+    let mut bytes = json::canon_bytes(v);
+    const ERROR_CODE: &[u8] = b"{\"error\":{\"code\":";
+    if v.member("error").and_then(|e| e.member("code")).is_some() && bytes.starts_with(ERROR_CODE) {
+        bytes.insert(ERROR_CODE.len(), b'-');
+    }
+    bytes.push(b'\n');
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(&bytes);
+    let _ = out.flush();
+}
+
+/// The end of an `mcp` session, its input closed: every message went out through [`frame`]; nothing more is
+/// written, exit 0. Only `mcp` calls it.
+pub fn finish() -> ! {
+    let _ = std::io::stdout().lock().flush();
+    std::process::exit(Exit::Affirmed.code() as i32)
 }
 
 /// The language of the lines for people (stderr's second line, the line an answer tells): the system's, as the
@@ -373,6 +400,8 @@ pub enum Said {
     HomeOtherMachine,
     Adopted,
     AsWord,
+    OriginalsWord,
+    OriginalsHomeOnly,
     NotAHome,
     HandedOff,
     HandoffFile,
@@ -391,10 +420,28 @@ pub enum Said {
     SendRefused,
     ReadOnly,
     ScanTooWide,
+    /// `mcp` refusing a tool's parameter itself, before any process is started.
+    McpAbsolute,
+    McpNotAParameter,
+    McpNotText,
+    McpNotTexts,
+    McpNoProgram,
+    /// `mcp` refusing a parameter the way through the desktop does not take.
+    McpNotThroughDesktop,
+    /// A record package addressed to one key: the two ways to name the recipient, a folder, a key off the curve (the
+    /// words the addressed package's one table gives, `zikaron_seal::addressed::words`).
+    AddressedBoth,
+    AddressedFolder,
+    AddressedKeyShape,
+    OnlyWithTo,
+    ChainNotDeployed,
+    AddressedNeedsKey,
+    AddressedElsewhere,
+    LedgerNotHome,
 }
 
 impl Said {
-    pub const ALL: [Said; 75] = [
+    pub const ALL: [Said; 91] = [
         Said::Usage,
         Said::NotAVerb,
         Said::NotAFlag,
@@ -452,6 +499,8 @@ impl Said {
         Said::HomeOtherMachine,
         Said::Adopted,
         Said::AsWord,
+        Said::OriginalsWord,
+        Said::OriginalsHomeOnly,
         Said::NotAHome,
         Said::HandedOff,
         Said::HandoffFile,
@@ -470,6 +519,20 @@ impl Said {
         Said::SendRefused,
         Said::ReadOnly,
         Said::ScanTooWide,
+        Said::McpAbsolute,
+        Said::McpNotAParameter,
+        Said::McpNotText,
+        Said::McpNotTexts,
+        Said::McpNoProgram,
+        Said::McpNotThroughDesktop,
+        Said::AddressedBoth,
+        Said::AddressedFolder,
+        Said::AddressedKeyShape,
+        Said::OnlyWithTo,
+        Said::ChainNotDeployed,
+        Said::AddressedNeedsKey,
+        Said::AddressedElsewhere,
+        Said::LedgerNotHome,
     ];
 
     /// The words, one table: Chinese and English.
@@ -532,6 +595,8 @@ impl Said {
             Said::HomeOtherMachine => ("这份数据由另一台机器写入,未写", "Another machine writes this data; nothing was written"),
             Said::Adopted => ("这本账已被 ZIKARON Desk 采用,原目录不再写", "ZIKARON Desk has adopted this ledger; its folder is no longer written"),
             Said::AsWord => ("--as 只认 file 或 folder", "--as takes file or folder"),
+            Said::OriginalsWord => ("--originals 只认 none", "--originals takes none"),
+            Said::OriginalsHomeOnly => ("--originals 只对桌面所管之家生效;普通账本文件夹的原件以 --file 逐个给", "--originals applies only to a home the desktop keeps; give a plain ledger folder's originals one by one with --file"),
             Said::NotAHome => ("这不是桌面所管之家的账本,没有底账设置;给 --basis", "this is not the ledger of a home the desktop keeps and has no basis settings; give --basis"),
             Said::HandedOff => ("这本账已交接到另一处;收下交回的交接件之前不在这里写", "This ledger was handed off to another place; it is not written here until its handoff comes back"),
             Said::HandoffFile => ("这份文件读不出交接件,未写", "This file does not read as a handoff; nothing was written"),
@@ -555,6 +620,20 @@ impl Said {
             Said::HomeSettingsSay => ("这处数据的链、合约、节点与代理由设置给,不收这一旗", "this home's chain, registry, nodes and proxy come from its settings; this flag is not taken"),
             Said::SendRefused => ("什么也没发出:看 token 与 detail", "Nothing was sent: see token and detail"),
             Said::ReadOnly => ("这一处数据只读,未写:看 token 与 detail", "This home is read-only; nothing was written: see token and detail"),
+            Said::McpAbsolute => ("要一条完整路径(从根起)", "a full path is needed (from the root)"),
+            Said::McpNotAParameter => ("不是这个工具的参数", "not a parameter of this tool"),
+            Said::McpNotText => ("要一段文字", "text is needed"),
+            Said::McpNotTexts => ("要一列文字", "a list of texts is needed"),
+            Said::McpNoProgram => ("起不了命令行程序", "the command line program could not be started"),
+            Said::McpNotThroughDesktop => ("经桌面这一路不收这一参", "the way through the desktop does not take this parameter"),
+            Said::AddressedBoth => zikaron_seal::addressed::words::BOTH,
+            Said::AddressedFolder => zikaron_seal::addressed::words::FOLDER,
+            Said::AddressedKeyShape => zikaron_seal::addressed::words::RECIPIENT,
+            Said::OnlyWithTo => ("只与 --to 同给", "taken only with --to"),
+            Said::ChainNotDeployed => ("这条链不在已知部署表内", "this chain is not in the known deployments table"),
+            Said::AddressedNeedsKey => ("这是加密记录包:以 --key-file、--ledger 或 --home 打开", "This is an encrypted record package: open it with --key-file, --ledger or --home"),
+            Said::AddressedElsewhere => ("这是加密记录包,用 kit-verify 打开", "This is an encrypted record package; open it with kit-verify"),
+            Said::LedgerNotHome => ("--ledger 要桌面所管之家的账本", "--ledger takes the ledger of a home the desktop keeps"),
             Said::ScanTooWide => (
                 "这一扇窗按节点收得下的跨度问不完:把起始区块往前挪,或换一处收得下更宽窗的节点",
                 "This window cannot be read at the span the node takes: move the start block forward, or use a node that takes wider windows",

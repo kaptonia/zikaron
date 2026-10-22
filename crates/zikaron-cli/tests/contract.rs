@@ -134,7 +134,7 @@ fn the_contract_answer_is_what_the_tables_say() {
     let verbs = listed(&v);
     let names: Vec<&str> = verbs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, zikaron_cli::verbs::VERBS.to_vec());
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 26);
     for (name, fl) in &verbs {
         let row: Vec<String> = zikaron_cli::verbs::accepts(name, false).expect("动词没有行").iter().map(|x| x.to_string()).collect();
         assert_eq!(fl, &row, "{name} 的旗单与表不一");
@@ -227,7 +227,7 @@ fn every_verb_takes_exactly_the_flags_the_contract_lists() {
             asked += 1;
         }
     }
-    assert_eq!(asked, 25 * 61);
+    assert_eq!(asked, 26 * 64);
     let _ = std::fs::remove_dir_all(&w);
 }
 
@@ -269,7 +269,7 @@ fn with_home_a_verb_takes_exactly_its_home_row() {
             }
         }
     }
-    assert_eq!(asked, 25 * 58);
+    assert_eq!(asked, 26 * 61);
     let _ = std::fs::remove_dir_all(&w);
 }
 

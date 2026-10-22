@@ -35,6 +35,12 @@ impl Page {
         self.primary_with(ui, text, true)
     }
 
+    /// As above with a glyph before the words (a toolbar's "+ new").
+    pub fn primary_lead(self, ui: &mut egui::Ui, text: &str, glyph: crate::icons::Glyph) -> (Sealed, egui::Response) {
+        let resp = button::show(ui, button::Key::new(text, Role::Primary).lead(glyph));
+        (Sealed { _seal: () }, resp)
+    }
+
     /// As above, optionally enabled (disabled is 45%, no shadow, no response). Also gives up the page. Sized
     /// to its text.
     pub fn primary_with(self, ui: &mut egui::Ui, text: &str, enabled: bool) -> (Sealed, egui::Response) {
@@ -82,6 +88,16 @@ impl Pen {
     /// The same key, saying `busy` with a turning ring while its phase is busy (`button::Key::busy_text`).
     pub fn press_long_saying(self, ui: &mut egui::Ui, text: &str, busy: &str, enabled: bool, phase: button::Phase) -> egui::Response {
         button::show(ui, button::Key::new(text, Role::Commit).enabled(enabled).phase(phase).busy_text(busy))
+    }
+}
+
+/// Erase key: the last step of a deletion, on its own confirmation card (an identity, a record): the bad ink on
+/// its pale wash with a bad edge (`Role::Danger`). One per card, as the commit key.
+pub struct Erase;
+
+impl Erase {
+    pub fn press(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+        button::key(ui, text, Role::Danger, enabled)
     }
 }
 

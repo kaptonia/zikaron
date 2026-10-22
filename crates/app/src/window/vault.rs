@@ -1,5 +1,5 @@
-//! My grants (the grantee seat): held grants as cards (record name, issuer name, validity, last on chain,
-//! verdict), optionally grouped by issuer; a grant's detail page (credential, sublicense, upstream,
+//! My grants (the grantee seat): held grants in a table (record name, issuer name, validity, first anchor,
+//! verdict), optionally one table per issuer; a grant's detail page (credential, sublicense, upstream folder,
 //! details); and the sublicense page opened from it.
 
 use super::*;
@@ -40,6 +40,9 @@ pub(super) fn countdown_say(c: &crate::vaultx::Countdown) -> String {
 pub(super) fn days_of(secs: u64) -> String {
     secs.div_ceil(86_400).to_string()
 }
+
+/// The verdict column's least width (the pills of every table line up at the widest).
+const VERDICT_W: f32 = 120.0;
 
 impl Win {
     /// List the vault once (started by the app itself, no toast).
@@ -104,6 +107,9 @@ impl Win {
         }
     }
 
+    /// My grants: search, then one table of held grants (record, issuer, validity, first anchor, verdict); by
+    /// issuer, one table per issuer under a group title saying how that issuer's ledger stands, and the grants
+    /// never verified in a group of their own.
     pub(super) fn vault_page(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_held(now);
         let (cards, chain_now) = self.shell.cards.clone().unwrap_or((Vec::new(), None));
@@ -123,7 +129,8 @@ impl Win {
             self.ux.range.insert("vault", range);
             return;
         }
-        let faces: Vec<(crate::vaultx::Held, String, String, (String, PillTone, Mark))> = held
+        type Face = (crate::vaultx::Held, String, String, (String, PillTone, Mark));
+        let faces: Vec<Face> = held
             .iter()
             .map(|h| {
                 let name = self.held_record_name(&h.id);
@@ -136,75 +143,77 @@ impl Win {
         // run's re-check, else the cached verdict), in the record rows' format; "not read" only while neither has it.
         let shell = &self.shell;
         let anchored_say = |id: &str| shell.held_anchored_at(id).map(crate::when::when).unwrap_or_else(|| t(Key::U4AnchorAgeUnread).to_string());
-        let shown = |f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark))| {
-            matches(&query, &[&f.1, &f.2, &f.0.author, &(f.3).0]) && crate::when::within(shell.held_anchored_at(&f.0.id), &range.0, &range.1)
+        let shown = |f: &Face| matches(&query, &[&f.1, &f.2, &f.0.author, &(f.3).0]) && crate::when::within(shell.held_anchored_at(&f.0.id), &range.0, &range.1);
+        // The verdict column is as wide as its widest pill, so the pills of every table line up.
+        let pill_w = faces.iter().map(|f| mark::pill_w(ui, &(f.3).0, false)).fold(VERDICT_W, f32::max).min(260.0).ceil();
+        let by_issuer = self.ux.u4.vault_by_issuer;
+        let cols: Vec<table::Column> = [
+            Some(table::col(t(Key::U3Work), table::Col::Fr(1.0))),
+            (!by_issuer).then(|| table::col(t(Key::U3Issuer), table::Col::Fr(0.8))),
+            Some(table::col(t(Key::U3Window), table::Col::Fr(1.0))),
+            Some(table::col(t(Key::U4RecordFirstAt), table::Col::Px(190.0))),
+            Some(table::col(t(Key::U3Verdict), table::Col::Px(pill_w))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let rows_of = |members: &[&Face]| -> Vec<table::Row> {
+            members
+                .iter()
+                .map(|(h, name, issuer, (verdict, tone, _))| {
+                    let mut cells = vec![table::Cell::Text(name.clone())];
+                    if !by_issuer {
+                        cells.push(table::Cell::Text(issuer.clone()));
+                    }
+                    cells.extend([table::Cell::Text(super::faces::window_short(h.window)), if shell.held_anchored_at(&h.id).is_some() { table::Cell::Mono(anchored_say(&h.id)) } else { table::Cell::Text(anchored_say(&h.id)) }, table::Cell::Pill(verdict.clone(), *tone)]);
+                    table::Row { cells, click: true, gone: false, on: false }
+                })
+                .collect()
         };
-        let draw = |ui: &mut egui::Ui, f: &(crate::vaultx::Held, String, String, (String, PillTone, Mark)), open: &mut Option<String>| {
-            let (h, name, issuer, (verdict, tone, _)) = f;
-            let (_, resp) = card::open_card(ui, egui::Id::new(("held-card", &h.id)), |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S1;
-                width::then_at(ui, Type::Card.line(), |ui| mark::pill(ui, verdict, *tone), |ui, room| paint::line(ui, name, Type::Card, c(C::Ink), room));
-                let room = ui.available_width();
-                paint::line(ui, &format!("{} \u{b7} {} \u{b7} {}", issuer, window_short(h.window), anchored_say(&h.id)), Type::Note, c(C::Ink2), room);
-            });
-            if resp.clicked() {
-                *open = Some(h.id.clone());
-            }
-        };
-        if self.ux.u4.vault_by_issuer {
+        if by_issuer {
             let groups = crate::vaultx::groups(&cards, chain_now);
+            let mut any = false;
             for (gi, g) in groups.iter().enumerate() {
-                let members: Vec<&(crate::vaultx::Held, String, String, (String, PillTone, Mark))> =
-                    g.cards.iter().filter_map(|k| faces.iter().find(|f| f.0.id.eq_ignore_ascii_case(&k.id))).filter(|f| shown(f)).collect();
+                let members: Vec<&Face> = g.cards.iter().filter_map(|k| faces.iter().find(|f| f.0.id.eq_ignore_ascii_case(&k.id))).filter(|f| shown(f)).collect();
                 if members.is_empty() {
                     continue;
                 }
-                let m = if g.red {
-                    Mark::Bad
-                } else if g.label == zikaron::tokens::Label::Complete.as_str() {
-                    Mark::Ok
-                } else if g.label.is_empty() {
-                    Mark::Todo
-                } else {
-                    Mark::Warn
-                };
+                any = true;
                 let age = g.anchor_age.map(|a| fill1(Key::U4AnchorAgeDays, &days_of(a))).unwrap_or_else(|| t(Key::U4AnchorAgeUnread).to_string());
                 let label = if g.label.is_empty() { t(Key::U4AuditUnread).to_string() } else { fill1(Key::U4IssuerAudit, &label_human(&g.label)) };
-                let who = self.issuer_name(&g.author);
+                let title = format!("{} \u{b7} {label} \u{b7} {age}", self.issuer_name(&g.author));
+                let rows = rows_of(&members);
                 stagger(ui, gi + 1, |ui| {
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = tk::S2;
-                        group_head(ui, m, &who, &format!("{label} \u{b7} {age}"));
-                        for f in members {
-                            draw(ui, f, &mut open);
+                    card::section(ui, &title, "", |ui| {
+                        if let Some(i) = table::table(ui, &format!("vault-{gi}"), &cols, true, &rows, "").clicked {
+                            open = members.get(i).map(|f| f.0.id.clone());
                         }
                     });
                 });
             }
             // Grants never verified have no issuer reading, so they form a group of their own.
-            let loose: Vec<&(crate::vaultx::Held, String, String, (String, PillTone, Mark))> =
-                faces.iter().filter(|f| !cards.iter().any(|k| k.id.eq_ignore_ascii_case(&f.0.id))).filter(|f| shown(f)).collect();
+            let loose: Vec<&Face> = faces.iter().filter(|f| !cards.iter().any(|k| k.id.eq_ignore_ascii_case(&f.0.id))).filter(|f| shown(f)).collect();
             if !loose.is_empty() {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = tk::S2;
-                    group_head(ui, Mark::Todo, t(Key::U4NotChecked), t(Key::U4ReviewToGroup));
-                    for f in loose {
-                        draw(ui, f, &mut open);
+                any = true;
+                let title = format!("{} \u{b7} {}", t(Key::U4NotChecked), t(Key::U4ReviewToGroup));
+                let rows = rows_of(&loose);
+                card::section(ui, &title, "", |ui| {
+                    if let Some(i) = table::table(ui, "vault-loose", &cols, true, &rows, "").clicked {
+                        open = loose.get(i).map(|f| f.0.id.clone());
                     }
                 });
             }
+            if !any {
+                card::card(ui, |ui| states::empty(ui, Glyph::Search, t(Key::SearchNone)));
+            }
         } else {
+            let members: Vec<&Face> = faces.iter().filter(|f| shown(f)).collect();
+            let rows = rows_of(&members);
             stagger(ui, 1, |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = tk::S2;
-                    for f in faces.iter().filter(|f| shown(f)) {
-                        draw(ui, f, &mut open);
-                    }
-                });
+                if let Some(i) = table::table(ui, "vault", &cols, true, &rows, t(Key::SearchNone)).clicked {
+                    open = members.get(i).map(|f| f.0.id.clone());
+                }
             });
-        }
-        if !faces.iter().any(shown) {
-            card::card(ui, |ui| states::empty(ui, Glyph::Search, t(Key::SearchNone)));
         }
         self.ux.search.insert("vault", query);
         self.ux.range.insert("vault", range);
@@ -215,8 +224,9 @@ impl Win {
         }
     }
 
-    /// A held grant: record, issuer, validity and verdict in the head, what is wrong under it, the basic facts,
-    /// the credential and sublicense, and the upstream and details folded.
+    /// A held grant, laid as a grant's page: the head (the record, its issuer, the verdict), what is wrong under
+    /// it, the basic facts (the issuer's address first), the credential (make it; sublicense once every check
+    /// passed), the upstream ledger folder (each opens its sheet), and details.
     pub(super) fn held_detail(&mut self, ui: &mut egui::Ui, id: &str, now: f64) {
         self.ensure_held(now);
         let Some(h) = self.shell.held.clone().unwrap_or_default().into_iter().find(|x| x.id.eq_ignore_ascii_case(id)) else {
@@ -228,9 +238,8 @@ impl Win {
         let name = self.held_record_name(id);
         let issuer = self.issuer_name(&h.author);
         let (verdict, tone, _) = self.held_face(id);
-        let window = self.window_days(h.window);
         stagger(ui, 0, |ui| {
-            card::hero(ui, &name, &format!("{issuer} \u{b7} {window}"), false, |ui| {
+            card::hero(ui, &name, &issuer, false, |ui| {
                 mark::pill(ui, &verdict, tone);
             });
         });
@@ -265,120 +274,97 @@ impl Win {
             (None, None) => t(Key::U4NotChecked).to_string(),
         };
         let upstream = match (&h.upstream, card.as_ref(), &last) {
-            (None, _, _) => t(Key::U4NoUpstream).to_string(),
-            (Some(_), Some(k), _) if !k.upstream_label.is_empty() => fill1(Key::U4UpstreamAudit, &label_human(&k.upstream_label)),
-            (Some(_), None, Some(v)) if !v.upstream_label.is_empty() => fill1(Key::U4UpstreamAudit, &label_human(&v.upstream_label)),
-            (Some(_), _, _) => t(Key::U4UpstreamUnread).to_string(),
+            (None, _, _) => None,
+            (Some(_), Some(k), _) if !k.upstream_label.is_empty() => Some(fill1(Key::U4UpstreamAudit, &label_human(&k.upstream_label))),
+            (Some(_), None, Some(v)) if !v.upstream_label.is_empty() => Some(fill1(Key::U4UpstreamAudit, &label_human(&v.upstream_label))),
+            (Some(_), _, _) => Some(t(Key::U4UpstreamUnread).to_string()),
         };
+        let first = first_anchor_say(card.as_ref().and_then(|k| k.anchored_at));
+        let mut copied = None;
         stagger(ui, 2, |ui| {
-            kv_section(
-                ui,
-                t(Key::BasicInfo),
-                &[
-                    (t(Key::U3Issuer), Val::text(issuer.clone())),
-                    (t(Key::U3Window), Val::text(window.clone())),
-                    (t(Key::U4RecordFirstAt), Val::mono(first_anchor_say(card.as_ref().and_then(|k| k.anchored_at)))),
-                    (t(Key::U4Remaining), Val::text(remaining)),
-                    (t(Key::U4Upstream), Val::text(upstream)),
-                ],
-            );
+            card::section(ui, t(Key::BasicInfo), "", |ui| {
+                card::form(ui, |ui, f| {
+                    copied = f.info(ui, t(Key::U3Issuer), card::Show::Short(&h.author));
+                    f.with(ui, t(Key::U3Window), "", |ui| super::grants::span_trail(ui, h.window));
+                    let _ = f.info(ui, t(Key::U4RecordFirstAt), card::Show::Mono(&first));
+                    let _ = f.info(ui, t(Key::U4Remaining), card::Show::Text(&remaining));
+                    let _ = f.info(ui, t(Key::U4Upstream), upstream.as_deref().map(card::Show::Text).unwrap_or(card::Show::Empty(t(Key::U4NoUpstream))));
+                });
+            });
         });
+        tell_copied(ui.ctx(), copied);
         let green = card.as_ref().map(|k| k.verdict == zikaron_kit::tokens::CheckVerdict::Green.as_str()).unwrap_or(false);
-        if self.typed.badge_out.trim().is_empty() {
-            if let Some(home) = self.shell.home.as_ref() {
-                self.typed.badge_out = home.dir(crate::home::Slot::Kits).display().to_string();
-            }
-        }
+        // The upstream ledger folder saved for this grant (the sheet edits the typed copy).
+        let saved_dir = self.shell.settings.upstreams.iter().find(|(g, _)| g.eq_ignore_ascii_case(&h.id)).map(|(_, d)| d.clone());
+        let badge_phase = self.phase_of(crate::task::Kind::Badge);
         let (mut badge, mut relicense, mut set_upstream) = (false, false, false);
         // The credential is shown only on the grant it was made for.
         let made = self.shell.badge.clone().filter(|b| b.grant.eq_ignore_ascii_case(id));
+        // The credential: make it (and what was made, with its code), and "sublicense to others" once every check
+        // passed.
         stagger(ui, 3, |ui| {
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S3;
-                Self::place_row(ui, Key::IdStore, &mut self.typed.badge_out);
-                keys_row(ui, |ui| {
-                    badge = self.long_key(ui, t(Key::V2MakeBadge), Role::Secondary, Self::landing_ok(&self.typed.badge_out), crate::task::Kind::Badge);
-                    if green {
-                        relicense = key::key(ui, t(Key::V2RelicenseOthers), Role::Secondary, true).clicked();
-                    }
-                });
-                self.stage_line(ui, crate::task::Kind::Badge);
-                if let Some(b) = made.as_ref() {
-                    paint::rule(ui, 0.0);
-                    motion::swap(ui, egui::Id::new("held-badge"), motion::key_of(&b.txt), |ui| {
-                        // What was made on the left; the credential's code on the right edge, under the "choose
-                        // folder" key, on a plate `QR_PAD` wider on each side.
-                        const QR: f32 = 116.0;
-                        let plate = QR + 2.0 * paint::QR_PAD;
-                        let (top, right) = (ui.cursor().top(), ui.max_rect().right());
-                        let room = (ui.available_width() - plate - 20.0).max(160.0);
-                        ui.allocate_ui(egui::vec2(room, 0.0), |ui| {
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = tk::S2;
-                                card::flat_title(ui, t(Key::U4BadgeMade));
-                                kv::kv(
-                                    ui,
-                                    &[
-                                        (t(Key::U3Hops), Val::text(fill1(Key::CheckHopsCount, &b.hops.to_string()))),
-                                        (t(Key::U4BadgeText), Val::mono(width::file_name(&b.txt.display().to_string()))),
-                                        (t(Key::U4BadgeImage), Val::mono(width::file_name(&b.svg.display().to_string()))),
-                                    ],
-                                );
+            card::section(ui, t(Key::PageBadge), "", |ui| {
+                card::form(ui, |ui, f| {
+                    badge = f.act(ui, t(Key::V2MakeBadge), if made.is_some() { t(Key::U4BadgeMade) } else { "" }, key::Key::new(t(Key::V2MakeBadge), Role::Secondary).phase(badge_phase)).clicked();
+                    if let Some(b) = made.as_ref() {
+                        let _ = f.info(ui, t(Key::U3Hops), card::Show::Text(&fill1(Key::CheckHopsCount, &b.hops.to_string())));
+                        let _ = f.info(ui, t(Key::U4BadgeText), card::Show::Mono(&width::file_name(&b.txt.display().to_string())));
+                        let _ = f.info(ui, t(Key::U4BadgeImage), card::Show::Mono(&width::file_name(&b.svg.display().to_string())));
+                        // The credential's code at the card's right line, on its plate.
+                        f.free(ui, |ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                motion::swap(ui, egui::Id::new("held-badge"), motion::key_of(&b.txt), |ui| paint::qr(ui, &b.modules, 116.0));
                             });
                         });
-                        let at = egui::Rect::from_min_size(egui::pos2(right - plate, top), egui::vec2(plate, plate));
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
-                            paint::qr(ui, &b.modules, QR);
-                        });
-                    });
-                }
-            });
-        });
-        stagger(ui, 4, |ui| {
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S2;
-                fold::fold(ui, "held-more", t(Key::U3MoreOptions), |ui| {
-                    field(ui, t(Key::U4UpstreamDir), None, |ui| pick_path(ui, &mut self.typed.vt_dir, crate::platform::Pick::Folder));
-                    set_upstream = key::key(ui, t(Key::DoSetUpstream), Role::Secondary, true).clicked();
-                });
-                let mut rows: Vec<(String, Val)> = vec![
-                    (t(Key::U3Issuer).to_string(), Val::mono(h.author.clone())),
-                    (t(Key::U4ToMe).to_string(), Val::mono(h.grantee.clone())),
-                    (t(Key::DetailPick).to_string(), Val::mono(h.id.clone())),
-                    (t(Key::U3TermsHash).to_string(), Val::mono(h.terms.clone())),
-                    (t(Key::ContentHash).to_string(), Val::mono(h.work.clone())),
-                ];
-                if let Some(k) = card.as_ref() {
-                    rows.push((t(Key::U3Verdict).to_string(), Val::mono(k.verdict.clone())));
-                    for (tok, st) in crate::vaultx::states(&k.checks) {
-                        rows.push((tok, Val::mono(st)));
                     }
-                    rows.push((t(Key::AuditLabel).to_string(), Val::mono(k.upstream_label.clone())));
-                }
-                let refs: Vec<(&str, Val)> = rows.iter().map(|(a, b)| (a.as_str(), b.clone())).collect();
-                details(ui, "held-details", &refs);
+                    if green {
+                        relicense = f.go(ui, t(Key::V2RelicenseOthers), "", true, "").clicked();
+                    }
+                });
             });
         });
-        if badge {
-            let out = match self.shell.home.as_ref() {
-                Some(_) => {
-                    let chosen = crate::home::choose(
-                        &crate::home::Kind::Bundle { stem: format!("badge-{}", h.id.trim_start_matches("0x").chars().take(10).collect::<String>()) },
-                        std::path::Path::new(self.typed.badge_out.trim()),
-                    );
-                    self.remember_landing(Out::Badge, &chosen);
-                    chosen.at.display().to_string()
+        // The upstream ledger folder this grant is checked against.
+        stagger(ui, 4, |ui| {
+            card::form(ui, |ui, f| {
+                set_upstream = match saved_dir.as_deref() {
+                    Some(d) => f.act_path(ui, t(Key::UpstreamDirName), d, key::Key::new(t(Key::DoChangeDir), Role::Secondary)),
+                    None => f.act(ui, t(Key::UpstreamDirName), t(Key::SetNone), key::Key::new(t(Key::DoChangeDir), Role::Secondary)),
                 }
-                None => String::new(),
-            };
-            self.act(Action::ExportBadge { grant: h.id.clone(), out }, now);
+                .clicked();
+            });
+        });
+        let mut rows: Vec<(String, Val)> = vec![
+            (t(Key::U3Issuer).to_string(), Val::mono(h.author.clone())),
+            (t(Key::U4ToMe).to_string(), Val::mono(h.grantee.clone())),
+            (t(Key::DetailPick).to_string(), Val::mono(h.id.clone())),
+            (t(Key::U3TermsHash).to_string(), Val::mono(h.terms.clone())),
+            (t(Key::ContentHash).to_string(), Val::mono(h.work.clone())),
+        ];
+        if let Some(d) = saved_dir.as_ref() {
+            rows.push((t(Key::UpstreamDirName).to_string(), Val::mono(d.clone())));
+        }
+        if let Some(k) = card.as_ref() {
+            rows.push((t(Key::U3Verdict).to_string(), Val::figure(k.verdict.clone())));
+            for (tok, st) in crate::vaultx::states(&k.checks) {
+                rows.push((tok, Val::figure(st)));
+            }
+            rows.push((t(Key::AuditLabel).to_string(), Val::figure(k.upstream_label.clone())));
+        }
+        if let Some(b) = made.as_ref() {
+            rows.push((t(Key::U4BadgeText).to_string(), Val::mono(b.txt.display().to_string())));
+            rows.push((t(Key::U4BadgeImage).to_string(), Val::mono(b.svg.display().to_string())));
+        }
+        let refs: Vec<(&str, Val)> = rows.iter().map(|(a, b)| (a.as_str(), b.clone())).collect();
+        stagger(ui, 5, |ui| details_card(ui, "held-details", &refs));
+        if badge {
+            self.out_open(super::grants::OutSheet::Badge(h.id.clone()));
         }
         if relicense {
             self.u4_confirm_open(U4Confirm::Relicense { grant: h.id.clone() });
         }
         if set_upstream {
-            let a = Action::SetUpstream { grant: h.id.clone(), dir: self.typed.vt_dir.clone() };
-            self.act(a, now);
+            self.typed.vt_dir = saved_dir.unwrap_or_default();
+            self.out_open(super::grants::OutSheet::Upstream(h.id.clone()));
         }
     }
 
@@ -391,49 +377,42 @@ impl Win {
         let held = self.shell.held.clone().unwrap_or_default().into_iter().find(|h| h.id.eq_ignore_ascii_case(&upstream));
         let name = self.held_record_name(&upstream);
         let issuer = held.as_ref().map(|h| self.issuer_name(&h.author)).unwrap_or_else(|| t(Key::UnnamedIssuer).to_string());
-        let window = self.window_days(held.as_ref().and_then(|h| h.window));
+        let window = held.as_ref().and_then(|h| h.window);
+        // The page's title already says "sublicense": the card holds only its rows.
         stagger(ui, 0, |ui| {
-            card::flat(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S3;
-                card_title(ui, t(Key::U4RelicenseTitle));
-                kv::kv(ui, &[(t(Key::U3Work), Val::text(name.clone())), (t(Key::U3Issuer), Val::text(issuer.clone())), (t(Key::U4WindowCap), Val::text(window.clone()))]);
-                details(
-                    ui,
-                    "relicense-page-details",
-                    &[
-                        (t(Key::U4Upstream), Val::mono(if upstream.is_empty() { t(Key::None_).to_string() } else { upstream.clone() })),
-                        (t(Key::U3Issuer), Val::mono(held.as_ref().map(|h| h.author.clone()).unwrap_or_default())),
-                    ],
-                );
+            card::form(ui, |ui, f| {
+                let _ = f.info(ui, t(Key::U3Work), card::Show::Text(&name));
+                let _ = f.info(ui, t(Key::U3Issuer), card::Show::Text(&issuer));
+                f.with(ui, t(Key::U4WindowCap), "", |ui| super::grants::span_trail(ui, window));
             });
+            details_card(
+                ui,
+                "relicense-page-details",
+                &[
+                    (t(Key::U4Upstream), if upstream.is_empty() { Val::text(t(Key::None_)) } else { Val::mono(upstream.clone()) }),
+                    (t(Key::U3Issuer), Val::mono(held.as_ref().map(|h| h.author.clone()).unwrap_or_default())),
+                ],
+            );
         });
         match crate::relicx::guide(self.shell.anchor.is_some(), self.shell.rooted) {
             crate::relicx::Guide::Ready => self.grant_form(ui, Some(name), now),
             g @ crate::relicx::Guide::NeedKey => {
                 states::err_box(ui, "relic-key", t(Key::U4NeedKeyWhat), t(Key::U4NeedKeyNext), t(Key::U3RawError), g.as_str());
-                if key::key(ui, t(Key::U4GoKeys), Role::Secondary, true).clicked() {
+                let mut go = false;
+                card::form(ui, |ui, f| go = f.go(ui, t(Key::U4GoKeys), "", true, "").clicked());
+                if go {
                     // Making the key is a wizard step; without a passcode the wizard starts at the passcode.
                     self.wizard_open(crate::nav::Step::Key);
                 }
             }
             g @ crate::relicx::Guide::NeedGenesis => {
                 states::err_box(ui, "relic-genesis", t(Key::U4NeedLedgerWhat), t(Key::U4NeedLedgerNext), t(Key::U3RawError), g.as_str());
-                if page::Page::new().primary(ui, t(Key::WizGenesisTitle)).1.clicked() {
+                let mut go = false;
+                card::form(ui, |ui, f| go = f.go(ui, t(Key::WizGenesisTitle), "", true, "").clicked());
+                if go {
                     self.wizard_open(crate::nav::Step::Genesis);
                 }
             }
         }
     }
-}
-
-/// A group head on "my grants" by issuer: a mark, the issuer's name, and the issuer ledger's state.
-fn group_head(ui: &mut egui::Ui, m: Mark, who: &str, state: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = tk::S2;
-        ui.add_space(4.0);
-        mark::mark(ui, m);
-        paint::text(ui, who, Type::Strong, c(C::Ink2));
-        let room = ui.available_width();
-        paint::line(ui, state, Type::Note, c(C::Ink2), room);
-    });
 }

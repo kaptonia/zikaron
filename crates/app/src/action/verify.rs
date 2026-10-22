@@ -24,15 +24,20 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
         // enumerations and get the same checks. A publish address is fetched once and the result serves both
         // kit verification and the entry bytes. `originals` maps each `contents` row to its original in the
         // kit, for the per-record table.
-        let (kit, bytes, rejected, originals, manifest) = match &source {
+        // What taking the originals out would take (`zikaron_glue::extract`), for a local kit that passes: read from the
+        // originals the same reading judges the records by.
+        let (kit, bytes, rejected, originals, manifest, takes) = match &source {
             crate::verifyx::Source::Kit(d) => {
                 let (b, r) = crate::verifyx::bytes_at(&source)?;
                 let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
-                (Some(crate::verifyx::verify_kit_at(d)), b, r, crate::verifyx::originals_in_dir(d), manifest)
+                let kit = crate::verifyx::verify_kit_at(d);
+                let held = zikaron_glue::extract::originals_in_dir(d);
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
+                (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes)
             }
             crate::verifyx::Source::Bytes(_) => {
                 let (b, r) = crate::verifyx::bytes_at(&source)?;
-                (None, b, r, Vec::new(), None)
+                (None, b, r, Vec::new(), None, None)
             }
             crate::verifyx::Source::File(p) => {
                 // One file (a record package, a grant file): read out into a folder of its own, streaming, with no
@@ -42,14 +47,34 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 let d = out.dir.clone();
                 let (b, r) = crate::verifyx::bytes_at(&crate::verifyx::Source::Kit(d.clone()))?;
                 let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
-                let read = (Some(crate::verifyx::verify_kit_at(&d)), b, r, crate::verifyx::originals_in_dir(&d), manifest);
+                let kit = crate::verifyx::verify_kit_at(&d);
+                let held = zikaron_glue::extract::originals_in_dir(&d);
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
+                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes);
                 drop(out);
+                read
+            }
+            crate::verifyx::Source::Addressed(p) => {
+                // Sealed to one key: opened with this machine's identities into a folder of its own (none of them
+                // its recipient, or a segment that does not pass, is refused by name and nothing is left), then
+                // read out and verified as one file is; both folders go when this is done.
+                let opened = crate::addressedx::open(p)?;
+                let out = zikaron_glue::read::unpack(&opened.file).map_err(|b| crate::fault::Fault::known(crate::fault::Known::KitFileBad, format!("{}:{}", b.code(), b.subject())))?;
+                let d = out.dir.clone();
+                let (b, r) = crate::verifyx::bytes_at(&crate::verifyx::Source::Kit(d.clone()))?;
+                let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
+                let kit = crate::verifyx::verify_kit_at(&d);
+                let held = zikaron_glue::extract::originals_in_dir(&d);
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
+                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes);
+                drop(out);
+                drop(opened);
                 read
             }
             crate::verifyx::Source::Remote(base) => {
                 let got = crate::fetchx::fetch_kit(base)?;
                 let (b, r) = crate::verifyx::entries_of_pairs(&got.pairs);
-                (Some(crate::verifyx::kit_facts_of(&got.pairs)), b, r, crate::verifyx::originals_in_pairs(&got.pairs), crate::verifyx::manifest_in(&got.pairs))
+                (Some(crate::verifyx::kit_facts_of(&got.pairs)), b, r, crate::verifyx::originals_in_pairs(&got.pairs), crate::verifyx::manifest_in(&got.pairs), None)
             }
         };
         // The network the kit says it is anchored on: if it is not among the networks read (the main one and
@@ -170,10 +195,53 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
             depth,
             mismatches,
             records,
+            takes,
             not_added,
             missed,
             read: if read_chain { crate::verifyx::chains_of(&fragment) } else { Vec::new() },
             filed,
         })))
     }))
+}
+
+/// Take the originals out of a record package (background, `Kind::Extract`): the package at `kit` read again and
+/// judged, its matching originals placed in `to`, all or nothing, by the one way the command line takes them too
+/// (`zikaron_glue::extract::take`). Nothing is trusted from the verification shown: the task judges what it reads.
+pub(super) fn extract_originals(shell: &mut Shell, kit: &str, to: &str) -> Applied {
+    let (kit, to) = (std::path::PathBuf::from(kit.trim()), std::path::PathBuf::from(to.trim()));
+    match shell.tasks.spawn(Kind::Extract, move || {
+        // A package sealed to one key is opened again here with this machine's identities (nothing is kept from the
+        // verification); its plain package is what the one way of taking out reads.
+        let opened = if zikaron_glue::addressed::is_addressed_at(&kit) { Some(crate::addressedx::open(&kit)?) } else { None };
+        let from = opened.as_ref().map(|o| o.file.clone()).unwrap_or_else(|| kit.clone());
+        match zikaron_glue::extract::take(&from, &to) {
+            Ok((plan, landed)) => Ok(Done::Extracted { landed, left: plan.left }),
+            Err(r) => Err(extract_fault(&r)),
+        }
+    }) {
+        Spawned::Started => Applied::Started(Kind::Extract),
+        Spawned::InFlight => Applied::Refused(Kind::Extract),
+    }
+}
+
+/// A refusal to take originals out, as the desktop names it: one fault per refusal of `zikaron_glue::extract`, its
+/// subject in the evidence (the names, the path, the verdict).
+pub fn extract_fault(r: &zikaron_glue::extract::Refused) -> crate::fault::Fault {
+    use crate::fault::Known;
+    use zikaron_glue::extract::Refused;
+    let known = match r {
+        Refused::Kit { .. } | Refused::Unpack { .. } => Known::ExtractKit,
+        Refused::Path(_) => Known::ExtractPath,
+        Refused::Nothing => Known::ExtractNothing,
+        Refused::Clash(_) => Known::ExtractClash,
+        Refused::NotAFolder(_) => Known::ExtractNotFolder,
+        Refused::Exists(_) => Known::ExtractExists,
+        Refused::Link(_) => Known::ExtractLink,
+        Refused::Changed(_) => Known::ExtractChanged,
+        Refused::Landing(..) => Known::ExtractLanding,
+    };
+    let mut tail: Vec<String> = vec![r.code()];
+    tail.extend(r.names().iter().cloned());
+    tail.extend(r.detail());
+    crate::fault::Fault::known(known, tail.join(" \u{b7} "))
 }

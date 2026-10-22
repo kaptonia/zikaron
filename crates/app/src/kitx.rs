@@ -128,8 +128,9 @@ fn chosen_in(pile: &[Vec<u8>], pick: &Pick) -> Result<Chosen, Fault> {
 /// selection.
 ///
 /// An attachment is valid only if its digest is in this set: a file by the sha256 of its bytes
-/// (`anchorx::file_digest`), a directory by its manifest digest (`anchorx::of_dir`), the same code that
-/// computes `content` at signing. File names, paths and extensions are irrelevant.
+/// (`anchorx::file_digest`), a directory by its manifest digest in any spelling its record may have
+/// (`anchorx::dir_digests`, the spelling signing computes `content` in, or the one a directory signed on Windows had
+/// before). File names, paths and extensions are irrelevant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Originals(BTreeSet<String>);
 
@@ -154,6 +155,17 @@ impl Originals {
     /// malformed string is not accepted.
     pub fn admits_hex(&self, digest: &str) -> bool {
         self.0.contains(&digest.trim().to_ascii_lowercase())
+    }
+
+    /// Whether any of the digests an attachment may have been signed under is one of these originals
+    /// ([`digest_of`]).
+    pub fn admits_any(&self, digests: &[[u8; 32]]) -> bool {
+        digests.iter().any(|d| self.admits(d))
+    }
+
+    /// As [`Originals::admits_any`], with the digests as hex32 strings (as computed in the background).
+    pub fn admits_any_hex(&self, digests: &[String]) -> bool {
+        digests.iter().any(|d| self.admits_hex(d))
     }
 
     pub fn len(&self) -> usize {
@@ -272,17 +284,18 @@ fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fa
     Ok(())
 }
 
-/// The digest of an attachment path: a file by its bytes ([`crate::anchorx::file_digest`]), a directory by
-/// its manifest digest ([`crate::anchorx::of_dir`]), as [`attach`] and signing compute it; symbolic links and
-/// device files are refused. The export page computes it in the background when something is dragged in
-/// (`Action::VetAttachments`) to flag non-originals early; [`attach`] still checks at export.
-pub fn digest_of(path: &Path) -> Result<[u8; 32], Fault> {
+/// The digests an attachment path may have been signed under: a file's by its bytes
+/// ([`crate::anchorx::file_digest`]), a directory's by its manifest in each spelling its record may have
+/// ([`crate::anchorx::dir_digests`]), as [`attach`] checks it; symbolic links and device files are refused. The export
+/// page computes them in the background when something is dragged in (`Action::VetAttachments`) to flag
+/// non-originals early; [`attach`] still checks at export.
+pub fn digest_of(path: &Path) -> Result<Vec<[u8; 32]>, Fault> {
     let md = std::fs::symlink_metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.is_file() {
         let bytes = std::fs::read(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
-        Ok(crate::anchorx::file_digest(&bytes))
+        Ok(vec![crate::anchorx::file_digest(&bytes)])
     } else if md.is_dir() {
-        Ok(crate::anchorx::of_dir(path)?.digest)
+        crate::anchorx::dir_digests(path)
     } else {
         Err(Fault::known(Known::NotAdoptable, crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()])))
     }
@@ -314,7 +327,7 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
         }
         zikaron_glue::kitnames::put_original(&name, bytes, into, names).map_err(|n| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(n)))?;
     } else if md.is_dir() {
-        if !originals.admits(&crate::anchorx::of_dir(path)?.digest) {
+        if !originals.admits_any(&crate::anchorx::dir_digests(path)?) {
             return Err(stranger());
         }
         let mut got: Vec<(String, Vec<u8>)> = Vec::new();
@@ -375,6 +388,11 @@ pub struct Made {
     pub pulled: Vec<String>,
     /// Platform junk dropped before export, each named.
     pub dropped: Vec<String>,
+    /// The package paths of the originals attached (each file of an attached folder).
+    pub originals: Vec<String>,
+    /// What the kits index records of this package, read from the plain package before it was sealed (when it was):
+    /// the original digests, the author's note, where it says it is anchored (`kitsindex::RowFacts`).
+    pub facts: crate::kitsindex::RowFacts,
 }
 
 /// Export: choose, attach, and hand to the glue crate to write.
@@ -395,6 +413,27 @@ pub fn export(
     out: &Path,
     form: zikaron_glue::pack::Form,
 ) -> Result<Made, Fault> {
+    export_to(_pass, home, pick, attachments, note, out, form, None)
+}
+
+/// [`export`], the one-file package sealed to `to` when given (`addressedx::seal_out`): the plain package is laid
+/// out in a folder of its own in the system's temporary place (never beside `out`), its index facts read there, then
+/// sealed into `out` the one way files land; the plain copy is removed either way. A folder is never sealed
+/// (`ADDRESSED_FOLDER`). Nothing in what is returned names the recipient.
+#[allow(clippy::too_many_arguments)]
+pub fn export_to(
+    _pass: &crate::exitgate::Pass,
+    home: &Home,
+    pick: &Pick,
+    attachments: &[String],
+    note: &str,
+    out: &Path,
+    form: zikaron_glue::pack::Form,
+    to: Option<&[u8; 33]>,
+) -> Result<Made, Fault> {
+    if to.is_some() && form == zikaron_glue::pack::Form::Folder {
+        return Err(Fault::known(Known::AddressedFolder, out.display().to_string()));
+    }
     // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::W5);
     let pile = whole(home)?;
@@ -410,12 +449,15 @@ pub fn export(
     let note = crate::kitsindex::note_with(note, anchored_on(home)?.as_ref());
     let mut b = Bundle { entries: chosen.items.clone(), note, ..Default::default() };
     let mut names: Vec<(String, String)> = Vec::new();
+    let mut attached: Vec<String> = Vec::new();
     for one in attachments {
         let t = one.trim();
         if t.is_empty() {
             continue;
         }
+        let before = b.files.len();
         attach(Path::new(t), &originals, &mut b, &mut names)?;
+        attached.extend(b.files[before..].iter().map(|(p, _)| p.clone()));
     }
     // Renamed items get a name table (a file in the manifest, not record content).
     if !names.is_empty() {
@@ -438,18 +480,42 @@ pub fn export(
             }
         }
     }
-    let landed = pack::export_as(out, b, form).map_err(|t| {
-        Fault::of_landing(t)
+    let Some(to) = to else {
+        let landed = pack::export_as(out, b, form).map_err(|t| {
+            Fault::of_landing(t)
+        })?;
+        let facts = crate::kitsindex::RowFacts::of_kit(out)?;
+        return Ok(Made {
+            path: out.display().to_string(),
+            kit_id: landed.kit_id,
+            entries: landed.entries,
+            files: landed.files,
+            pulled: chosen.pulled,
+            dropped: landed.dropped,
+            originals: attached,
+            facts,
+        });
+    };
+    let pulled = chosen.pulled.clone();
+    let ((landed, mut facts), one_time) = crate::addressedx::seal_out(to, out, |plain| {
+        let landed = pack::export_as(plain, b, zikaron_glue::pack::Form::File).map_err(Fault::of_landing)?;
+        let facts = crate::kitsindex::RowFacts::of_kit(plain)?;
+        crate::task::stage_at(crate::task::Kind::Kit, 4);
+        Ok((landed, facts))
     })?;
+    facts.one_time = Some(zikaron::hexfmt::encode(&one_time));
     Ok(Made {
         path: out.display().to_string(),
         kit_id: landed.kit_id,
         entries: landed.entries,
         files: landed.files,
-        pulled: chosen.pulled,
+        pulled,
         dropped: landed.dropped,
+        originals: attached,
+        facts,
     })
 }
+
 
 #[cfg(test)]
 mod stem_tests {

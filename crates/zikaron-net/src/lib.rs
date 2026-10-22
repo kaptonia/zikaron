@@ -34,7 +34,7 @@ mod route;
 pub use dial::{CONNECT_CAP, STAGGER};
 pub use keep::{close_down, cuts, open_up, IDLE_KEEP, PER_PLACE};
 pub use pac::{Auto, PacTrouble};
-pub use route::{excepted, follow_the_terminal, script_trouble_for, script_trouble_last, is_local, is_loopback, proxy_of, proxy_text_shown, read_choice, read_system_with, set_choice, way_for, way_shown, way_shown_under, way_under, Auth, Choice, Kind, NotAProxy, Proxy, Reading, Script, Secret, SystemProxies, Way, SYSTEM_FRESH, SYSTEM_READ_CAP};
+pub use route::{excepted, follow_the_system, follow_the_terminal, script_trouble_for, script_trouble_last, is_local, is_loopback, proxy_of, proxy_text_shown, read_choice, read_system_with, set_choice, way_for, way_shown, way_shown_under, way_under, Auth, Choice, Kind, NotAProxy, Proxy, Reading, Script, Secret, SystemProxies, Way, SYSTEM_FRESH, SYSTEM_READ_CAP};
 
 // ───────────────────────── The request head ─────────────────────────
 

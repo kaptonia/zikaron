@@ -168,7 +168,7 @@ pub fn lay(root: &Path) -> Result<(), Fault> {
 ///
 /// Written beside, then renamed: a temporary name in the same room, `sync_all`, then rename over. Rename is
 /// atomic on one file system, so a truncated file never appears. With this one write path, a power loss
-/// mid-write cannot leave a half-written queue, checklist or settings file that silently loses data.
+/// mid-write cannot leave a half-written queue or settings file that silently loses data.
 pub fn put(home: &Home, slot: Slot, name: &str, bytes: &[u8]) -> Result<(), Fault> {
     put_at(&home.dir(slot), name, bytes)
 }

@@ -20,7 +20,8 @@
 //!
 //! - `JetBrainsMono-Regular.ttf` (JetBrains Mono 2.304, official release; licence
 //!   `fonts/OFL-JetBrainsMono.txt`);
-//! - `Inter-Regular.ttf` (Inter 4.1, official release; licence `fonts/OFL-Inter.txt`);
+//! - `Inter-Regular.ttf`, `Inter-Medium.ttf` and `Inter-SemiBold.ttf` (Inter 4.1, official release; licence
+//!   `fonts/OFL-Inter.txt`), the medium and semibold for Latin in medium and strong text;
 //! - Noto Sans SC Regular (the notofonts `noto-cjk` subset release; licence `fonts/OFL-NotoSansSC.txt`), in
 //!   every build except macOS.
 //!
@@ -82,9 +83,17 @@ impl Place {
     }
 }
 
-/// The two embedded faces, monospace and Latin body. Their bytes live only in these two lines.
+/// The embedded faces, monospace and Latin body, and the Latin body's medium and semibold weights. Their bytes
+/// live only in these lines.
 const JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
 const INTER: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+const INTER_MEDIUM: &[u8] = include_bytes!("../fonts/Inter-Medium.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
+
+/// The Latin weights of the medium and strong roles (file names as in `embedded`): Latin letters, figures and
+/// signs in medium and strong text come from them, Chinese from the role's own face after them. Embedded on
+/// every system, so never missing.
+pub const LATIN_WEIGHTS: [(Role, &str); 2] = [(Role::Medium, "Inter-Medium.ttf"), (Role::Strong, "Inter-SemiBold.ttf")];
 
 /// The licence of the embedded faces (reported on screen), defined once.
 pub const OFL: &str = "SIL OFL 1.1";
@@ -131,6 +140,8 @@ pub fn embedded(file: &str) -> Option<&'static [u8]> {
     match file {
         "JetBrainsMono-Regular.ttf" => Some(JETBRAINS_MONO),
         "Inter-Regular.ttf" => Some(INTER),
+        "Inter-Medium.ttf" => Some(INTER_MEDIUM),
+        "Inter-SemiBold.ttf" => Some(INTER_SEMIBOLD),
         #[cfg(not(target_os = "macos"))]
         "NotoSansSC-Regular.otf" => Some(NOTO_SANS_SC),
         _ => None,
@@ -407,6 +418,17 @@ pub fn install(ctx: &egui::Context, found: &Found) -> Vec<Role> {
             Role::Mono => monospace.push(name),
             Role::Medium => middle.push(name),
             Role::Strong => heavy.push(name),
+        }
+    }
+    // Latin in medium and strong text takes Inter's own weights, first in those families (a Chinese face's
+    // Latin and signs differ from the body's: its hyphen is long).
+    for (role, file) in LATIN_WEIGHTS {
+        let Some(bytes) = embedded(file) else { continue };
+        let name = format!("{}-latin", role.as_str());
+        defs.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
+        match role {
+            Role::Medium => middle.insert(0, name),
+            _ => heavy.insert(0, name),
         }
     }
     // Chinese in monospace and Latin in medium and strong borrow from the body faces: a glyph drawn as a box

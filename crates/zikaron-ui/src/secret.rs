@@ -14,7 +14,8 @@
 //! The input control edits this block through [`egui::TextBuffer`] without first copying into a `String`.
 //! Copies egui makes within a frame (undo stack, previous text) are outside this type: the undo stack is
 //! cleared every frame by the input control (`input::secret_field`), and the previous-text copy is a temporary
-//! inside egui's frame.
+//! inside egui's frame. Both are plain `String`s egui frees without wiping, so their bytes can stay in freed
+//! memory until it is reused; this type does not reach them.
 
 /// Most bytes one secret holds. Eight passcode cells, twelve words (a whole phrase pasted into one cell is
 /// about a hundred bytes), backup passwords and hex private keys all fit well within it; what does not fit is

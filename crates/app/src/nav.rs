@@ -241,6 +241,21 @@ impl Section {
         }
     }
 
+    /// The section's line glyph on the settings home.
+    pub fn glyph(self) -> zikaron_ui::icons::Glyph {
+        use zikaron_ui::icons::Glyph;
+        match self {
+            Section::Language => Glyph::Lang,
+            Section::Appearance => Glyph::Sun,
+            Section::Keys => Glyph::Key,
+            Section::Network => Glyph::Globe,
+            Section::Notify => Glyph::Watch,
+            Section::Data => Glyph::Data,
+            Section::Cli => Glyph::Terminal,
+            Section::About => Glyph::Info,
+        }
+    }
+
     /// The one-line note under the section's title on the settings home.
     pub fn note(self, role: Role) -> Key {
         match self {
@@ -377,7 +392,7 @@ const fn it(place: Place, name: Key, glyph: Glyph) -> Item {
 }
 
 const HOME: Item = it(Place::Home, Key::NavHome, Glyph::Home);
-const VERIFY: Item = it(Place::View(View::Verify, tab::VERIFY_CHECK), Key::NavVerifyView, Glyph::Check);
+const VERIFY: Item = it(Place::View(View::Verify, tab::VERIFY_CHECK), Key::NavVerifyView, Glyph::Shield);
 const ALERTS: Item = it(Place::View(View::Alerts, 0), Key::NavAlertsView, Glyph::Watch);
 
 /// The author's rail: three groups, six items.
@@ -386,7 +401,7 @@ pub const AUTHOR: [Group; 3] = [
     Group {
         title: Some(Key::U3Work),
         items: &[
-            it(Place::View(View::Works, tab::WORKS_ALL), Key::NavWorksView, Glyph::Ledger),
+            it(Place::View(View::Works, tab::WORKS_ALL), Key::NavWorksView, Glyph::Doc),
             it(Place::View(View::Grants, tab::GRANTS_LIST), Key::KindGrant, Glyph::Grant),
         ],
     },

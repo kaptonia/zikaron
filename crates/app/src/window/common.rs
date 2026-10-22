@@ -9,8 +9,8 @@ use super::*;
 pub(super) fn lang_pick(ui: &mut egui::Ui, id_salt: &str) -> Option<crate::lang::Lang> {
     let langs = crate::lang::Lang::ALL;
     let cur = langs.iter().position(|l| *l == crate::lang::lang()).unwrap_or(0);
-    let cells: Vec<zikaron_ui::seg::Cell> = langs.iter().map(|l| zikaron_ui::seg::Cell::from(l.label())).collect();
-    zikaron_ui::seg::seg(ui, id_salt, &cells, cur).filter(|i| *i != cur).map(|i| langs[i])
+    let labels: Vec<&str> = langs.iter().map(|l| l.label()).collect();
+    zikaron_ui::covers::seg_small(ui, id_salt, &labels, cur).filter(|i| *i != cur).map(|i| langs[i])
 }
 
 /// A field: its label (14, second ink, 8 above the control; an optional word after it in the quiet ink),
@@ -112,6 +112,24 @@ pub(super) fn pick_path(ui: &mut egui::Ui, slot: &mut String, kind: crate::platf
     }
 }
 
+/// The bottom-left key of a sheet that takes a place: "Choose folder" or "Choose file", through the
+/// system's dialog; the path chosen, the frame it lands. Draw it after the sheet's other foot keys.
+pub(super) fn foot_pick(ui: &mut egui::Ui, salt: &str, kind: crate::platform::Pick) -> Option<String> {
+    let label = match kind {
+        crate::platform::Pick::File => t(Key::PickFile),
+        _ => t(Key::PickFolder),
+    };
+    let asked = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| key::key(ui, label, Role::Secondary, true).clicked()).inner;
+    path_answer(ui.ctx(), egui::Id::new(("zikaron-foot-pick", salt)), asked, kind)
+}
+
+/// A value copied from a row: the window says so once this frame is drawn.
+pub(super) fn tell_copied(ctx: &egui::Context, copied: Option<String>) {
+    if let Some(s) = copied {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("zikaron-copied"), s));
+    }
+}
+
 /// A row of buttons, 8 apart, wrapping when narrow.
 pub(super) fn keys_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal_wrapped(|ui| {
@@ -121,33 +139,63 @@ pub(super) fn keys_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> 
     .inner
 }
 
-/// A titled card of key-value rows ("basic information").
-pub(super) fn kv_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, Val)]) {
-    card::section(ui, title, "", |ui| {
-        card::card(ui, |ui| kv::kv(ui, rows));
-    });
-}
-
 /// The details fold in its own card: raw values (addresses, digests, ids, transactions) live only here.
 pub(super) fn details_card(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)]) {
-    card::card(ui, |ui| {
-        fold::fold(ui, id_salt, t(Key::SetEvidence), |ui| kv::kv(ui, rows));
-    });
+    let (detail, widest) = detail_rows(ui, rows);
+    let copied = card::form(ui, |ui, f| f.details(ui, id_salt, t(Key::SetEvidence), &detail, widest));
+    tell_copied(ui.ctx(), copied);
 }
 
-/// The details fold inline (inside a card or a sheet).
-pub(super) fn details(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)]) {
-    fold::fold(ui, id_salt, t(Key::SetEvidence), |ui| kv::kv(ui, rows));
+/// [`details_card`] whose open state the page holds (`open`).
+pub(super) fn details_card_held(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)], open: &mut bool) {
+    let (detail, widest) = detail_rows(ui, rows);
+    let copied = card::form(ui, |ui, f| f.details_held(ui, id_salt, t(Key::SetEvidence), &detail, widest, open));
+    tell_copied(ui.ctx(), copied);
+}
+
+/// The details fold as a row of the form being drawn (an overview's tail, a sheet's group).
+pub(super) fn details_row(ui: &mut egui::Ui, f: &mut card::Form, id_salt: &str, rows: &[(&str, Val)]) {
+    let (detail, widest) = detail_rows(ui, rows);
+    let copied = f.details(ui, id_salt, t(Key::SetEvidence), &detail, widest);
+    tell_copied(ui.ctx(), copied);
+}
+
+/// The details list itself, open (in a sheet, or under a result): its rows in a group of their own.
+pub(super) fn details_list(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)]) {
+    let (detail, widest) = detail_rows(ui, rows);
+    let copied = card::form(ui, |ui, f| f.detail_rows(ui, id_salt, &detail, widest));
+    tell_copied(ui.ctx(), copied);
+}
+
+/// Rows of values as the details list takes them, and its label column: as wide as the widest label in either
+/// language.
+fn detail_rows<'a>(ui: &egui::Ui, rows: &[(&'a str, Val)]) -> (Vec<(&'a str, card::Detail)>, f32) {
+    let font = zikaron_ui::tokens::Type::Note.font();
+    let widest = rows
+        .iter()
+        .flat_map(|(k, _)| [Some(*k), crate::lang::twin(k)])
+        .flatten()
+        .map(|k| ui.painter().layout_no_wrap(k.to_string(), font.clone(), egui::Color32::BLACK).size().x)
+        .fold(0.0, f32::max);
+    let detail = rows
+        .iter()
+        .map(|(k, v)| {
+            let d = match v {
+                Val::Mono(s) => card::Detail::Mono(s.clone()),
+                Val::Figure(s) => card::Detail::Figure(s.clone()),
+                Val::Quiet(s) => card::Detail::Quiet(s.clone()),
+                Val::Text(s) | Val::Mark(_, s) => card::Detail::Text(s.clone()),
+                Val::Loading(_) => card::Detail::Quiet(String::new()),
+            };
+            (*k, d)
+        })
+        .collect();
+    (detail, widest)
 }
 
 /// A hint line (14), second ink.
 pub(super) fn hint(ui: &mut egui::Ui, s: &str) {
     states::hint(ui, s);
-}
-
-/// A card's small title.
-pub(super) fn card_title(ui: &mut egui::Ui, s: &str) {
-    card::card_title(ui, s);
 }
 
 /// A pill for an anchoring state.
@@ -209,8 +257,12 @@ impl Win {
     }
 
     /// The stage line under a long-running button: the stage the task reports, the previous one checked; a
-    /// counted stage shows its count. Nothing while the task is not running.
+    /// counted stage shows its count. Nothing while the task is not running, and nothing where the rail's status
+    /// line reports the task already (the line is for where no rail is drawn: the first-run wizard).
     pub(super) fn stage_line(&self, ui: &mut egui::Ui, k: crate::task::Kind) {
+        if self.status_reports(k) {
+            return;
+        }
         let words = stage_words(k);
         let running = self.shell.tasks.in_flight(k);
         let id = ui.id().with(("zikaron-stage", k as u8));
@@ -258,13 +310,14 @@ pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
         Kind::Verify => &[Key::StageReadKit, Key::StageReadChain, Key::StageCompareEach],
         Kind::Book => &[Key::StageConnect, Key::StageScanBlocks],
         Kind::Diligence => &[Key::StageConnect, Key::StageScanBlocks, Key::StageCheckLedger],
-        Kind::Kit => &[Key::StageGather, Key::StageCheckOriginals, Key::StageWriteKit],
+        Kind::Kit => &[Key::StageGather, Key::StageCheckOriginals, Key::StageWriteKit, Key::StageReadChain, Key::StageSeal],
         Kind::Badge => &[Key::StageGrantChain, Key::StageWriteBadge],
         Kind::Review => &[Key::StageReadChain, Key::StageReadUpstream],
         Kind::Reconcile => &[Key::StageReconcile],
         Kind::Archive => &[Key::DoMeasure],
         Kind::Publish => &[Key::StageFetchFiles],
         Kind::Chain => &[Key::StageReadChain],
+        Kind::ChainTime => &[Key::StageReadChain],
         Kind::Depth => &[Key::StageReadChain],
         Kind::Gate => &[Key::StageReadChain],
         Kind::ReadNet => &[Key::StageConnect],
@@ -287,12 +340,22 @@ pub(super) fn date_box(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &s
 /// The calendar's words in the app's language.
 pub(super) fn date_words() -> datepick::Words<'static> {
     let weekdays = [Key::DateMon, Key::DateTue, Key::DateWed, Key::DateThu, Key::DateFri, Key::DateSat, Key::DateSun].map(t);
-    datepick::Words { weekdays, month: month_title, today: t(Key::DateToday), clear: t(Key::PickClear) }
+    datepick::Words { weekdays, month: month_title, year: year_alone, month_alone, today: t(Key::DateToday), clear: t(Key::PickClear) }
 }
 
 /// The calendar's month row: the year and the month, each followed by its word in the current language.
 fn month_title(y: i32, m: u32) -> String {
     fill2(Key::DateMonth, &y.to_string(), &m.to_string())
+}
+
+/// A year alone (the months level's head, the years level's cells).
+fn year_alone(y: i32) -> String {
+    fill1(Key::DateYearAlone, &y.to_string())
+}
+
+/// A month alone (the months level's cells).
+fn month_alone(m: u32) -> String {
+    fill1(Key::DateMonthAlone, &m.to_string())
 }
 
 /// Today as the calendar counts it: the day of `now_secs` in the zone moments are shown in.
@@ -318,7 +381,10 @@ pub(super) fn date_pair(ui: &mut egui::Ui, id: &str, range: &mut (String, String
 /// of their own under the search field.
 pub(super) fn search_row(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str, range: &mut (String, String), now_secs: u64) {
     let w = ui.available_width();
-    if w >= DATE_W * 2.0 + tk::S2 * 2.0 + SEARCH_MIN_W {
+    // The search box is wide enough when its whole hint shows (its glyph takes 34 in, 12 is left at its end).
+    let hint_w = ui.painter().layout_no_wrap(hint.to_string(), zikaron_ui::tokens::Type::Small.font(), egui::Color32::BLACK).size().x;
+    let search_need = SEARCH_MIN_W.max(34.0 + hint_w + 12.0);
+    if w >= DATE_W * 2.0 + tk::S2 * 2.0 + search_need {
         width::then(
             ui,
             |ui| {

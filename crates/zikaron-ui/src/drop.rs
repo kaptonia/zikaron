@@ -59,7 +59,7 @@ fn zones_at(ctx: &egui::Context, pass: u64) -> Zones {
 /// receiver lights up while a file is dragged, and only it takes the file: the lit zone is the one that gets
 /// it.
 fn is_receiver(ctx: &egui::Context, me: egui::Id) -> bool {
-    let pass = ctx.cumulative_pass_nr();
+    let pass = crate::motion::pass(ctx);
     let pointer = ctx.input(|i| i.pointer.latest_pos());
     let z = zones_at(ctx, pass);
     if z.last.iter().any(|(id, _)| *id == me) {
@@ -71,7 +71,7 @@ fn is_receiver(ctx: &egui::Context, me: egui::Id) -> bool {
 }
 
 fn register(ctx: &egui::Context, me: egui::Id, rect: Rect) {
-    let pass = ctx.cumulative_pass_nr();
+    let pass = crate::motion::pass(ctx);
     let mut z = zones_at(ctx, pass);
     z.this.push((me, rect));
     ctx.data_mut(|d| d.insert_temp(zones_id(), z));
@@ -129,13 +129,15 @@ pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&st
     if accept {
         register(ui.ctx(), me, rect);
     }
-    let hot = motion::flag(ui.ctx(), resp.id.with("hot"), hovering || resp.hovered(), tokens::FAST);
+    let hot = motion::states(ui.ctx(), resp.id, hovering || resp.hovered(), resp.is_pointer_button_down_on(), resp.has_focus(), true).hover;
     let press = motion::to(ui.ctx(), resp.id.with("press"), if resp.is_pointer_button_down_on() { 0.995 } else { 1.0 }, tokens::FAST, Curve::Ease);
     let r = paint::scaled(rect, press);
     let p = ui.painter();
+    // A drop zone's corners are a card's; a one-line drop (as tall as a row) takes a tag's.
+    let round = if shape == Shape::Line { Radius::Tag } else { Radius::Card };
     match chosen {
         Some((name, size, change)) => {
-            p.rect(r, Radius::Menu.egui(), c(C::OkBox), egui::Stroke::new(1.0_f32, c(C::OkEdge)), egui::StrokeKind::Inside);
+            p.rect(r, round.egui(), c(C::OkBox), egui::Stroke::new(1.0_f32, c(C::OkEdge)), egui::StrokeKind::Inside);
             let heavy = egui::FontId::new(15.0, crate::fonts::strong());
             let room = r.width() - 32.0;
             let total = 22.0 + if size.is_empty() { 0.0 } else { 4.0 + 18.0 } + if change.is_empty() { 0.0 } else { 6.0 + 18.0 };
@@ -154,18 +156,18 @@ pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&st
             }
         }
         None => {
-            p.rect_filled(r, Radius::Menu.egui(), palette::mix(c(C::Drop), c(C::DropHot), hot));
-            dashed(p, r.shrink(0.75), 10.0, egui::Stroke::new(1.5_f32, palette::mix(c(C::Dash), c(C::Accent), hot)), 3.0, 1.5);
+            p.rect_filled(r, round.egui(), palette::mix(c(C::Drop), c(C::DropHot), hot));
+            dashed(p, r.shrink(0.75), round.px() - 0.75, egui::Stroke::new(1.5_f32, palette::mix(c(C::Dash).gamma_multiply(0.75), c(C::Accent), hot)), 4.5, 4.5);
             let title = lines.first().copied().unwrap_or("");
             let note = lines.get(1).copied().unwrap_or("");
             let heavy = egui::FontId::new(15.0, crate::fonts::strong());
             match shape {
                 Shape::Column => {
-                    let gh = if glyph.is_some() { 22.0 + 4.0 } else { 0.0 };
+                    let gh = if glyph.is_some() { 26.0 + 6.0 } else { 0.0 };
                     let total = gh + 22.0 + if note.is_empty() { 0.0 } else { 2.0 + 20.0 };
                     let mut y = r.center().y - total / 2.0;
                     if let Some(g) = glyph {
-                        icons::glyph_at(p, g, pos2(r.center().x, y + 11.0), 22.0, c(C::Ink3));
+                        icons::glyph_at(p, g, pos2(r.center().x, y + 13.0), 26.0, c(C::Ink3));
                         y += gh;
                     }
                     p.text(pos2(r.center().x, y + 11.0), egui::Align2::CENTER_CENTER, crate::width::elide_to(ui, title, heavy.clone(), r.width() - 24.0), heavy, c(C::Ink));
@@ -200,11 +202,11 @@ pub fn file_row(ui: &mut egui::Ui, id_salt: &str, name: &str, sub: &str, bad: bo
     let id = ui.id().with(("zikaron-file-row", id_salt));
     let enter = motion::enter(ui.ctx(), id, motion::key_of(&name), 0.0, tokens::MID, Curve::Ease);
     let mut hit = false;
-    motion::shifted(ui, vec2(0.0, 6.0 * (1.0 - enter)), enter, |ui| {
+    motion::shifted(ui, vec2(0.0, 6.0 * (1.0 - enter)), enter, motion::key_of(&name), |ui| {
         let w = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(vec2(w, 52.0), egui::Sense::hover());
         let p = ui.painter();
-        p.rect(rect, Radius::Menu.egui(), c(C::Surface), egui::Stroke::new(1.0_f32, c(C::Line)), egui::StrokeKind::Inside);
+        p.rect(rect, Radius::Tag.egui(), c(C::Surface), egui::Stroke::new(1.0_f32, c(C::Line)), egui::StrokeKind::Inside);
         let ic = Rect::from_min_size(pos2(rect.left() + 12.0, rect.center().y - 15.0), vec2(30.0, 30.0));
         p.rect_filled(ic, egui::CornerRadius::same(7), c(C::AccentWash));
         icons::glyph_at(p, Glyph::File, ic.center(), 16.0, c(C::AccentInk));
@@ -229,6 +231,33 @@ pub fn file_row(ui: &mut egui::Ui, id_salt: &str, name: &str, sub: &str, bad: bo
         }
     });
     hit
+}
+
+/// What was chosen, in a box as tall as a field (a record, a terms file): a glyph, its name, quiet words at the
+/// right end (a size); with nothing chosen (`chosen` false) the name is a quiet hint. A name too long for the box
+/// is elided and shows whole on hover. The key that changes it stands beside the box, the caller's.
+pub fn chosen(ui: &mut egui::Ui, w: f32, glyph: Glyph, name: &str, aside: &str, chosen: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
+    let enter = motion::enter(ui.ctx(), resp.id, motion::key_of(&name), 0.0, tokens::MID, Curve::Ease);
+    ui.painter().add(crate::input::frame_of(ui.ctx(), rect, resp.id, false));
+    let p = ui.painter();
+    let x = rect.left() + tokens::INPUT_PAD_X;
+    let cy = rect.center().y;
+    icons::glyph_at(p, glyph, pos2(x + 8.0, cy), 16.0, c(if chosen { C::AccentInk } else { C::Ink3 }));
+    let tx = x + 16.0 + tokens::S2;
+    let mut right = rect.right() - tokens::INPUT_PAD_X;
+    if !aside.is_empty() {
+        right = paint::at(p, ui, pos2(right, cy), egui::Align2::RIGHT_CENTER, aside, Type::Small, c(C::Ink3), (right - tx) * 0.4).left() - tokens::S2;
+    }
+    let ink = if chosen { c(C::Ink) } else { c(C::Ink3) }.gamma_multiply(0.4 + 0.6 * enter);
+    let room = (right - tx).max(0.0);
+    let fit = crate::width::elide_mid(ui, name, Type::Body.font(), room);
+    p.text(pos2(tx, cy), egui::Align2::LEFT_CENTER, &fit, Type::Body.font(), ink);
+    if fit != name {
+        crate::layer::tip(resp, name)
+    } else {
+        resp
+    }
 }
 
 /// The drag veil: a dimming layer over the whole window with a dashed blue frame 32 in, a glyph, a bold line

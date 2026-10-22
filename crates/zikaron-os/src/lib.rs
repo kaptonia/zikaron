@@ -27,6 +27,8 @@
 //! - [`put_at`] / [`rename_over`] / [`open_owner_only`]: replace a file whole and durably: written owner-only under
 //!   a temporary name, synced, renamed over its place in one step, the directory synced; a write that does not
 //!   land takes its temporary file with it.
+//! - [`backdrop`] / [`backdrop_available`] / [`backdrop_appearance`]: the system's own material under a window
+//!   (macOS 26 glass, earlier macOS vibrancy, Windows 11 Mica); elsewhere the app paints its own tinted ground.
 //! - [`wipe`] / [`wipe_string`] / [`wipe_string_tail`]: zero secret bytes in place with writes the compiler
 //!   cannot drop. The one place outside the platform implementations that writes through a raw pointer: every
 //!   other crate of the product forbids `unsafe` and wipes through these.
@@ -806,11 +808,70 @@ pub fn put_at(dir: &Path, name: &str, tmp: &str, bytes: &[u8]) -> Result<(), Unp
     wrote
 }
 
-/// Renames `from` over `to` in one step, then syncs the directory so the new name survives a power cut. A failed
-/// rename is said with the target, a failed sync with the directory (the file is in place, but the write is not
-/// taken as done).
+/// Renames `from` over `to` in one step, then syncs the directory `to` is in ([`parent_dir`]) so the new name
+/// survives a power cut. A failed rename is said with the target, a failed sync with the directory (the file is
+/// in place, but the write is not taken as done).
 pub fn rename_over(from: &Path, to: &Path) -> Result<(), Unput> {
     replace(from, to).map_err(|error| Unput { error, at: to.to_path_buf() })?;
-    let dir = to.parent().unwrap_or_else(|| Path::new("."));
+    let dir = parent_dir(to);
     sync_dir(dir, to).map_err(|error| Unput { error, at: dir.to_path_buf() })
+}
+
+/// The directory `path` is in, the one place that says it: its parent; the working directory `.` when the path
+/// names no directory (a bare file name, whose parent is the empty path, or the empty path itself); a root is
+/// its own. Every write that syncs the directory it landed in takes the directory from here.
+pub fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        None if path.has_root() => path,
+        _ => Path::new("."),
+    }
+}
+
+// ───────────────────────── The window's backdrop ─────────────────────────
+
+/// What the system draws under a window's own surfaces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Backdrop {
+    /// macOS 26 and later: the system's glass (`NSGlassEffectView`).
+    Glass,
+    /// Earlier macOS: the system's vibrancy (`NSVisualEffectView`).
+    Vibrancy,
+    /// Windows 11: Mica.
+    Mica,
+    /// No system material: the app paints a tinted ground of its own.
+    Tint,
+}
+
+/// A native window as the windowing layer hands it: macOS its content view (`NSView`), Windows its `HWND`.
+#[derive(Clone, Copy, Debug)]
+pub enum Window {
+    AppKit(*mut std::ffi::c_void),
+    Win32(isize),
+    Other,
+}
+
+/// Whether this system can put its own material under a window (macOS; Windows 11 22H2 and later). Asked
+/// before the window opens: a window that shows the material is made transparent.
+pub fn backdrop_available() -> bool {
+    imp::backdrop_available()
+}
+
+/// Put the system's material under `w` in the dark or light appearance; asked once per window, when it opens.
+/// `follows` says the app follows the system's appearance: the window is then left to the system's (macOS), so
+/// the system still tells the app when it changes; otherwise the window takes the app's. Answers what was put
+/// (`Tint`: nothing, the app paints its own ground).
+pub fn backdrop(w: Window, dark: bool, follows: bool) -> Backdrop {
+    imp::backdrop(w, dark, follows)
+}
+
+/// Follow the app's light or dark appearance, and whether it follows the system's, on a window's material.
+pub fn backdrop_appearance(w: Window, dark: bool, follows: bool) {
+    imp::backdrop_appearance(w, dark, follows)
+}
+
+/// Whether the system asks apps to reduce motion (macOS: Accessibility › Display › Reduce motion; Windows:
+/// "Animation effects" off; Linux: GNOME's animations off). The window asks every few seconds.
+pub fn reduce_motion() -> bool {
+    imp::reduce_motion()
 }

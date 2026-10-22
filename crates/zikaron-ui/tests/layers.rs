@@ -7,6 +7,14 @@ use std::path::PathBuf;
 use zikaron_ui::egui::{self, pos2, vec2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::{button, datepick, full, input, layer, mark, menu, pick, sheet, toast, tokens, width};
 
+/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
+/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
+fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
+    top.set_clip_rect(ctx.content_rect());
+    panel.show_inside(&mut top, add)
+}
+
 const SCREEN: egui::Vec2 = egui::Vec2 { x: 1180.0, y: 800.0 };
 
 struct Frames {
@@ -27,7 +35,8 @@ impl Frames {
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
         // Two pixels a point, as the window has on the screens it ships to (layout rounds to pixels).
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
-        self.ctx.run(input, |ctx| {
+        self.ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             ui(ctx);
             layer::fade_out(ctx);
         })
@@ -60,7 +69,7 @@ fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
 /// A page with one key under where the menus open; returns whether the key was clicked.
 fn page_key(ctx: &egui::Context) -> bool {
     let mut clicked = false;
-    egui::CentralPanel::default().show(ctx, |ui| {
+    central(ctx, egui::CentralPanel::default(), |ui| {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(400.0, 300.0), vec2(200.0, 40.0))));
         clicked = button::key(&mut child, "底下的键", button::Role::Secondary, true).clicked();
     });
@@ -364,7 +373,7 @@ fn the_overlay_opened_last_lies_on_top() {
 #[test]
 fn one_esc_closes_the_calendar_and_not_the_sheet_under_it() {
     let mut f = Frames::new();
-    let words = datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y}年{m}月"), today: "今天", clear: "清除" };
+    let words = datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y}年{m}月"), year: |y| format!("{y}年"), month_alone: |m| format!("{m}月"), today: "今天", clear: "清除" };
     let mut date_id = None;
     let mut value = String::new();
     let mut sheet_esc = false;
@@ -463,7 +472,7 @@ fn a_hint_too_long_for_its_field_ends_in_an_ellipsis_inside_the_frame() {
         let mut text = String::new();
         let mut rect = Rect::NOTHING;
         let mut out = f.run(0.1, vec![], |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| rect = input::field(ui, &mut text, hint, w, input::Look::default()).rect);
+            central(ctx, egui::CentralPanel::default(), |ui| rect = input::field(ui, &mut text, hint, w, input::Look::default()).rect);
         });
         out = if out.shapes.is_empty() { f.run(0.1, vec![], |_| {}) } else { out };
         let shown: Vec<(String, Rect)> = texts(&out).into_iter().filter(|(s, _)| s.starts_with(hint.chars().next().unwrap())).collect();
@@ -487,7 +496,7 @@ fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
     let natural = {
         let mut w = 0.0;
         f.run(0.1, vec![], |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| w = mark::pill_w(ui, words, false));
+            central(ctx, egui::CentralPanel::default(), |ui| w = mark::pill_w(ui, words, false));
         });
         w
     };
@@ -495,7 +504,7 @@ fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
     for (x, room) in [(100.0, 60.0_f32), (100.4, natural), (100.6, natural), (100.0, 400.0)] {
         let mut r = Rect::NOTHING;
         let out = f.run(0.1, vec![], |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            central(ctx, egui::CentralPanel::default(), |ui| {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(x, 100.0), vec2(room, 30.0))));
                 r = mark::pill(&mut child, words, zikaron_ui::palette::Tone::Warn).rect;
             });
@@ -543,7 +552,7 @@ fn a_pill_in_a_table_cell_its_own_width_stays_whole() {
     for words in ["已撤销", "未知", "有效", "Revoked", "Pending"] {
         let row = table::Row { cells: vec![table::Cell::Text("封面设计".into()), table::Cell::Pill(words.into(), zikaron_ui::palette::Tone::Grey)], click: true, ..Default::default() };
         let mut out = f.run(0.1, vec![], |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            central(ctx, egui::CentralPanel::default(), |ui| {
                 table::table(ui, "pills", &[table::col("记录", table::Col::Fr(1.0)), table::col("状态", table::Col::Px(84.0))], true, std::slice::from_ref(&row), "无");
             });
         });
@@ -626,12 +635,12 @@ fn a_press_on_a_cover_reaches_nothing_under_it() {
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| {
             got |= page_key(ctx);
-            full::cover(ctx, "t-cover", |ui, _| ui.label("盖着"));
+            full::cover(ctx, "t-cover", 0.0, |ui, _| ui.label("盖着"));
         });
     }
     f.run(0.1, press_at(on_key), |ctx| {
         got |= page_key(ctx);
-        full::cover(ctx, "t-cover", |ui, _| ui.label("盖着"));
+        full::cover(ctx, "t-cover", 0.0, |ui, _| ui.label("盖着"));
     });
     assert!(!got, "the key under the cover is untouched");
 }
@@ -674,7 +683,7 @@ fn a_hover_tip_does_not_stay_over_a_press() {
     let on_key = pos2(420.0, 317.0);
     let mut under = false;
     let draw = |ctx: &egui::Context, under: &mut bool| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             let k = ui.interact(Rect::from_min_size(pos2(400.0, 300.0), vec2(200.0, 40.0)), egui::Id::new("tipped"), egui::Sense::hover());
             let _ = layer::tip(k, "整句提示话");
             *under |= ui.interact(Rect::from_min_max(pos2(0.0, 342.0), pos2(SCREEN.x, SCREEN.y)), egui::Id::new("under-tip"), egui::Sense::click()).clicked();
@@ -740,12 +749,12 @@ fn a_pick_list_and_the_date_card_with_no_room_under_open_above() {
     assert_eq!(ys.len(), 3, "the pick rows are drawn: {ys:?}");
     assert!(ys.iter().all(|y| *y < low.top() && *y > 8.0), "the pick list above its anchor, inside the window: {ys:?}");
     // The date field at the window's foot: its calendar opens above it.
-    let words = datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y}年{m}月"), today: "今天", clear: "清除" };
+    let words = datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y}年{m}月"), year: |y| format!("{y}年"), month_alone: |m| format!("{m}月"), today: "今天", clear: "清除" };
     let mut f = Frames::new();
     let mut value = String::new();
     let mut field = Rect::NOTHING;
     let mut draw = |ctx: &egui::Context, open: bool, field: &mut Rect| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(low));
             let id = child.id().with(("zikaron-date", "d"));
             if open && !menu::is_open(ctx, id) {
@@ -786,7 +795,7 @@ fn a_card_with_room_on_neither_side_stays_inside_the_window() {
 fn a_key_value_tables_widest_key_stands_whole() {
     let mut f = Frames::new();
     let draw = |ctx: &egui::Context| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             ui.set_width(520.0);
             zikaron_ui::kv::kv(ui, &[("Network", zikaron_ui::kv::Val::text("Base")), ("Ledger description", zikaron_ui::kv::Val::text("值"))]);
         });
@@ -853,7 +862,7 @@ fn a_banner_wraps_a_long_sentence_and_never_cuts_it() {
     let mut f = Frames::new();
     let mut drawn: Vec<(String, usize, egui::Rect)> = Vec::new();
     let out = f.run(0.1, vec![], |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             ui.allocate_ui(egui::vec2(360.0, 400.0), |ui| {
                 states::banner(ui, states::Banner::Warn, long, |ui| ui.button("Write"));
             });
@@ -885,7 +894,7 @@ fn a_floating_card_stays_inside_its_anchors_room() {
         let mut f = Frames::new();
         let content = Rect::from_min_max(pos2(content_left, 0.0), pos2(SCREEN.x, SCREEN.y));
         let draw = |ctx: &egui::Context, out_key: &mut Rect| {
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+            central(ctx, egui::CentralPanel::default().frame(egui::Frame::NONE), |ui| {
                 let mut room = ui.new_child(egui::UiBuilder::new().max_rect(content));
                 room.set_clip_rect(content);
                 room.add_space(40.0);
@@ -925,7 +934,7 @@ fn a_row_with_no_line_under_its_title_centres_the_title() {
     let mut rows: Vec<Rect> = Vec::new();
     let draw = |ctx: &egui::Context, rows: &mut Vec<Rect>| {
         rows.clear();
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             ui.set_width(520.0);
             rows.push(full::radio_row(ui, egui::Id::new("r-bare"), false, "Lone title", None, "").rect);
             rows.push(full::radio_row(ui, egui::Id::new("r-two"), false, "Two line title", None, "a line under it").rect);
@@ -944,9 +953,10 @@ fn a_row_with_no_line_under_its_title_centres_the_title() {
     let at = |t: &str| drawn.iter().find(|(x, _)| x == t).map(|(_, r)| *r).unwrap_or_else(|| panic!("{t} drawn"));
     let line = Type::Strong.line();
     assert!((rows[0].height() - (24.0 + line)).abs() < 0.5, "one line high: {:?}", rows[0]);
-    // A choice row lays its title from the top of the lines it has: alone, one line centred in the row.
-    assert!((at("Lone title").top() + line / 2.0 - rows[0].center().y).abs() < 0.5, "centred: {:?} in {:?}", at("Lone title"), rows[0]);
-    assert!(at("Two line title").top() + line / 2.0 < rows[1].center().y - 4.0, "with a line under it, the title sits above the middle");
+    // A choice row lays its title in the first of the lines it has, centred in that line: alone, its middle on
+    // the row's middle.
+    assert!((at("Lone title").center().y - rows[0].center().y).abs() < 0.5, "centred: {:?} in {:?}", at("Lone title"), rows[0]);
+    assert!(at("Two line title").center().y < rows[1].center().y - 4.0, "with a line under it, the title sits above the middle");
     // A large row lays a lone title on its middle.
     assert!((at("Big lone title").center().y - rows[2].center().y).abs() < 0.5, "a large row's lone title centred: {:?} in {:?}", at("Big lone title"), rows[2]);
 }
@@ -962,7 +972,7 @@ fn a_passcode_row_under_a_sheet_takes_no_keys() {
         let mut value = Secret::default();
         let mut words = Rect::NOTHING;
         let draw = |ctx: &egui::Context, value: &mut Secret, words: &mut Rect| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            central(ctx, egui::CentralPanel::default(), |ui| {
                 ui.add_space(200.0);
                 let _ = pin::pin_row(ui, "u-pin", value, 8, None, true, false);
             });
@@ -986,4 +996,46 @@ fn a_passcode_row_under_a_sheet_takes_no_keys() {
     };
     assert_eq!(typed(false), 3, "with nothing over it the row takes what is typed");
     assert_eq!(typed(true), 0, "under the sheet the row takes nothing");
+}
+
+/// A field or row in a sheet named as the sheet is titled draws no name: the title already names it (the
+/// "Published address" sheet's one field). Victim: whoever reads the sheet, one word read twice and a line of
+/// nothing. A field named otherwise keeps its name, and outside a sheet the same name is drawn: the judgement
+/// is the library's one place (`sheet::echoes_title`), asked by fields and rows alike.
+#[test]
+fn a_name_that_says_the_sheet_title_again_is_not_drawn() {
+    use zikaron_ui::{card, fields};
+    let mut f = Frames::new();
+    let title = "发布地址";
+    let draw = |ctx: &egui::Context| {
+        let mut unit = ();
+        let _ = sheet::show(
+            ctx,
+            sheet::Spec::new("u4-echo", tokens::SHEET_W),
+            &mut unit,
+            |ui, _| {
+                sheet::title(ui, title, "");
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, title, None, None, |ui, w| ui.allocate_exact_size(vec2(w, 38.0), egui::Sense::hover()));
+                    st.field(ui, "名称", None, None, |ui, w| ui.allocate_exact_size(vec2(w, 38.0), egui::Sense::hover()));
+                });
+                card::form(ui, |ui, f| {
+                    let _ = f.info(ui, title, card::Show::Text("x"));
+                });
+            },
+            |_, _| (),
+        );
+        egui::Area::new(egui::Id::new("u4-page")).fixed_pos(pos2(20.0, 20.0)).show(ctx, |ui| {
+            ui.set_width(300.0);
+            fields::stack(ui, |ui, st| st.field(ui, title, None, None, |ui, w| ui.allocate_exact_size(vec2(w, 38.0), egui::Sense::hover())));
+        });
+    };
+    let mut out = f.run(0.1, vec![], draw);
+    for _ in 0..12 {
+        out = f.run(0.1, vec![], draw);
+    }
+    let said = texts(&out);
+    let n = |s: &str| said.iter().filter(|(t, _)| t == s).count();
+    assert_eq!(n(title), 2, "the sheet's title and the field outside any sheet; the field and the row in the sheet draw no name: {said:?}");
+    assert_eq!(n("名称"), 1, "a field named otherwise keeps its name");
 }

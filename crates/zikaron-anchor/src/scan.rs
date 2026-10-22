@@ -873,6 +873,38 @@ pub fn anchored_log(log: &W, t0: &[u8; 32]) -> Option<LogFacts> {
     })
 }
 
+/// The public key of `author` as one node of chain `chain` shows it: the logs `registry` emitted for anchors whose
+/// topic 1 is `author`, in blocks `from` to `to` (read by the anchor scan's own reader, [`logs_over_window`]), each
+/// judged as an anchor log ([`anchored_log`]: shape, topic 0, the emitter and topic 1 checked here, never left to
+/// the node's filter), and each one's transaction read ([`tx::read`]: the signing hash rebuilt by its type, the
+/// hash checked) until one whose recovered sender is `author` itself and whose signature names this chain. Its
+/// public key is returned: that key's address is `author`, so the answer proves itself whichever node gave it.
+/// An anchor sent through a relay or a contract (the transaction's signer is not `author`) is passed over.
+/// `Ok(None)`: the node read every block and holds no such anchor. A log whose transaction the node does not give
+/// is a node that contradicts itself, refused ([`Shape::TxLacks`]), never passed over as no anchor.
+pub fn author_key(ep: &mut dyn Endpoint, chain: u64, registry: &[u8; 20], author: &[u8; 20], from: u64, to: u64) -> Result<Option<[u8; 65]>, Refusal> {
+    crate::seam();
+    let t0 = topic0();
+    let filter = LogFilter { addresses: vec![*registry], topics: vec![Topic::One(t0), Topic::One(padded(author))] };
+    let mut c = Chain { id: chain, ep };
+    for log in paged(&mut c, &filter, from, to)? {
+        let Some(f) = anchored_log(&log, &t0) else { continue };
+        if &f.claimed != author || emitter_of(&log).as_ref() != Some(registry) || f.block_number < from || f.block_number > to {
+            continue;
+        }
+        let Some(t) = c.tx_by_hash(&f.tx)? else {
+            return Err(Refusal::Malformed(Shape::TxLacks { part: "transaction".into(), tx: hexfmt::encode(&f.tx) }));
+        };
+        if t.sender != Some(*author) || t.chain_id != Some(chain) {
+            continue;
+        }
+        if let Some(key) = t.pubkey.filter(|k| cryptox::address_of_pubkey(k) == *author) {
+            return Ok(Some(key));
+        }
+    }
+    Ok(None)
+}
+
 /// Whether this window admits the sender (§9.4: `senders` bounds only the registry-form scan).
 pub fn window_admits(w: &Window, claimed: &[u8; 20]) -> bool {
     w.senders.contains(claimed)

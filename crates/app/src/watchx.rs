@@ -230,6 +230,13 @@ pub struct Row {
     pub rings: Vec<Ring>,
 }
 
+/// The rows that need attention, as the desktop's alerts list them: a row that warns or is bad, never one that is
+/// fine or not yet read, and never the whole-machine backup (its state is shown in settings, not raised as an
+/// alert). The command line's watch output reads every row and is not filtered here.
+pub fn needing_attention(rows: Vec<Row>) -> Vec<Row> {
+    rows.into_iter().filter(|r| r.item != Item::Backup && matches!(r.light, Light::Warn | Light::Bad)).collect()
+}
+
 fn row(item: Item, light: Light, n: u64, detail: String, gap: Option<Gap>) -> Row {
     Row { item, light, n, detail, gap, rings: Vec::new() }
 }
@@ -515,6 +522,12 @@ pub fn notices(rows: &[Row]) -> Vec<Notice> {
         }
     }
     out
+}
+
+/// What may ring: the notices of the rows that need attention (`needing_attention`, the alerts page's own
+/// judgment), so nothing rings that the alerts page would not list (the whole-machine backup never does).
+pub fn to_ring(rows: Vec<Row>) -> Vec<Notice> {
+    notices(&needing_attention(rows))
 }
 
 /// Deduplicate. Keys already alerted do not alert again; returns (the new alerts this pass, their keys).

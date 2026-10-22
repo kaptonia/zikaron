@@ -95,51 +95,27 @@ pub fn of_file(p: &Path) -> Result<Content, Fault> {
     })
 }
 
-/// A directory manifest: one `{path, sha256}` row per file, sorted by path.
+/// A directory manifest: one `{path, sha256}` row per file, sorted by path (`zikaron_glue::recording`, the one
+/// walk and manifest for a directory: signing it here and taking it out of a record package recompute alike).
 ///
 /// Its shape is a canonical JSON value, so the manifest bytes are unique: the same tree gives the same bytes
 /// anywhere. Only regular files are included; other kinds (symbolic links, device files) are left out and
 /// counted, so skipping is reported rather than silent.
 pub fn manifest(dir: &Path) -> Result<(Value, usize, usize), Fault> {
-    let mut rows: Vec<(String, String)> = Vec::new();
-    let mut skipped = 0usize;
-    walk(dir, dir, &mut rows, &mut skipped)?;
+    let (rows, skipped) = zikaron_glue::recording::dir_rows(dir).map_err(|(e, at)| classify(&e, &at.display().to_string()))?;
     if rows.is_empty() {
         return Err(Fault::known(Known::DirEmpty, dir.display().to_string()));
     }
-    rows.sort();
     let n = rows.len();
-    let arr = rows
-        .into_iter()
-        .map(|(path, sha)| {
-            Value::Obj(vec![
-                ("path".to_string(), Value::Str(path)),
-                ("sha256".to_string(), Value::Str(sha)),
-            ])
-        })
-        .collect();
-    Ok((Value::Obj(vec![("files".to_string(), Value::Arr(arr))]), n, skipped))
+    Ok((zikaron_glue::recording::dir_manifest(&rows), n, skipped))
 }
 
-fn walk(root: &Path, at: &Path, out: &mut Vec<(String, String)>, skipped: &mut usize) -> Result<(), Fault> {
-    let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(at)
-        .map_err(|e| classify(&e, &at.display().to_string()))?
-        .map(|e| e.map(|e| e.path()).map_err(|e| classify(&e, &at.display().to_string())))
-        .collect::<Result<_, _>>()?;
-    names.sort();
-    for p in names {
-        let md = std::fs::symlink_metadata(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
-        if md.is_dir() {
-            walk(root, &p, out, skipped)?;
-        } else if md.is_file() {
-            let b = std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
-            let rel = p.strip_prefix(root).unwrap_or(&p).display().to_string();
-            out.push((rel, hexfmt::encode(&cryptox::sha256(&b))));
-        } else {
-            *skipped += 1;
-        }
-    }
-    Ok(())
+/// The digests a directory may have been signed under: the one [`of_dir`] signs now, then, when it differs, the one a
+/// directory signed on Windows had before (`zikaron_glue::recording::dir_contents`), from the rows of its
+/// [`manifest`]. Checking a directory against records takes any of them.
+pub fn dir_digests(p: &Path) -> Result<Vec<[u8; 32]>, Fault> {
+    let (doc, _, _) = manifest(p)?;
+    Ok(zikaron_glue::recording::dir_contents(&zikaron_glue::recording::manifest_rows(&doc)).into_iter().map(|(d, _)| d).collect())
 }
 
 /// Directory: the sha256 of the manifest's canonical bytes.

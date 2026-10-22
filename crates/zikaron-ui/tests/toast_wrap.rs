@@ -16,7 +16,8 @@ fn rows_of(text: &str) -> Vec<String> {
     let mut out = egui::FullOutput::default();
     for time in [0.1, 0.5, 1.0] {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), ..Default::default() };
-        out = ctx.run(input, |ctx| {
+        out = ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             let _ = t.draw(ctx, 216.0);
         });
     }
@@ -79,8 +80,8 @@ fn value_rows(text: &str, mark: bool, width: f32) -> Vec<String> {
     let _ = zikaron_ui::skin::dress(&ctx);
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(0.1), ..Default::default() };
     let v = if mark { Val::Mark(zikaron_ui::mark::Mark::Warn, text.to_string()) } else { Val::text(text) };
-    let out = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    let out = ctx.run_ui(input, |root| {
+        egui::CentralPanel::default().show_inside(root, |ui| {
             ui.allocate_ui(egui::vec2(width, 600.0), |ui| zikaron_ui::width::body(ui, |ui| zikaron_ui::kv::kv(ui, &[("Chain reading", v.clone())])));
         });
     });
@@ -137,7 +138,8 @@ fn opening_a_toasts_details_moves_none_of_its_keys() {
     let mut frame = |t: &mut Toasts, events: Vec<egui::Event>| -> egui::FullOutput {
         time += 0.2;
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
-        ctx.run(input, |ctx| {
+        ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             let _ = t.draw(ctx, 216.0);
         })
     };

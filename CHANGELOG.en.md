@@ -2,6 +2,77 @@
 
 [中文](CHANGELOG.md) | English
 
+## 0.1.4
+
+This version lays out and draws the whole app anew, with motion that flows and no flash on refresh; alerts list only what needs attention; AI apps can call the command line through MCP, by the same two ways as before, "Through the desktop app" and "With a credential". A record package's originals can be taken out once it is verified, and a record package can be encrypted to one recipient, so that only they can open it.
+
+### Upgrading from 0.1.3
+
+- **Install over it**: 0.1.3's machine folder and data folders are used as they are, with nothing else to do. Data from 0.1.2 or earlier comes across as the 0.1.3 section's "Upgrading from an earlier version" says.
+
+### Record packages
+
+- **Take out originals**: "Take out originals" on the verify result card takes the originals that match their records into a folder you choose, under their own names; a signed folder comes out whole. A name the folder already holds refuses the whole batch with not a byte written; everything is written into a staging place and checked against its fingerprint before it is moved into place, and a failure on the way takes it all back; a link is refused, and nothing is ever written outside the chosen folder.
+- **Encrypted record packages**: turn on "Encrypt the record package" on the export page and give the recipient's address (the app finds a transaction they signed on chain and recovers their public key) or their public key, and the `.zkit` exported opens for them alone. The package does not say who it is for; whoever is not the recipient cannot even verify it. The limits are in the user manual's "Record kit" section.
+- "Details" in Settings > Identity key has a "Public key" row with a copy key: what others fill in to encrypt a record package to you.
+- An encrypted record package dropped elsewhere (others' ledgers, due diligence) is refused with "This is an encrypted record package. Open it on the verify page".
+- Opening an encrypted record package, a key of one identity on this machine that does not read no longer stops the others: the next is tried; when none opens it, the one that did not read is named, never "none is the recipient".
+- **A node behind no longer voids a read-only network**: a node not yet synced to the block its registry was deployed in no longer marks the whole network "fingerprint mismatch"; the verify page, others' ledgers, the grant check, due diligence and exporting to an address read it on its other nodes; only when no node has the contract there is it a mismatch.
+- Exporting to an address: a read-only row with the current network's own chain and registry is that network itself, and failing to reach it no longer says the chain could not be read; with no chain set for the data folder, the read-only networks read through with no anchor say "not anchored".
+- **A signed folder has the same fingerprint on every system**: paths inside it are joined by `/` everywhere; a folder signed on Windows by earlier versions still matches when verified, exported or taken out on macOS or Linux. A folder signed on Windows by this version does not match when checked on Windows by 0.1.3 or earlier; the other side should upgrade too.
+- Taking out originals: the same file attached alone and inside an attached folder comes out under the name it was signed with alone; a file inside a signed folder that comes out whole is no longer placed again beside it; a signed file kept inside a folder comes out under its own name.
+- The command line with the credential, scanning its home, finding a recipient's key and sending its home's queue, goes by this machine's proxy setting; set to "System", it follows the system's proxy settings, never the terminal's proxy variables (not even those an AI app starts it with).
+
+### Interface
+
+- **A new layout**: each settings page opens with an overview card (an icon, the name and state, three figures), with its rows in groups below; a form's field names stand above its fields; a sheet's rows line up with its title and its footer stays at its foot. The lock screen, the passcode gate's states and the first-run wizard are drawn anew.
+- **Materials and depth**: the background, cards, floating panels and sheets each sit at one level, their shadows and grounds following it. On macOS the system's own material lies under the window (from macOS 26 the window corners and traffic lights follow the system's new style), on Windows 11 Mica; elsewhere the ground is opaque as before.
+- **Motion that flows**: changing pages and lists, toasts coming and going, sheets opening and closing, folds, segmented controls and switches all move, and a change of course goes on from where things are; content updated in place moves in place, without replaying the page's entrance. With the system's "Reduce motion" on, only fades are left.
+- **No flash, no false state**: while the ledger or the grants list refreshes the page keeps drawing the last reading and swaps in the new one where it stands, never emptying first; a ledger check under way no longer shows "Problems" for a moment.
+- **Switching language**: words that change cross-fade where they stand.
+- **Date picker**: pick a year and a month, then the day.
+- **Folds and drop-downs**: with too little room below, the window slides to show them whole; on a page with keys held at its foot, what opens stops above the keys instead of behind them.
+- **Highlights**: hover and selection blocks keep an even gap on all four sides, their corners matching the card's; in a sheet's list (such as "Choose a record") the first and last rows light as tall as the rows between.
+- **Type**: Latin letters, figures and signs in medium and semibold weights use Inter (SIL OFL 1.1, embedded with the app).
+- **Words**: explanatory small print is kept to what is needed; the app has no small blue links any more, plain keys or whole clickable rows stand in their place; a time is just the time (e.g. `2026-10-17 00:42:11`).
+- **A new record** is made in one step; its name defaults to the file's full name, extension and all.
+- **Network**: nodes and chain settings are edited in one "Edit nodes and chain" sheet, with one "Save".
+- **A new grant**: the "Checks before issuing" card and the first-grant checklist (its two ticks and its reset) are gone; the form takes the page's whole width.
+- **A new grant's custom validity**: the start's day is picked on its date block's calendar, with an hour and minute beside; the length is given in days, hours and minutes (at most 999 days); the end is worked out from the two and shown on the date block at the right. Start and end are no longer typed as seconds.
+- **The "Command line" page is now "Command line and AI control"**.
+- **Sheets**: the fixed reminder notes on confirmation cards are gone.
+- **Delete keys**: the last step of deleting an identity or a record, and the second press that removes a local copy or a read-only network, is a red delete key.
+- **Copy keys**: in details only machine values (addresses, fingerprints, hashes, paths and the like) carry a copy key; words and counts do not.
+- **On macOS the window is drawn through Metal**; Windows and Linux keep OpenGL.
+- **"Choose a record" in a new grant** opens a sheet: a search field, start and end dates (with a calendar), and the records below; click one to choose it. Records that cannot be granted yet are greyed out with the reason.
+- **A key is as wide as what it says now**: no room is kept for what it says while busy, and its width eases as the words change.
+- **The setup wizard's column** is as wide as the main window's side bar; leaving the wizard goes straight to the main window, with no ghost of it left behind.
+- **Switching identity no longer stalls**: the sidebar's switch between Recorder and User, and switching identity in settings, run in the background, and the new identity's pages replace the old in place once read; switching again on the way, the last one stands; a switch that fails says why and stays where it was.
+- **A field named as its dialog's title no longer repeats the name** (as "Publish address").
+- **Sheet details**: no scroll bar along a sheet's right edge when its content fits; an "Advanced options" or "By hand" fold at a sheet's foot stands off the keys below as anything else there does, closed or open; switching to another app and back with a sheet open no longer flashes the window or brings the sheet up again.
+- **Page form details**: a form on a page ending in an "Advanced options" fold stands off the keys below as a field does, closed or open.
+
+### Alerts
+
+- The alerts page, the rail's count and the toasts list only what needs attention (warnings and errors); the whole-machine backup no longer appears among the alerts. With none, the page says "Nothing needs your attention".
+
+### Command line and AI apps
+
+- **`zikaron mcp`**: AI apps call the command line through the Model Context Protocol (MCP), with no terminal needed. The write tools (`history`, `grant`, `revoke`, `adopt`, `annotate`, `retract`, `kit-export`, `anchor`, `kit-verify`) each go "With a credential" or "Through the desktop app" as the switches stand at that call; `kit-export`'s package and the originals `kit-verify` takes out land in the folder you give, the rest write this machine's data folder only. The read tools are `show`, `audit`, `scan`, `check-grant`, `chain-check`, `depth`, `badge` and `contract`; `scan` takes only `home` and reads with that data folder's chain settings and nodes; `audit`'s `out` and `badge`'s `encode` are not given. Each call is that command, and its answer's bytes and exit code are those of the same command typed in a terminal; making keys, every way that takes a private key, handing a ledger over and the fee bump are not given. Putting on chain follows "Putting on chain from the command line": with "Send automatically" it spends this identity's gas.
+- **"Connect an AI app"**: in the "Terminal" group of Settings > Command line and AI control, "Copy config" copies the configuration to paste into the AI app's MCP settings.
+- **Taking originals out and encrypted record packages work on the command line and in AI apps too**, through the desktop and with a credential alike, with the desktop's conclusions and refusals word for word: `kit-verify --originals-to <folder>` takes the originals out (a plain package needs no home and no key); `kit-export --to <address>` or `--to-key <public key>` exports an encrypted package (with a credential, the key is looked for on the data folder's network and this machine's read-only networks; directly on a plain ledger folder, give `--to-key`, or `--to` with `--endpoint`); `kit-verify` opens an encrypted package with the desktop's identities through the desktop, with this machine's identities with a credential (`--ledger <home>/ledger`), or with `--key-file` directly. An encrypted package's refusals are the new `E_ADDRESSED`; a network not read is exit 4 (no answer), through the desktop too. Taken out, the answer adds `taken` (the names) and `path`; not taken out, the refusal is the new `E_EXTRACT`, its `token` saying why, with nothing written in the chosen folder. Other verbs that read packages (such as `audit`) refuse an encrypted package with `E_ADDRESSED` (`ADDRESSED_ELSEWHERE`), pointing to `kit-verify`. In AI apps `kit-export` takes `to` and `to-key`, and `kit-verify`'s `home` may be left out.
+- **`kit-export` takes the originals as the desktop does**: exporting from a desktop data folder, through the desktop (`--home`) and with a credential alike, the chosen records' originals go in by default, taken as the desktop's export page takes them, and the answer lists `originals` and `leftOut`; `--originals none` (the `originals` parameter of the AI app tool) leaves them out. Before, the road through the desktop took none, and the credential's road could not leave them out. A plain ledger folder still takes its originals one by one with `--file`, and `--originals` there is refused as misuse.
+- `scan --ledger <a desktop data folder's ledger>` with no `--endpoint` takes that data folder's nodes with the credential (and this machine's proxy), read as anchoring with a credential reads them.
+- `CLI-SCHEMA.md` gains section 13, the protocol; `contract` lists `mcp` among the verbs.
+
+### Fixes
+
+- **A new grant starts from the chain's present**: opening a new grant reads the latest block's time from the current network once, and both the presets and a custom start day count from it; if the latest cannot be read, the chain time heard last is used and the date blocks say so. Before, the start was the chain time this machine had last heard, possibly days earlier, so the window signed was shorter than the one chosen.
+- **A data folder replaced by a file says so**: switching role or identity to a data folder another program replaced with a plain file is refused with "A file stands where a folder should be", suggesting to move the file away or choose another place; before, this was an unknown fault (on Windows, a missing file). The same on macOS, Linux and Windows.
+- **A wrong key in the key store is not used**: a slot holding a key whose address is not the slot's own is refused by the desktop (the other slots still read), as the command line refuses it; before, it was used.
+- A file written by its bare name into the current folder lands as reported (before, the write could be reported failed while the file had in fact been replaced).
+- Resetting a forgotten passcode with the recovery phrase or a key file, typing a word cell by cell or the file's password no longer moves the focus to the new passcode line halfway; it moves on Return or Tab in the last cell or the password, a click on the passcode line, or one paste filling all twelve cells.
+
 ## 0.1.3
 
 This version lets the command line write the data the desktop keeps sealed even while the desktop is closed or locked, authorised by you on the desktop, for a time you choose, and taken back whenever you like; a ledger can be handed back and forth between two places, and a record kit is now one file; following the system's proxy runs the system's automatic configuration script and takes proxies that ask for credentials, HTTPS proxies and SOCKS4; the machine settings keep only the two the passcode gate needs in plain. **Data an earlier version left is not read and nothing converts it: bring it across by hand as in "Upgrading from an earlier version" below.**

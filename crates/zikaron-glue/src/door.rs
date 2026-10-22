@@ -52,6 +52,8 @@ mod member {
     pub const ENTRIES: &str = "entries";
     pub const FILES: &str = "files";
     pub const DROPPED: &str = "dropped";
+    pub const ORIGINALS: &str = "originals";
+    pub const LEFT_OUT: &str = "leftOut";
     pub const COUNT: &str = "count";
     pub const CODE: &str = "code";
     pub const TAIL: &str = "tail";
@@ -59,6 +61,14 @@ mod member {
     pub const ZH: &str = "zh";
     pub const EN: &str = "en";
     pub const NAMES: &str = "names";
+    pub const RECORDS: &str = "records";
+    pub const CONTENT: &str = "content";
+    pub const ORIGINAL: &str = "original";
+    pub const ANCHORED: &str = "anchored";
+    pub const FIRST_AT: &str = "firstAt";
+    pub const TAKEN: &str = "taken";
+    pub const VERDICT: &str = "verdict";
+    pub const SUBJECT: &str = "subject";
 }
 
 /// A CLI request: the verb, the named home, and each parsed flag with its value in the order given (a repeated
@@ -125,8 +135,15 @@ pub enum Reply {
     /// Nothing was sent: the chain already holds anchors of these hashes from this key (`names`), the earliest in
     /// transaction `tx` at block `block`.
     OnChain { names: Vec<String>, tx: String, block: u64 },
-    /// A record package was written.
-    Kit { kit_id: String, path: String, entries: u64, files: u64, dropped: Vec<String> },
+    /// A record package was written: the package paths of the originals that went in, and the places of the chosen
+    /// records' originals that did not (no longer the bytes recorded, or not there to read).
+    Kit { kit_id: String, path: String, entries: u64, files: u64, dropped: Vec<String>, originals: Vec<String>, left_out: Vec<String> },
+    /// A record package was verified and the kit law passed it: its id, how many entries it carries, each record's
+    /// facts (`crate::recordcheck`, the one judge), and the originals taken out when that was asked.
+    Verified { kit_id: String, entries: u64, records: Vec<Record>, taken: Option<Taken> },
+    /// A record package the kit law refuses: its verdict token, and its subject when there is one. Nothing is taken
+    /// out of it.
+    KitRefused { verdict: String, subject: Option<String> },
     /// Nothing was sent: the entries wait in the queue for the user to send them from the desktop.
     Queued { count: u64 },
     /// The action needs the passcode, so it is done on the desktop, never over IPC.
@@ -139,6 +156,22 @@ pub enum Reply {
     Closed,
 }
 
+/// One record's facts in a verified package: its entry, its `content`, its original, its anchoring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub entry_id: String,
+    pub content: String,
+    pub original: crate::recordcheck::Original,
+    pub chain: crate::recordcheck::OnChain,
+}
+
+/// The originals taken out of a verified package: the folder and the names they were placed under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    pub path: String,
+    pub names: Vec<String>,
+}
+
 mod kind {
     pub const WROTE: &str = "wrote";
     pub const ANCHORED: &str = "anchored";
@@ -148,6 +181,8 @@ mod kind {
     pub const VOIDED: &str = "voided";
     pub const ON_CHAIN: &str = "onChain";
     pub const KIT: &str = "kit";
+    pub const VERIFIED: &str = "verified";
+    pub const KIT_REFUSED: &str = "kitRefused";
     pub const QUEUED: &str = "queued";
     pub const ON_DESKTOP: &str = "onDesktop";
     pub const REFUSED: &str = "refused";
@@ -196,13 +231,43 @@ impl Reply {
                 put(member::TX, s(tx));
                 put(member::BLOCK, Value::Int(*block));
             }
-            Reply::Kit { kit_id, path, entries, files, dropped } => {
+            Reply::Kit { kit_id, path, entries, files, dropped, originals, left_out } => {
                 put(member::REPLY, s(kind::KIT));
                 put(member::KIT_ID, s(kit_id));
                 put(member::PATH, s(path));
                 put(member::ENTRIES, Value::Int(*entries));
                 put(member::FILES, Value::Int(*files));
                 put(member::DROPPED, Value::Arr(dropped.iter().map(|x| s(x)).collect()));
+                put(member::ORIGINALS, Value::Arr(originals.iter().map(|x| s(x)).collect()));
+                put(member::LEFT_OUT, Value::Arr(left_out.iter().map(|x| s(x)).collect()));
+            }
+            Reply::Verified { kit_id, entries, records, taken } => {
+                put(member::REPLY, s(kind::VERIFIED));
+                put(member::KIT_ID, s(kit_id));
+                put(member::ENTRIES, Value::Int(*entries));
+                let row = |r: &Record| {
+                    let mut m = vec![
+                        (member::ANCHORED.to_string(), s(r.chain.word())),
+                        (member::CONTENT.to_string(), s(&r.content)),
+                        (member::ENTRY_ID.to_string(), s(&r.entry_id)),
+                    ];
+                    if let Some(t) = r.chain.first_at() {
+                        m.push((member::FIRST_AT.to_string(), Value::Int(t)));
+                    }
+                    m.push((member::ORIGINAL.to_string(), s(r.original.word())));
+                    Value::Obj(m)
+                };
+                put(member::RECORDS, Value::Arr(records.iter().map(row).collect()));
+                if let Some(t) = taken {
+                    put(member::TAKEN, Value::Obj(vec![(member::NAMES.to_string(), Value::Arr(t.names.iter().map(|x| s(x)).collect())), (member::PATH.to_string(), s(&t.path))]));
+                }
+            }
+            Reply::KitRefused { verdict, subject } => {
+                put(member::REPLY, s(kind::KIT_REFUSED));
+                put(member::VERDICT, s(verdict));
+                if let Some(x) = subject {
+                    put(member::SUBJECT, s(x));
+                }
             }
             Reply::Queued { count } => {
                 put(member::REPLY, s(kind::QUEUED));
@@ -249,7 +314,37 @@ impl Reply {
                 entries: n(member::ENTRIES)?,
                 files: n(member::FILES)?,
                 dropped: v.member(member::DROPPED)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                originals: v.member(member::ORIGINALS)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                left_out: v.member(member::LEFT_OUT)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
             },
+            kind::VERIFIED => {
+                let strs = |v: &Value| v.as_arr().and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
+                let record = |r: &Value| -> Option<Record> {
+                    let t = |k: &str| r.member(k).and_then(|x| x.as_str()).map(str::to_string);
+                    let first = match r.member(member::FIRST_AT) {
+                        None => None,
+                        Some(Value::Int(x)) => Some(*x),
+                        Some(_) => return None,
+                    };
+                    Some(Record {
+                        entry_id: t(member::ENTRY_ID)?,
+                        content: t(member::CONTENT)?,
+                        original: crate::recordcheck::Original::of_word(&t(member::ORIGINAL)?)?,
+                        chain: crate::recordcheck::OnChain::of_word(&t(member::ANCHORED)?, first)?,
+                    })
+                };
+                let taken = match v.member(member::TAKEN) {
+                    None => None,
+                    Some(t) => Some(Taken { path: t.member(member::PATH)?.as_str()?.to_string(), names: strs(t.member(member::NAMES)?)? }),
+                };
+                Reply::Verified {
+                    kit_id: s(member::KIT_ID)?,
+                    entries: n(member::ENTRIES)?,
+                    records: v.member(member::RECORDS)?.as_arr()?.iter().map(record).collect::<Option<Vec<_>>>()?,
+                    taken,
+                }
+            }
+            kind::KIT_REFUSED => Reply::KitRefused { verdict: s(member::VERDICT)?, subject: s(member::SUBJECT) },
             kind::QUEUED => Reply::Queued { count: n(member::COUNT)? },
             kind::ON_DESKTOP => Reply::OnDesktop,
             kind::REFUSED => Reply::Refused {
@@ -333,7 +428,19 @@ mod tests {
             Reply::Unheard { tx: "t".into(), detail: "no node".into() },
             Reply::Voided { tx: "t".into() },
             Reply::OnChain { names: vec!["h1".into(), "h2".into()], tx: "t".into(), block: 7 },
-            Reply::Kit { kit_id: "k".into(), path: "/o".into(), entries: 2, files: 0, dropped: vec![".DS_Store".into()] },
+            Reply::Kit { kit_id: "k".into(), path: "/o".into(), entries: 2, files: 1, dropped: vec![".DS_Store".into()], originals: vec!["a.txt".into()], left_out: vec!["/gone/b.txt".into()] },
+            Reply::Verified {
+                kit_id: "k".into(),
+                entries: 3,
+                records: vec![
+                    Record { entry_id: "e1".into(), content: "c1".into(), original: crate::recordcheck::Original::Match, chain: crate::recordcheck::OnChain::Anchored { first_at: 9 } },
+                    Record { entry_id: "e2".into(), content: "c2".into(), original: crate::recordcheck::Original::Missing, chain: crate::recordcheck::OnChain::Unread },
+                ],
+                taken: Some(Taken { path: "/t".into(), names: vec!["a 原件.pdf".into()] }),
+            },
+            Reply::Verified { kit_id: "k".into(), entries: 0, records: Vec::new(), taken: None },
+            Reply::KitRefused { verdict: "v1".into(), subject: Some("a".into()) },
+            Reply::KitRefused { verdict: "v2".into(), subject: None },
             Reply::Queued { count: 4 },
             Reply::OnDesktop,
             Reply::Refused { code: "LOCKED".into(), tail: "t".into(), network: true, zh: "锁".into(), en: "locked".into() },

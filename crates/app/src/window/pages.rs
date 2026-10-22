@@ -105,6 +105,10 @@ impl Pages for Win {
         self.title_of(route)
     }
 
+    fn title_in_bar(&self, route: &Route) -> bool {
+        matches!(route, Route::Root(Place::Settings(_)) | Route::Section(_))
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
         self.toolbar_acts(ui, route, now);
     }
@@ -321,19 +325,10 @@ impl Win {
             }
             Place::View(View::Grants, _) => {
                 self.ensure_grants(now);
-                let (_s, r) = page::Page::new().primary(ui, t(Key::V2NewGrant));
+                let (_s, r) = page::Page::new().primary_lead(ui, t(Key::V2NewGrant), zikaron_ui::icons::Glyph::Plus);
                 if r.clicked() {
                     self.grant_form_fresh();
                     self.push(Route::NewGrant, now);
-                }
-            }
-            Place::View(View::Verify, tab) => {
-                let role = self.shell.settings.role;
-                let list = crate::nav::tabs(View::Verify, role);
-                let labels: Vec<seg::Cell> = list.iter().map(|x| seg::Cell::from(t(tab_key(View::Verify, *x)))).collect();
-                let cur = list.iter().position(|x| x == tab).unwrap_or(0);
-                if let Some(i) = seg::seg(ui, "verify-tabs", &labels, cur) {
-                    self.set_tab(Place::View(View::Verify, list[i]), now);
                 }
             }
             Place::View(View::Log, _) => self.ledger_acts(ui, now),
@@ -407,13 +402,6 @@ pub(super) fn tab_key(v: View, tab: u8) -> Key {
         (View::Verify, T::VERIFY_OTHERS) => Key::V2TabOthers,
         (View::Verify, _) => Key::V2TabCheckGrant,
         (_, _) => v.key(),
-    }
-}
-
-pub(super) fn step_name(s: crate::wizard::Step) -> Key {
-    match s {
-        crate::wizard::Step::Terms => Key::StepTerms,
-        crate::wizard::Step::Anchor => Key::StepAnchor,
     }
 }
 

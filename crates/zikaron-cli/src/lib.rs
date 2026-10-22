@@ -1,5 +1,6 @@
-//! The `zikaron` command line: twenty-two verbs; with `--home`, ten of them are done by the running desktop
-//! through its local IPC endpoint ([`desk`]).
+//! The `zikaron` command line: twenty-six verbs; with `--home`, eleven of them are done by the running desktop
+//! through its local IPC endpoint ([`desk`]); `mcp` speaks the Model Context Protocol and runs the others in
+//! processes of their own ([`mcp`]).
 //!
 //! The verbs are a thin shell: entries are built and checked by the core, directories read and written by the
 //! storage crate, chains scanned and written by the anchoring crate, documents, payloads, kits, depth and
@@ -41,6 +42,7 @@ pub mod entry;
 pub mod handoff;
 pub mod kitout;
 pub mod ledger;
+pub mod mcp;
 pub mod out;
 pub mod sealed;
 pub mod sealedsend;

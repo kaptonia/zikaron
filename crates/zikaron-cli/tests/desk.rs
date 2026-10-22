@@ -113,7 +113,7 @@ fn each_reply_is_answered_by_the_verbs_own_answer() {
         ("anchor", vec![], Reply::NotYet { tx: "0xt".into(), waited: 60 }, 4, r#"{"count":60,"ok":false,"reason":"E_TX_NOT_YET","tx":"0xt"}"#),
         ("anchor", vec![], Reply::Unheard { tx: "0xt".into(), detail: "d".into() }, 4, r#"{"detail":"d","ok":false,"reason":"E_UNREACHABLE","tx":"0xt"}"#),
         ("anchor", vec![], Reply::Voided { tx: "0xt".into() }, 1, r#"{"ok":false,"reason":"E_TX_VOID","tx":"0xt"}"#),
-        ("kit-export", vec!["--out", "/o"], Reply::Kit { kit_id: "k".into(), path: "/o".into(), entries: 2, files: 1, dropped: vec![] }, 0, r#"{"dropped":[],"entries":2,"files":1,"kitId":"k","ok":true,"path":"/o","proofs":0,"state":"KIT_OK"}"#),
+        ("kit-export", vec!["--out", "/o"], Reply::Kit { kit_id: "k".into(), path: "/o".into(), entries: 2, files: 1, dropped: vec![], originals: vec!["a.txt".into()], left_out: vec!["/gone/b.txt".into()] }, 0, r#"{"dropped":[],"entries":2,"files":1,"kitId":"k","leftOut":["/gone/b.txt"],"ok":true,"originals":["a.txt"],"path":"/o","proofs":0,"state":"KIT_OK"}"#),
         ("anchor", vec![], Reply::Queued { count: 3 }, 3, r#"{"count":3,"ok":false,"reason":"E_QUEUED"}"#),
         ("attest", vec![], Reply::OnDesktop, 1, r#"{"ok":false,"reason":"E_ON_DESKTOP"}"#),
         ("annotate", vec![], Reply::Refused { code: "READ_ONLY".into(), tail: "t".into(), network: false, zh: "只读".into(), en: "read only".into() }, 1, r#"{"detail":"t","ok":false,"reason":"E_DESKTOP_REFUSED","token":"READ_ONLY"}"#),
@@ -162,6 +162,8 @@ fn the_request_carries_each_flag_as_read() {
         (vec!["grant".into(), "--grantee".into(), "0xg".into(), "--window-from".into(), "+5".into(), "--window-to".into(), "9".into(), "--scope".into(), "s".into()], vec![("grantee", "0xg".into()), ("window-from", "5".into()), ("window-to", "9".into()), ("scope", "s".into())]),
         (vec!["history".into(), "--file".into(), file.display().to_string(), "--note".into(), "n".into()], vec![("file", std::fs::canonicalize(&file).unwrap().display().to_string()), ("note", "n".into())]),
         (vec!["kit-export".into(), "--entry".into(), "ab".repeat(32), "--entry".into(), format!("0x{}", "cd".repeat(32)), "--out".into(), "rel/out".into()], vec![("entry", format!("0x{}", "ab".repeat(32))), ("entry", format!("0x{}", "cd".repeat(32))), ("out", std::path::absolute("rel/out").unwrap().display().to_string())]),
+        // Leaving the originals out goes to the desktop as its word; not given, the desktop takes them.
+        (vec!["kit-export".into(), "--out".into(), "/o".into(), "--originals".into(), "none".into()], vec![("out", "/o".into()), ("originals", "none".into())]),
         // The anchors file is sent as the JSON it holds, in canonical bytes.
         (vec!["adopt".into(), "--anchors".into(), anchors.display().to_string(), "--attestor".into(), "0xa".into()], vec![("anchors", r#"[{"chainId":1,"content":"0xc","payloadKind":"bare","tx":"0xt"}]"#.into()), ("attestor", "0xa".into())]),
     ];
@@ -193,6 +195,7 @@ fn misuse_is_judged_before_the_desktop_is_asked() {
     let not_json = b.root.join("anchors.txt");
     std::fs::write(&not_json, b"[1,").expect("a file that is not JSON");
     let not_json = not_json.display().to_string();
+    let plain = b.root.join("plain-ledger").display().to_string();
     let cases: Vec<(Vec<&str>, &str, &str)> = vec![
         (vec!["annotate", "--home", "/nowhere/at/all"], "E_UNREADABLE #3 (15 bytes)", "cannot be read"),
         (vec!["annotate", "--home", &home, "--key", "x"], "E_ARGS --key", "not taken together with --home (the desktop uses its own identity and ledger)"),
@@ -202,6 +205,10 @@ fn misuse_is_judged_before_the_desktop_is_asked() {
         (vec!["history", "--home", &home, "--content", "x"], "E_ARGS --content", "not taken together with --home (the desktop uses its own identity and ledger)"),
         (vec!["kit-export", "--home", &home], "E_ARGS --out", "this flag is missing"),
         (vec!["kit-export", "--home", &home, "--out", "/o", "--entry", "zz"], "E_ARGS #7 (2 bytes)", "not 64 lowercase hex digits"),
+        // `--originals` takes its one word, judged before the desktop is asked.
+        (vec!["kit-export", "--home", &home, "--out", "/o", "--originals", "all"], "E_ARGS --originals", "--originals takes none"),
+        // A plain ledger folder keeps no index of signed files: the flag is refused there, whatever its word.
+        (vec!["kit-export", "--ledger", &plain, "--out", "/o", "--originals", "none"], "E_ARGS --originals", "--originals applies only to a home the desktop keeps; give a plain ledger folder's originals one by one with --file"),
         (vec!["grant", "--home", &home, "--window-from", "9007199254740992"], "E_ARGS --window-from", "past the whole-number ceiling 9007199254740991"),
         (vec!["keygen", "--home", &home], "E_ARGS --home", "not among this verb's flags"),
         (vec!["show", "--home", &home], "E_ARGS --home", "not among this verb's flags"),

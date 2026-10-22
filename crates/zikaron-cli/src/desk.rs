@@ -56,7 +56,7 @@ pub fn ask(a: &Args) -> Answer {
 
 /// Whether this machine writes alone: a command-line credential is in its folder (the desktop keeps one exactly
 /// while that switch is on, and keeps its endpoint closed meanwhile).
-fn writes_alone(machine: &std::path::Path) -> bool {
+pub(crate) fn writes_alone(machine: &std::path::Path) -> bool {
     !matches!(zikaron_seal::credential::find(machine), Err(t) if t.code == zikaron_seal::Code::CredentialMissing)
 }
 
@@ -70,6 +70,12 @@ pub fn on_desktop() -> Answer {
 /// read as the verb reads it without `--home`: whole numbers within the spec's ceiling, entry ids in their one
 /// form, a file that must exist and read, places made whole.
 fn read_args(a: &Args) -> Vec<(String, String)> {
+    // Whom a package is sealed to is judged here as without `--home` (both ways, a folder, a value not in its form
+    // are misuse), before the desktop is asked; the values go as given.
+    if a.verb() == "kit-export" {
+        let _ = verbs::seal_to(a);
+        let _ = verbs::originals_wanted(a);
+    }
     let own = verbs::accepts(a.verb(), true).unwrap_or_default();
     let mut out = Vec::new();
     for flag in own.into_iter().filter(|f| *f != verbs::HOME_FLAG) {
@@ -81,6 +87,9 @@ fn read_args(a: &Args) -> Vec<(String, String)> {
             ("adopt", "anchors") => a.one(flag).map(|p| String::from_utf8_lossy(&zikaron::json::canon_bytes(&crate::args::slurp_json(&p))).into_owned()).into_iter().collect(),
             ("kit-export", "out") => vec![whole_place(&a.need(flag))],
             ("kit-export", "entry") => a.many(flag).iter().map(|x| verbs::entry_id_form(x)).collect(),
+            // The package and the folder its originals go to, whole (the desktop judges each: a package that is not
+            // there or does not read, a folder that is not one).
+            ("kit-verify", "kit" | "originals-to") => a.one(flag).map(|p| whole_place(&p)).into_iter().collect(),
             _ => a.one(flag).into_iter().collect(),
         };
         out.extend(values.into_iter().map(|v| (flag.to_string(), v)));
@@ -130,7 +139,19 @@ fn answer_of(r: Reply, verb: &str) -> Answer {
         Reply::Voided { tx } => verbs::tx_void(&tx),
         Reply::OnChain { names, tx, block } => verbs::on_chain(&names, &tx, block),
         // Under `--home` a package takes no proof bundles (they are chosen on the desktop).
-        Reply::Kit { kit_id, path, entries, files, dropped } => verbs::kit_written(&dropped, entries, files, &kit_id, &path, 0),
+        Reply::Kit { kit_id, path, entries, files, dropped, originals, left_out } => verbs::kit_written(&dropped, entries, files, &kit_id, &path, 0).with(vec![
+            (Key::Originals, zikaron::json::Value::Arr(originals.iter().map(|x| s(x)).collect())),
+            (Key::LeftOut, zikaron::json::Value::Arr(left_out.iter().map(|x| s(x)).collect())),
+        ]),
+        // The desktop's record facts, answered by the one builder of `kit-verify`'s answer.
+        Reply::Verified { kit_id, entries, records, taken } => {
+            let a = verbs::records_answer(&kit_id, entries, &records);
+            match taken {
+                Some(t) => verbs::with_taken(a, &t.names, &t.path),
+                None => a,
+            }
+        }
+        Reply::KitRefused { verdict, subject } => verbs::kit_refused(&verdict, subject.as_deref()),
         Reply::Queued { count } => verbs::queued(count),
         Reply::OnDesktop => on_desktop(),
         Reply::Refused { code, tail, network, zh, en } if verb == "anchor" => crate::sealedsend::send_refused(&code, &tail, network, out::pick(zh, en)),

@@ -34,6 +34,9 @@ pub enum Source {
     Bytes(PathBuf),
     /// A single-file bundle (grant file, `grantfilex`).
     File(PathBuf),
+    /// A record package sealed to one key (`zikaron_glue::addressed`): opened on the verify page only, with this
+    /// machine's identities (`addressedx::open`); everywhere else refused by name.
+    Addressed(PathBuf),
     /// A publish address (`https://`, `fetchx`): fetched file by file from its manifest.
     Remote(crate::fetchx::Base),
 }
@@ -42,7 +45,7 @@ impl Source {
     /// Where this came from (path or address), for the UI's "from …" line.
     pub fn said(&self) -> String {
         match self {
-            Source::Kit(p) | Source::Bytes(p) | Source::File(p) => p.display().to_string(),
+            Source::Kit(p) | Source::Bytes(p) | Source::File(p) | Source::Addressed(p) => p.display().to_string(),
             Source::Remote(b) => b.as_str().to_string(),
         }
     }
@@ -71,6 +74,8 @@ pub fn source_of(path: &str) -> Result<Source, Fault> {
         }
     } else if md.is_file() && crate::grantfilex::is_grant_file(p) {
         Ok(Source::File(p.to_path_buf()))
+    } else if md.is_file() && zikaron_glue::addressed::is_addressed_at(p) {
+        Ok(Source::Addressed(p.to_path_buf()))
     } else if md.is_file() {
         Ok(Source::Bytes(p.to_path_buf()))
     } else {
@@ -277,6 +282,9 @@ pub fn bytes_at(source: &Source) -> Result<(Vec<Vec<u8>>, Vec<Rejected>), Fault>
         Source::File(p) => Ok((crate::grantfilex::open(p)?.ledger, Vec::new())),
         Source::Remote(b) => Ok(entries_of_pairs(&crate::fetchx::fetch_kit(b)?.pairs)),
         Source::Bytes(p) => entries_of(p),
+        // A sealed package is opened on the verify page alone: where someone else's material is read (their ledger,
+        // due diligence, a hop, the grant vault) it is refused by name, never read as bytes that do not read.
+        Source::Addressed(p) => Err(Fault::known(Known::AddressedElsewhere, p.display().to_string())),
     }
 }
 
@@ -331,6 +339,12 @@ fn facts(v: zikaron_kit::kitdir::KitVerdict) -> KitFacts {
 /// The original file of a record in the package, and whether the record is anchored, as decided by the shared
 /// record check (`zikaron_glue::recordcheck`, which the command line's `kit-verify` uses too).
 pub use zikaron_glue::recordcheck::{contents_of, originals_in_dir, originals_in_pairs, OnChain, Original};
+
+/// The originals a package holds (`zikaron_glue::extract::originals_in_dir`) as the record check takes them: (content,
+/// fingerprint bytes).
+pub fn originals_of(held: &[(zikaron_glue::extract::Original, Option<Vec<u8>>)]) -> Vec<(String, Option<Vec<u8>>)> {
+    held.iter().map(|(o, b)| (o.content.clone(), b.clone())).collect()
+}
 
 /// One row of record package verification: one record (`history`), as the shared check reports it, plus the
 /// record's name for the page.
@@ -419,6 +433,10 @@ pub struct Verified {
     /// Per record: one row per record when a record bundle was dropped in (directory, grant file, publish
     /// address); empty otherwise.
     pub records: Vec<RecordRow>,
+    /// What taking the originals out would take from a local package that passes (`zikaron_glue::extract::plan_of`):
+    /// the originals and the records left, or why none; `None` for anything else (no package, a package that does not
+    /// pass, one fetched from a publish address).
+    pub takes: Option<Result<zikaron_glue::extract::Plan, zikaron_glue::extract::Refused>>,
     /// The network the kit says it is anchored on, when that network is neither the main network nor a
     /// read-only one: then no chain was read, and the page says which network to add.
     pub not_added: Option<crate::kitsindex::AnchoredOn>,

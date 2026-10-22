@@ -3,7 +3,7 @@
 use crate::motion::{self, Curve};
 use crate::paint;
 use crate::palette::{self, c, C};
-use crate::tokens::{self, Type};
+use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
 /// What a passcode row did this frame.
@@ -33,6 +33,10 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
     } else if active && top && ui.memory(|m| m.focused().is_none()) {
         resp.request_focus();
     }
+    // A row typed into, as a field is: the text beam over it.
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
     let mut changed = false;
     let events = if held { ui.input(|i| i.events.clone()) } else { Vec::new() };
     for e in events {
@@ -53,7 +57,7 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
             _ => {}
         }
     }
-    let dx = motion::shake_at(ui.ctx(), shake_at, 0.4);
+    let dx = motion::shake_at(ui.ctx(), shake_at, 0.4 * crate::tokens::PACE);
     let filled = value.chars();
     let id = resp.id;
     let focus = motion::flag(ui.ctx(), id.with("focus"), resp.has_focus(), tokens::FAST);
@@ -62,12 +66,14 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
         let x = rect.left() + dx + (cw + tokens::PIN_GAP) * i as f32;
         let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cw, ch));
         let here = i == filled.min(len - 1) && filled < len;
-        let r = if small { 7 } else { 9 };
-        if here && focus > 0.0 {
-            p.rect_stroke(cell.expand(1.5), egui::CornerRadius::same(r + 2), egui::Stroke::new(3.0_f32, c(C::Focus).gamma_multiply(focus)), egui::StrokeKind::Middle);
+        // A grey tone; the cell being typed into, focused, turns to the surface with a blue edge and the soft
+        // blue ring, as a field does.
+        let lit = if here { focus } else { 0.0 };
+        let r = Radius::Field.px() as u8;
+        if lit > 0.0 {
+            p.rect_stroke(cell.expand(2.0), egui::CornerRadius::same(r + 2), egui::Stroke::new(4.0_f32, c(C::Focus).gamma_multiply(lit)), egui::StrokeKind::Middle);
         }
-        let line = if here { palette::mix(c(C::Line), c(C::Accent), focus) } else { c(C::Line) };
-        p.rect(cell, egui::CornerRadius::same(r), c(C::Surface), egui::Stroke::new(1.0_f32, line), egui::StrokeKind::Inside);
+        p.rect(cell, egui::CornerRadius::same(r), palette::mix(c(C::Tone), c(C::Surface), lit), egui::Stroke::new(1.0_f32, c(C::Accent).gamma_multiply(0.7 * lit)), egui::StrokeKind::Inside);
         if i < filled {
             // Each dot pops in with a spring the first time it is drawn.
             let a = motion::age(ui.ctx(), id.with(("dot", i)), 0);
@@ -100,7 +106,7 @@ pub fn words_grid_marked(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::s
             ui.spacing_mut().item_spacing.y = tokens::PIN_GAP;
             let row_w = w * cols as f32 + tokens::PIN_GAP * (cols as f32 - 1.0);
             for row in 0..4 {
-                crate::width::cell(ui, vec2(row_w, tokens::INPUT_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                crate::width::cell(ui, vec2(row_w, tokens::WORD_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = tokens::PIN_GAP;
                     for col in 0..cols {
                         let i = row * cols + col;
@@ -150,8 +156,8 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
     let p = ui.painter();
     match words {
         None => {
-            let hot = motion::flag(ui.ctx(), id.with("hot"), resp.hovered(), tokens::FAST);
-            p.rect_filled(rect, egui::CornerRadius::same(10), c(C::Drop));
+            let hot = motion::states(ui.ctx(), id, resp.hovered(), resp.is_pointer_button_down_on(), resp.has_focus(), true).hover;
+            p.rect_filled(rect, Radius::Tag.egui(), c(C::Drop));
             // Diagonal stripes, 8 wide.
             let clip = p.with_clip_rect(rect.shrink(1.0));
             let mut x = rect.left() - rect.height();
@@ -161,7 +167,7 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
                 clip.line_segment([a, b], egui::Stroke::new(5.7_f32, c(C::Ground)));
                 x += 16.0 * std::f32::consts::SQRT_2;
             }
-            crate::drop::dashed(p, rect.shrink(0.75), 10.0, egui::Stroke::new(1.5_f32, palette::mix(c(C::Dash), c(C::Accent), hot)), 3.0, 1.5);
+            crate::drop::dashed(p, rect.shrink(0.75), Radius::Tag.px() - 0.75, egui::Stroke::new(1.5_f32, palette::mix(c(C::Dash), c(C::Accent), hot)), 3.0, 1.5);
             p.text(rect.center(), egui::Align2::CENTER_CENTER, cover, Type::Body.font(), c(C::Ink2));
         }
         Some(ws) => {
@@ -170,13 +176,13 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
             let a = motion::age(ui.ctx(), id.with("reveal"), motion::key_of(&ws.len()));
             for (i, word) in ws.iter().enumerate().take(12) {
                 let (r, cc) = (i / cols, i % cols);
-                let t = ((a - i as f32 * 0.025) / tokens::MID).clamp(0.0, 1.0);
+                let t = ((a - i as f32 * 0.025 * crate::tokens::PACE) / tokens::MID).clamp(0.0, 1.0);
                 if t < 1.0 {
                     ui.ctx().request_repaint();
                 }
                 let e = Curve::Ease.at(t);
                 let cell = Rect::from_min_size(pos2(rect.left() + (cw + gap) * cc as f32, rect.top() + (cell_h + gap) * r as f32 + 6.0 * (1.0 - e)), vec2(cw, cell_h));
-                p.rect(cell, egui::CornerRadius::same(8), c(C::Surface).gamma_multiply(e), egui::Stroke::new(1.0_f32, c(C::Line).gamma_multiply(e)), egui::StrokeKind::Inside);
+                p.rect_filled(cell, Radius::Field.egui(), c(C::Tone).gamma_multiply(e));
                 p.text(pos2(cell.left() + 12.0 + 16.0, cell.center().y), egui::Align2::RIGHT_CENTER, (i + 1).to_string(), Type::Tiny.font(), c(C::Ink3).gamma_multiply(e));
                 p.text(pos2(cell.left() + 12.0 + 16.0 + 8.0, cell.center().y), egui::Align2::LEFT_CENTER, word.expose(), Type::MonoSmall.font(), c(C::Ink).gamma_multiply(e));
             }

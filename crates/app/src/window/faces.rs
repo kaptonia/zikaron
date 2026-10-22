@@ -43,15 +43,6 @@ impl Win {
         crate::home::landing(given).is_ok()
     }
 
-    /// The shared location row: "save to" on the left (132), the chosen folder's name, "choose folder…" on
-    /// the right; the whole path is on hover. Choosing writes into `slot`; cancelling changes nothing.
-    pub(super) fn place_row(ui: &mut egui::Ui, label: Key, slot: &mut String) {
-        let asked = path_row(ui, t(label), slot, t(Key::PickFolder), t(Key::PickNone));
-        if let Some(p) = path_answer(ui.ctx(), ui.id().with(("zikaron-place-row", label as u32)), asked, crate::platform::Pick::Folder) {
-            *slot = p;
-        }
-    }
-
     /// The row the wizard's network step has selected now: the one clicked, else the one already chosen
     /// ([`wiz_network_chosen`](Self::wiz_network_chosen)), else the sheet's default.
     pub(super) fn wiz_network_pick(&self) -> String {
@@ -218,8 +209,10 @@ pub(super) fn lamp_pill(l: crate::ledgerx::Lamp) -> (PillTone, bool) {
     match l {
         Lamp::Anchored | Lamp::Remembered => (PillTone::Ok, false),
         Lamp::RememberedStale => (PillTone::Grey, false),
-        Lamp::Submitted => (PillTone::Warn, !receipts_stalled()),
-        Lamp::Included | Lamp::Queued => (PillTone::Warn, false),
+        Lamp::Submitted if receipts_stalled() => (PillTone::Warn, false),
+        Lamp::Submitted => (PillTone::Blue, true),
+        Lamp::Included => (PillTone::Blue, false),
+        Lamp::Queued => (PillTone::Grey, false),
         Lamp::Landed | Lamp::Deleted | Lamp::LocalDeletion | Lamp::ChainUnread => (PillTone::Grey, false),
         Lamp::Reverted | Lamp::Refused => (PillTone::Bad, false),
     }
@@ -340,6 +333,10 @@ pub(super) fn fresh_win(shell: Shell, typed: Typed, ux: Ux) -> Win {
         faults_told: 0,
         ux,
         asker: crate::platform::ask_path,
+        backdrop: None,
+        asks_motion: false,
+        reduced: false,
+        motion_asked: None,
     }
 }
 
@@ -371,7 +368,7 @@ impl SendProbe {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 760.0));
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(self.t), ..Default::default() };
         let win = &mut self.win;
-        let _ = ctx.run(input, |c| win.draw(c));
+        let _ = ctx.run_ui(input, |ui| win.draw(ui));
         self.win.ux.u3.confirm.is_some()
     }
 
@@ -423,19 +420,26 @@ pub fn probe_paths(ctx: &egui::Context, shell: Shell, asker: crate::platform::As
         t += 0.1;
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(t), ..Default::default() };
         let mut took = Vec::new();
-        let _ = ctx.run(input, |c| {
-            for (n, kind) in &f.ask {
-                let _ = path_answer(c, site(n), true, *kind);
+        // A frame laid out again (a second pass) carries no input: a place asks, as a click does, in the first.
+        let _ = ctx.run_ui(input, |ui| {
+            let c = &ui.ctx().clone();
+            if c.current_pass_index() == 0 {
+                for (n, kind) in &f.ask {
+                    let _ = path_answer(c, site(n), true, *kind);
+                }
             }
-            win.draw(c);
+            win.draw(ui);
         });
         // Taken the next frame they are drawn, as the places do (the answer landed at this frame's start).
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(t + 0.05), ..Default::default() };
         t += 0.05;
-        let _ = ctx.run(input, |c| {
-            win.draw(c);
-            for n in &f.take {
-                took.push((*n, path_answer(c, site(n), false, crate::platform::Pick::File)));
+        let _ = ctx.run_ui(input, |ui| {
+            let c = &ui.ctx().clone();
+            win.draw(ui);
+            if c.current_pass_index() == 0 {
+                for n in &f.take {
+                    took.push((*n, path_answer(c, site(n), false, crate::platform::Pick::File)));
+                }
             }
         });
         out.push(PathRead { took, faults: win.shell.faults.clone(), open: win.shell.tasks.in_flight(crate::task::Kind::Path) });
@@ -534,10 +538,10 @@ pub struct WizardExit {
     /// Whether the way out was offered, and whether the wizard was still open after Esc.
     pub offered: bool,
     pub still_open: bool,
-    /// With new words shown and not yet checked: whether Esc asked first (and said the words would be void),
-    /// and whether leaving dropped them.
+    /// With new words shown and not yet checked: whether Esc asked first, whether the question was drawn (its title
+    /// and its leaving key on the frame), and whether pressing that key dropped them.
     pub asked: bool,
-    pub said_void: bool,
+    pub asked_drawn: bool,
     pub words_dropped: bool,
     /// The window's own structural state, not what was drawn: where the wizard recorded it was opened from
     /// (`ux.wiz_from`: seat, stack, place) while it was up, and the seat, stack and place after leaving.
@@ -593,6 +597,16 @@ pub struct LangPick {
     pub still_up: bool,
 }
 
+/// What a new grant's "choose a record" sheet did (`probe_work_pick`): the words drawn with it up, then after a
+/// press on a record that cannot be granted yet and after one on a record that can, the record the form holds
+/// (its content fingerprint, empty for none) and whether the sheet was still up.
+#[derive(Clone, Debug, Default)]
+pub struct WorkPick {
+    pub drawn: Vec<String>,
+    pub after_grey: (String, bool),
+    pub after_open: (String, bool),
+}
+
 /// What the "write alone" sheet did when its validity cells were typed into and its switch clicked
 /// (`probe_cli_sheet`).
 #[derive(Clone, Debug, Default)]
@@ -609,9 +623,6 @@ pub struct CliSheet {
     pub never_on: bool,
     pub days_while_never: String,
     pub quiet_while_never: bool,
-    /// Whether the sheet said, as it opened, that the command line may spend this identity's gas while
-    /// putting on chain from the command line sends automatically.
-    pub gas_said: bool,
 }
 
 /// What typing at the passcode gate did, with nothing over it and with the lock screen's restore sheet over it.
@@ -626,6 +637,22 @@ pub struct TypedUnder {
     pub under: usize,
     /// Whether the vault stayed locked throughout.
     pub locked: bool,
+}
+
+/// The passcode gate's column read by [`probe_gate_column`] (rectangles in points; the title by its drawn strokes).
+#[derive(Clone, Debug)]
+pub struct GateColumn {
+    /// The window's height.
+    pub window_h: f32,
+    /// The top of the app's name over the title (its line), and the bottom of the title's strokes.
+    pub group_top: f32,
+    pub title_ink_bottom: f32,
+    /// The passcode cells' row.
+    pub cells: egui::Rect,
+    /// The refusal under the cells, when one is said (the box it is said in).
+    pub said: Option<egui::Rect>,
+    /// The "forgot passcode" key.
+    pub forgot: egui::Rect,
 }
 
 /// One rail item walked by [`probe_rail_walk`]: its label and the route drawn after each move (`None` where the
@@ -647,9 +674,6 @@ pub struct RailWalk {
     pub rail_again: Option<String>,
 }
 
-pub(super) fn t_void() -> &'static str {
-    t(Key::WizExitWords)
-}
 
 /// A record row's state pill: deleted grey, confirmed green, on its way amber, failed red.
 pub(super) fn work_state(w: &WorkLine, at: Option<u64>) -> (String, PillTone, bool) {

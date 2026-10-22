@@ -9,7 +9,8 @@
 //!
 //! One file in the machine directory ([`FILE`], form literal [`FORM`]), shared by every identity on this
 //! machine and written through `home::put_at` (temporary name then rename, owner-only). It holds no account
-//! data, so it is stored plain. An empty table means no file: removing the last network deletes it.
+//! data, so it is stored plain. An empty table means no file: removing the last network deletes it. Its bytes
+//! are read by the sealed layer's one reading (`zikaron_seal::readnets`), which the command line reads too.
 //!
 //! ─── Shape ───
 //!
@@ -28,10 +29,8 @@ use crate::lang::Key;
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// The table's form literal.
-pub const FORM: &str = "zikaron.read-networks/1";
-/// The table's file name in the machine directory.
-pub const FILE: &str = "read-networks.json";
+/// The table's form literal and file name (the sealed layer's, one for both ends).
+pub use zikaron_seal::readnets::{FILE, FORM};
 
 /// Chains with built-in display names, and each name's string key.
 const NAMES: [(u64, Key); 8] = [
@@ -136,7 +135,7 @@ pub fn cells(name: &str, chain: &str, registry: &str, from_block: &str, nodes: &
 
 /// Where the table's file is.
 pub fn path_in(machine: &Path) -> PathBuf {
-    machine.join(FILE)
+    zikaron_seal::readnets::path_in(machine)
 }
 
 /// The table's canonical bytes.
@@ -145,13 +144,6 @@ pub fn bytes_of(nets: &[Net]) -> Vec<u8> {
         ("form".to_string(), Value::Str(FORM.to_string())),
         ("networks".to_string(), Value::Arr(nets.iter().map(Net::value).collect())),
     ]))
-}
-
-fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
-    match v {
-        Value::Obj(m) => m.iter().find(|(x, _)| x == k).map(|(_, v)| v),
-        _ => None,
-    }
 }
 
 /// Read the table. No file is an empty table; a malformed file is an error (never read as empty, or the next
@@ -168,37 +160,11 @@ pub fn read(machine: &Path) -> Result<Vec<Net>, Fault> {
 
 /// Parse the table from bytes (the file's, or a whole-machine backup's); `said` names the source in errors.
 pub fn from_bytes(bytes: &[u8], said: &str) -> Result<Vec<Net>, Fault> {
-    let bad = || Fault::known(Known::SettingsShape, said.to_string());
-    let v = json::parse(bytes).map_err(|t| Fault::known(Known::SettingsShape, format!("{said}: {t:?}")))?;
-    if !matches!(member(&v, "form"), Some(Value::Str(f)) if f == FORM) {
-        return Err(bad());
-    }
-    let Some(Value::Arr(rows)) = member(&v, "networks") else { return Err(bad()) };
-    let mut out: Vec<Net> = Vec::new();
-    for r in rows {
-        let int = |k: &str| match member(r, k) {
-            Some(Value::Int(n)) => Some(*n),
-            _ => None,
-        };
-        let text = |k: &str| match member(r, k) {
-            Some(Value::Str(s)) => Some(s.clone()),
-            _ => None,
-        };
-        let nodes = match member(r, "nodes") {
-            Some(Value::Arr(a)) => a.iter().map(|x| if let Value::Str(s) = x { Some(s.clone()) } else { None }).collect::<Option<Vec<_>>>(),
-            _ => None,
-        };
-        let (Some(chain_id), Some(from_block), Some(registry), Some(nodes)) =
-            (int("chainId"), int("fromBlock"), text("registry").and_then(|a| Address::parse(&a)), nodes)
-        else {
-            return Err(bad());
-        };
-        if nodes.is_empty() || out.iter().any(|n| n.is(chain_id, &registry)) {
-            return Err(bad());
-        }
-        out.push(Net { chain_id, registry, from_block, nodes, name: text("name") });
-    }
-    Ok(out)
+    let rows = zikaron_seal::readnets::parse(bytes).map_err(|w| match w.as_str() {
+        "form" | "networks" => Fault::known(Known::SettingsShape, said.to_string()),
+        _ => Fault::known(Known::SettingsShape, format!("{said}: {w}")),
+    })?;
+    Ok(rows.into_iter().map(|r| Net { chain_id: r.chain_id, registry: Address(r.registry), from_block: r.from_block, nodes: r.nodes, name: r.name }).collect())
 }
 
 /// Write the table: an empty one removes the file.

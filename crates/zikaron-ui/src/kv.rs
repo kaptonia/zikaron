@@ -6,11 +6,18 @@ use crate::mark::{self, Mark};
 use crate::palette::{c, C};
 use crate::tokens::{self, Type};
 
-/// One value.
+/// One value. Its kind says whether a copy key goes with it: only a machine value (an address, a digest or
+/// fingerprint, an entry or transaction id, a contract or node address, a path, a code) is taken elsewhere to be
+/// pasted; words, figures, states and empty values are read, not copied.
 #[derive(Clone, Debug)]
 pub enum Val {
+    /// Words: no copy key.
     Text(String),
+    /// A machine value, in the monospace face, with a copy key.
     Mono(String),
+    /// A figure in the monospace face that is read, not pasted (a count, a size, a date or time, a state's
+    /// token): no copy key.
+    Figure(String),
     /// A status mark and words.
     Mark(Mark, String),
     /// Words in a quiet tone (a value that is not there yet).
@@ -26,6 +33,15 @@ impl Val {
 
     pub fn mono(s: impl Into<String>) -> Val {
         Val::Mono(s.into())
+    }
+
+    pub fn figure(s: impl Into<String>) -> Val {
+        Val::Figure(s.into())
+    }
+
+    /// Whether a copy key goes with this value (a machine value with something in it).
+    pub fn copies(&self) -> bool {
+        matches!(self, Val::Mono(s) if !s.trim().is_empty())
     }
 }
 
@@ -63,6 +79,77 @@ pub fn kv(ui: &mut egui::Ui, rows: &[(&str, Val)]) {
     });
 }
 
+/// The details list, the one shape every "details" takes: a label column as wide as the widest label
+/// (`label_w`: the caller measures its labels in both languages and gives the larger), values in one line —
+/// monospace values elided in the middle (whole on hover) — each row with a copy key at its end when its value
+/// can be copied, a fine line between rows across the whole width. A value of several lines lists them left
+/// aligned, its first line on the label's line, in their order. Returns the words copied this frame.
+pub fn list(ui: &mut egui::Ui, id_salt: &str, rows: &[(&str, Val)], label_w: f32) -> Option<String> {
+    let id = ui.id().with(("zikaron-details", id_salt));
+    let w = ui.available_width();
+    let widest = rows.iter().map(|(k, _)| ui.painter().layout_no_wrap(k.to_string(), Type::Body.font(), egui::Color32::BLACK).size().x).fold(label_w, f32::max).ceil();
+    let line_h = Type::Body.line();
+    let pad = 9.0;
+    let mut copied = None;
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let lines: Vec<String> = match v {
+            Val::Text(s) | Val::Mono(s) | Val::Figure(s) | Val::Quiet(s) | Val::Mark(_, s) => s.split('\n').map(str::to_string).collect(),
+            Val::Loading(_) => vec![String::new()],
+        };
+        let n = lines.len().max(1) as f32;
+        let h = pad * 2.0 + line_h * n;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+        crate::probe::part(ui.ctx(), ui.layer_id(), rect);
+        let p = ui.painter().clone();
+        if i > 0 {
+            p.hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0_f32, c(C::Line2)));
+        }
+        let top = rect.top() + pad;
+        p.text(egui::pos2(rect.left(), top + line_h / 2.0), egui::Align2::LEFT_CENTER, *k, Type::Body.font(), c(C::Ink2));
+        let x = rect.left() + widest + tokens::KV_COL_GAP;
+        let copyable = v.copies();
+        let key_w = if copyable { 26.0 + tokens::S2 } else { 0.0 };
+        let room = (rect.right() - key_w - x).max(20.0);
+        if copyable {
+            let kr = egui::Rect::from_center_size(egui::pos2(rect.right() - 13.0, top + line_h / 2.0), egui::vec2(26.0, 26.0));
+            let r = ui.interact(kr, id.with(("copy", i)), egui::Sense::click());
+            crate::button::paint_icon_key_at(ui, kr, &r, crate::icons::Glyph::Copy, true, 6.0);
+            if r.clicked() {
+                let all = lines.join("\n");
+                ui.ctx().copy_text(all.clone());
+                copied = Some(all);
+            }
+        }
+        match v {
+            Val::Loading(lw) => {
+                let r = egui::Rect::from_min_size(egui::pos2(x, top + 3.0), egui::vec2(lw.min(room), 12.0));
+                crate::states::paint_skeleton(ui, r, 6.0);
+            }
+            Val::Mark(m, _) => {
+                mark::paint_mark(ui.ctx(), &p, egui::pos2(x + tokens::MARK / 2.0, top + line_h / 2.0), *m, tokens::MARK);
+                for (j, l) in lines.iter().enumerate() {
+                    crate::paint::at(&p, ui, egui::pos2(x + tokens::MARK + tokens::S2, top + line_h * (j as f32 + 0.5)), egui::Align2::LEFT_CENTER, l, Type::Body, c(C::Ink), room - tokens::MARK - tokens::S2);
+                }
+            }
+            _ => {
+                let (t, ink) = match v {
+                    Val::Mono(_) | Val::Figure(_) => (Type::Mono, c(C::Ink)),
+                    Val::Quiet(_) => (Type::Body, c(C::Ink3)),
+                    _ => (Type::Body, c(C::Ink)),
+                };
+                for (j, l) in lines.iter().enumerate() {
+                    let shown = if matches!(v, Val::Mono(_) | Val::Figure(_)) { crate::width::elide_mid(ui, l, t.font(), room) } else { crate::width::elide_to(ui, l, t.font(), room) };
+                    let at = p.text(egui::pos2(x, top + line_h * (j as f32 + 0.5)), egui::Align2::LEFT_CENTER, &shown, t.font(), ink);
+                    if shown != *l {
+                        let _ = crate::layer::tip(ui.interact(at, id.with(("whole", i, j)), egui::Sense::hover()), l.as_str());
+                    }
+                }
+            }
+        }
+    }
+    copied
+}
+
 /// One value, drawn where it stands (also used outside tables).
 pub fn value(ui: &mut egui::Ui, v: &Val) {
     // The width a value may take is read here, in the value's own column: inside a horizontal row (the
@@ -79,7 +166,7 @@ pub fn value(ui: &mut egui::Ui, v: &Val) {
     match v {
         Val::Text(s) => wrap(ui, s, Type::Body, c(C::Ink), room),
         Val::Quiet(s) => wrap(ui, s, Type::Body, c(C::Ink3), room),
-        Val::Mono(s) => wrap(ui, s, Type::Mono, c(C::Ink), room),
+        Val::Mono(s) | Val::Figure(s) => wrap(ui, s, Type::Mono, c(C::Ink), room),
         Val::Loading(w) => {
             ui.allocate_ui_with_layout(egui::vec2(*w, Type::Body.line()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 crate::states::skeleton(ui, *w, 12.0, 6.0);

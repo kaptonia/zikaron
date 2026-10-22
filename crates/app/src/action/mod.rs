@@ -177,6 +177,9 @@ pub enum Action {
     RecheckAll,
     /// Read the chain once (background): balance and two read-only calls.
     ReadChain,
+    /// Read the chain's time once (background): the latest block's, for a new grant's start. Needs no key and
+    /// reads no balance.
+    ReadChainTime,
     /// Set chain endpoints (`<chain>=<url>`, several allowed).
     SetEndpoints { specs: String },
     // ── First run and adoption ──
@@ -242,8 +245,12 @@ pub enum Action {
     /// Pick once: range and record hash fields (disk walked in the background).
     PickKit { from: String, to: String, ids: String },
     /// Write a kit (background): pick, attach, hand to the kit output crate to lay out and self-verify; lands
-    /// only on KIT_OK.
-    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String, form: String },
+    /// only on KIT_OK. `recipient` (an address) or `recipient_key` (a public key), at most one: the one-file package
+    /// is sealed to that key (`addressedx`), the address's key found on chain first; both empty, it is not sealed.
+    /// `originals`: its word, judged by the action layer: none, the chosen records' originals are attached too, those
+    /// the export page lists for the choice (`kitx::originals`), as the command line asks through this desktop;
+    /// `none`, only `attach` (the page itself lists them there); any other word is refused by name.
+    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String, form: String, recipient: String, recipient_key: String, originals: String },
     /// Digest attachments first: each path dropped on the export page is digested in the background in
     /// content form.
     VetAttachments { paths: Vec<String> },
@@ -262,11 +269,6 @@ pub enum Action {
     ReadGrants,
     /// Run the overlap check (guard against selling the same work twice).
     CheckClash { work: String, from: String, to: String },
-    // First-run checklist.
-    /// Tick a step. Skipping a step is refused by name.
-    WizardTick { step: String, said: String },
-    /// Start over.
-    WizardReset,
     // Revocation.
     /// Assemble a revocation. A legal action (verb `revoke`).
     Revoke { grant: String, case: String },
@@ -309,8 +311,13 @@ pub enum Action {
     SaveSnapshot { to: String },
     // Record verification.
     /// Verify a record (background): kit verification (kit core), anchor review (anchoring crate and core),
-    /// depth reading (kit core).
-    VerifyWork { path: String, work: String },
+    /// depth reading (kit core). `then_to`: the folder the originals go to once the verification lands (the command
+    /// line's `kit-verify --originals-to` through the door, which takes them out by `ExtractOriginals` as the page's
+    /// key does); empty from the page, whose key opens the sheet instead.
+    VerifyWork { path: String, work: String, then_to: String },
+    /// Take the originals out of a record package verified here (background): the package read again and judged,
+    /// its matching originals placed in `to` all or nothing (`zikaron_glue::extract`).
+    ExtractOriginals { kit: String, to: String },
     // Delivery check.
     /// Delivery check (background): read the delivered bytes and compare their sha256 with the recorded hash.
     CheckDelivery { path: String, expect: String },
@@ -631,6 +638,7 @@ impl Action {
             | Action::Reconcile
             | Action::RecheckAll
             | Action::ReadChain
+            | Action::ReadChainTime
             | Action::SetEndpoints { .. }
             | Action::SaveReadNetwork { .. }
             | Action::RemoveReadNetwork { .. }
@@ -655,8 +663,6 @@ impl Action {
             | Action::ReadDepth { .. }
             | Action::ReadGrants
             | Action::CheckClash { .. }
-            | Action::WizardTick { .. }
-            | Action::WizardReset
             | Action::ReadStory { .. }
             | Action::VerifyAnchors { .. }
             | Action::ListKeyAnchors { .. }
@@ -671,6 +677,7 @@ impl Action {
             | Action::ReviewVault
             | Action::ListHeld
             | Action::VerifyWork { .. }
+            | Action::ExtractOriginals { .. }
             | Action::CheckDelivery { .. }
             | Action::Diligence { .. }
             | Action::SaveSnapshot { .. }
@@ -741,6 +748,7 @@ impl Action {
             | Action::Reconcile
             | Action::RecheckAll
             | Action::ReadChain
+            | Action::ReadChainTime
             | Action::SetEndpoints { .. }
             | Action::ChooseNetwork { .. }
             | Action::SaveReadNetwork { .. }
@@ -761,7 +769,6 @@ impl Action {
             Action::ReadDepth { .. } => Feature::W6,
             Action::DraftGrant { .. } => Feature::W7,
             Action::ReadGrants | Action::CheckClash { .. } => Feature::W8,
-            Action::WizardTick { .. } | Action::WizardReset => Feature::W13,
             Action::Revoke { .. } | Action::ReadStory { .. } => Feature::W9,
             Action::VerifyAnchors { .. }
             | Action::Cosign { .. }
@@ -775,6 +782,7 @@ impl Action {
             | Action::ForgetAddress { .. } => Feature::W14,
             Action::Diligence { .. } | Action::SaveSnapshot { .. } => Feature::D1,
             Action::VerifyWork { .. } => Feature::D2,
+            Action::ExtractOriginals { .. } => Feature::D2,
             Action::CheckDelivery { .. } => Feature::D4,
             Action::ImportGrant { .. } | Action::ImportGrantDir { .. } | Action::SetUpstream { .. } | Action::NoteHeld { .. } | Action::ReviewVault => Feature::D6,
             Action::ListHeld => Feature::D6,
@@ -844,6 +852,7 @@ impl Action {
             Action::Reconcile => None,
             Action::RecheckAll => None,
             Action::ReadChain => None,
+            Action::ReadChainTime => None,
             Action::SetEndpoints { .. } => None,
             Action::SaveReadNetwork { .. } => None,
             Action::RemoveReadNetwork { .. } => None,
@@ -880,8 +889,6 @@ impl Action {
             Action::QueueEntry { .. } => None,
             Action::ReadGrants => None,
             Action::CheckClash { .. } => None,
-            Action::WizardTick { .. } => None,
-            Action::WizardReset => None,
             Action::Revoke { .. } => None,
             Action::ReadStory { .. } => None,
             Action::VerifyAnchors { .. } => None,
@@ -898,6 +905,7 @@ impl Action {
             Action::Diligence { .. } => None,
             Action::SaveSnapshot { .. } => None,
             Action::VerifyWork { .. } => None,
+            Action::ExtractOriginals { .. } => None,
             Action::CheckDelivery { .. } => None,
             Action::CheckPayload { .. } => None,
             Action::ImportGrant { .. } => None,
@@ -1023,6 +1031,7 @@ impl Action {
             Action::Audit => Some("audit"),
             Action::DraftGrant { .. } => Some("grant"),
             Action::ExportKit { .. } => Some("kit-export"),
+            Action::VerifyWork { .. } => Some("kit-verify"),
             Action::ReadDepth { .. } => Some("depth"),
             Action::Revoke { .. } => Some("revoke"),
             Action::AdoptAnchors { .. } => Some("adopt"),
@@ -1157,10 +1166,6 @@ pub enum Applied {
     ReadNets(usize),
     /// The overlap check ran: how many overlaps.
     Clashed(usize),
-    /// A step was ticked, with the next step.
-    Ticked { step: &'static str, next: Option<&'static str> },
-    /// The checklist starts over.
-    Restarted,
     /// A revocation was written.
     Revoked { id: String, queued: usize, next: Next },
     /// A grant's three-part story was read.
@@ -1475,6 +1480,7 @@ pub fn landed(shell: &mut Shell, k: Kind, got: Result<Done, crate::fault::Fault>
             }
             Applied::RecordedBatch { ids, stopped, queued: n.queued, next: n.next }
         }
+        (Kind::Seat, got) => seat_landed(shell, got),
         (Kind::Migrate, Ok(Done::Copied { old, root })) => match migrate_landed(shell, &old, &root) {
             Ok(root) => Applied::Migrated { root },
             Err(f) => shell.trouble(f),
@@ -1500,7 +1506,11 @@ fn take_started(shell: &mut Shell, source: crate::anchorx::Source, p: std::path:
 fn said_settled(shell: &mut Shell, k: Kind) -> Applied {
     loop {
         if let Some(done) = shell.said.remove(&k) {
-            return done;
+            // A landing that started the same kind again (a seat switch going on to the seat wished meanwhile) is a
+            // step on the way: the answer is the one that ends it.
+            if done != Applied::Started(k) {
+                return done;
+            }
         }
         let finished = shell.tasks.finished_in_flight(k);
         shell.drain_hold();
@@ -1594,7 +1604,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         }
 
         Action::SwitchRole => match switch_role(shell) {
-            Ok(r) => Applied::Seated(r),
+            Ok(a) => a,
             Err(f) => shell.trouble(f),
         },
         Action::ReadIdentities => match crate::register::view() {
@@ -1624,10 +1634,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(started) => started,
             Err(f) => shell.trouble(f),
         },
-        Action::SwitchIdentity { id } => match switch_identity(shell, &id) {
-            Ok(row) => Applied::IdentitySwitched { id: row.id },
-            Err(f) => shell.trouble(f),
-        },
+        // Off the window's thread, as a seat switch (`keys::switch_identity`): it answers where it lands.
+        Action::SwitchIdentity { id } => switch_identity(shell, &id),
         Action::NameIdentity { id, label } => match name_identity(shell, &id, &label) {
             Ok(row) => Applied::IdentityNamed { id: row.id, label: row.label },
             Err(f) => shell.trouble(f),
@@ -1872,6 +1880,15 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Spawned::InFlight => Applied::Refused(Kind::Chain),
             }
         }
+        Action::ReadChainTime => {
+            let eps = shell.endpoints.clone();
+            // No chain set reads as no node for it (`node::head_time`'s own refusal), kept for the grant form.
+            let chain = shell.settings.chain_id.unwrap_or(0);
+            match shell.tasks.spawn(Kind::ChainTime, move || crate::chainx::head_time(&eps, chain).map(|(at, _, _)| Done::ChainTime(at))) {
+                Spawned::Started => Applied::Started(Kind::ChainTime),
+                Spawned::InFlight => Applied::Refused(Kind::ChainTime),
+            }
+        }
         Action::SetEndpoints { specs } => match set_endpoints(shell, &specs) {
             Ok(n) => Applied::Endpoints(n),
             Err(f) => shell.trouble(f),
@@ -1991,7 +2008,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             let rows = paths
                 .into_iter()
                 .map(|p| {
-                    let d = crate::kitx::digest_of(std::path::Path::new(p.trim())).map(|d| zikaron::hexfmt::encode(&d));
+                    let d = crate::kitx::digest_of(std::path::Path::new(p.trim())).map(|d| d.iter().map(|x| zikaron::hexfmt::encode(x)).collect());
                     (p, d)
                 })
                 .collect();
@@ -2065,8 +2082,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
-        Action::ExportKit { from, to, ids, attach, note, out, form } => {
-            match export_kit(shell, &from, &to, &ids, &attach, &note, &out, &form) {
+        Action::ExportKit { from, to, ids, attach, note, out, form, recipient, recipient_key, originals } => {
+            match export_kit(shell, &from, &to, &ids, &attach, &note, &out, &form, &recipient, &recipient_key, &originals) {
                 Ok(s) => match s {
                     Spawned::Started => Applied::Started(Kind::Kit),
                     Spawned::InFlight => Applied::Refused(Kind::Kit),
@@ -2114,16 +2131,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(n) => Applied::Clashed(n),
             Err(f) => shell.trouble(f),
         },
-        // ── First-run checklist ──
-        Action::WizardTick { step, said } => match wizard_tick(shell, &step, &said) {
-            Ok((s, n)) => Applied::Ticked { step: s, next: n },
-            Err(f) => shell.trouble(f),
-        },
-        Action::WizardReset => match wizard_reset(shell) {
-            Ok(()) => Applied::Restarted,
-            Err(f) => shell.trouble(f),
-        },
-
         // ── Revocation ──
         Action::Revoke { grant, case } => match revoke(shell, &grant, &case) {
             Ok((id, n)) => Applied::Revoked { id, queued: n.queued, next: n.next },
@@ -2216,13 +2223,14 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(bytes) => Applied::Snapshot { path: to.trim().to_string(), bytes },
             Err(f) => shell.trouble(f),
         },
-        Action::VerifyWork { path, work } => match verify_work(shell, &path, &work) {
+        Action::VerifyWork { path, work, .. } => match verify_work(shell, &path, &work) {
             Ok(s) => match s {
                 Spawned::Started => Applied::Started(Kind::Verify),
                 Spawned::InFlight => Applied::Refused(Kind::Verify),
             },
             Err(f) => shell.trouble(f),
         },
+        Action::ExtractOriginals { kit, to } => extract_originals(shell, &kit, &to),
         Action::CheckDelivery { path, expect } => match check_delivery(shell, &path, &expect) {
             Ok(s) => match s {
                 Spawned::Started => Applied::Started(Kind::Delivery),
@@ -2303,6 +2311,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         Action::ReadCliPath => {
             let s = cli_path_now();
             shell.cli_path = Some(s.clone());
+            // No config where the command line cannot be reached from outside the app (the same judgement).
+            shell.ai_config = cli_beside().filter(|_| !matches!(s, zikaron_os::cli_path::State::Unsupported(_))).map(|cli| ai_config(&cli));
             Applied::CliPathRead(s)
         }
         Action::SetCliPath { on } => match crate::action::cli_beside() {
@@ -2511,7 +2521,6 @@ mod sentinel;
 mod succeed;
 mod vault;
 mod verify;
-mod wizard;
 use self::adopt::*;
 use self::anchor::*;
 use self::archive::*;
@@ -2530,6 +2539,7 @@ use self::grants::*;
 pub use self::home::*;
 pub use self::identity::*;
 use self::keys::*;
+pub use self::keys::Seating;
 use self::kit::*;
 use self::ledger::*;
 pub use self::queue::*;
@@ -2539,11 +2549,20 @@ use self::sentinel::*;
 use self::succeed::*;
 use self::vault::*;
 use self::verify::*;
-use self::wizard::*;
 
 /// The command line binary shipped beside this program (located only by `zikaron_os::cli_path`).
 pub fn cli_beside() -> Option<std::path::PathBuf> {
     zikaron_os::cli_path::beside_this_program()
+}
+
+/// What an AI app takes to start the command line's MCP server (CLI-SCHEMA §13): this machine's command line by its
+/// absolute path (an app started from the desktop does not have the terminal's path), and `mcp`. Written by the
+/// one JSON writer, so a path's backslashes and quotes are escaped as JSON escapes them on every system.
+pub fn ai_config(cli: &std::path::Path) -> String {
+    use zikaron::json::Value;
+    let o = |k: &str, v: Value| Value::Obj(vec![(k.to_string(), v)]);
+    let server = Value::Obj(vec![("command".to_string(), Value::Str(cli.display().to_string())), ("args".to_string(), Value::Arr(vec![Value::Str("mcp".to_string())]))]);
+    String::from_utf8_lossy(&zikaron::json::canon_bytes(&o("mcpServers", o("zikaron", server)))).into_owned()
 }
 
 /// What is currently at the command line's location (a missing bundled command line reads as unsupported).

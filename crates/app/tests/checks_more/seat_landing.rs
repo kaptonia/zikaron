@@ -43,7 +43,7 @@ fn an_identity_lands_on_the_seat_in_use_when_it_has_it() {
     let words = |w: &str| app::action::ImportForm::Words(w.to_string().into());
     let a = import(&mut shell, words("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"), Role::Author, "a");
     assert_eq!(seat_now(&shell), (Some(Role::Author), Role::Author), "the first identity: the author seat");
-    answers!(apply(&mut shell, Action::SwitchRole), Applied::Seated(Role::Grantee));
+    answers!(app::action::apply_settled(&mut shell, Action::SwitchRole), Applied::Seated(Role::Grantee));
     // Imported while on the grantee seat, an identity with both seats stays on it.
     let b = import(&mut shell, words("legal winner thank year wave sausage worth useful legal winner thank yellow"), Role::Grantee, "b");
     assert_eq!(seat_now(&shell), (Some(Role::Grantee), Role::Grantee), "imported on the grantee seat: stays");
@@ -52,13 +52,13 @@ fn an_identity_lands_on_the_seat_in_use_when_it_has_it() {
     let c = import(&mut shell, key, Role::Author, "c");
     assert_eq!(seat_now(&shell), (Some(Role::Author), Role::Author), "an author-only key lands on the author seat");
     // Switching, on the author seat: to an identity with both seats, the author seat.
-    answers!(apply(&mut shell, Action::SwitchIdentity { id: a.clone() }), Applied::IdentitySwitched { .. });
+    answers!(app::action::apply_settled(&mut shell, Action::SwitchIdentity { id: a.clone() }), Applied::IdentitySwitched { .. });
     assert_eq!(seat_now(&shell), (Some(Role::Author), Role::Author));
     // On the grantee seat, switching to another identity with both seats stays on the grantee seat.
-    answers!(apply(&mut shell, Action::SwitchRole), Applied::Seated(Role::Grantee));
-    answers!(apply(&mut shell, Action::SwitchIdentity { id: b }), Applied::IdentitySwitched { .. });
+    answers!(app::action::apply_settled(&mut shell, Action::SwitchRole), Applied::Seated(Role::Grantee));
+    answers!(app::action::apply_settled(&mut shell, Action::SwitchIdentity { id: b }), Applied::IdentitySwitched { .. });
     assert_eq!(seat_now(&shell), (Some(Role::Grantee), Role::Grantee), "switched on the grantee seat: stays");
     // On the grantee seat, switching to the author-only key: its first seat.
-    answers!(apply(&mut shell, Action::SwitchIdentity { id: c }), Applied::IdentitySwitched { .. });
+    answers!(app::action::apply_settled(&mut shell, Action::SwitchIdentity { id: c }), Applied::IdentitySwitched { .. });
     assert_eq!(seat_now(&shell), (Some(Role::Author), Role::Author), "the seat in use is not its: the author seat");
 }

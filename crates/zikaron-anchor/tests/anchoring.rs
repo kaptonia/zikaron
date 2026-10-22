@@ -5,7 +5,7 @@
 
 use zikaron::json::Value;
 use zikaron_anchor::rpc::{Endpoint, Replay, Trouble};
-use zikaron_anchor::wire::{self, Body, W};
+use zikaron_anchor::wire::{self, W};
 use zikaron_anchor::{mpt, rlp, scan, send, tx};
 
 fn w(json: &str) -> W {

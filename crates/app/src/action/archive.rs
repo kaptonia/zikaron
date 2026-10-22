@@ -132,25 +132,36 @@ pub(super) fn endpoints_changed(shell: &mut Shell, eps: Vec<crate::chainx::Endpo
     tail_if_due(shell);
 }
 
-/// The only way a home takes a network: a known deployment via [`adopt_deployment`], or a hand-filled one
-/// stored as given (chain, registry, start block, nodes) with the home's network set to "custom". Called when
-/// a writer opens a home without a network whose identity has one (`open_home_at`), and by the wizard's
-/// network step (`choose_network`). Saves once and records which choice it came from.
+/// The window's way a home takes a network: a known deployment, or a hand-filled one stored as given (chain, registry,
+/// start block, nodes) with the home's network set to "custom" ([`network_into`]); the wizard's network step
+/// (`choose_network`). A writer opening a home without a network whose identity has one takes it in the disk half of
+/// opening (`home::take_identity_network`), by the same [`network_into`]. Saves once and records which choice it came
+/// from.
 pub(super) fn adopt_network(shell: &mut Shell, n: crate::deploy::Network) -> Result<(), crate::fault::Fault> {
+    shell.commit_settings(|s| network_into(s, n))?;
+    let eps: Vec<crate::chainx::Endpoint> = shell.settings.endpoints.iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
+    endpoints_changed(shell, eps);
+    Ok(())
+}
+
+/// What taking a network writes into a home's settings: a known deployment's chain, registry, start block and nodes,
+/// or a hand-filled one's as given, and which choice it came from. The one place both the window's choice
+/// ([`adopt_network`]) and opening a bare home off the window's thread (`home::take_identity_network`) fill them.
+pub(super) fn network_into(s: &mut crate::settings::Settings, n: crate::deploy::Network) {
     match n {
-        crate::deploy::Network::Known(d) => adopt_deployment(shell, d),
+        crate::deploy::Network::Known(d) => {
+            s.chain_id = Some(d.chain_id);
+            s.registry = Some(d.registry_address());
+            s.from_block = d.from_block;
+            s.endpoints = d.endpoint_specs().iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).map(|e| e.spec()).collect();
+            s.network = Some(d.name.to_string());
+        }
         crate::deploy::Network::Custom(c) => {
-            let c = c.clone();
-            let eps: Vec<crate::chainx::Endpoint> = c.endpoints.iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
-            shell.commit_settings(|s| {
-                s.chain_id = Some(c.chain_id);
-                s.registry = Some(c.registry);
-                s.from_block = c.from_block;
-                s.endpoints = eps.iter().map(|e| e.spec()).collect();
-                s.network = Some(crate::deploy::CUSTOM.to_string());
-            })?;
-            endpoints_changed(shell, eps);
-            Ok(())
+            s.chain_id = Some(c.chain_id);
+            s.registry = Some(c.registry);
+            s.from_block = c.from_block;
+            s.endpoints = c.endpoints.iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).map(|e| e.spec()).collect();
+            s.network = Some(crate::deploy::CUSTOM.to_string());
         }
     }
 }
@@ -189,18 +200,5 @@ pub(super) fn remember_custom(shell: &mut Shell) -> Result<(), crate::fault::Fau
     if changed == Some(true) {
         shell.seat_identities(Some(crate::register::view()?));
     }
-    Ok(())
-}
-
-pub(super) fn adopt_deployment(shell: &mut Shell, d: &'static crate::deploy::Deployment) -> Result<(), crate::fault::Fault> {
-    let eps: Vec<crate::chainx::Endpoint> = d.endpoint_specs().iter().filter_map(|x| crate::chainx::Endpoint::parse(x)).collect();
-    shell.commit_settings(|s| {
-        s.chain_id = Some(d.chain_id);
-        s.registry = Some(d.registry_address());
-        s.from_block = d.from_block;
-        s.endpoints = eps.iter().map(|e| e.spec()).collect();
-        s.network = Some(d.name.to_string());
-    })?;
-    endpoints_changed(shell, eps);
     Ok(())
 }

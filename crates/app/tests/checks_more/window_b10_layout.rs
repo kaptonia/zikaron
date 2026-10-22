@@ -124,8 +124,9 @@ fn inside(inner: Rect, outer: Rect) -> bool {
 
 // ───────────────────── 1 · The wizard's bottom row at the least width ─────────────────────
 
-/// At the window's least size in English, the identity step's bottom row lays "Back" where it does not cross
-/// the step's own keys ("Generate recovery words", "Import an existing key…", "Restore from backup…").
+/// At the window's least size in English, the identity step's card lays "Back" (in its foot) where it does not
+/// cross the step's three ways ("Generate recovery words", "Import an existing key", "Restore from backup", rows
+/// in the card).
 #[test]
 fn at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys() {
     if super::alone_in(module_path!(), "at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys") {
@@ -154,13 +155,14 @@ fn at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys() {
     })
 }
 
-// ───────────────────── 2 · The custom network row's note at the least width ─────────────────────
+// ───────────────────── 2 · The network rows at the least width ─────────────────────
 
-/// At the least size in English, the network step's "Custom" row holds its whole note: every text of the row
-/// (its title and the note under it) lies inside the row's own rectangle.
+/// At the least size in English, the network step's rows hold their words, their tag and their radio: the "Custom"
+/// row's title and the "Recommended" tag each lie inside a row (the row is one click target), and every row stays
+/// in the window.
 #[test]
-fn at_the_least_width_the_custom_network_rows_note_stays_inside_its_row() {
-    if super::alone_in(module_path!(), "at_the_least_width_the_custom_network_rows_note_stays_inside_its_row") {
+fn at_the_least_width_the_network_rows_hold_their_words() {
+    if super::alone_in(module_path!(), "at_the_least_width_the_network_rows_hold_their_words") {
         return;
     }
     english(|| {
@@ -168,29 +170,26 @@ fn at_the_least_width_the_custom_network_rows_note_stays_inside_its_row() {
         let mut shell = probe_shell(&ctx);
         shell.anchor = Some(some_anchor());
         let (_, texts, _) = app::window::probe_wizard_step(&ctx, shell, Place::Home, Step::Network, app::window::MIN_W, app::window::MIN_H);
-        let title = texts.iter().find(|d| d.text == t(Key::U3Custom)).map(|d| d.rect).expect("the Custom row is drawn");
-        let note = texts.iter().find(|d| d.text == t(Key::WizNetCustomSay)).expect("the Custom row's note is drawn");
-        // The row: the smallest clickable widget around its title (the row is one click target).
-        let row = ctx
-            .viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, ws)| ws.iter().filter(|w| w.sense.senses_click()).map(|w| w.rect).collect::<Vec<_>>()).collect::<Vec<_>>())
-            .into_iter()
-            .filter(|r| r.contains(title.center()))
-            .min_by(|a, b| a.area().total_cmp(&b.area()))
-            .expect("the Custom row is a widget");
-        assert!(inside(title, row), "the title {title:?} stays in its row {row:?}");
-        assert!(inside(note.rect, row), "the note {:?} ({} rows) stays in its row {row:?}", note.rect, note.rows);
-        assert!(row.max.x <= app::window::MIN_W + 0.5, "the row stays in the window: {row:?}");
+        let rows = ctx.viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, ws)| ws.iter().filter(|w| w.sense.senses_click()).map(|w| w.rect).collect::<Vec<_>>()).collect::<Vec<_>>());
+        // The smallest clickable widget around a text is its row.
+        let row_of = |r: Rect| rows.iter().copied().filter(|w| w.contains(r.center())).min_by(|a, b| a.area().total_cmp(&b.area()));
+        for k in [Key::U3Custom, Key::WizNetRecommended] {
+            let said = texts.iter().find(|d| d.text == t(k)).map(|d| d.rect).unwrap_or_else(|| panic!("{:?} is drawn", t(k)));
+            let row = row_of(said).unwrap_or_else(|| panic!("{:?} lies in a row", t(k)));
+            assert!(inside(said, row), "{:?} {said:?} stays in its row {row:?}", t(k));
+            assert!(row.max.x <= app::window::MIN_W + 0.5, "the row stays in the window: {row:?}");
+        }
     })
 }
 
-// ───────────────────── 3 · The gas code's caption at the least width ─────────────────────
+// ───────────────────── 3 · The gas code at the least width ─────────────────────
 
-/// At the least size in English, the caption under the gas step's code ("Scan with a wallet to pay") is drawn
-/// whole and within the code's plate width: every letter laid out, no wider than the plate, within the plate's
-/// width under it, and not cut by what it is clipped to.
+/// At the least size in English, the gas step's code stands whole by its rows: one plate, inside the window, the
+/// address and the balance clear of it (beside it, or over it when the card is narrow), the rows not cut by what
+/// they are clipped to.
 #[test]
-fn at_the_least_width_the_gas_codes_caption_is_whole_within_the_plate() {
-    if super::alone_in(module_path!(), "at_the_least_width_the_gas_codes_caption_is_whole_within_the_plate") {
+fn at_the_least_width_the_gas_code_stands_whole_by_its_rows() {
+    if super::alone_in(module_path!(), "at_the_least_width_the_gas_code_stands_whole_by_its_rows") {
         return;
     }
     english(|| {
@@ -202,17 +201,14 @@ fn at_the_least_width_the_gas_codes_caption_is_whole_within_the_plate() {
         let (_, texts, plates) = app::window::probe_wizard_step(&ctx, shell, Place::Home, Step::Gas, app::window::MIN_W, app::window::MIN_H);
         let plate = *plates.first().expect("the code's plate is drawn");
         assert_eq!(plates.len(), 1, "one code: {plates:?}");
-        let said = t(Key::WizGasScan);
-        let cap = texts.iter().find(|d| d.text == said).expect("the caption is drawn");
-        let glyphs: usize = cap.row_chars.iter().sum();
-        assert!(glyphs >= said.chars().filter(|c| !c.is_whitespace()).count(), "every letter is laid out: {glyphs} of {said:?}");
-        assert!(cap.rect.width() <= plate.width() + 0.5, "the caption {:?} is no wider than the plate {plate:?}", cap.rect);
-        assert!(cap.rect.min.x >= plate.min.x - 0.5 && cap.rect.max.x <= plate.max.x + 0.5, "the caption {:?} lies within the plate's width {plate:?}", cap.rect);
-        assert!(cap.rect.min.y >= plate.max.y - 0.5, "the caption is under the plate: {:?} {plate:?}", cap.rect);
-        assert!(cap.rect.max.x <= app::window::MIN_W + 0.5 && cap.rect.max.y <= app::window::MIN_H + 0.5, "the caption is not cut by the window: {:?}", cap.rect);
+        assert!(plate.max.x <= app::window::MIN_W + 0.5 && plate.max.y <= app::window::MIN_H + 0.5, "the plate is not cut by the window: {plate:?}");
+        for k in [Key::IdAddress, Key::IdGas] {
+            let said = texts.iter().find(|d| d.text == t(k)).map(|d| d.rect).unwrap_or_else(|| panic!("{:?} is drawn", t(k)));
+            assert!(!said.intersects(plate), "{:?} {said:?} stands clear of the plate {plate:?}", t(k));
+        }
         let last = frames_of(&frames).pop().expect("frames ran");
-        let (_, _, clip) = last.iter().find(|(s, _, _)| s == said).expect("the caption is in the last frame");
-        assert!(inside(cap.rect, *clip), "the caption {:?} is not cut by its clip {clip:?}", cap.rect);
+        let (_, rect, clip) = last.iter().find(|(s, _, _)| s == t(Key::IdGas)).expect("the balance row is in the last frame");
+        assert!(inside(*rect, *clip), "the balance row {rect:?} is not cut by its clip {clip:?}");
     })
 }
 
@@ -286,7 +282,8 @@ fn the_wizard_asks_the_one_esc_owner_and_one_esc_goes_to_the_last_opened() {
     let frame = |pressed: bool, over_shown: bool| -> (bool, bool) {
         let events = if pressed { esc().remove(0).1 } else { Vec::new() };
         let mut got = (false, false);
-        let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |c| {
+        let _ = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |root| {
+            let c = &root.ctx().clone();
             got.0 = zikaron_ui::layer::esc(c, under);
             if over_shown {
                 got.1 = zikaron_ui::layer::esc(c, over);
@@ -366,12 +363,76 @@ fn the_proxy_section_draws_no_now_line_and_still_saves() {
         lead.extend(click(manual.center()));
         lead.extend(idle(2));
         let (f, _) = walk(lead.clone());
-        let save = at(f.last().unwrap(), t(Key::ReadNetSave)).expect("\"Save\" stands once a proxy is to be entered");
+        // The proxy's "Save" is at its card's foot, the lowest on the page (the publish address has its own).
+        let save = f.last().unwrap().iter().filter(|(s, _, _)| s.as_str() == t(Key::ReadNetSave)).map(|(_, r, _)| *r).max_by(|a, b| a.top().total_cmp(&b.top())).expect("\"Save\" stands once a proxy is to be entered");
         let mut steps = lead;
         steps.extend(click(save.center()));
         steps.extend(idle(2));
         let (f, _) = walk(steps);
         assert!(f.iter().all(|fr| now_line(fr).is_none()), "no frame draws a now line");
         assert_eq!(app::machine::read().expect("the machine settings read").proxy.as_deref(), Some(proxy), "and the typed proxy is what the machine keeps");
+    })
+}
+
+/// A new grant's "choose a record" is a sheet: it lists the records with the search and the two dates over them;
+/// a record not yet on chain says why and a press on it chooses nothing; a press on a record on chain chooses it
+/// and closes the sheet.
+#[test]
+fn a_new_grants_record_is_chosen_in_a_sheet() {
+    english(|| {
+        let ctx = egui::Context::default();
+        let shell = probe_shell(&ctx);
+        let row = |seq: u64, note: &str, lamp: app::ledgerx::Lamp, byte: u8| app::ledgerx::Row {
+            seq,
+            kind: zikaron::tokens::EntryType::History,
+            id: format!("{:02x}", byte).repeat(32),
+            prev: None,
+            author: String::new(),
+            summary: String::new(),
+            lamp,
+            tx: None,
+            bytes: 0,
+            work: Some(format!("{:02x}", byte + 1).repeat(32)),
+            facts: app::ledgerx::Facts { note: Some(note.to_string()), ..Default::default() },
+            anchored_at: None,
+        };
+        let rows = vec![row(1, "On chain", app::ledgerx::Lamp::Anchored, 0x10), row(2, "Not yet", app::ledgerx::Lamp::Queued, 0x20)];
+        let (_, got) = app::window::probe_work_pick(&ctx, shell, rows, "Not yet", "On chain", 1180.0, 760.0);
+        for want in [t(Key::V2PickWorkBtn), t(Key::SearchWorks), t(Key::DateFrom), t(Key::DateTo), "On chain", "Not yet", t(Key::V2PendingGrey)] {
+            assert!(got.drawn.iter().any(|d| d == want), "drawn with the sheet up: {want:?} in {:?}", got.drawn);
+        }
+        assert_eq!(got.after_grey, (String::new(), true), "a record not yet on chain is not chosen; the sheet stays");
+        assert_eq!(got.after_open, ("11".repeat(32), false), "a record on chain is chosen and the sheet closes");
+    })
+}
+
+/// In a list of a sheet (here a new grant's "choose a record"), the first row's lit block is as tall as the next
+/// row's and keeps the same distance from its row: the list's top is no line above it, and its block neither
+/// reaches up to the list's edge nor stops short of it. Whoever moves down the list sees one block, the same at
+/// every row.
+#[test]
+fn the_first_rows_lit_block_is_as_tall_as_the_next_rows() {
+    english(|| {
+        let ctx = egui::Context::default();
+        let shell = probe_shell(&ctx);
+        let row = |seq: u64, note: &str, byte: u8| app::ledgerx::Row {
+            seq,
+            kind: zikaron::tokens::EntryType::History,
+            id: format!("{:02x}", byte).repeat(32),
+            prev: None,
+            author: String::new(),
+            summary: String::new(),
+            lamp: app::ledgerx::Lamp::Anchored,
+            tx: None,
+            bytes: 0,
+            work: Some(format!("{:02x}", byte + 1).repeat(32)),
+            facts: app::ledgerx::Facts { note: Some(note.to_string()), ..Default::default() },
+            anchored_at: None,
+        };
+        let rows = vec![row(1, "One", 0x10), row(2, "Two", 0x20), row(3, "Three", 0x30)];
+        let (_, got) = app::window::probe_pick_lits(&ctx, shell, rows, &["Three", "Two", "One"], 1180.0, 760.0);
+        let (first, second) = (got[0].expect("the first row lights"), got[1].expect("the second row lights"));
+        assert!((first.block.height() - second.block.height()).abs() < 0.5, "the first row's block is as tall as the next row's: {first:?} against {second:?}");
+        assert!((first.block.top() - first.slot.top() - (second.block.top() - second.slot.top())).abs() < 0.5, "and as far from its row's top: {first:?} against {second:?}");
     })
 }

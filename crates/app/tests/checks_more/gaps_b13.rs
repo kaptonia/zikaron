@@ -139,13 +139,15 @@ fn a_lock_let_go_while_children_start_is_taken_again_as_a_writer() {
     let _ = std::fs::remove_dir_all(&dir);
     let home = app::home::Home::open_or_create(&dir).expect("a home");
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let begun = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let starters: Vec<_> = (0..4)
         .map(|_| {
-            let stop = stop.clone();
+            let (stop, begun) = (stop.clone(), begun.clone());
             std::thread::spawn(move || {
                 let mut n = 0usize;
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                     if let Ok(mut c) = zikaron_os::spawn(std::process::Command::new("/usr/bin/true").stdin(std::process::Stdio::null())) {
+                        begun.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = c.wait();
                         n += 1;
                     }
@@ -154,6 +156,12 @@ fn a_lock_let_go_while_children_start_is_taken_again_as_a_writer() {
             })
         })
         .collect();
+    // The takes start once children are starting (the starters' first child), however busy the machine is.
+    let from = std::time::Instant::now();
+    while begun.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(from.elapsed() < std::time::Duration::from_secs(20), "no child started");
+        std::thread::yield_now();
+    }
     let mut readers = 0usize;
     let mut modes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for _ in 0..3000 {

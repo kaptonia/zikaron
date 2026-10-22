@@ -351,7 +351,7 @@ fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
 #[test]
 fn the_verbs_are_counted_and_each_one_answers() {
     let names = zikaron_cli::verbs::VERBS;
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 26);
     let text = src("verbs.rs");
     for v in names {
         assert!(text.contains(&format!("\"{v}\" =>")), "{v} 没有分发的落点");
@@ -359,7 +359,7 @@ fn the_verbs_are_counted_and_each_one_answers() {
     let mut sorted = names.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), 25, "二十五个名字里有重的");
+    assert_eq!(sorted.len(), 26, "二十六个名字里有重的");
 }
 
 #[test]
@@ -654,7 +654,8 @@ fn the_shell_holds_no_bare_write_to_a_path_the_caller_gave() {
 #[test]
 fn stdout_has_one_writer_and_that_writer_never_returns() {
     // "Misuse writes zero bytes to stdout" holds by control flow: `emit` is the only writer and never returns,
-    // so nothing can print and then refuse.
+    // so nothing can print and then refuse. The one exception is `mcp` (CLI-SCHEMA §1 rule 7): its writer
+    // `frame` returns and its end `finish` writes nothing; no other file calls either.
     for (name, text) in sources() {
         let code: String = text
             .lines()
@@ -672,8 +673,15 @@ fn stdout_has_one_writer_and_that_writer_never_returns() {
     // The writer never returns.
     assert!(out_rs.contains("pub fn emit(a: Answer) -> !"), "emit 不再是不返回的:两个出口就不互斥了");
     assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: Subject, said: Said) -> !"));
-    // Exactly two exits.
-    assert_eq!(out_rs.matches("std::process::exit").count(), 2, "out.rs 里的退出口不是两处");
+    assert!(out_rs.contains("pub fn frame(v: &Value)") && out_rs.contains("pub fn finish() -> !"), "mcp 的分帧写口与收尾");
+    // Exactly three exits: an answer, misuse, and the end of an `mcp` session.
+    assert_eq!(out_rs.matches("std::process::exit").count(), 3, "out.rs 里的退出口不是三处");
+    for (name, text) in sources() {
+        if name == "out.rs" || name == "mcp.rs" {
+            continue;
+        }
+        assert!(!text.contains("out::frame") && !text.contains("out::finish"), "{name} 调了只许 mcp 调的写口");
+    }
     // `Exit::Misuse` appears only in out.rs and codes.rs, so no answer can claim to be misuse.
     for (name, text) in sources() {
         if name == "out.rs" || name == "codes.rs" {
@@ -772,7 +780,7 @@ fn the_cli_schema_lists_every_flag_the_code_knows() {
     real.dedup();
     assert_eq!(real.len(), m, "码里的旗名闭表有重名");
     assert_eq!(listed, real, "§八 与旗名闭表对不上");
-    assert_eq!(listed.len(), 59, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
+    assert_eq!(listed.len(), 62, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
 }
 
 // init: one ledger, one root.
@@ -1057,4 +1065,28 @@ fn a_refused_body_is_said_in_the_systems_language_flags_and_all() {
     assert_eq!(en, "mode: missing or malformed; given by --mark and --toolchain (or --file)");
     assert!(!en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "no Chinese on an English system: {en}");
     assert_eq!(zh, "mode: 缺或不成形,由 --mark 与 --toolchain(或 --file) 给");
+}
+
+/// Every flag a verb reads more than once (`Args::many` / `many_at` in `verbs.rs` and `desk.rs`) is in the table that
+/// says so (`verbs::REPEATED`), and every flag the table names is read that way somewhere: the readings that need to
+/// know whether a flag repeats (`mcp`'s tool parameters) read the table, not the call sites.
+#[test]
+fn the_repeated_flags_are_the_ones_read_many_times() {
+    let mut read: Vec<String> = Vec::new();
+    for text in [src("verbs.rs"), src("desk.rs")] {
+        for head in ["many(\"", "many_at(\""] {
+            for piece in text.split(head).skip(1) {
+                if let Some(name) = piece.split('"').next() {
+                    read.push(name.to_string());
+                }
+            }
+        }
+    }
+    read.sort();
+    read.dedup();
+    let mut table: Vec<String> = zikaron_cli::verbs::REPEATED.iter().map(|(_, f)| f.to_string()).collect();
+    table.sort();
+    table.dedup();
+    // `desk.rs` reads a home row's flags generically (`many(flag)`): `kit-export`'s `entry`, already in the table.
+    assert_eq!(read, table, "flags read many times against the table of repeated flags");
 }

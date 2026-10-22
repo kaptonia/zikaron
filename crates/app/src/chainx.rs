@@ -194,6 +194,40 @@ pub fn serving(eps: &[Endpoint], chain: u64) -> Result<(Vec<Endpoint>, Vec<Strin
     zikaron_send::node::serving(eps, chain).map(|(kept, left)| (kept, left.iter().map(said_of).collect())).map_err(Fault::from)
 }
 
+/// The key behind an address on these networks (`zikaron_send::recipient::key_of`: found from a transaction the
+/// address signed, not anchored on any of them, or not read through), this desktop's words for the connection layers
+/// said first.
+pub fn recipient_key(nets: &[RecipientNet], author: &[u8; 20]) -> zikaron_send::recipient::Found {
+    speak();
+    zikaron_send::recipient::key_of(nets, author)
+}
+
+/// One network a recipient's key is looked for on.
+pub use zikaron_send::recipient::{Found as RecipientFound, Net as RecipientNet};
+
+/// The key behind an address for sealing a package to it, the sender's one judgement for both ends
+/// (`zikaron_send::recipient::key_for`), this desktop's words for the connection layers said first.
+pub fn key_for_sealing(address: &[u8; 20], nets: Vec<RecipientNet>, readonly: &[RecipientNet], unread: Vec<String>, pinned: &str) -> zikaron_send::recipient::KeyFor {
+    speak();
+    zikaron_send::recipient::key_for(address, nets, readonly, unread, pinned)
+}
+
+/// A read-only network's fingerprint gate, the sender's one gate for both ends (`zikaron_send::fingerprint`), this
+/// desktop's words for the connection layers said first.
+pub fn fingerprint_gate(chain: u64, registry: &[u8; 20], nodes: &[String], pinned: &str) -> FingerprintGate {
+    fingerprint_gate_counted(chain, registry, nodes, pinned).0
+}
+
+/// [`fingerprint_gate`], also returning the nodes that counted (`zikaron_send::fingerprint::gate_counted`): the network
+/// is read on those and no other.
+pub fn fingerprint_gate_counted(chain: u64, registry: &[u8; 20], nodes: &[String], pinned: &str) -> (FingerprintGate, Vec<String>) {
+    speak();
+    zikaron_send::fingerprint::gate_counted(chain, registry, nodes, pinned)
+}
+
+/// How a read-only network's gate went, and why a node did not count (the sender's).
+pub use zikaron_send::fingerprint::{Gate as FingerprintGate, Why as FingerprintMiss};
+
 /// An address's balance (wei) on `chain`, several endpoints agreeing (`node::balance`).
 pub fn balance(eps: &[Endpoint], chain: u64, who: &Address) -> Result<(u128, Reading), Fault> {
     // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)

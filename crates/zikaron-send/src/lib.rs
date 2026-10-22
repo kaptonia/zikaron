@@ -1,6 +1,7 @@
 //! The sender: one for every road that puts a home's anchors on chain (the desktop's queue, the command line
 //! through the desktop, the command line with its credential). It reads the chain (`node`, `agree`), lets a
-//! batch out only through the exit gate (`gate`), keeps the queue's steps under one lock (`keep`) and signs and
+//! batch out only through the exit gate (`gate`), finds the key behind an address for a record package addressed
+//! to it (`recipient`), keeps the queue's steps under one lock (`keep`) and signs and
 //! broadcasts a batch, waits for its receipt and judges a batch no node holds (`batch`), and asks a home's write
 //! gates from what is on disk before anything goes (`shut`). The command line's own record of what its direct
 //! `anchor` sent lives here too (`sent`).
@@ -13,9 +14,11 @@
 
 pub mod agree;
 pub mod batch;
+pub mod fingerprint;
 pub mod gate;
 pub mod keep;
 pub mod node;
+pub mod recipient;
 pub mod sent;
 pub mod shut;
 

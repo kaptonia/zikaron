@@ -7,8 +7,9 @@ use crate::palette::{c, C};
 use crate::tokens;
 use egui::{pos2, vec2, Rect};
 
-/// Draw a cover. `add` gets a child the size of the window; the value it returns comes back.
-pub fn cover<R>(ctx: &egui::Context, id_salt: &str, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
+/// Draw a cover, a strip of `side` at its left on the rail's ground (0: none). `add` gets a child the size of
+/// the window; the value it returns comes back.
+pub fn cover<R>(ctx: &egui::Context, id_salt: &str, side: f32, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
     let id = egui::Id::new(("zikaron-cover", id_salt));
     let screen = ctx.content_rect();
     let a = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::MID);
@@ -20,9 +21,16 @@ pub fn cover<R>(ctx: &egui::Context, id_salt: &str, add: impl FnOnce(&mut egui::
     let layer = egui::LayerId::new(egui::Order::Middle, id);
     crate::layer::place(ctx, layer, None);
     let r = crate::layer::over(ctx, layer).show(ctx, |ui| {
-        // The ground: the page colour over the whole window in the cover's own layer, taking every press and drag
-        // so nothing under it reacts.
-        crate::layer::under(ui, crate::layer::Under::Ground(c(C::Ground).gamma_multiply(a)));
+        // The ground: the page colour over the window in the cover's own layer, taking every press and drag so
+        // nothing under it reacts; a strip of `side` at the left takes the rail's ground (the steps' column).
+        if side > 0.0 {
+            crate::layer::under(ui, crate::layer::Under::Ground(egui::Color32::TRANSPARENT));
+            let (strip, rest) = screen.split_left_right_at_x(screen.left() + side);
+            ui.painter().rect_filled(strip, 0.0, crate::material::rail_ground().gamma_multiply(a));
+            ui.painter().rect_filled(rest, 0.0, c(C::Ground).gamma_multiply(a));
+        } else {
+            crate::layer::under(ui, crate::layer::Under::Ground(c(C::Ground).gamma_multiply(a)));
+        }
         ui.set_clip_rect(screen);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(screen).layout(egui::Layout::top_down(egui::Align::Min)));
         child.multiply_opacity(a);
@@ -103,7 +111,7 @@ pub fn steps(ui: &mut egui::Ui, steps: &[Step], current: usize) -> Option<usize>
         let on = i == current;
         let done = motion::flag(ui.ctx(), id.with(("done", i)), s.done, tokens::MID);
         let lit = motion::flag(ui.ctx(), id.with(("on", i)), on, tokens::MID);
-        let hot = motion::flag(ui.ctx(), id.with(("hot", i)), s.reachable && resp.hovered(), tokens::FAST);
+        let hot = motion::states(ui.ctx(), id.with(("step", i)), resp.hovered(), resp.is_pointer_button_down_on(), resp.has_focus(), s.reachable).hover;
         let edge = crate::palette::mix(crate::palette::mix(c(C::Line), c(C::Accent), lit), c(C::Ok), done);
         p.circle_filled(bc, 11.0, crate::palette::mix(c(C::Surface), c(C::Ok), done));
         if s.later && !s.done {
@@ -155,9 +163,14 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     let lit = motion::flag(ui.ctx(), id.with("on"), on, tokens::FAST);
     let dot = motion::to(ui.ctx(), id.with("dot"), if on { 1.0 } else { 0.0 }, tokens::FAST, Curve::Spring);
     let p = ui.painter().clone();
-    let fill = crate::palette::mix(c(C::Surface), c(C::Sel), lit);
-    let edge = crate::palette::mix(c(C::Line), c(C::Accent), lit);
-    p.rect(rect, crate::tokens::Radius::Menu.egui(), fill, egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
+    // A grey tone at rest; chosen, the selection ground with a blue edge and the soft blue ring.
+    let fill = crate::palette::mix(c(C::Tone), c(C::Sel), lit);
+    let round = crate::tokens::Radius::Menu;
+    if lit > 0.0 {
+        p.rect_stroke(rect.expand(2.0), egui::CornerRadius::same(round.px() as u8 + 2), egui::Stroke::new(4.0_f32, c(C::Focus).gamma_multiply(lit)), egui::StrokeKind::Middle);
+    }
+    p.rect(rect, round.egui(), fill, egui::Stroke::new(1.0_f32, c(C::Accent).gamma_multiply(0.7 * lit)), egui::StrokeKind::Inside);
+    let edge = crate::palette::mix(c(C::Dash), c(C::Accent), lit);
     let rc = pos2(rect.left() + 14.0 + 8.0, rect.center().y);
     p.circle_stroke(rc, 7.5, egui::Stroke::new(1.5_f32, edge));
     if dot > 0.0 {
@@ -165,7 +178,8 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     }
     let x = rect.left() + text_x;
     let ty = rect.center().y - lines_h / 2.0;
-    let tr = p.text(pos2(x, ty), egui::Align2::LEFT_TOP, title, crate::tokens::Type::Strong.font(), c(C::Ink));
+    // The title centred in its line, whatever the face's own height (Latin and Chinese faces differ).
+    let tr = p.text(pos2(x, ty + crate::tokens::Type::Strong.line() / 2.0), egui::Align2::LEFT_CENTER, title, crate::tokens::Type::Strong.font(), c(C::Ink));
     if let Some(s) = pill {
         let pw = crate::mark::pill_w(ui, s, false);
         let pr = Rect::from_min_size(pos2(tr.right() + 8.0, tr.center().y - tokens::PILL_H / 2.0), vec2(pw, tokens::PILL_H));

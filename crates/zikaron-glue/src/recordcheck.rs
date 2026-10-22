@@ -95,6 +95,22 @@ pub enum Original {
     Missing,
 }
 
+impl Original {
+    /// Its word in an answer (the command line's `original`, the door's record facts): one spelling, here.
+    pub fn word(self) -> &'static str {
+        match self {
+            Original::Match => "match",
+            Original::Mismatch => "mismatch",
+            Original::Missing => "missing",
+        }
+    }
+
+    /// The original a word names.
+    pub fn of_word(w: &str) -> Option<Original> {
+        [Original::Match, Original::Mismatch, Original::Missing].into_iter().find(|o| o.word() == w)
+    }
+}
+
 /// Whether this record is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnChain {
@@ -107,6 +123,35 @@ pub enum OnChain {
     /// The chain was not read (no network configured, chain unreachable), or this pass left out a network that
     /// could hold its anchor ([`unread_where_missed`]): never shown as "not anchored".
     Unread,
+}
+
+impl OnChain {
+    /// Its word in an answer (the command line's `anchored`, the door's record facts): one spelling, here.
+    pub fn word(self) -> &'static str {
+        match self {
+            OnChain::Anchored { .. } => "anchored",
+            OnChain::NotAnchored => "notAnchored",
+            OnChain::Unread => "unread",
+        }
+    }
+
+    /// The reading a word and a first-anchor time name (the time only for `anchored`).
+    pub fn of_word(w: &str, first_at: Option<u64>) -> Option<OnChain> {
+        match (w, first_at) {
+            ("anchored", Some(t)) => Some(OnChain::Anchored { first_at: t }),
+            ("notAnchored", None) => Some(OnChain::NotAnchored),
+            ("unread", None) => Some(OnChain::Unread),
+            _ => None,
+        }
+    }
+
+    /// The first-anchor time, when anchored.
+    pub fn first_at(self) -> Option<u64> {
+        match self {
+            OnChain::Anchored { first_at } => Some(first_at),
+            _ => None,
+        }
+    }
 }
 
 /// One row of record bundle verification: one record (`history`).
@@ -146,29 +191,17 @@ pub fn contents_of(manifest: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The file each `contents` row points to in a kit directory: (content, bytes; `None` when the kit lacks it).
+/// The originals a kit directory holds, as (content, fingerprint bytes): the file each `contents` row points to
+/// (the row's content, the file's bytes; `None` when the kit lacks it), and each signed directory kept in it file by
+/// file (its content recomputed from those files with the names they were signed with, its manifest's bytes):
+/// `crate::extract::originals`, the one reading taking originals out uses too.
 pub fn originals_in_dir(dir: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    let manifest = std::fs::read(dir.join(crate::names::MANIFEST)).unwrap_or_default();
-    contents_of(&manifest)
-        .into_iter()
-        .map(|(content, path)| {
-            let bytes = std::fs::read(dir.join(&path)).or_else(|_| std::fs::read(dir.join(crate::names::FILES_DIR).join(&path))).ok();
-            (content, bytes)
-        })
-        .collect()
+    crate::extract::originals_in_dir(dir).into_iter().map(|(o, b)| (o.content, b)).collect()
 }
 
 /// As [`originals_in_dir`], from a file list (a grant file, or a kit fetched from a publish address).
 pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Vec<u8>>)> {
-    let manifest = pairs.iter().find(|(p, _)| p == crate::names::MANIFEST).map(|(_, b)| b.clone()).unwrap_or_default();
-    let files_prefixed = |path: &str| format!("{}/{}", crate::names::FILES_DIR, path);
-    contents_of(&manifest)
-        .into_iter()
-        .map(|(content, path)| {
-            let bytes = pairs.iter().find(|(p, _)| *p == path || *p == files_prefixed(&path)).map(|(_, b)| b.clone());
-            (content, bytes)
-        })
-        .collect()
+    crate::extract::originals_in_pairs(pairs).into_iter().map(|(o, b)| (o.content, b)).collect()
 }
 
 /// Verify a record package record by record: one row per record (`history`) in it. Original: the `contents` row

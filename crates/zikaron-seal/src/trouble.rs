@@ -9,6 +9,8 @@ pub enum Code {
     FileMissing,
     /// The system refused access.
     Denied,
+    /// The system says a place on the way is not a folder (a file stands where a folder is expected).
+    NotAFolder,
     /// Any other system error (its message is the evidence).
     Unknown,
     /// The vault is locked: no master key in hand.
@@ -70,6 +72,17 @@ pub enum Code {
     HandedOff,
 }
 
+impl Code {
+    /// Whether this refusal is one key slot's own (its seal does not match, or the key in it is not a key of its
+    /// address), as against the vault's or the machine's (locked, missing, not in shape, no credential): a slot's own
+    /// trouble leaves every other slot readable. Where every identity's key is tried in turn (opening a record package
+    /// addressed to one of them, both ends), a slot that fails so is passed over and the rest are tried; the vault's
+    /// trouble stops the whole.
+    pub fn one_slot(self) -> bool {
+        matches!(self, Code::KeyboxSlot | Code::KeyMalformed)
+    }
+}
+
 /// One refusal: its code and its evidence (paths, members, numbers; never a sentence).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Trouble {
@@ -82,16 +95,26 @@ impl Trouble {
         Trouble { code, tail: tail.into() }
     }
 
-    /// A system error said with `subject` (a path, a source): missing and denied by their codes, any other as
-    /// unknown with the system's message.
+    /// A system error said with `subject` (a path, a source): missing, denied and not a folder by their codes, any
+    /// other as unknown with the system's message. The one table of system errors: the desktop classifies by it too.
+    /// Whether a place on the way is not a folder is read from the way itself, not from the kind of error alone: a
+    /// path found missing below a plain file ([`file_on_the_way`]) is not a folder, as the systems that say so call it.
     pub fn io(e: &std::io::Error, subject: &str) -> Trouble {
         let tail = format!("{subject}: {e}");
         match e.kind() {
+            std::io::ErrorKind::NotFound if file_on_the_way(std::path::Path::new(subject)) => Trouble::new(Code::NotAFolder, tail),
             std::io::ErrorKind::NotFound => Trouble::new(Code::FileMissing, tail),
             std::io::ErrorKind::PermissionDenied => Trouble::new(Code::Denied, tail),
+            std::io::ErrorKind::NotADirectory => Trouble::new(Code::NotAFolder, tail),
             _ => Trouble::new(Code::Unknown, tail),
         }
     }
+}
+
+/// Whether a place above `path` (a whole path) is a plain file: the way to `path` runs through something that is
+/// not a folder. A subject that is not a whole path names no way and says no.
+pub fn file_on_the_way(path: &std::path::Path) -> bool {
+    path.is_absolute() && path.ancestors().skip(1).any(|a| std::fs::metadata(a).map(|m| m.is_file()).unwrap_or(false))
 }
 
 /// What every end's error says about itself, so the sealed layer can read back its own refusals from either
@@ -123,4 +146,26 @@ pub fn random(n: usize) -> Result<Vec<u8>, Trouble> {
 /// Fill `buf` from the system entropy source.
 pub fn fill_random(buf: &mut [u8]) -> Result<(), Trouble> {
     zikaron_os::fill_random(buf).map_err(|e| Trouble::io(&e, zikaron_os::ENTROPY_SOURCE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A path found missing below a plain file is not a folder, whatever the system calls it (some say the path is
+    /// not there); one found missing with only folders on the way is missing. Guards the person whose home folder
+    /// is a file: told what is wrong, not sent to look for a file that was never lost.
+    #[test]
+    fn a_missing_path_below_a_file_is_not_a_folder() {
+        let base = std::env::temp_dir().join(format!("zk-trouble-way-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&base);
+        let home = base.join("home");
+        std::fs::write(&home, b"a plain file").unwrap();
+        let below = home.join("settings").join("home-label.json");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(Trouble::io(&missing, &below.display().to_string()).code, Code::NotAFolder);
+        assert_eq!(Trouble::io(&missing, &base.join("gone").join("x").display().to_string()).code, Code::FileMissing);
+        assert_eq!(Trouble::io(&missing, "a relative subject").code, Code::FileMissing);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

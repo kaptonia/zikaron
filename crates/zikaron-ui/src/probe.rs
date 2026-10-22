@@ -12,6 +12,20 @@ const TILES: &str = "zikaron-probe-tiles";
 const ROUTE: &str = "zikaron-probe-route";
 const HISTORY: &str = "zikaron-probe-history";
 const QR: &str = "zikaron-probe-qr";
+const PARTS: &str = "zikaron-probe-parts";
+const BOXES: &str = "zikaron-probe-boxes";
+const LITS: &str = "zikaron-probe-lits";
+
+/// A lit block as drawn ([`crate::band`]): the block and its corners, the slot whose sides bound it (the card's
+/// edges, the lines, or the next rows), the card it lies in and that card's corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lit {
+    pub block: egui::Rect,
+    pub corners: egui::CornerRadius,
+    pub slot: egui::Rect,
+    pub card: egui::Rect,
+    pub card_corner: f32,
+}
 
 /// Clear at the start of a frame.
 pub fn begin(ctx: &egui::Context) {
@@ -25,6 +39,9 @@ pub fn begin(ctx: &egui::Context) {
         d.insert_temp(egui::Id::new(ROUTE), String::new());
         d.insert_temp(egui::Id::new(HISTORY), (false, false));
         d.insert_temp(egui::Id::new(QR), Vec::<egui::Rect>::new());
+        d.insert_temp(egui::Id::new(PARTS), Vec::<(egui::LayerId, egui::Rect)>::new());
+        d.insert_temp(egui::Id::new(BOXES), Vec::<(egui::LayerId, egui::Rect)>::new());
+        d.insert_temp(egui::Id::new(LITS), Vec::<Lit>::new());
     });
 }
 
@@ -116,4 +133,35 @@ pub fn qr(ctx: &egui::Context, plate: egui::Rect) {
 /// The QR plates recorded this frame.
 pub fn qrs(ctx: &egui::Context) -> Vec<egui::Rect> {
     ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(egui::Id::new(QR))).unwrap_or_default()
+}
+
+/// One row of a card (any of its kinds), on `layer`: the structure reading checks every control in a card lies
+/// in one.
+pub fn part(ctx: &egui::Context, layer: egui::LayerId, rect: egui::Rect) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(egui::LayerId, egui::Rect)>>(egui::Id::new(PARTS)).push((layer, rect)));
+}
+
+/// One card made of rows, on `layer`.
+pub fn boxed(ctx: &egui::Context, layer: egui::LayerId, rect: egui::Rect) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(egui::LayerId, egui::Rect)>>(egui::Id::new(BOXES)).push((layer, rect)));
+}
+
+/// The rows recorded this frame.
+pub fn parts(ctx: &egui::Context) -> Vec<(egui::LayerId, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(egui::LayerId, egui::Rect)>>(egui::Id::new(PARTS))).unwrap_or_default()
+}
+
+/// The cards made of rows recorded this frame.
+pub fn boxes(ctx: &egui::Context) -> Vec<(egui::LayerId, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(egui::LayerId, egui::Rect)>>(egui::Id::new(BOXES))).unwrap_or_default()
+}
+
+/// One lit block drawn this frame.
+pub fn lit(ctx: &egui::Context, l: Lit) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<Lit>>(egui::Id::new(LITS)).push(l));
+}
+
+/// The lit blocks drawn this frame.
+pub fn lits(ctx: &egui::Context) -> Vec<Lit> {
+    ctx.data(|d| d.get_temp::<Vec<Lit>>(egui::Id::new(LITS))).unwrap_or_default()
 }

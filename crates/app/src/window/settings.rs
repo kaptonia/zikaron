@@ -1,4 +1,4 @@
-//! Settings: the home (one line per section: title, what it holds, a chevron) and the section pages.
+//! Settings: the home (one line per section: its glyph, its name, a chevron) and the section pages.
 //! Technical values (addresses, nodes, contract, chain id, start block, paths, key file names, the instance
 //! lock) live under each section's details.
 
@@ -11,7 +11,7 @@ impl Win {
         stagger(ui, 0, |ui| {
             card::form(ui, |ui, f| {
                 for s in crate::nav::sections(role) {
-                    if f.nav_big(ui, t(s.key()), t(s.note(role))).clicked() {
+                    if f.go_glyph(ui, s.glyph(), t(s.key())).clicked() {
                         open = Some(s);
                     }
                 }
@@ -44,18 +44,13 @@ impl Win {
         let zone_cells: Vec<seg::Cell> = zones.iter().map(|z| seg::Cell::from(zone_label(*z))).collect();
         let example = fill1(Key::ZoneExample, &crate::when::when(wall_secs()));
         let (mut pick_lang, mut pick_zone) = (None, None);
+        // The time zone's line says the time as it is shown, or why the system's zone is not read.
+        let zone_say = if crate::when::zone() == crate::when::Zone::System && !crate::when::system_read() { t(Key::ZoneSystemUnread).to_string() } else { example };
         stagger(ui, 0, |ui| {
             card::form(ui, |ui, f| {
                 f.row_with(ui, None, t(Key::Language), "", card::Value::None, |ui| pick_lang = seg::seg(ui, "set-lang", &lang_cells, cur));
+                f.row_with(ui, None, t(Key::SetZoneTitle), &zone_say, card::Value::None, |ui| pick_zone = seg::seg(ui, "set-zone", &zone_cells, zone_now));
             });
-        });
-        stagger(ui, 1, |ui| {
-            card::form(ui, |ui, f| {
-                f.row_with(ui, None, t(Key::SetZoneTitle), &example, card::Value::None, |ui| pick_zone = seg::seg(ui, "set-zone", &zone_cells, zone_now));
-            });
-            if crate::when::zone() == crate::when::Zone::System && !crate::when::system_read() {
-                hint(ui, t(Key::ZoneSystemUnread));
-            }
         });
         if let Some(i) = pick_lang {
             if i != cur || self.shell.settings.lang != Some(langs[i]) {
@@ -88,7 +83,7 @@ impl Win {
         stagger(ui, 2, |ui| {
             card::section(ui, t(Key::SetCliAnchoring), "", |ui| {
                 card::form(ui, |ui, f| {
-                    f.row_with(ui, None, t(Key::SetCliAnchor), t(Key::SetCliAnchorSay), card::Value::None, |ui| pick = seg::seg(ui, "set-cli-anchor", &cells, cur));
+                    pick = f.with(ui, t(Key::SetCliAnchor), "", |ui| seg::seg(ui, "set-cli-anchor", &cells, cur));
                 });
             });
         });
@@ -116,20 +111,32 @@ impl Win {
             State::Provided => (true, false, t(Key::CliPathProvidedSay).to_string()),
             State::Unsupported(_) => (false, false, t(Key::CliPathUnsupportedSay).to_string()),
         };
+        // "Connect an AI app": the config that starts the command line's MCP server, copied; grey where the command
+        // line cannot be reached from outside the app (a disk image opened in place, an AppImage), and why on hover.
+        let config = self.shell.ai_config.clone();
         let mut flip = false;
+        let mut copy = false;
         stagger(ui, 0, |ui| {
             card::section(ui, t(Key::SetCliTerminal), "", |ui| {
                 card::form(ui, |ui, f| {
-                    f.row_with(ui, None, t(Key::SetCliPath), &say, card::Value::None, |ui| flip = toggle::switch(ui, on, can && !busy).clicked());
+                    flip = f.switch(ui, t(Key::SetCliPath), &say, on, can && !busy);
+                    // Why it cannot be installed: the details, folded in the same card.
+                    if let State::Unsupported(why) = &state {
+                        f.fold(ui, "cli-path-why", t(Key::SetEvidence), "", |ui, f| f.note(ui, why));
+                    }
+                    copy = f.with(ui, t(Key::SetCliAiApp), "", |ui| {
+                        let k = key::Key::new(t(Key::DoCopyAiConfig), Role::Secondary).enabled(config.is_some());
+                        key::show(ui, if config.is_some() { k } else { k.why(t(Key::CliPathUnsupportedSay)) }).clicked()
+                    });
                 });
-                // Why it cannot be installed: the details, folded.
-                if let State::Unsupported(why) = &state {
-                    fold::fold(ui, "cli-path-why", t(Key::SetEvidence), |ui| hint(ui, why));
-                }
             });
         });
         if flip {
             self.act(Action::SetCliPath { on: !on }, now);
+        }
+        if let Some(c) = config.filter(|_| copy) {
+            ui.ctx().copy_text(c);
+            self.toasts.say(t(Key::SaidCopiedAiConfig), Tone::Note, now);
         }
     }
 
@@ -143,17 +150,18 @@ impl Win {
         let alone = path == crate::machine::CliPath::Alone;
         let desktop = path == crate::machine::CliPath::Desktop;
         let unlocked = self.shell.unlocked();
+        // The second lines say state only: when the credential ends, and why the desktop switch is greyed out.
         let alone_say = match (alone, self.shell.credential) {
             (true, Some(c)) => cli_expiry_said(c.expires),
-            _ => t(Key::SetCliAloneSay).to_string(),
+            _ => String::new(),
         };
-        let desktop_say = if alone { t(Key::SetCliDesktopGrey) } else { t(Key::SetCliDesktopSay) };
+        let desktop_say = if alone { t(Key::SetCliDesktopGrey) } else { "" };
         let (mut flip_desktop, mut flip_alone) = (false, false);
         stagger(ui, 1, |ui| {
             card::section(ui, t(Key::SetCliLevel), "", |ui| {
                 card::form(ui, |ui, f| {
-                    f.row_with(ui, None, t(Key::SetCliDesktop), desktop_say, card::Value::None, |ui| flip_desktop = toggle::switch(ui, desktop, unlocked && !alone).clicked());
-                    f.row_with(ui, None, t(Key::SetCliAlone), &alone_say, card::Value::None, |ui| flip_alone = toggle::switch(ui, alone, unlocked).clicked());
+                    flip_desktop = f.switch(ui, t(Key::SetCliDesktop), desktop_say, desktop, unlocked && !alone);
+                    flip_alone = f.switch(ui, t(Key::SetCliAlone), &alone_say, alone, unlocked);
                 });
             });
         });
@@ -189,10 +197,10 @@ impl Win {
         self.ux.cli_trouble = None;
     }
 
-    /// The "write alone" sheet: the passcode, then how long the credential lasts: days, hours and minutes (an
-    /// empty cell is zero), or never by the switch under them, which leaves the cells faint and not taken. A cell
-    /// past its most is framed red and the line under the switch says why; the key turns it on only with a
-    /// whole passcode and a validity in range.
+    /// The "write alone" sheet: that the command line may spend gas, in a note; how long the credential lasts
+    /// in one row: days, hours and minutes in one box (an empty cell is zero), or never by the switch on the
+    /// row's head, which leaves the box faint and not taken; then the passcode. A cell past its most is red and
+    /// the line under the box says why; the key turns it on only with a whole passcode and a validity in range.
     pub(super) fn cli_sheet(&mut self, ctx: &egui::Context, now: f64) {
         if !self.ux.cli_sheet {
             return;
@@ -213,40 +221,32 @@ impl Win {
             sheet::Spec::new("cli-alone", tk::SHEET_W),
             self,
             |ui, me| {
-                sheet::title(ui, t(Key::SetCliAlone), t(Key::SetCliAloneSay));
-                hint(ui, t(Key::SetCliAloneGas));
-                field(ui, t(Key::IdPinGate), None, |ui| {
-                    pin::pin_row(ui, "cli-alone-pin", &mut me.ux.cli_pin, len, me.ux.pin_shake, !busy, true);
-                });
-                field(ui, t(Key::U3Window), None, |ui| {
-                    let never = me.ux.cli_never;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        if never {
-                            ui.disable();
-                            ui.multiply_opacity(tk::OFF);
-                        }
-                        for (i, (unit, _, _)) in CLI_SPAN.iter().enumerate() {
-                            if i > 0 {
-                                ui.add_space(CLI_CELL_GAP);
+                sheet::title(ui, t(Key::SetCliAlone), "");
+                fields::stack(ui, |ui, st| {
+                    // The validity: its name, then "does not expire" and its switch right after it on the same line;
+                    // days, hours and minutes in one box under it (faint while it never expires); the line under the
+                    // box takes room only while it has words, opening and closing with them.
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = tk::S2;
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tk::KEY_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = tk::S2;
+                            // A field's name is set in the key face (14, medium).
+                            let named = ui.painter().layout_no_wrap(t(Key::U3Window).to_string(), key::key_font(), c(C::Ink)).size().x;
+                            ui.allocate_ui(egui::vec2(named, Type::Note.line()), |ui| fields::name(ui, t(Key::U3Window), None));
+                            let w = ui.add(egui::Label::new(egui::RichText::new(t(Key::CliLastsNever)).font(Type::Note.font()).color(c(C::Ink2))).selectable(false).sense(egui::Sense::click()));
+                            let s = toggle::switch(ui, me.ux.cli_never, true);
+                            if s.clicked() || w.clicked() {
+                                me.ux.cli_never = !me.ux.cli_never;
                             }
-                            let bad = matches!(span, Span::Over(o) if o[i]);
-                            ui.push_id(("cli-span", i), |ui| {
-                                input::field(ui, &mut me.ux.cli_span[i], "0", CLI_CELL_W, input::Look { mono: true, bad, centred: true, ..Default::default() });
-                            });
-                            me.ux.cli_span[i] = cli_cell(&me.ux.cli_span[i]);
-                            ui.add_space(tk::S2);
-                            paint::text(ui, t(*unit), Type::Body, c(C::Ink2));
-                        }
+                        });
+                        let never = me.ux.cli_never;
+                        let units: Vec<&str> = CLI_SPAN.iter().map(|(unit, _, _)| t(*unit)).collect();
+                        let bad: Vec<bool> = (0..CLI_SPAN.len()).map(|i| matches!(span, Span::Over(o) if o[i])).collect();
+                        zikaron_ui::lasts::boxed(ui, "cli-span", &mut me.ux.cli_span, &units, "0", &bad, !never);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        passing_line(ui, egui::Id::new("cli-span-said"), &said.0, said.1);
                     });
-                    paint::rule(ui, CLI_RULE_GAP);
-                    toggle::toggle(ui, &mut me.ux.cli_never, t(Key::CliLastsNever), "", true);
-                    ui.add_space(tk::S3);
-                    let colour = if said.1 { c(C::Bad) } else { c(C::Ink2) };
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), Type::Small.size() + 5.0), egui::Sense::hover());
-                    if !said.0.is_empty() {
-                        ui.painter().text(rect.left_top(), egui::Align2::LEFT_TOP, &said.0, Type::Small.font(), colour);
-                    }
+                    let _ = pin_field(st, ui, t(Key::IdPinGate), None, "cli-alone-pin", &mut me.ux.cli_pin, me.ux.pin_shake, !busy);
                 });
                 if let Some(f) = &trouble {
                     states::err_box(ui, "cli-trouble", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
@@ -295,78 +295,43 @@ impl Win {
         let can_sign = !unseated && self.shell.anchor.is_some();
         let name = current.as_ref().map(|(r, _)| if r.label.trim().is_empty() { t(Key::Unnamed).to_string() } else { r.label.clone() }).unwrap_or_else(|| t(Key::IdNone).to_string());
         let kind = current.as_ref().map(|(r, _)| format!("{} \u{b7} {}", t(id_seat_key(seat)), t(id_kind_key(r.kind())))).unwrap_or_default();
-        let mut copy = false;
-        stagger(ui, 0, |ui| {
-            card::card(ui, |ui| {
-                let lines = [(name.as_str(), Type::Page, c(C::Ink)), (kind.as_str(), Type::Note, c(C::Ink2))];
-                width::then_at(
-                    ui,
-                    paint::lines_height(ui, &lines, 2.0).max(tk::INPUT_H),
-                    |ui| copy = key::key(ui, t(Key::IdDoCopy), Role::Secondary, can_sign).clicked(),
-                    |ui, room| {
-                        paint::lines(ui, &lines, 2.0, room);
-                    },
-                );
-            });
-        });
-        if self.shell.tasks.in_flight(crate::task::Kind::Keystore) {
+        if self.shell.tasks.in_flight(crate::task::Kind::Keystore) && !self.status_reports(crate::task::Kind::Keystore) {
             states::note_box(ui, t(Key::V2Encrypting));
         }
         if unseated {
-            states::note_box(ui, t(Key::IdSeatEmptyNote));
+            zikaron_ui::callout::callout(ui, t(Key::IdSeatEmptyNote));
         }
-        // The identity: what it is, when made, the balance and the backup state (the action layer reads the disk;
-        // the frame only reads fields).
-        let who = match &current {
-            Some((r, _)) if !r.label.trim().is_empty() => format!("{} \u{b7} {} \u{b7} {}", t(id_seat_key(seat)), t(id_kind_key(r.kind())), r.label),
-            Some((r, _)) => format!("{} \u{b7} {}", t(id_seat_key(seat)), t(id_kind_key(r.kind()))),
-            None => t(Key::IdNone).to_string(),
-        };
+        // The overview: the identity's name and kind, its address (copied from its row), balance, backup
+        // state, when it was made and where it is kept (the action layer reads the disk; the frame reads fields).
         let created = match current.as_ref().map(|(r, _)| r.created.clone()) {
             Some(ref c) if c != crate::identity::NO_CREATED => c.get(0..10).unwrap_or(c).to_string(),
             _ => t(Key::IdCreatedNone).to_string(),
         };
-        let mut rows: Vec<(&str, Val)> = vec![(t(Key::IdCurrent), Val::text(who)), (t(Key::IdCreated), Val::mono(created))];
-        if unseated {
-            rows.push((t(Key::IdAddress), Val::Mark(Mark::Warn, t(Key::IdSeatEmptyHow).to_string())));
-        } else if self.shell.anchor.is_none() {
-            rows.push((t(Key::IdAddress), Val::Mark(Mark::Bad, t(if current.is_some() { Key::IdKeyMissing } else { Key::SetNoKey }).to_string())));
-        }
-        rows.push((
-            t(Key::IdGas),
-            match self.chain_read() {
-                Err(f) => Val::Mark(Mark::Bad, fill1(Key::SetReadFailedNow, f.human())),
-                Ok(Some(Done::Chain { gas_wei: Some(w), .. })) => Val::Mark(if *w > 0 { Mark::Ok } else { Mark::Bad }, fill1(Key::SetGasSay, &eth_held(*w))),
-                _ => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
-            },
-        ));
-        rows.push((
-            t(Key::IdBackupState),
-            match &current {
-                Some((r, _)) => {
-                    let k = match (r.backed_words, r.backed_file) {
-                        (true, true) => Key::IdBackedBoth,
-                        (true, false) => Key::IdBackedWords,
-                        (false, true) => Key::IdBackedFile,
-                        (false, false) => Key::IdNotBacked,
-                    };
-                    Val::Mark(if r.backed() { Mark::Ok } else { Mark::Warn }, t(k).to_string())
-                }
-                None => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
-            },
-        ));
+        let addr = self.shell.anchor.filter(|_| !unseated).map(|a| a.hex());
+        let gas = match self.chain_read() {
+            Err(f) => (Mark::Bad, fill1(Key::SetReadFailedNow, f.human())),
+            Ok(Some(Done::Chain { gas_wei: Some(w), .. })) => (if *w > 0 { Mark::Ok } else { Mark::Bad }, fill1(Key::SetGasSay, &eth_held(*w))),
+            _ => (Mark::Todo, t(Key::SetNotRead).to_string()),
+        };
+        let backed = match &current {
+            Some((r, _)) => {
+                let k = match (r.backed_words, r.backed_file) {
+                    (true, true) => Key::IdBackedBoth,
+                    (true, false) => Key::IdBackedWords,
+                    (false, true) => Key::IdBackedFile,
+                    (false, false) => Key::IdNotBacked,
+                };
+                (if r.backed() { Mark::Ok } else { Mark::Warn }, t(k).to_string())
+            }
+            None => (Mark::Todo, t(Key::SetNotRead).to_string()),
+        };
         let seen = self.shell.backup_seen.clone();
-        rows.push((
-            t(Key::IdBackupAt),
-            match &seen {
-                Some(b) if b.at == crate::identity::NO_BACKUP_AT => Val::Mark(Mark::Todo, t(Key::IdBackupNever).to_string()),
-                Some(b) if b.exists && b.opens => Val::Mark(Mark::Ok, t(Key::IdBackupThere).to_string()),
-                Some(_) => Val::Mark(Mark::Bad, t(Key::IdBackupGone).to_string()),
-                None => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
-            },
-        ));
-        rows.push((t(Key::IdStore), Val::text(t(Key::IdKeybox))));
-        stagger(ui, 1, |ui| card::section(ui, t(Key::IdGroup), "", |ui| card::card(ui, |ui| kv::kv(ui, &rows))));
+        let backup_at = match &seen {
+            Some(b) if b.at == crate::identity::NO_BACKUP_AT => (Mark::Todo, t(Key::IdBackupNever).to_string()),
+            Some(b) if b.exists && b.opens => (Mark::Ok, t(Key::IdBackupThere).to_string()),
+            Some(_) => (Mark::Bad, t(Key::IdBackupGone).to_string()),
+            None => (Mark::Todo, t(Key::SetNotRead).to_string()),
+        };
         // The primary identity, the only one that recovers the passcode: this one, or another one via "set as
         // primary" (a new master key; everything resealed).
         let primary = self.shell.primary.clone();
@@ -379,42 +344,55 @@ impl Win {
             .and_then(|(p, _)| reg.find(p))
             .map(|r| if r.label.trim().is_empty() { t(Key::Unnamed).to_string() } else { r.label.clone() })
             .unwrap_or_else(|| t(Key::IdNone).to_string());
-        let mut set_primary = false;
-        stagger(ui, 2, |ui| {
-            card::section(ui, t(Key::IdPrimaryTag), t(Key::IdPrimaryFoot), |ui| {
-                card::form(ui, |ui, f| {
-                    if this_primary {
-                        let by = match primary.as_ref().map(|(_, k)| *k) {
-                            Some(crate::keybox::PrimaryKind::KeyFile) => Key::IdPrimaryByFile,
-                            _ => Key::IdPrimaryByWords,
-                        };
-                        f.row(ui, t(Key::IdPrimaryTag), t(by), card::Value::Text(t(Key::IdPrimaryThis)));
-                    } else {
-                        f.row(ui, t(Key::IdPrimaryTag), "", card::Value::Text(&primary_name));
-                        set_primary = f.row(ui, t(Key::PrimaryTitle), "", if current.is_some() && !unseated { card::Value::Nav } else { card::Value::Off }).clicked();
-                    }
-                });
+        // The overview: the identity's name, its seat and whether it is the primary one, "copy address", and
+        // three figures: the address, the balance, the backup state.
+        let sub = match &current {
+            Some(_) if this_primary => format!("{} \u{b7} {}", t(id_seat_key(seat)), t(Key::IdPrimaryTag)),
+            Some(_) => kind.clone(),
+            None => String::new(),
+        };
+        let addr_short = addr.as_deref().map(card::short).unwrap_or_default();
+        let addr_fact = match (&addr, unseated) {
+            (Some(_), _) => card::Fact::Mono(&addr_short),
+            (None, true) => card::Fact::Warn(t(Key::IdSeatEmpty)),
+            (None, false) => card::Fact::Warn(t(if current.is_some() { Key::IdKeyMissing } else { Key::SetNoKey })),
+        };
+        let gas_fact = match gas.0 {
+            Mark::Ok => card::Fact::Text(&gas.1),
+            Mark::Todo => card::Fact::Quiet(&gas.1),
+            _ => card::Fact::Warn(&gas.1),
+        };
+        // A backup file that is gone, or no longer opens, is flagged here, above the backup state it undoes.
+        let backed_fact = if backup_at.0 == Mark::Bad {
+            card::Fact::Warn(&backup_at.1)
+        } else if backed.0 == Mark::Ok {
+            card::Fact::Text(&backed.1)
+        } else {
+            card::Fact::Warn(&backed.1)
+        };
+        let mut copy = false;
+        stagger(ui, 0, |ui| {
+            card::form(ui, |ui, f| {
+                copy = f.summary(ui, Glyph::Key, card::Tint::Blue, &name, None, &sub, |ui| addr.is_some() && key::key(ui, t(Key::IdDoCopy), Role::Secondary, true).clicked());
+                f.facts(ui, &[(t(Key::IdAddress), addr_fact), (t(Key::IdGas), gas_fact), (t(Key::IdBackupState), backed_fact)]);
             });
         });
-        // The passcode group, in order: the passcode, the auto-lock switch, the idle time (only while on), and
-        // change passcode. Changes take effect at once; nothing to save.
+        // The passcode group: change passcode, the auto-lock switch, the idle time (only while on). Changes take
+        // effect at once; nothing to save.
         let pin_set = !self.shell.vault.absent();
         let lock_on = self.shell.machine.auto_lock;
         let lock_now = self.shell.machine.auto_lock_secs;
         let lock_items: Vec<String> = crate::machine::LOCK_CHOICES.iter().map(|x| fill1(Key::MinutesN, &(x / 60).to_string())).collect();
         let lock_label = fill1(Key::MinutesN, &(lock_now / 60).to_string());
         let (mut change, mut set_pin, mut lock_pick, mut flip) = (false, false, None, false);
-        stagger(ui, 3, |ui| {
+        stagger(ui, 1, |ui| {
             card::section(ui, t(Key::IdPin), "", |ui| {
                 card::form(ui, |ui, f| {
                     if pin_set {
-                        f.row(ui, t(Key::IdPin), t(Key::IdPinNote), card::Value::None);
-                        let note = t(if lock_on { Key::IdAutoLockOnNote } else { Key::IdAutoLockOffNote });
-                        f.row_with(ui, None, t(Key::IdAutoLock), note, card::Value::None, |ui| {
-                            flip = zikaron_ui::toggle::switch(ui, lock_on, true).clicked();
-                        });
+                        change = f.go(ui, t(Key::ChangePinTitle), "", true, "").clicked();
+                        flip = f.switch(ui, t(Key::IdAutoLock), "", lock_on, true);
                         if lock_on {
-                            f.row_with(ui, None, t(Key::IdIdleFor), "", card::Value::None, |ui| {
+                            f.with(ui, t(Key::IdIdleFor), "", |ui| {
                                 let items: Vec<menu::Item> = lock_items
                                     .iter()
                                     .enumerate()
@@ -423,35 +401,37 @@ impl Win {
                                 lock_pick = menu::menu_key(ui, "auto-lock", &lock_label, false, 150.0, &items);
                             });
                         }
-                        change = f.row(ui, t(Key::ChangePinTitle), "", card::Value::Nav).clicked();
                     } else {
-                        f.row(ui, t(Key::IdPin), "", card::Value::Text(t(Key::IdPinNone)));
-                        f.keys(ui, |ui| set_pin = key::key(ui, t(Key::IdDoSetPin), Role::Secondary, true).clicked());
+                        set_pin = f.act(ui, t(Key::IdPin), t(Key::IdPinNone), key::Key::new(t(Key::IdDoSetPin), Role::Secondary)).clicked();
                     }
                 });
             });
-            if self.shell.unlocked() && crate::keybox::pin_digits_only() == Some(true) {
-                hint(ui, t(Key::PinDigitsOnly));
-            }
         });
         let (mut backup, mut words) = (false, false);
-        stagger(ui, 4, |ui| {
-            card::section(ui, t(Key::IdExportGroup), if has_words || current.is_none() { "" } else { t(Key::IdNoWordsHint) }, |ui| {
+        stagger(ui, 2, |ui| {
+            card::section(ui, t(Key::IdExportGroup), "", |ui| {
                 card::form(ui, |ui, f| {
-                    backup = f.row(ui, t(Key::IdDoBackupGo), "", if can_sign { card::Value::Nav } else { card::Value::Off }).clicked();
-                    words = f.row(ui, t(Key::IdWordsTitle), "", if !unseated && has_words { card::Value::Nav } else { card::Value::Off }).clicked();
+                    backup = f.go(ui, t(Key::IdDoBackupGo), "", can_sign, "").clicked();
+                    words = f.go(ui, t(Key::IdWordsTitle), "", !unseated && has_words, if has_words || current.is_none() { "" } else { t(Key::IdNoWordsHint) }).clicked();
                 });
             });
         });
-        let (mut switch, mut new, mut import, mut rename) = (false, false, false, false);
-        let change_note = t(if seat == crate::roles::Role::Author { Key::IdChangeAuthorHint } else { Key::IdChangeGranteeHint });
-        stagger(ui, 5, |ui| {
-            card::section(ui, t(Key::IdChangeFold), change_note, |ui| {
+        let (mut set_primary, mut switch, mut new, mut import, mut rename) = (false, false, false, false, false);
+        stagger(ui, 3, |ui| {
+            card::section(ui, t(Key::IdGroup), "", |ui| {
                 card::form(ui, |ui, f| {
-                    switch = f.row(ui, t(Key::IdSwitchTitle), "", if reg.rows.len() > 1 { card::Value::Nav } else { card::Value::Off }).clicked();
-                    new = f.row(ui, t(Key::IdNewTitle), "", card::Value::Nav).clicked();
-                    import = f.row(ui, t(Key::IdImportTitle), "", card::Value::Nav).clicked();
-                    rename = f.row(ui, t(Key::IdDoRenameGo), "", if current.is_some() { card::Value::Nav } else { card::Value::Off }).clicked();
+                    let _ = f.info(ui, t(Key::IdPrimaryTag), card::Show::Text(if this_primary { t(Key::IdPrimaryThis) } else { &primary_name }));
+                    if !this_primary {
+                        set_primary = f.go(ui, t(Key::PrimaryTitle), "", current.is_some() && !unseated, "").clicked();
+                    }
+                    if reg.rows.len() > 1 {
+                        switch = f.go(ui, t(Key::IdSwitchTitle), &fill1(Key::CountN, &reg.rows.len().to_string()), true, "").clicked();
+                    } else {
+                        let _ = f.info(ui, t(Key::IdSwitchTitle), card::Show::Empty(t(Key::IdOnlyOne)));
+                    }
+                    new = f.go(ui, t(Key::IdNewTitle), "", true, "").clicked();
+                    import = f.go(ui, t(Key::IdImportTitle), "", true, "").clicked();
+                    rename = f.go(ui, t(Key::IdDoRenameGo), "", current.is_some(), "").clicked();
                 });
             });
         });
@@ -462,12 +442,20 @@ impl Win {
         let mut raw: Vec<(&str, Val)> = Vec::new();
         if let Some(a) = self.shell.anchor.filter(|_| !unseated) {
             raw.push((t(Key::IdAddress), Val::mono(a.hex())));
+            // The public key under the key address, with its copy key: what someone sealing a record package to this
+            // key fills in.
+            if let Some(p) = self.shell.anchor_public {
+                raw.push((t(Key::IdPublicKey), Val::mono(zikaron::hexfmt::encode(&p))));
+            }
         }
         raw.push((t(Key::IdSeatRowAuthor), seat_addr(crate::roles::Role::Author)));
         raw.push((t(Key::IdSeatRowGrantee), seat_addr(crate::roles::Role::Grantee)));
         if let Some(b) = seen.as_ref().filter(|b| b.at != crate::identity::NO_BACKUP_AT) {
-            raw.push((t(Key::IdBackupAt), Val::mono(b.at.clone())));
+            raw.push((t(Key::IdBackupAt), Val::figure(b.at.clone())));
         }
+        raw.push((t(Key::IdBackupAt), Val::text(backup_at.1.clone())));
+        raw.push((t(Key::IdCreated), Val::figure(created.clone())));
+        raw.push((t(Key::IdStore), Val::text(t(Key::IdKeybox))));
         if has_words {
             raw.push((t(Key::IdPaths), Val::mono(format!("{} \u{b7} {}", crate::family::path_text(crate::roles::Role::Author), crate::family::path_text(crate::roles::Role::Grantee)))));
         }
@@ -481,9 +469,11 @@ impl Win {
                 Val::text(t(Key::IdSeatEmpty))
             },
         ));
-        stagger(ui, 6, |ui| details_card(ui, "keys-details", &raw));
+        let mut open = self.ux.u3.keys_details;
+        stagger(ui, 4, |ui| details_card_held(ui, "keys-details", &raw, &mut open));
+        self.ux.u3.keys_details = open;
         let mut delete = false;
-        stagger(ui, 7, |ui| {
+        stagger(ui, 5, |ui| {
             if current.is_some() {
                 card::form(ui, |ui, f| delete = f.danger(ui, t(Key::IdDoDeleteGo)).clicked());
             }
@@ -549,150 +539,293 @@ impl Win {
         let bare = s.chain_id.is_none() && s.registry.is_none() && s.endpoints.is_empty();
         // This home's network: the preset row it was filled from (a home that has a network keeps it even if an
         // identity later chooses another), or a hand-saved setup whose cells all equal a current row
-        // (`deploy::same_as_row`), else custom. Only this line uses it.
+        // (`deploy::same_as_row`), else custom.
         let row = s.network.as_deref().and_then(crate::deploy::named).or_else(|| crate::deploy::same_as_row(s.chain_id, s.registry, s.from_block, &s.endpoints));
-        let network = match row {
-            Some(d) if !bare => Val::text(network_label(d.name)),
-            _ if bare => Val::Mark(Mark::Warn, t(Key::SetNetworkNone).to_string()),
-            _ => Val::text(t(Key::U3Custom)),
+        let title = match row {
+            _ if bare => t(Key::SetNetworkNone).to_string(),
+            Some(d) => network_label(d.name),
+            None => t(Key::U3Custom).to_string(),
         };
-        let read = match self.chain_read() {
+        let (mark, said) = match self.chain_read() {
             // The last read failed: show this failure, not the reading before it.
-            Err(f) => Val::Mark(Mark::Bad, fill1(Key::SetReadFailedNow, f.human())),
+            Err(f) => (Mark::Bad, fill1(Key::SetReadFailedNow, f.human())),
             Ok(Some(Done::Chain { sources, single_source, unanswered, .. })) => {
                 let said = if *single_source { t(Key::SetSingleSource).to_string() } else { fill1(Key::SetAgreed, &sources.to_string()) };
-                // Name the nodes that gave nothing, so "single source" says which one stayed silent: the first layer
-                // counts them, the details name them.
+                // Name the nodes that gave nothing, so "single source" says which one stayed silent: the head
+                // counts them, the fold names them.
                 let said = if unanswered.is_empty() { said } else { format!("{said} · {}", fill1(Key::SetUnansweredCount, &unanswered.len().to_string())) };
-                Val::Mark(if *single_source || !unanswered.is_empty() { Mark::Warn } else { Mark::Ok }, said)
+                (if *single_source || !unanswered.is_empty() { Mark::Warn } else { Mark::Ok }, said)
             }
-            _ => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
+            _ => (Mark::Todo, t(Key::SetNotRead).to_string()),
         };
-        let none = || Val::text(t(Key::SetNone));
+        let unanswered: Vec<String> = match self.chain_read() {
+            Ok(Some(Done::Chain { unanswered, .. })) => unanswered.clone(),
+            _ => Vec::new(),
+        };
+        let tint = match (bare, mark) {
+            (true, _) => card::Tint::Warn,
+            (false, Mark::Ok) => card::Tint::Ok,
+            (false, Mark::Warn) => card::Tint::Warn,
+            (false, Mark::Bad) => card::Tint::Bad,
+            _ => card::Tint::Blue,
+        };
+        let head = match s.chain_id {
+            Some(ch) if !bare => format!("{title} \u{b7} {}", fill1(Key::ChainNumbered, &ch.to_string())),
+            _ => title.clone(),
+        };
+        let nodes = s.endpoints.join(" ");
+        let registry = s.registry.map(|a| a.hex());
+        let phase = self.phase_of(crate::task::Kind::Chain);
+        let (mut read_chain, mut edit, mut copied, mut flip) = (false, false, None, false);
+        // The overview: the network and its chain, how the last reading went, "read the chain".
         stagger(ui, 0, |ui| {
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S3;
-                kv::kv(ui, &[(t(Key::SetChain), network), (t(Key::SetChainRead), read)]);
-                if let Ok(Some(Done::Chain { unanswered, .. })) = self.chain_read() {
-                    if !unanswered.is_empty() {
-                        let unanswered = unanswered.clone();
-                        fold::fold(ui, "chain-unanswered", t(Key::SetWhatEachSaid), |ui| {
-                            hint(ui, &fill1(Key::SetUnanswered, &unanswered.join(" · ")));
-                        });
-                    }
-                }
-                details(
-                    ui,
-                    "network-details",
-                    &[
-                        (t(Key::SetNodes), if s.endpoints.is_empty() { none() } else { Val::mono(s.endpoints.join("\n")) }),
-                        (t(Key::SetRegistry), s.registry.map(|a| Val::mono(a.hex())).unwrap_or_else(none)),
-                        (t(Key::BasisChain), s.chain_id.map(|n| Val::mono(n.to_string())).unwrap_or_else(none)),
-                        (t(Key::BasisFrom), Val::mono(s.from_block.to_string())),
-                    ],
-                );
-            });
-        });
-        // Auto put on chain (per home, off by default): read by the writing keys' labels and by what follows a
-        // write.
-        let mut flip = false;
-        stagger(ui, 1, |ui| {
             card::form(ui, |ui, f| {
-                f.row_with(ui, None, t(Key::SetAutoAnchor), t(Key::SetAutoAnchorSay), card::Value::None, |ui| flip = toggle::switch(ui, s.auto_anchor, true).clicked());
+                read_chain = f.summary(ui, Glyph::Globe, tint, &head, None, &said, |ui| key::show(ui, key::Key::new(t(Key::DoReadChain), Role::Secondary).enabled(!bare).phase(phase)).clicked());
+                if !unanswered.is_empty() {
+                    let _ = f.fold(ui, "chain-unanswered", t(Key::SetWhatEachSaid), &unanswered.len().to_string(), |ui, f| f.note(ui, &fill1(Key::SetUnanswered, &unanswered.join(" \u{b7} "))));
+                }
+            });
+            self.stage_line(ui, crate::task::Kind::Chain);
+        });
+        // Nodes and chain: shown here, edited in their sheet; the auto put on chain switch (per home, off by
+        // default) with them.
+        stagger(ui, 1, |ui| {
+            card::section(ui, t(Key::NetGroup), "", |ui| {
+                card::form(ui, |ui, f| {
+                    // The nodes in the monospace face; none yet says so in words, as the publish address does.
+                    let k = key::Key::new(t(Key::SetEditNodes), if bare { Role::Primary } else { Role::Secondary });
+                    edit = if nodes.is_empty() { f.act(ui, t(Key::SetNodes), t(Key::SetNone), k) } else { f.act_path(ui, t(Key::SetNodes), &nodes, k) }.clicked();
+                    copied = match registry.as_deref() {
+                        Some(r) => f.info(ui, t(Key::SetRegistry), card::Show::Short(r)),
+                        None => f.info(ui, t(Key::SetRegistry), card::Show::Empty(t(Key::SetNone))),
+                    };
+                    flip = f.switch(ui, t(Key::SetAutoAnchor), "", s.auto_anchor, true);
+                });
             });
         });
+        tell_copied(ui.ctx(), copied);
         if flip {
             self.act(Action::SetAutoAnchor { on: !s.auto_anchor }, now);
         }
-        let (mut read_chain, mut save_nodes, mut save_basis) = (false, false, false);
-        stagger(ui, 2, |ui| {
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S3;
-                // A home without a network is set up here, by hand or from a preset (the only place to do so).
-                if bare {
-                    hint(ui, t(Key::SetNetworkNoneSay));
-                }
-                keys_row(ui, |ui| {
-                    if key::key(ui, t(Key::SetEditNodes), Role::Secondary, true).clicked() {
-                        self.ux.open_nodes = !self.ux.open_nodes;
-                    }
-                    read_chain = self.long_key(ui, t(Key::DoReadChain), Role::Secondary, true, crate::task::Kind::Chain);
-                });
-                self.stage_line(ui, crate::task::Kind::Chain);
-                let open = motion::flag(ui.ctx(), egui::Id::new("network-editor"), self.ux.open_nodes, tk::MID);
-                if open > 0.0 {
-                    ui.scope(|ui| {
-                        ui.multiply_opacity(open);
-                        paint::rule(ui, 0.0);
-                        // A preset fills the four cells from the known table; saving still goes through the two
-                        // keys below.
-                        if let Some(i) = field(ui, t(Key::ReadNetPreset), None, |ui| preset_menu(ui, "network-preset", self.ux.basis_preset)) {
-                            self.ux.basis_preset = i;
-                            if let Some(c) = preset_cells(i) {
-                                self.typed.endpoints = c.endpoints;
-                                self.ux.basis_chain = c.chain;
-                                self.ux.basis_registry = c.registry;
-                                self.ux.basis_from = c.from;
-                            }
-                        }
-                        let (_, save) = width::line_then(ui, &mut self.typed.endpoints, t(Key::EndpointHint), true, |ui| key::key(ui, t(Key::DoSetEndpoints), Role::Secondary, true).clicked());
-                        save_nodes = save;
-                        card::grid(ui, "network-basis", 3, 120.0, |ui, i| {
-                            let (slot, hint_key) = match i {
-                                0 => (&mut self.ux.basis_chain, Key::BasisChain),
-                                1 => (&mut self.ux.basis_registry, Key::SetRegistry),
-                                _ => (&mut self.ux.basis_from, Key::BasisFrom),
-                            };
-                            let w = ui.available_width();
-                            input::field(ui, slot, t(hint_key), w, input::Look { mono: true, ..Default::default() });
-                        });
-                        // Saving first checks the registry's code at this home's nodes (in the background); the
-                        // last check's reading for these cells stays beside them.
-                        save_basis = self.long_key(ui, t(Key::DoSetBasis), Role::Secondary, true, crate::task::Kind::Basis);
-                        let typed = (self.ux.basis_chain.trim().parse::<u64>().ok(), crate::key::Address::parse(&self.ux.basis_registry));
-                        if let Some((c, r, reading)) = self.shell.basis_read {
-                            if typed == (Some(c), Some(r)) {
-                                // No reading yet (no node for this chain, or the check still running): shown as not
-                                // checked, never as checked.
-                                let (m, k) = match reading {
-                                    Some(r @ (crate::widex::Reading::Agreed(_) | crate::widex::Reading::Single)) => (Mark::Ok, r.key()),
-                                    Some(crate::widex::Reading::Fingerprint) => (Mark::Bad, Key::BadgeFingerprint),
-                                    Some(crate::widex::Reading::Down) => (Mark::Warn, Key::BadgeDown),
-                                    None => (Mark::Warn, Key::BadgeUnchecked),
-                                };
-                                states::okline(ui, m, t(k));
-                            }
-                        }
-                    });
-                }
-            });
-        });
         if read_chain {
             self.act(Action::ReadChain, now);
         }
-        if save_nodes {
-            let a = Action::SetEndpoints { specs: self.typed.endpoints.clone() };
-            self.act(a, now);
+        if edit {
+            self.net_edit_open();
         }
-        if save_basis {
-            let a = Action::SetBasis { chain: self.ux.basis_chain.clone(), registry: self.ux.basis_registry.clone(), from_block: self.ux.basis_from.clone() };
-            self.act(a, now);
-        }
-        stagger(ui, 3, |ui| self.set_read_nets(ui, now));
-        stagger(ui, 4, |ui| card::section(ui, t(Key::SetPublish), "", |ui| card::card(ui, |ui| self.set_publish(ui, now))));
-        stagger(ui, 5, |ui| card::section(ui, t(Key::SetProxy), "", |ui| self.set_proxy(ui, now)));
+        stagger(ui, 2, |ui| self.set_read_nets(ui));
+        stagger(ui, 3, |ui| self.set_publish(ui));
+        stagger(ui, 4, |ui| self.set_proxy(ui, now));
+        let none = || Val::text(t(Key::SetNone));
+        let rows = [
+            (t(Key::SetNodes), if s.endpoints.is_empty() { none() } else { Val::mono(s.endpoints.join("\n")) }),
+            (t(Key::BasisChain), s.chain_id.map(|n| Val::figure(n.to_string())).unwrap_or_else(none)),
+            (t(Key::SetRegistry), s.registry.map(|a| Val::mono(a.hex())).unwrap_or_else(none)),
+            (t(Key::BasisFrom), Val::figure(s.from_block.to_string())),
+        ];
+        stagger(ui, 5, |ui| details_card(ui, "network-details", &rows));
     }
 
-    /// The proxy (machine-wide): follow the system, none, or a custom proxy in cells (kind, host, port, user name,
-    /// password; checked in `proxycells`). A wrong cell is framed red with its reason under the cells, and saving
-    /// waits until every cell is valid. A whole address pasted into the host cell, or left there, is split into
-    /// the cells. A saved password is never shown again: its cell stays empty, and the page says one is set only
-    /// while saving the cells as they are would keep it (`proxycells::password_stays`: the same proxy and user
-    /// name).
+    /// Open the sheet for a new read-only network.
+    pub(super) fn read_net_new_open(&mut self) {
+        self.ux.readnet = ReadNetUx { sheet: Some((None, Draft::default())), armed: false };
+    }
+
+    /// Whether a sheet of the network page is open.
+    pub(super) fn net_sheet_open(&self) -> bool {
+        self.ux.net_sheet || self.ux.readnet.sheet.is_some() || self.ux.publish_sheet || self.ux.publish_edit
+    }
+
+    /// Close the network page's sheets.
+    pub(super) fn net_sheets_clear(&mut self) {
+        self.ux.net_sheet = false;
+        self.ux.basis_waiting = false;
+        self.ux.readnet = ReadNetUx::default();
+        self.ux.publish_sheet = false;
+        self.ux.publish_edit = false;
+    }
+
+    /// Open the network sheet with this home's network as saved.
+    pub(super) fn net_edit_open(&mut self) {
+        let s = &self.shell.settings;
+        self.ux.basis_chain = s.chain_id.map(|n| n.to_string()).unwrap_or_default();
+        self.ux.basis_registry = s.registry.map(|a| a.hex()).unwrap_or_default();
+        self.ux.basis_from = if s.chain_id.is_some() || s.registry.is_some() { s.from_block.to_string() } else { String::new() };
+        self.typed.endpoints = s.endpoints.join(" ");
+        self.ux.basis_custom = false;
+        self.ux.basis_waiting = false;
+        self.ux.net_sheet = true;
+    }
+
+    /// The cells of the network sheet as one of the known table's rows fills them.
+    fn net_fill(&mut self, d: &crate::deploy::Deployment) {
+        let c = d.cells();
+        self.ux.basis_chain = c.chain;
+        self.ux.basis_registry = c.registry;
+        self.ux.basis_from = c.from;
+        self.typed.endpoints = c.endpoints;
+    }
+
+    /// The network sheet's cells that do not read yet, by name.
+    fn net_missing(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.typed.endpoints.trim().is_empty() {
+            v.push(t(Key::SetNodes));
+        }
+        if self.ux.basis_chain.trim().parse::<u64>().is_err() {
+            v.push(t(Key::BasisChain));
+        }
+        if self.ux.basis_from.trim().parse::<u64>().is_err() {
+            v.push(t(Key::BasisFrom));
+        }
+        if crate::key::Address::parse(&self.ux.basis_registry).is_none() {
+            v.push(t(Key::SetRegistry));
+        }
+        v
+    }
+
+    /// The known table's row the network sheet's cells equal now, if any.
+    fn net_row_typed(&self) -> Option<usize> {
+        crate::deploy::KNOWN.iter().position(|d| {
+            let c = d.cells();
+            c.chain == self.ux.basis_chain.trim() && c.registry.eq_ignore_ascii_case(self.ux.basis_registry.trim()) && c.from == self.ux.basis_from.trim() && c.endpoints.split_whitespace().eq(self.typed.endpoints.split_whitespace())
+        })
+    }
+
+    /// The network sheet: Ethereum mainnet or custom on its first line (custom offers the known table's rows
+    /// as presets beside it), the four cells, one key to save. Saving writes the chain settings (a registry
+    /// outside the known table is checked at this home's nodes first, in the background) and then the nodes;
+    /// the sheet closes once both are kept, and stays with the reading when the check says otherwise.
+    pub(super) fn net_edit_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.ux.net_sheet {
+            return;
+        }
+        let checking = self.shell.tasks.in_flight(crate::task::Kind::Basis);
+        let typed = (self.ux.basis_chain.trim().parse::<u64>().ok(), crate::key::Address::parse(&self.ux.basis_registry));
+        // The check this sheet started has landed: a reading that the registry is the pinned build closes it.
+        if self.ux.basis_waiting && !checking {
+            self.ux.basis_waiting = false;
+            if let Some((c, r, Some(crate::widex::Reading::Agreed(_) | crate::widex::Reading::Single))) = self.shell.basis_read {
+                if typed == (Some(c), Some(r)) {
+                    self.ux.net_sheet = false;
+                    return;
+                }
+            }
+        }
+        let reading = self.shell.basis_read.filter(|(c, r, _)| typed == (Some(*c), Some(*r))).map(|(_, _, x)| match x {
+            Some(r @ (crate::widex::Reading::Agreed(_) | crate::widex::Reading::Single)) => (Mark::Ok, r.key()),
+            Some(crate::widex::Reading::Fingerprint) => (Mark::Bad, Key::BadgeFingerprint),
+            Some(crate::widex::Reading::Down) => (Mark::Warn, Key::BadgeDown),
+            // No reading yet (no node for this chain, or the check still running): never shown as checked.
+            None => (Mark::Warn, Key::BadgeUnchecked),
+        });
+        let phase = self.phase_of(crate::task::Kind::Basis);
+        let (mut save, mut close) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("network-edit", 500.0),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::NetEditTitle), "");
+                let row = me.net_row_typed();
+                let custom = me.ux.basis_custom || row != Some(0);
+                let cells = [seg::Cell::from(t(crate::deploy::KNOWN[0].label)), seg::Cell::from(t(Key::U3Custom))];
+                let (mut pick, mut preset) = (None, None);
+                fields::stack(ui, |ui, st| {
+                    // Mainnet or custom; the preset menu beside it on the right while custom (its place kept).
+                    ui.horizontal(|ui| {
+                        pick = seg::seg(ui, "network-kind", &cells, usize::from(custom));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let b = if custom { egui::UiBuilder::new() } else { egui::UiBuilder::new().invisible() };
+                            ui.scope_builder(b, |ui| preset = preset_menu(ui, "network-preset", row));
+                        });
+                    });
+                    let mono = fields::Look { mono: true, ..Default::default() };
+                    let check = reading.map(|(m, k)| (t(k), m == Mark::Bad));
+                    st.field(ui, t(Key::SetNodes), None, None, |ui, w| fields::line(ui, &mut me.typed.endpoints, t(Key::EndpointHint), w, mono));
+                    st.pair(
+                        ui,
+                        |ui, st| st.field(ui, t(Key::BasisChain), None, None, |ui, w| fields::line(ui, &mut me.ux.basis_chain, "", w, mono)),
+                        |ui, st| st.field(ui, t(Key::BasisFrom), None, None, |ui, w| fields::line(ui, &mut me.ux.basis_from, "", w, mono)),
+                    );
+                    st.field(ui, t(Key::SetRegistry), None, check, |ui, w| fields::line(ui, &mut me.ux.basis_registry, "", w, mono));
+                });
+                match pick {
+                    Some(0) => {
+                        me.ux.basis_custom = false;
+                        me.net_fill(&crate::deploy::KNOWN[0]);
+                    }
+                    // Custom: the cells start empty, the preset menu shows.
+                    Some(_) if !custom => {
+                        me.ux.basis_custom = true;
+                        me.ux.basis_chain.clear();
+                        me.ux.basis_registry.clear();
+                        me.ux.basis_from.clear();
+                        me.typed.endpoints.clear();
+                    }
+                    _ => {}
+                }
+                if let Some(i) = preset {
+                    me.net_fill(&crate::deploy::KNOWN[i]);
+                }
+            },
+            |ui, me| {
+                // Saving waits until every cell reads; what is still missing is said on the key, on hover.
+                let missing = me.net_missing();
+                let k = key::Key::new(t(Key::ReadNetSave), Role::Primary).phase(phase).enabled(missing.is_empty());
+                let still = fill1(Key::GrantStillNeed, &missing.join(t(Key::ListJoin)));
+                save = key::show(ui, if missing.is_empty() { k } else { k.why(&still) }).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+            },
+        );
+        if close || out.esc {
+            self.ux.net_sheet = false;
+            return;
+        }
+        if !save || checking {
+            return;
+        }
+        let s = self.shell.settings.clone();
+        let basis_same = typed.0 == s.chain_id && typed.1 == s.registry && self.ux.basis_from.trim().parse::<u64>().ok() == Some(s.from_block);
+        let nodes_same = self.typed.endpoints.split_whitespace().eq(s.endpoints.iter().map(String::as_str));
+        // The chain settings first (their check asks this home's nodes for that chain), then the nodes (saving
+        // them checks a custom network again on the new nodes).
+        let mut kept = true;
+        if !basis_same {
+            let a = Action::SetBasis { chain: self.ux.basis_chain.clone(), registry: self.ux.basis_registry.clone(), from_block: self.ux.basis_from.clone() };
+            match self.act(a, now) {
+                Applied::Basis { .. } => {}
+                Applied::Started(crate::task::Kind::Basis) => {
+                    self.ux.basis_waiting = true;
+                    kept = false;
+                }
+                _ => return,
+            }
+        }
+        if !nodes_same {
+            let a = Action::SetEndpoints { specs: self.typed.endpoints.clone() };
+            if !matches!(self.act(a, now), Applied::Endpoints(_)) {
+                return;
+            }
+            if self.shell.tasks.in_flight(crate::task::Kind::Basis) {
+                self.ux.basis_waiting = true;
+                kept = false;
+            }
+        }
+        if kept {
+            self.ux.net_sheet = false;
+        }
+    }
+
+    /// The proxy (machine-wide), one card: follow the system, none, or a custom proxy in cells (kind, host,
+    /// port, user name, password; checked in `proxycells`), saved at the card's foot. A wrong cell is framed red
+    /// with its reason under it, and saving waits until every cell is valid. A whole address pasted into the
+    /// host cell, or left there, is split into the cells. A saved password is never shown again: its cell stays
+    /// empty, and the line under it says one is set only while saving the cells as they are would keep it
+    /// (`proxycells::password_stays`: the same proxy and user name). The cells come and go in place.
     fn set_proxy(&mut self, ui: &mut egui::Ui, now: f64) {
         use crate::machine::proxy::{NONE, SYSTEM};
         use crate::proxycells::{self as pc, Bad};
-        ui.spacing_mut().item_spacing.y = tk::S3;
         let written = self.shell.machine.proxy.clone();
         let cur = match written.as_deref().map(str::trim) {
             None | Some(SYSTEM) => 0,
@@ -707,343 +840,394 @@ impl Win {
             self.ux.proxy_seeded = true;
         }
         let shown = if self.ux.proxy_manual { 2 } else { cur };
-        let cells: Vec<seg::Cell> = [Key::ProxySystem, Key::ProxyOff, Key::ProxyManual].iter().map(|k| seg::Cell::from(t(*k))).collect();
-        let mut pick = None;
+        let choices: Vec<seg::Cell> = [Key::ProxySystem, Key::ProxyOff, Key::ProxyManual].iter().map(|k| seg::Cell::from(t(*k))).collect();
+        let open = self.ux.proxy_manual || cur == 2;
+        let c = &mut self.typed.proxy;
+        let checked = pc::check(c);
+        let is_bad = |b: Bad| matches!(&checked, Err(v) if v.contains(&b));
+        let (mut pick, mut hit) = (None, false);
+        let mut to_save = None;
         card::form(ui, |ui, f| {
-            f.row_with(ui, None, t(Key::SetProxy), "", card::Value::None, |ui| pick = seg::seg(ui, "set-proxy", &cells, shown));
+            f.keep(ui);
+            f.key("proxy");
+            pick = f.with(ui, t(Key::SetProxy), "", |ui| seg::seg(ui, "set-proxy", &choices, shown));
+            if !open {
+                return;
+            }
+            f.key("cells");
+            f.panel(ui, |ui| {
+                fields::stack(ui, |ui, st| {
+                    let kinds: Vec<seg::Cell> = pc::KINDS.iter().map(|(_, w)| seg::Cell::from(*w)).collect();
+                    let at = pc::KINDS.iter().position(|(k, _)| *k == c.kind).unwrap_or(0);
+                    if let Some(i) = st.field(ui, t(Key::U3RawType), None, None, |ui, _| seg::seg(ui, "proxy-kind", &kinds, at)) {
+                        c.kind = pc::KINDS[i].0;
+                    }
+                    let host_bad = is_bad(Bad::Host) && !c.host.trim().is_empty();
+                    let port_bad = is_bad(Bad::Port) && !c.port.trim().is_empty();
+                    let (host, _) = st.pair_w(
+                        ui,
+                        128.0,
+                        |ui, st| {
+                            st.field(ui, t(Key::ProxyCellHost), None, None, |ui, w| {
+                                fields::line(ui, &mut c.host, t(Key::ProxyHint), w, fields::Look { mono: true, bad: host_bad, ..Default::default() })
+                            })
+                        },
+                        |ui, st| {
+                            st.field(ui, t(Key::ProxyCellPort), None, None, |ui, w| {
+                                fields::line(ui, &mut c.port, "", w, fields::Look { mono: true, bad: port_bad, ..Default::default() })
+                            })
+                        },
+                    );
+                    // A whole address pasted at once, or left in the host cell, is split into the cells
+                    // (`proxycells::split_in`): never mid-way while it is typed.
+                    let pasted: Option<String> = ui.input(|i| {
+                        let p: String = i.events.iter().filter_map(|e| if let egui::Event::Paste(p) = e { Some(p.as_str()) } else { None }).collect();
+                        (!p.is_empty()).then_some(p)
+                    });
+                    if let Some(split) = pc::split_in(c, pasted.as_deref(), host.has_focus()) {
+                        *c = split;
+                    }
+                    let user_bad = (is_bad(Bad::UserMissing) || is_bad(Bad::UserLong)) && !(c.user.is_empty() && c.pass.is_empty());
+                    let pass_bad = is_bad(Bad::PassLong);
+                    let user_label = if pc::takes_password(c.kind) { Key::ProxyCellUser } else { Key::ProxyCellUserId };
+                    let takes = pc::takes_password(c.kind);
+                    st.pair(
+                        ui,
+                        |ui, st| {
+                            st.field(ui, t(user_label), Some(t(Key::ProxyCellOptional)), None, |ui, w| {
+                                fields::line(ui, &mut c.user, "", w, fields::Look { bad: user_bad, ..Default::default() })
+                            })
+                        },
+                        |ui, st| {
+                            if takes {
+                                st.field(ui, t(Key::IdPassword), Some(t(Key::ProxyCellOptional)), None, |ui, w| input::secret_line_w_marked(ui, &mut c.pass, "", w, pass_bad));
+                            }
+                        },
+                    );
+                    // Why a cell is red, one line each; else whether a password is kept ("password set" only when
+                    // saving these cells now would keep the saved password: the same check saving uses).
+                    let mut lines: Vec<(Mark, &str)> = Vec::new();
+                    if let Err(v) = &checked {
+                        for b in v {
+                            let shown = match b {
+                                Bad::Host => host_bad,
+                                Bad::Port => port_bad,
+                                Bad::UserMissing | Bad::UserLong => user_bad,
+                                Bad::PassLong => true,
+                            };
+                            if shown {
+                                lines.push((
+                                    Mark::Bad,
+                                    t(match b {
+                                        Bad::Host => Key::ProxyBadHost,
+                                        Bad::Port => Key::ProxyBadPort,
+                                        Bad::UserMissing => Key::ProxyBadUserMissing,
+                                        Bad::UserLong => Key::ProxyBadUserLong,
+                                        Bad::PassLong => Key::ProxyBadPassLong,
+                                    }),
+                                ));
+                            }
+                        }
+                    }
+                    let saved_proxy = written.as_deref().and_then(|w| zikaron_net::proxy_of(w).ok());
+                    let typed_proxy = pc::check(c).ok().and_then(|a| zikaron_net::proxy_of(&a).ok());
+                    if takes && matches!((&saved_proxy, &typed_proxy), (Some(s), Some(t_)) if pc::password_stays(s, t_)) {
+                        lines.push((Mark::Ok, t(Key::ProxyPasswordSet)));
+                    }
+                    st.says(ui, &lines);
+                    // Saving: every cell reads, and the cells differ from what is saved (a password typed counts).
+                    let typed_pass = !c.pass.is_empty() && takes;
+                    let shown_written = written.as_deref().map(|w| zikaron_net::proxy_text_shown(w).0).unwrap_or_default();
+                    to_save = pc::check(c).ok().filter(|a| cur != 2 || typed_pass || zikaron_net::proxy_text_shown(a).0 != shown_written);
+                    st.foot(ui, |ui| hit = key::key(ui, t(Key::ReadNetSave), Role::Secondary, to_save.is_some()).clicked());
+                });
+            });
         });
         match pick {
             Some(2) => self.ux.proxy_manual = true,
+            // The saved choice pressed again (from "enter one" left unsaved): back to it, nothing written.
+            Some(i) if i == cur => self.ux.proxy_manual = false,
             Some(i) if i != shown => {
                 self.ux.proxy_manual = false;
                 self.act(Action::SetProxy { choice: if i == 0 { SYSTEM } else { NONE }.to_string() }, now);
             }
             _ => {}
         }
-        if !(self.ux.proxy_manual || cur == 2) {
-            return;
-        }
-        let c = &mut self.typed.proxy;
-        let kinds: Vec<seg::Cell> = pc::KINDS.iter().map(|(_, w)| seg::Cell::from(*w)).collect();
-        let at = pc::KINDS.iter().position(|(k, _)| *k == c.kind).unwrap_or(0);
-        if let Some(i) = field(ui, t(Key::U3RawType), None, |ui| seg::seg(ui, "proxy-kind", &kinds, at)) {
-            c.kind = pc::KINDS[i].0;
-        }
-        let checked = pc::check(c);
-        let is_bad = |b: Bad| matches!(&checked, Err(v) if v.contains(&b));
-        let host_bad = is_bad(Bad::Host) && !c.host.trim().is_empty();
-        let host = field(ui, t(Key::ProxyCellHost), None, |ui| {
-            let w = ui.available_width();
-            input::field(ui, &mut c.host, t(Key::ProxyHint), w, input::Look { mono: true, bad: host_bad, ..Default::default() })
-        });
-        // A whole address pasted at once, or left in the host cell, is split into the cells (`proxycells::split_in`):
-        // never mid-way while it is typed.
-        let pasted: Option<String> = ui.input(|i| {
-            let p: String = i.events.iter().filter_map(|e| if let egui::Event::Paste(p) = e { Some(p.as_str()) } else { None }).collect();
-            (!p.is_empty()).then_some(p)
-        });
-        if let Some(split) = pc::split_in(c, pasted.as_deref(), host.has_focus()) {
-            *c = split;
-        }
-        let port_bad = is_bad(Bad::Port) && !c.port.trim().is_empty();
-        field(ui, t(Key::ProxyCellPort), None, |ui| input::field(ui, &mut c.port, "", CLI_CELL_W * 2.0, input::Look { mono: true, bad: port_bad, ..Default::default() }));
-        let user_bad = (is_bad(Bad::UserMissing) || is_bad(Bad::UserLong)) && !(c.user.is_empty() && c.pass.is_empty());
-        let user_label = if pc::takes_password(c.kind) { Key::ProxyCellUser } else { Key::ProxyCellUserId };
-        field(ui, t(user_label), Some(t(Key::ProxyCellOptional)), |ui| {
-            let w = ui.available_width();
-            input::field(ui, &mut c.user, "", w, input::Look { bad: user_bad, ..Default::default() })
-        });
-        if pc::takes_password(c.kind) {
-            let pass_bad = is_bad(Bad::PassLong);
-            field(ui, t(Key::IdPassword), Some(t(Key::ProxyCellOptional)), |ui| {
-                let w = ui.available_width();
-                input::secret_line_w_marked(ui, &mut c.pass, "", w, pass_bad)
-            });
-        }
-        // Why a cell is red, one line each; else whether a password is kept.
-        let shown_bad: Vec<Key> = match &checked {
-            Err(v) => v
-                .iter()
-                .filter(|b| match b {
-                    Bad::Host => host_bad,
-                    Bad::Port => port_bad,
-                    Bad::UserMissing | Bad::UserLong => user_bad,
-                    Bad::PassLong => true,
-                })
-                .map(|b| match b {
-                    Bad::Host => Key::ProxyBadHost,
-                    Bad::Port => Key::ProxyBadPort,
-                    Bad::UserMissing => Key::ProxyBadUserMissing,
-                    Bad::UserLong => Key::ProxyBadUserLong,
-                    Bad::PassLong => Key::ProxyBadPassLong,
-                })
-                .collect(),
-            Ok(_) => Vec::new(),
-        };
-        for k in &shown_bad {
-            states::okline(ui, Mark::Bad, t(*k));
-        }
-        let typed_pass = !c.pass.is_empty() && pc::takes_password(c.kind);
-        // "Password set" only when saving these cells now would keep the saved password (the same check saving uses).
-        let saved_proxy = written.as_deref().and_then(|w| zikaron_net::proxy_of(w).ok());
-        let typed_proxy = pc::check(c).ok().and_then(|a| zikaron_net::proxy_of(&a).ok());
-        if let (Some(s), Some(t_)) = (&saved_proxy, &typed_proxy) {
-            if pc::password_stays(s, t_) {
-                states::okline(ui, Mark::Ok, t(Key::ProxyPasswordSet));
-            }
-        }
-        // Saving: every cell reads, and the cells differ from what is saved (a password typed counts).
-        let shown_written = written.as_deref().map(|w| zikaron_net::proxy_text_shown(w).0).unwrap_or_default();
-        let to_save = checked.ok().filter(|a| cur != 2 || typed_pass || zikaron_net::proxy_text_shown(a).0 != shown_written);
-        if key::key(ui, t(Key::ReadNetSave), Role::Secondary, to_save.is_some()).clicked() {
-            if let Some(address) = to_save {
-                self.act(Action::SetProxy { choice: address }, now);
-                if self.shell.machine.proxy.as_deref().is_some_and(|p| p != SYSTEM && p != NONE) {
-                    self.ux.proxy_manual = false;
-                    self.ux.proxy_seeded = false;
-                    self.typed.proxy.pass.clear();
-                }
+        if let (true, Some(address)) = (hit, to_save) {
+            self.act(Action::SetProxy { choice: address }, now);
+            if self.shell.machine.proxy.as_deref().is_some_and(|p| p != SYSTEM && p != NONE) {
+                self.ux.proxy_manual = false;
+                self.ux.proxy_seeded = false;
+                self.typed.proxy.pass.clear();
             }
         }
     }
 
-    /// The read-only networks (machine-wide): one row each with its name and reading; a row opens to its four
-    /// cells and three keys. "Add" starts one new row (only one unsaved at a time), from a preset or by hand.
-    fn set_read_nets(&mut self, ui: &mut egui::Ui, now: f64) {
+    /// The read-only networks (machine-wide): a list, one row each with its name and reading; a row opens its
+    /// sheet, and "Add network", the last row, opens the same sheet empty.
+    fn set_read_nets(&mut self, ui: &mut egui::Ui) {
         let nets = self.shell.read_nets.clone().unwrap_or_default();
         let reads = self.shell.net_reads.clone();
-        let rn = &mut self.ux.readnet;
-        // Forget rows of networks no longer in the table.
-        rn.open.retain(|k| nets.iter().any(|n| n.is(k.0, &k.1)));
-        rn.drafts.retain(|(k, _)| nets.iter().any(|n| n.is(k.0, &k.1)));
-        let mut act: Option<Action> = None;
-        let mut add = false;
-        let unsaved = rn.new.is_some();
-        ui.horizontal(|ui| {
-            card::group_title(ui, t(Key::ReadNetTitle));
-            if !unsaved {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| add = key::key(ui, t(Key::ReadNetAdd), Role::Secondary, true).clicked());
-            }
+        let (mut open, mut add) = (None, false);
+        card::section(ui, t(Key::ReadNetTitle), "", |ui| {
+            card::form(ui, |ui, f| {
+                for n in &nets {
+                    let k = (n.chain_id, n.registry);
+                    let badge = reads.iter().find(|(c, r, _)| *c == k.0 && *r == k.1).map(|(_, _, x)| (t(x.key()), read_tone(*x)));
+                    let chain = fill1(Key::ChainNumbered, &n.chain_id.to_string());
+                    let (row, _) = f.line(ui, None, &n.name(), &chain, false, true, c(C::Ink), |ui| {
+                        if let Some((s, tone)) = badge {
+                            mark::pill(ui, s, tone);
+                        }
+                    });
+                    if row.clicked() {
+                        open = Some(n.clone());
+                    }
+                }
+                add = f.add_row(ui, t(Key::ReadNetAdd)).clicked();
+            });
         });
-        if nets.is_empty() && !unsaved {
-            return self.read_nets_added(add);
-        }
-        card::card(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = tk::S2;
-            for (i, n) in nets.iter().enumerate() {
-                if i > 0 {
-                    paint::rule(ui, 0.0);
-                }
-                let k = (n.chain_id, n.registry);
-                let open = rn.open.contains(&k);
-                let badge = reads.iter().find(|(c, r, _)| *c == k.0 && *r == k.1).map(|(_, _, x)| (t(x.key()), read_tone(*x)));
-                if net_row(ui, &format!("{}-{}", k.0, k.1.hex()), &n.name(), badge, open).clicked() {
-                    if open {
-                        rn.open.retain(|x| *x != k);
-                        rn.drafts.retain(|(x, _)| *x != k);
-                        if rn.armed == Some(k) {
-                            rn.armed = None;
-                        }
-                    } else {
-                        rn.open.push(k);
-                        rn.drafts.push((k, Draft::of(n)));
-                    }
-                }
-                if !rn.open.contains(&k) {
-                    continue;
-                }
-                let Some(d) = rn.drafts.iter_mut().find(|(x, _)| *x == k).map(|(_, d)| d) else { continue };
-                ui.push_id(("readnet-body", k.0, k.1.hex()), |ui| net_cells(ui, d, false));
-                keys_row(ui, |ui| {
-                    if rn.armed == Some(k) {
-                        paint::text(ui, t(Key::ReadNetRemoveAsk), Type::Body, c(C::Ink));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked() {
-                                rn.armed = None;
-                            }
-                            if page::Guide::key(ui, t(Key::KitRemove), true).clicked() {
-                                act = Some(Action::RemoveReadNetwork { chain: k.0, registry: k.1.hex() });
-                            }
-                        });
-                    } else {
-                        if key::key(ui, t(Key::ReadNetSave), Role::Primary, true).clicked() {
-                            act = Some(d.save(Some(k)));
-                        }
-                        if key::key(ui, t(Key::StageReadChain), Role::Secondary, true).clicked() {
-                            act = Some(Action::ReadReadNetwork { chain: k.0, registry: k.1.hex() });
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if page::Guide::key(ui, t(Key::KitRemove), true).clicked() {
-                                rn.armed = Some(k);
-                            }
-                        });
-                    }
-                });
-            }
-            if let Some(d) = rn.new.as_mut() {
-                if !nets.is_empty() {
-                    paint::rule(ui, 0.0);
-                }
-                net_row(ui, "readnet-new", t(Key::ReadNetNew), None, true);
-                ui.push_id("readnet-new-body", |ui| net_cells(ui, d, true));
-                let mut drop = false;
-                keys_row(ui, |ui| {
-                    if key::key(ui, t(Key::ReadNetSave), Role::Primary, true).clicked() {
-                        act = Some(d.save(None));
-                    }
-                    if key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked() {
-                        drop = true;
-                    }
-                });
-                if drop {
-                    rn.new = None;
-                }
-            }
-        });
-        if let Some(a) = act {
-            let was = match &a {
-                Action::SaveReadNetwork { was, .. } => Some(was.clone()),
-                _ => None,
-            };
-            let removed = match &a {
-                Action::RemoveReadNetwork { chain, registry } => crate::key::Address::parse(registry).map(|r| (*chain, r)),
-                _ => None,
-            };
-            if let Applied::ReadNets(_) = self.act(a, now) {
-                let rn = &mut self.ux.readnet;
-                match was {
-                    // Saved: the row closes (a new row leaves the drafts).
-                    Some(None) => rn.new = None,
-                    Some(Some((c, r))) => {
-                        if let Some(r) = crate::key::Address::parse(&r) {
-                            rn.open.retain(|x| *x != (c, r));
-                            rn.drafts.retain(|(x, _)| *x != (c, r));
-                        }
-                    }
-                    None => {}
-                }
-                if let Some(k) = removed {
-                    rn.open.retain(|x| *x != k);
-                    rn.drafts.retain(|(x, _)| *x != k);
-                    rn.armed = None;
-                }
-            }
-        }
-        self.read_nets_added(add);
-    }
-
-    /// "Add": one new, unsaved, open row.
-    fn read_nets_added(&mut self, add: bool) {
-        if add && self.ux.readnet.new.is_none() {
-            self.ux.readnet.new = Some(Draft::default());
+        if let Some(n) = open {
+            self.ux.readnet = ReadNetUx { sheet: Some((Some((n.chain_id, n.registry)), Draft::of(&n))), armed: false };
+        } else if add {
+            self.ux.readnet = ReadNetUx { sheet: Some((None, Draft::default())), armed: false };
         }
     }
 
-    /// From the verify page, for a kit naming a network not yet added: open the settings' network page with a
-    /// new row holding the kit's chain, registry and start block (replacing any unsaved row); the user fills
-    /// in the nodes.
+    /// A read-only network's sheet: its name (a new one's name cell offers the known table's rows as presets),
+    /// chain id, registry, start block and nodes; its reading with "read" (a saved one); "remove" at the bottom
+    /// left, asked once more in the sheet; saving closes it.
+    pub(super) fn read_net_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((was, _)) = self.ux.readnet.sheet.clone() else { return };
+        let armed = self.ux.readnet.armed;
+        let reading = was.and_then(|k| self.shell.net_reads.iter().find(|(c, r, _)| *c == k.0 && *r == k.1).map(|(_, _, x)| *x));
+        let phase = self.phase_of(crate::task::Kind::ReadNet);
+        let saved = was.and_then(|k| self.shell.read_nets.as_ref().and_then(|v| v.iter().find(|n| n.is(k.0, &k.1)).cloned()));
+        let title = saved.map(|n| n.name()).unwrap_or_else(|| t(Key::ReadNetNew).to_string());
+        let (mut read, mut act, mut close, mut del) = (None, None, false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("read-network", 500.0),
+            self,
+            |ui, me| {
+                let Some((_, d)) = me.ux.readnet.sheet.as_mut() else { return };
+                sheet::title(ui, &title, "");
+                // A saved network's reading, with "read the chain".
+                if let Some(k) = was {
+                    card::form(ui, |ui, f| {
+                        let key = key::Key::new(t(Key::StageReadChain), Role::Secondary).phase(phase);
+                        let said = reading.map(|x| t(x.key())).unwrap_or(t(Key::SetNotRead));
+                        if f.act(ui, t(Key::SetChainRead), said, key).clicked() {
+                            read = Some(Action::ReadReadNetwork { chain: k.0, registry: k.1.hex() });
+                        }
+                    });
+                }
+                net_cells(ui, d);
+            },
+            |ui, me| {
+                let Some((_, d)) = me.ux.readnet.sheet.as_ref() else { return };
+                let missing = d.missing();
+                let k = key::Key::new(t(Key::ReadNetSave), Role::Primary).enabled(missing.is_empty());
+                let still = fill1(Key::GrantStillNeed, &missing.join(t(Key::ListJoin)));
+                if key::show(ui, if missing.is_empty() { k } else { k.why(&still) }).clicked() {
+                    act = Some(d.save(was));
+                }
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                // Delete at the bottom left: pressed once it asks ("confirm delete"), pressed again it deletes.
+                if was.is_some() {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        del = if armed {
+                            paint::text(ui, t(Key::ReadNetRemoveAsk), Type::Body, c(C::Ink));
+                            key::key(ui, t(Key::KitRemove), Role::Danger, true).clicked()
+                        } else {
+                            key::key(ui, t(Key::KitRemove), Role::Secondary, true).clicked()
+                        };
+                    });
+                }
+            },
+        );
+        if close || out.esc {
+            self.ux.readnet = ReadNetUx::default();
+            return;
+        }
+        if del {
+            if !armed {
+                self.ux.readnet.armed = true;
+                return;
+            }
+            act = was.map(|k| Action::RemoveReadNetwork { chain: k.0, registry: k.1.hex() });
+        }
+        let Some(a) = act.or(read) else { return };
+        let ends = matches!(a, Action::SaveReadNetwork { .. } | Action::RemoveReadNetwork { .. });
+        if let Applied::ReadNets(_) = self.act(a, now) {
+            if ends {
+                self.ux.readnet = ReadNetUx::default();
+            }
+        }
+    }
+
+    /// From the verify page, for a kit naming a network not yet added: open the settings' network page with the
+    /// network sheet holding the kit's chain, registry and start block (replacing any unsaved one); the user
+    /// fills in the nodes.
     pub(super) fn add_stated_network(&mut self, at: &crate::kitsindex::AnchoredOn, now: f64) {
-        self.ux.readnet.new = Some(Draft {
-            preset: 0,
-            name: String::new(),
-            chain: at.chain_id.to_string(),
-            registry: at.registry.clone(),
-            from: at.from_block.to_string(),
-            nodes: String::new(),
-        });
+        let d = Draft { preset: None, name: String::new(), chain: at.chain_id.to_string(), registry: at.registry.clone(), from: at.from_block.to_string(), nodes: String::new() };
         self.go(Place::Settings(Section::Network), now);
+        self.ux.readnet = ReadNetUx { sheet: Some((None, d)), armed: false };
     }
 
-    /// The publish address (https only, checked at once) and "check publication" against a local kit, with a
-    /// sentence for each of three outcomes.
-    fn set_publish(&mut self, ui: &mut egui::Ui, now: f64) {
-        ui.spacing_mut().item_spacing.y = tk::S3;
-        if !self.ux.publish_seeded {
-            self.typed.publish = self.shell.settings.publish.clone().unwrap_or_default();
-            self.ux.publish_seeded = true;
+    /// The publish address (https only, checked at once) in its field, saved beside it; "check publication"
+    /// opens its sheet.
+    fn set_publish(&mut self, ui: &mut egui::Ui) {
+        let saved = self.shell.settings.publish.clone();
+        let last = self.shell.published.as_ref().map(|(_, r)| if r.complete() { t(Key::PublishOk) } else { t(Key::PublishPartial) });
+        let (mut edit, mut check) = (false, false);
+        card::form(ui, |ui, f| {
+            edit = match saved.as_deref() {
+                Some(u) => f.act_path(ui, t(Key::SetPublish), u, key::Key::new(t(Key::DoEdit), Role::Secondary)),
+                None => f.act(ui, t(Key::SetPublish), t(Key::SetNone), key::Key::new(t(Key::DoEdit), Role::Secondary)),
+            }
+            .clicked();
+            check = f.go(ui, t(Key::DoCheckPublished), last.unwrap_or(""), saved.is_some(), t(Key::SetPublish)).clicked();
+        });
+        if edit {
+            self.typed.publish = saved.clone().unwrap_or_default();
+            self.ux.publish_edit = true;
+        }
+        if check {
+            if self.typed.publish_local.trim().is_empty() {
+                if let Some(p) = self.shell.home.as_ref().and_then(|h| crate::kitx::latest_kit(&h.dir(crate::home::Slot::Kits))) {
+                    self.typed.publish_local = p.display().to_string();
+                }
+            }
+            self.ux.publish_sheet = true;
+        }
+    }
+
+    /// The publish address's sheet: the address (https only, checked as it is typed), "save".
+    pub(super) fn publish_edit_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.ux.publish_edit {
+            return;
         }
         let typed = self.typed.publish.trim().to_string();
-        let differs = typed != self.shell.settings.publish.clone().unwrap_or_default();
-        let (resp, hit) = width::line_then(ui, &mut self.typed.publish, "https://\u{2026}", true, |ui| key::key(ui, t(Key::DoSetPublish), Role::Secondary, differs).clicked());
-        let save = (resp.lost_focus() && differs) || hit;
         let shape = (!typed.is_empty()).then(|| crate::fetchx::base_of(&typed).err()).flatten();
-        match &shape {
-            Some(f) => states::okline(ui, Mark::Bad, f.human()),
-            None => hint(ui, t(Key::SetPublishNote)),
+        let said = shape.as_ref().map(|f| f.human().to_string());
+        let differs = typed != self.shell.settings.publish.clone().unwrap_or_default();
+        let (mut save, mut close) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("publish-edit", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::SetPublish), "");
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, t(Key::SetPublish), None, said.as_deref().map(|s| (s, true)), |ui, w| {
+                        let look = fields::Look { mono: true, bad: said.is_some(), ..Default::default() };
+                        fields::line(ui, &mut me.typed.publish, "https://\u{2026}", w, look)
+                    });
+                });
+            },
+            |ui, _me| {
+                save = key::key(ui, t(Key::DoSetPublish), Role::Primary, differs && shape.is_none()).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+            },
+        );
+        if close || out.esc {
+            self.ux.publish_edit = false;
+        } else if save {
+            self.act(Action::SetPublish { url: typed }, now);
+            self.ux.publish_edit = false;
         }
-        if save && shape.is_none() {
-            self.act(Action::SetPublish { url: typed.clone() }, now);
-        }
-        if self.shell.settings.publish.is_none() {
+    }
+
+    /// "Check publication": the record kit to compare (the latest kit by default, the last one chosen after),
+    /// "choose folder" at the bottom left, and what the check found, one sentence for each of three outcomes.
+    pub(super) fn publish_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.ux.publish_sheet {
             return;
         }
-        if self.typed.publish_local.trim().is_empty() {
-            if let Some(p) = self.shell.home.as_ref().and_then(|h| crate::kitx::latest_kit(&h.dir(crate::home::Slot::Kits))) {
-                self.typed.publish_local = p.display().to_string();
-            }
+        let k = crate::task::Kind::Publish;
+        let running = self.shell.tasks.in_flight(k);
+        let phase = self.phase_of(k);
+        let (mut go, mut close, mut picked) = (false, false, None);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("publish-check", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::DoCheckPublished), "");
+                let local = me.typed.publish_local.clone();
+                card::form(ui, |ui, f| f.folder(ui, t(Key::SetPublishLocal), &local, t(Key::PickNone)));
+                me.stage_line(ui, k);
+                if running {
+                    return;
+                }
+                if let Some(f) = me.shell.failed.get(&k) {
+                    states::err_box(ui, "publish-err", t(Key::PublishUnreachable), f.human(), t(Key::U3RawError), &f.raw());
+                } else if let Some((_, r)) = me.shell.published.as_ref() {
+                    if r.complete() {
+                        states::okline(ui, Mark::Ok, &format!("{} \u{b7} {}", t(Key::PublishOk), fill1(Key::PublishOkSay, &r.total.to_string())));
+                    } else {
+                        states::okline(ui, Mark::Bad, &format!("{} \u{b7} {}", t(Key::PublishPartial), fill2(Key::PublishPartialSay, &r.missing.len().to_string(), &r.differ.len().to_string())));
+                        if !r.missing.is_empty() {
+                            hint(ui, &fill1(Key::PublishMissingList, &r.missing.join(t(Key::ListJoin))));
+                        }
+                        if !r.differ.is_empty() {
+                            hint(ui, &fill1(Key::PublishDifferList, &r.differ.join(t(Key::ListJoin))));
+                        }
+                    }
+                }
+            },
+            |ui, me| {
+                go = key::show(ui, key::Key::new(t(Key::DoCheckShort), Role::Primary).enabled(!me.typed.publish_local.trim().is_empty()).phase(phase)).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                picked = foot_pick(ui, "publish-local", crate::platform::Pick::Folder);
+            },
+        );
+        if let Some(p) = picked {
+            self.typed.publish_local = p;
         }
-        Self::place_row(ui, Key::SetPublishLocal, &mut self.typed.publish_local);
-        if self.long_key(ui, t(Key::DoCheckPublished), Role::Secondary, true, crate::task::Kind::Publish) {
+        if close || out.esc {
+            self.ux.publish_sheet = false;
+        } else if go && !running {
             let a = Action::CheckPublished { local: self.typed.publish_local.clone() };
             self.act(a, now);
-        }
-        self.stage_line(ui, crate::task::Kind::Publish);
-        if self.shell.tasks.in_flight(crate::task::Kind::Publish) {
-            return;
-        }
-        if let Some(f) = self.shell.failed.get(&crate::task::Kind::Publish) {
-            states::err_box(ui, "publish-err", t(Key::PublishUnreachable), f.human(), t(Key::U3RawError), &f.raw());
-        } else if let Some((_, r)) = self.shell.published.as_ref() {
-            if r.complete() {
-                states::okline(ui, Mark::Ok, &format!("{} \u{b7} {}", t(Key::PublishOk), fill1(Key::PublishOkSay, &r.total.to_string())));
-            } else {
-                states::okline(ui, Mark::Bad, &format!("{} \u{b7} {}", t(Key::PublishPartial), fill2(Key::PublishPartialSay, &r.missing.len().to_string(), &r.differ.len().to_string())));
-                if !r.missing.is_empty() {
-                    hint(ui, &fill1(Key::PublishMissingList, &r.missing.join(t(Key::ListJoin))));
-                }
-                if !r.differ.is_empty() {
-                    hint(ui, &fill1(Key::PublishDifferList, &r.differ.join(t(Key::ListJoin))));
-                }
-            }
         }
     }
 
     fn set_notify(&mut self, ui: &mut egui::Ui, now: f64) {
         let s = self.shell.settings.clone();
-        let grantee = s.role == crate::roles::Role::Grantee;
-        let every = |n: u64| if n == 0 { t(Key::SetEveryOff).to_string() } else { fill1(Key::SetEvery, &n.to_string()) };
-        let (title, value) = if grantee { (t(Key::SetReview), every(s.review_every)) } else { (t(Key::PageAudit), every(s.audit_every)) };
-        let mut save = false;
+        // Both intervals in their rows (each runs in either seat): a narrow cell (empty means by hand only), its
+        // unit, "save" beside it. A cell shows the saved interval again whenever that changes.
+        if self.ux.cadence_seed != Some((s.audit_every, s.review_every)) {
+            self.ux.audit_every = if s.audit_every == 0 { String::new() } else { s.audit_every.to_string() };
+            self.ux.review_every = if s.review_every == 0 { String::new() } else { s.review_every.to_string() };
+            self.ux.cadence_seed = Some((s.audit_every, s.review_every));
+        }
+        let read = |x: &str| if x.trim().is_empty() { Some(0) } else { x.trim().parse::<u64>().ok() };
+        let (audit, review) = (read(&self.ux.audit_every), read(&self.ux.review_every));
+        let (mut save_audit, mut save_review) = (false, false);
+        // The two save keys are as wide as the wider of them, so the fields before them line up.
+        let key_w = [Key::DoSetAuditEvery, Key::DoSetReviewEvery].iter().map(|k| key::size_of(ui, &key::Key::new(t(*k), Role::Secondary)).x).fold(92.0_f32, f32::max);
+        let ux = &mut self.ux;
         stagger(ui, 0, |ui| {
             card::form(ui, |ui, f| {
-                f.row(ui, title, "", card::Value::Text(&value));
-                f.keys(ui, |ui| {
-                    if key::key(ui, t(Key::SetCadenceEdit), Role::Secondary, true).clicked() {
-                        self.ux.open_cadence = !self.ux.open_cadence;
-                    }
+                f.with(ui, t(Key::PageAudit), "", |ui| {
+                    save_audit = key::show_w(ui, key::Key::new(t(Key::DoSetAuditEvery), Role::Secondary).enabled(audit.is_some_and(|n| n != s.audit_every)).why(if audit.is_none() { t(Key::U3EveryMustBeNumber) } else { "" }), key_w).clicked();
+                    ui.label(egui::RichText::new(t(Key::UnitSeconds)).font(zikaron_ui::tokens::Type::Note.font()).color(c(C::Ink2)));
+                    let _ = fields::small(ui, &mut ux.audit_every, t(Key::SetEveryOff), 110.0, audit.is_none());
                 });
-                if self.ux.open_cadence {
-                    f.free(ui, |ui| {
-                        let slot = if grantee { &mut self.ux.review_every } else { &mut self.ux.audit_every };
-                        let label = t(if grantee { Key::DoSetReviewEvery } else { Key::DoSetAuditEvery });
-                        let (_, hit) = width::line_then(ui, slot, t(if grantee { Key::SetReview } else { Key::AuditEvery }), true, |ui| key::key(ui, label, Role::Secondary, true).clicked());
-                        save = hit;
-                    });
-                }
+                f.with(ui, t(Key::SetReview), "", |ui| {
+                    save_review = key::show_w(ui, key::Key::new(t(Key::DoSetReviewEvery), Role::Secondary).enabled(review.is_some_and(|n| n != s.review_every)).why(if review.is_none() { t(Key::U3EveryMustBeNumber) } else { "" }), key_w).clicked();
+                    ui.label(egui::RichText::new(t(Key::UnitSeconds)).font(zikaron_ui::tokens::Type::Note.font()).color(c(C::Ink2)));
+                    let _ = fields::small(ui, &mut ux.review_every, t(Key::SetEveryOff), 110.0, review.is_none());
+                });
             });
         });
-        if save {
-            if grantee {
-                let a = Action::SetReviewEvery { secs: self.ux.review_every.clone() };
-                self.act(a, now);
-            } else {
-                match self.ux.audit_every.trim().parse::<u64>() {
-                    Ok(n) => {
-                        self.act(Action::SetAuditEvery { secs: n }, now);
-                    }
-                    Err(_) => self.toasts.say(t(Key::U3EveryMustBeNumber), Tone::Bad, now),
-                }
-            }
+        if let (true, Some(n)) = (save_audit, audit) {
+            self.act(Action::SetAuditEvery { secs: n }, now);
+        }
+        if let (true, Some(n)) = (save_review, review) {
+            self.act(Action::SetReviewEvery { secs: n.to_string() }, now);
         }
     }
 
@@ -1108,44 +1292,59 @@ impl Win {
         if self.shell.take_measure_due() {
             self.auto(Action::Measure, now);
         }
-        let usage = match self.shell.archive.as_ref() {
-            Some(a) => Val::Mark(if a.bytes > self.shell.settings.cap_bytes { Mark::Bad } else { Mark::Ok }, fill2(Key::SetUsageHuman, &size_say(a.bytes), &size_say(self.shell.settings.cap_bytes))),
-            None => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
-        };
         let ids = self.shell.identities.as_ref().map(|r| r.rows.len()).unwrap_or(0);
-        let content = match self.shell.archive.as_ref() {
-            Some(a) if a.skipped == 0 => Val::text(crate::lang::filln(Key::BackupContent, &[&ids.to_string(), &a.items.to_string(), &a.records.to_string()])),
-            Some(a) => Val::Mark(Mark::Warn, fill2(Key::SetStraysSay, &a.items.to_string(), &a.skipped.to_string())),
-            None => Val::Mark(Mark::Todo, t(Key::SetNotRead).to_string()),
+        let archive = self.shell.archive.clone();
+        let content = match archive.as_ref() {
+            Some(a) => crate::lang::filln(Key::BackupContent, &[&ids.to_string(), &a.items.to_string(), &a.records.to_string()]),
+            None => t(Key::SetNotRead).to_string(),
         };
-        stagger(ui, 0, |ui| {
-            card::card(ui, |ui| kv::kv(ui, &[(t(Key::DataContent), content), (t(Key::DataProtect), Val::Mark(Mark::Ok, t(Key::DataProtectOn).to_string())), (t(Key::SetUsage), usage)]))
-        });
-        // The whole-machine backup: when the last one was written, what came after it, export, restore.
+        let strays = archive.as_ref().filter(|a| a.skipped > 0).map(|a| fill2(Key::SetStraysSay, &a.items.to_string(), &a.skipped.to_string()));
+        let usage = archive.as_ref().map(|a| fill2(Key::SetUsageHuman, &size_say(a.bytes), &size_say(self.shell.settings.cap_bytes))).unwrap_or_else(|| t(Key::SetNotRead).to_string());
+        let over = archive.as_ref().is_some_and(|a| a.bytes > self.shell.settings.cap_bytes);
+        // On an empty seat, keys that need a home or a key are disabled, as on the identity page
+        // (`Shell::seat_unseated`).
+        let seat_ok = !self.shell.seat_unseated();
+        let held = self.shell.pen != Pen::Granted;
+        let pen = if held { t(Key::SetPenHeld) } else { t(Key::SetPenOpen) };
+        let head = format!("{} \u{b7} {pen}", t(Key::DataProtectOn));
+        let entries = archive.as_ref().map(|a| a.items.to_string()).unwrap_or_else(|| t(Key::SetNotRead).to_string());
+        let reconciled = self.shell.reconciled.as_ref().map(|(label, _, n)| format!("{} \u{b7} {}", label_human(label), fill1(Key::U3EntriesCount, &n.to_string())));
         let last = self.shell.machine.backup.clone();
         let behind = self.backup_behind();
-        let (mut export, mut restore) = (false, false);
+        let backup_say = match (&last, behind) {
+            (Some(b), Some(n)) if n > 0 => format!("{} \u{b7} {}", crate::when::when(b.at), fill1(Key::U3EntriesCount, &n.to_string())),
+            (Some(b), _) => crate::when::when(b.at),
+            (None, _) => t(Key::DataBackupNever).to_string(),
+        };
+        let backup_fact = if last.is_some() && !behind.is_some_and(|n| n > 0) { card::Fact::Text(&backup_say) } else { card::Fact::Warn(&backup_say) };
+        let reconciled_fact = reconciled.as_deref().map(card::Fact::Text).unwrap_or(card::Fact::Quiet(t(Key::NotRun)));
+        let entries_fact = if archive.is_some() { card::Fact::Text(&entries) } else { card::Fact::Quiet(&entries) };
+        let reconcile_phase = self.phase_of(crate::task::Kind::Reconcile);
+        let mut reconcile = false;
+        // The overview: how the data is kept and whether it writes, "reconcile now"; three figures: the
+        // entries, the last reconciliation, the last backup.
+        stagger(ui, 0, |ui| {
+            card::form(ui, |ui, f| {
+                let tint = if held { card::Tint::Warn } else { card::Tint::Ok };
+                reconcile = f.summary(ui, Glyph::Lock, tint, &head, None, "", |ui| key::show(ui, key::Key::new(t(Key::DoReconcile), Role::Secondary).phase(reconcile_phase)).clicked());
+                f.facts(ui, &[(t(Key::DataEntries), entries_fact), (t(Key::LastAudit), reconciled_fact), (t(Key::DataBackupLast), backup_fact)]);
+            });
+            self.stage_line(ui, crate::task::Kind::Reconcile);
+        });
+        if !seat_ok {
+            zikaron_ui::callout::callout(ui, t(Key::IdSeatEmptyNote));
+        }
+        // The whole-machine backup: export, restore, and (the recorder's) the ledger mirror, rows of one kind.
+        let author = self.shell.settings.role == crate::roles::Role::Author;
+        let (mut export, mut restore, mut mirror) = (false, false, false);
         stagger(ui, 1, |ui| {
-            card::section(ui, t(Key::WizBackupTitle), t(Key::BackupRule), |ui| {
+            card::section(ui, t(Key::WizBackupTitle), "", |ui| {
                 card::form(ui, |ui, f| {
-                    match &last {
-                        Some(b) => f.row(ui, t(Key::DataBackupLast), "", card::Value::Mono(&crate::when::when(b.at))),
-                        None => f.row(ui, t(Key::DataBackupLast), "", card::Value::Text(t(Key::DataBackupNever))),
-                    };
-                    match (&last, behind) {
-                        (Some(_), Some(n)) if n > 0 => {
-                            let say = fill1(Key::U3EntriesCount, &n.to_string());
-                            f.row_with(ui, Some(Mark::Warn), t(Key::IdNotBacked), "", card::Value::Text(&say), |_| ());
-                        }
-                        (Some(_), Some(_)) => {
-                            f.row(ui, t(Key::IdNotBacked), "", card::Value::Text(t(Key::Nothing)));
-                        }
-                        _ => {
-                            f.row(ui, t(Key::IdNotBacked), "", card::Value::Text("\u{2014}"));
-                        }
+                    export = f.go(ui, t(Key::BackupExportTitle), "", self.shell.unlocked(), "").clicked();
+                    restore = f.go(ui, t(Key::BackupRestoreTitle), "", true, "").clicked();
+                    if author {
+                        mirror = f.go(ui, t(Key::MirrorTitle), "", true, "").clicked();
                     }
-                    export = f.row(ui, t(Key::BackupExportTitle), "", if self.shell.unlocked() { card::Value::Nav } else { card::Value::Off }).clicked();
-                    restore = f.row(ui, t(Key::BackupRestoreTitle), "", card::Value::Nav).clicked();
                 });
             });
         });
@@ -1155,173 +1354,246 @@ impl Win {
         if restore {
             self.bk_open(Bk::Restore(RestoreFrom::Settings));
         }
-        // The ledger mirror: an export of the recorder's ledger; it does not restore this machine.
-        if self.shell.settings.role == crate::roles::Role::Author {
-            let mut mirror = false;
-            stagger(ui, 2, |ui| {
-                card::section(ui, t(Key::PageMirror), "", |ui| {
-                    card::form(ui, |ui, f| mirror = f.row(ui, t(Key::MirrorTitle), "", card::Value::Nav).clicked());
-                });
+        if mirror {
+            self.bk_open(Bk::Mirror);
+        }
+        // The data folder (its path under the name, elided in the middle, whole on hover) with "change"; the usage
+        // with "measure"; for the recorder, the switch that hides what a deletion leaves on this machine only.
+        let root = self.shell.home.as_ref().map(|h| h.root().display().to_string());
+        let measure_phase = self.phase_of(crate::task::Kind::Archive);
+        let (mut open, mut measure, mut flip) = (None, false, false);
+        let hide = self.shell.settings.hide_local_deletions;
+        stagger(ui, 2, |ui| {
+            card::form(ui, |ui, f| {
+                let path = root.clone().unwrap_or_else(|| t(Key::HomeNotOpen).to_string());
+                if f.act_path(ui, t(Key::SetHomeOfSeat), &path, key::Key::new(t(Key::SetChangeHome), Role::Secondary).enabled(seat_ok)).clicked() {
+                    open = Some(DirSheet::Home);
+                }
+                let sub = strays.as_deref().unwrap_or("");
+                measure = f.act_value(ui, t(Key::SetUsage), sub, &usage, key::Key::new(t(Key::DoMeasure), Role::Secondary).enabled(seat_ok).phase(measure_phase)).clicked();
+                if author {
+                    flip = f.switch(ui, t(Key::SetHideLocalDeletions), "", hide, seat_ok);
+                }
             });
-            if mirror {
-                self.bk_open(Bk::Mirror);
+            self.stage_line(ui, crate::task::Kind::Archive);
+            if over {
+                states::okline(ui, Mark::Bad, &usage);
             }
+        });
+        // Advanced: the usage limit in its row; move, adopt, import grants, check every anchor again: one key
+        // each, a sheet for those that take a folder.
+        let grantee = !author;
+        let cap = self.shell.settings.cap_bytes;
+        if self.ux.cap_seed != Some(cap) {
+            self.typed.cap = cap.to_string();
+            self.ux.cap_seed = Some(cap);
         }
-        // On an empty seat, keys that need a home or a key are disabled, as on the identity page
-        // (`Shell::seat_unseated`).
-        let seat_ok = !self.shell.seat_unseated();
-        if !seat_ok {
-            states::note_box(ui, t(Key::IdSeatEmptyNote));
-        }
-        let grantee = self.shell.settings.role == crate::roles::Role::Grantee;
-        let (mut measure, mut open_home, mut import_dir) = (false, false, false);
+        let typed_cap = self.typed.cap.trim().parse::<u64>().ok();
+        let migrating = self.phase_of(crate::task::Kind::Migrate);
+        let (mut set_cap, mut recheck) = (false, false);
+        let typed = &mut self.typed;
         stagger(ui, 3, |ui| {
-            card::group_title(ui, t(Key::SetHomeOfSeat));
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S3;
-                keys_row(ui, |ui| {
-                    if key::key(ui, t(Key::SetChangeHome), Role::Secondary, seat_ok).clicked() {
-                        self.ux.open_home = !self.ux.open_home;
+            card::section(ui, t(Key::U3MoreOptions), "", |ui| {
+                card::form(ui, |ui, f| {
+                    f.with(ui, t(Key::SetCap), "", |ui| {
+                        set_cap = key::show_w(ui, key::Key::new(t(Key::DoSetCap), Role::Secondary).enabled(seat_ok && typed_cap.is_some_and(|n| n != cap)).why(if typed_cap.is_none() { t(Key::CapMustBeNumber) } else { "" }), 92.0).clicked();
+                        ui.label(egui::RichText::new(t(Key::UnitBytes)).font(zikaron_ui::tokens::Type::Note.font()).color(c(C::Ink2)));
+                        let _ = fields::small(ui, &mut typed.cap, "", 130.0, typed_cap.is_none());
+                    });
+                    if f.act(ui, t(Key::MigrateLabel), "", key::Key::new(t(Key::DoMigrate), Role::Secondary).enabled(seat_ok).phase(migrating).busy_text(t(Key::SetMigrating))).clicked() {
+                        open = Some(DirSheet::Migrate);
                     }
-                    measure = self.long_key(ui, t(Key::DoMeasure), Role::Secondary, seat_ok, crate::task::Kind::Archive);
-                    if grantee && key::key(ui, t(Key::V2ImportGrantDir), Role::Secondary, seat_ok).clicked() {
-                        self.ux.open_grant_dir = !self.ux.open_grant_dir;
+                    if f.act(ui, t(Key::AdoptGroup), "", key::Key::new(t(Key::DoAdopt), Role::Secondary).enabled(seat_ok)).clicked() {
+                        open = Some(DirSheet::Adopt);
                     }
+                    if grantee && f.go(ui, t(Key::V2ImportGrantDir), "", seat_ok, "").clicked() {
+                        open = Some(DirSheet::GrantDir);
+                    }
+                    // Anchors that several nodes already confirmed alike are not queried again (`checkedx`); this
+                    // drops that record, so the next sync queries every anchor.
+                    recheck = f.act(ui, t(Key::RecheckRow), "", key::Key::new(t(Key::DoRecheckAll), Role::Secondary)).clicked();
                 });
-                self.stage_line(ui, crate::task::Kind::Archive);
-                if self.ux.open_home && seat_ok {
-                    paint::rule(ui, 0.0);
-                    pick_path(ui, &mut self.typed.home, crate::platform::Pick::Folder);
-                    open_home = page::Page::new().primary_with(ui, t(Key::DoOpenHome), Self::landing_ok(&self.typed.home)).1.clicked();
-                }
-                if grantee && self.ux.open_grant_dir && seat_ok {
-                    paint::rule(ui, 0.0);
-                    pick_path(ui, &mut self.typed.grant_dir, crate::platform::Pick::Folder);
-                    import_dir = key::key(ui, t(Key::V2ImportGrantDirGo), Role::Secondary, !self.typed.grant_dir.trim().is_empty()).clicked();
-                }
             });
         });
-        // Display only, for the recorder's two lists: hide what a deletion leaves on this machine only.
-        if self.shell.settings.role == crate::roles::Role::Author {
-            let on = self.shell.settings.hide_local_deletions;
-            let mut flip = false;
-            stagger(ui, 3, |ui| {
-                card::form(ui, |ui, f| {
-                    f.row_with(ui, None, t(Key::SetHideLocalDeletions), "", card::Value::None, |ui| flip = toggle::switch(ui, on, seat_ok).clicked());
-                });
-            });
-            if flip {
-                self.act(Action::SetHideLocalDeletions { on: !on }, now);
-            }
-        }
-        if measure {
-            self.act(Action::Measure, now);
-        }
-        if open_home {
-            let a = Action::ChangeHome { root: self.typed.home.clone() };
-            self.act(a, now);
-            // Another home may have chosen another language: decide again next frame.
-            self.ux.lang_applied = false;
-        }
-        if import_dir {
-            let a = Action::ImportGrantDir { dir: self.typed.grant_dir.clone() };
-            self.act(a, now);
-        }
-        let (mut set_cap, mut migrate, mut adopt) = (false, false, false);
-        let root = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_else(|| t(Key::HomeNotOpen).to_string());
         let lock = match self.shell.lock.as_ref() {
             None => t(Key::HomeNoLock).to_string(),
             Some(l) => format!("{} \u{b7} {}", l.mode().as_str(), l.holder()),
         };
         let miss = self.shell.home.as_ref().map(|h| h.missing()).unwrap_or_default();
-        let mut reconcile = false;
-        let mut recheck = false;
+        let none = || Val::text(t(Key::SetNone));
         stagger(ui, 4, |ui| {
-            card::card(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tk::S2;
-                fold::fold(ui, "data-more", t(Key::U3MoreOptions), |ui| {
-                    ui.spacing_mut().item_spacing.y = tk::S3;
-                    field(ui, t(Key::SetCapLabel), None, |ui| {
-                        let (_, hit) = width::line_then(ui, &mut self.typed.cap, "", true, |ui| key::key(ui, t(Key::DoSetCap), Role::Secondary, seat_ok).clicked());
-                        set_cap = hit;
-                    });
-                    let asked = path_row(ui, t(Key::MigrateLabel), &self.typed.migrate, t(Key::PickFolder), t(Key::PickNone));
-                    {
-                        if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-migrate"), asked, crate::platform::Pick::Folder) {
-                            self.typed.migrate = p;
-                            // Working out where the move would land walks the disk, so it is done once, when the
-                            // folder is picked; the frame only reads it.
-                            self.ux.migrate_landing = Some(crate::home::choose(&crate::home::Kind::Home, std::path::Path::new(self.typed.migrate.trim())));
-                        }
-                    }
-                    // The landing place, with why it is not the one picked.
-                    let picked = self.ux.migrate_landing.clone();
-                    if let Some(p) = picked.as_ref() {
-                        if let Some(k) = p.why.say_ahead() {
-                            hint(ui, &fill1(k, &width::file_name(&p.at.display().to_string())));
-                        }
-                    }
-                    // While the whole tree is copied (`Kind::Migrate`) the key shows a spinner and ignores presses.
-                    let moving = if self.shell.tasks.in_flight(crate::task::Kind::Migrate) { Phase::Busy { frac: None } } else { Phase::Idle };
-                    let can = seat_ok && picked.as_ref().map(|p| Self::landing_ok(&p.at.display().to_string())).unwrap_or(false);
-                    migrate = key::show(ui, key::Key::new(t(Key::DoMigrate), Role::Secondary).enabled(can).phase(moving).busy_text(t(Key::SetMigrating))).clicked();
-                    field(ui, t(Key::AdoptGroup), None, |ui| pick_path(ui, &mut self.typed.adopt, crate::platform::Pick::Folder));
-                    adopt = key::key(ui, t(Key::DoAdopt), Role::Secondary, seat_ok && !self.typed.adopt.trim().is_empty()).clicked();
-                    // After adopting a ledger, reconcile once: only a match gives the pen back.
-                    let pen = if self.shell.pen == Pen::Granted { Val::Mark(Mark::Ok, t(Key::SetPenOpen).to_string()) } else { Val::Mark(Mark::Warn, t(Key::SetPenHeld).to_string()) };
-                    let last = match &self.shell.reconciled {
-                        Some((label, _, n)) => Val::text(format!("{} \u{b7} {}", label_human(label), fill1(Key::U3EntriesCount, &n.to_string()))),
-                        None => Val::text(t(Key::NotRun)),
-                    };
-                    kv::kv(ui, &[(t(Key::SetPen), pen), (t(Key::LastAudit), last)]);
-                    reconcile = self.long_key(ui, t(Key::DoReconcile), Role::Secondary, true, crate::task::Kind::Reconcile);
-                    self.stage_line(ui, crate::task::Kind::Reconcile);
-                    // Anchors that several nodes already confirmed alike are not queried again (`checkedx`); this
-                    // drops that record, so the next sync queries every anchor.
-                    hint(ui, t(Key::RecheckAllNote));
-                    recheck = key::key(ui, t(Key::DoRecheckAll), Role::Secondary, true).clicked();
-                });
-                details(
-                    ui,
-                    "data-details",
-                    &[
-                        (t(Key::SetHomeOfSeat), Val::mono(root.clone())),
-                        (t(Key::DataEncrypt), Val::mono(t(Key::DataEncryptHow).to_string())),
-                        (t(Key::DataBackupFile), last.as_ref().map(|b| Val::mono(b.path.clone())).unwrap_or_else(|| Val::text("\u{2014}"))),
-                        (t(Key::DataBackupHow), Val::mono(t(Key::DataBackupHowSay).to_string())),
-                        (t(Key::HomeWhere), Val::text(t(Key::HomeWhereNote))),
-                        (t(Key::HomeInstance), Val::mono(lock.clone())),
-                        (t(Key::HomeMissingRooms), Val::mono(if miss.is_empty() { t(Key::Nothing).to_string() } else { miss.join(" ") })),
-                    ],
-                );
-            });
+            details_card(
+                ui,
+                "data-details",
+                &[
+                    (t(Key::SetHomeOfSeat), root.clone().map(Val::mono).unwrap_or_else(|| Val::text(t(Key::HomeNotOpen)))),
+                    (t(Key::DataContent), Val::text(content.clone())),
+                    (t(Key::DataEncrypt), Val::figure(t(Key::DataEncryptHow).to_string())),
+                    (t(Key::DataBackupFile), last.as_ref().map(|b| Val::mono(b.path.clone())).unwrap_or_else(none)),
+                    (t(Key::DataBackupHow), Val::figure(t(Key::DataBackupHowSay).to_string())),
+                    (t(Key::HomeWhere), Val::text(t(Key::HomeWhereNote))),
+                    (t(Key::HomeInstance), Val::mono(lock.clone())),
+                    (t(Key::HomeMissingRooms), if miss.is_empty() { Val::text(t(Key::Nothing)) } else { Val::mono(miss.join(" ")) }),
+                ],
+            )
         });
-        if set_cap {
-            match self.typed.cap.trim().parse::<u64>() {
-                Ok(n) => {
-                    self.act(Action::SetCap { bytes: n }, now);
-                }
-                Err(_) => self.toasts.say(t(Key::CapMustBeNumber), Tone::Bad, now),
-            }
+        if let Some(d) = open {
+            self.dir_open(d);
         }
-        if migrate {
-            if let Some(p) = self.ux.migrate_landing.clone() {
-                let a = Action::MigrateHome { to: p.at.display().to_string() };
-                self.act(a, now);
-                // A picked place is used once: after the move it is no longer empty.
-                self.typed.migrate.clear();
-                self.ux.migrate_landing = None;
-            }
+        if flip {
+            self.act(Action::SetHideLocalDeletions { on: !hide }, now);
         }
-        if adopt {
-            let a = Action::Adopt { dir: self.typed.adopt.clone() };
-            self.act(a, now);
+        if measure {
+            self.act(Action::Measure, now);
         }
         if reconcile {
             self.act(Action::Reconcile, now);
         }
+        if let (true, Some(n)) = (set_cap, typed_cap) {
+            self.act(Action::SetCap { bytes: n }, now);
+        }
         if recheck {
             self.act(Action::RecheckAll, now);
+        }
+    }
+
+    /// Open a sheet that takes a folder: the folder last chosen for it, else the documents folder.
+    pub(super) fn dir_open(&mut self, d: DirSheet) {
+        let docs = self.shell.documents.clone();
+        let slot = self.dir_slot(d);
+        if slot.trim().is_empty() {
+            *slot = docs;
+        }
+        if d == DirSheet::Migrate {
+            self.dir_landing();
+        }
+        self.ux.dir_sheet = Some(d);
+    }
+
+    /// The typed folder of a sheet.
+    fn dir_slot(&mut self, d: DirSheet) -> &mut String {
+        match d {
+            DirSheet::Home => &mut self.typed.home,
+            DirSheet::GrantDir => &mut self.typed.grant_dir,
+            DirSheet::Migrate => &mut self.typed.migrate,
+            DirSheet::Adopt => &mut self.typed.adopt,
+        }
+    }
+
+    /// Where a move would land for the folder chosen: worked out once, when the folder is chosen (it walks
+    /// the disk); the frame only reads it.
+    fn dir_landing(&mut self) {
+        let at = self.typed.migrate.trim().to_string();
+        self.ux.migrate_landing = (!at.is_empty()).then(|| crate::home::choose(&crate::home::Kind::Home, std::path::Path::new(&at)));
+    }
+
+    /// A sheet that takes a folder: the folder in one row, "choose folder" at the bottom left, cancel
+    /// and the action at the bottom right. Moving the data keeps the sheet up until the copy is done.
+    pub(super) fn dir_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(d) = self.ux.dir_sheet else { return };
+        let moving = self.shell.tasks.in_flight(crate::task::Kind::Migrate);
+        if d == DirSheet::Migrate && self.ux.dir_waiting && !moving {
+            self.ux.dir_waiting = false;
+            self.ux.dir_sheet = None;
+            return;
+        }
+        let title = match d {
+            DirSheet::Home => Key::SetChangeHome,
+            DirSheet::GrantDir => Key::V2ImportGrantDir,
+            DirSheet::Migrate => Key::MigrateLabel,
+            DirSheet::Adopt => Key::AdoptGroup,
+        };
+        let at = self.dir_slot(d).clone();
+        let landing = self.ux.migrate_landing.clone().filter(|_| d == DirSheet::Migrate);
+        let ready = match d {
+            DirSheet::Home => Self::landing_ok(&at),
+            DirSheet::Migrate => landing.as_ref().is_some_and(|p| Self::landing_ok(&p.at.display().to_string())),
+            _ => !at.trim().is_empty(),
+        };
+        let phase = if d == DirSheet::Migrate { self.phase_of(crate::task::Kind::Migrate) } else { Phase::Idle };
+        let (mut go, mut close, mut picked) = (false, false, None);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("data-folder", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(title), "");
+                let entries = me.shell.archive.as_ref().map(|a| a.items.to_string());
+                card::form(ui, |ui, f| {
+                    if let (DirSheet::Migrate, Some(n)) = (d, entries.as_deref()) {
+                        let _ = f.info(ui, t(Key::LedgerEntries), card::Show::Text(n));
+                    }
+                    let label = match d {
+                        DirSheet::Home => t(Key::SetHomeOfSeat),
+                        DirSheet::GrantDir => t(Key::Folder),
+                        DirSheet::Migrate => t(Key::MoveTo),
+                        DirSheet::Adopt => t(Key::WizAdoptFolder),
+                    };
+                    f.folder(ui, label, &at, t(Key::PickNone));
+                });
+                // Where the move lands, when not in the folder chosen itself.
+                if let Some(k) = landing.as_ref().and_then(|p| p.why.say_ahead().map(|k| (k, p))) {
+                    hint(ui, &fill1(k.0, &width::file_name(&k.1.at.display().to_string())));
+                }
+            },
+            |ui, _me| {
+                // Moving and adopting commit the data (the pen's key); the others open or import.
+                let role = if matches!(d, DirSheet::Migrate | DirSheet::Adopt) { Role::Commit } else { Role::Primary };
+                let k = match d {
+                    DirSheet::Home => key::Key::new(t(Key::DoOpenHome), role),
+                    DirSheet::GrantDir => key::Key::new(t(Key::V2ImportGrantDirGo), role),
+                    DirSheet::Migrate => key::Key::new(t(Key::DoMigrate), role),
+                    DirSheet::Adopt => key::Key::new(t(Key::DoAdopt), role),
+                };
+                go = key::show(ui, k.enabled(ready).phase(phase).busy_text(t(Key::SetMigrating))).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                picked = foot_pick(ui, "data-folder", crate::platform::Pick::Folder);
+            },
+        );
+        if let Some(p) = picked {
+            *self.dir_slot(d) = p;
+            if d == DirSheet::Migrate {
+                self.dir_landing();
+            }
+        }
+        if close || out.esc {
+            self.ux.dir_sheet = None;
+            return;
+        }
+        if !go || moving {
+            return;
+        }
+        match d {
+            DirSheet::Home => {
+                let a = Action::ChangeHome { root: self.typed.home.clone() };
+                self.act(a, now);
+                // Another home may have chosen another language: decide again next frame.
+                self.ux.lang_applied = false;
+                self.ux.dir_sheet = None;
+            }
+            DirSheet::GrantDir => {
+                let a = Action::ImportGrantDir { dir: self.typed.grant_dir.clone() };
+                self.act(a, now);
+                self.ux.dir_sheet = None;
+            }
+            DirSheet::Adopt => {
+                let a = Action::Adopt { dir: self.typed.adopt.clone() };
+                self.act(a, now);
+                self.ux.dir_sheet = None;
+            }
+            DirSheet::Migrate => {
+                if let Some(p) = self.ux.migrate_landing.clone() {
+                    let a = Action::MigrateHome { to: p.at.display().to_string() };
+                    if matches!(self.act(a, now), Applied::Started(crate::task::Kind::Migrate)) {
+                        self.ux.dir_waiting = true;
+                    } else {
+                        self.ux.dir_sheet = None;
+                    }
+                    // A chosen place is used once: after the move it is no longer empty.
+                    self.typed.migrate.clear();
+                    self.ux.migrate_landing = None;
+                }
+            }
         }
     }
 
@@ -1345,87 +1617,122 @@ impl Win {
     }
 
     fn set_about(&mut self, ui: &mut egui::Ui, now: f64) {
-        stagger(ui, 0, |ui| card::card(ui, |ui| kv::kv(ui, &[(t(Key::Version), Val::mono(format!("{} {}", t(Key::AppName), env!("CARGO_PKG_VERSION"))))])));
+        let unseated = self.shell.seat_unseated();
+        let last = self.shell.last.as_ref().map(|x| format!("{} \u{b7} {} \u{b7} {}", x.found(), x.faces.iter().map(|f| f.bytes).sum::<u64>(), x.marks));
+        let phase = self.phase_of(crate::task::Kind::SelfCheck);
+        let title = format!("{} {}", t(Key::AppName), env!("CARGO_PKG_VERSION"));
+        // The overview: the app and its version, the build under it.
+        stagger(ui, 0, |ui| {
+            card::form(ui, |ui, f| f.summary(ui, Glyph::Info, card::Tint::Blue, &title, None, build_kind(), |_| ()));
+        });
+        // The setup check: a point done says so with its mark; one still to set up has the key that sets it up.
         let points = self.checklist();
+        let goes: Vec<Point> = match self.shell.settings.role {
+            crate::roles::Role::Author => Author::ALL
+                .iter()
+                .map(|a| match a {
+                    Author::AnchorKey => Point::Step(crate::nav::Step::Key),
+                    Author::Pin => Point::Step(crate::nav::Step::Pin),
+                    Author::GasFloat => Point::Step(crate::nav::Step::Gas),
+                    Author::Genesis => Point::Step(crate::nav::Step::Genesis),
+                    Author::Backup => Point::Backup,
+                })
+                .collect(),
+            crate::roles::Role::Grantee => Grantee::ALL
+                .iter()
+                .map(|g| match g {
+                    Grantee::AnchorKey => Point::Step(crate::nav::Step::Key),
+                    Grantee::Pin => Point::Step(crate::nav::Step::Pin),
+                    Grantee::Endpoints => Point::Network,
+                    Grantee::Ready => Point::Step(crate::nav::Step::Gas),
+                    Grantee::Backup => Point::Backup,
+                })
+                .collect(),
+        };
+        let mut go = None;
+        let (mut again, mut self_check) = (false, false);
         stagger(ui, 1, |ui| {
             card::section(ui, t(Key::SetMissing), "", |ui| {
                 card::form(ui, |ui, f| {
-                    for (m, name, _) in &points {
-                        f.row_with(ui, Some(*m), name, "", card::Value::None, |ui| {
-                            if *m != Mark::Ok {
-                                mark::pill(ui, t(Key::SetPending), PillTone::Warn);
-                            }
-                        });
+                    for ((m, name, _), p) in points.iter().zip(&goes) {
+                        if *m == Mark::Ok {
+                            // A done point says how it stands when there is a word for it (ready, done).
+                            let word = match p {
+                                Point::Step(crate::nav::Step::Genesis) | Point::Backup => t(Key::Done),
+                                Point::Step(crate::nav::Step::Gas) | Point::Network => t(Key::PointReady),
+                                _ => "",
+                            };
+                            let _ = f.info(ui, name, card::Show::Mark(Mark::Ok, word));
+                            continue;
+                        }
+                        let label = match p {
+                            Point::Step(s) => t(s.title()),
+                            Point::Backup => t(Key::BackupExportTitle),
+                            Point::Network => t(Key::SetEditNodes),
+                        };
+                        if f.act(ui, name, "", key::Key::new(label, Role::Secondary).enabled(!unseated)).clicked() {
+                            go = Some(*p);
+                        }
                     }
                 });
             });
         });
-        let mut again = false;
         stagger(ui, 2, |ui| {
-            // Disabled on an empty seat, as on the identity page.
-            keys_row(ui, |ui| again = key::key(ui, t(Key::DoWizardAgain), Role::Secondary, !self.shell.seat_unseated()).clicked());
+            card::form(ui, |ui, f| {
+                // Disabled on an empty seat, as on the identity page.
+                again = f.act(ui, t(Key::PageFirstRun), "", key::Key::new(t(Key::DoWizardAgain), Role::Secondary).enabled(!unseated)).clicked();
+                self_check = f.act(ui, t(Key::TaskSelfCheck), last.as_deref().unwrap_or(""), key::Key::new(t(Key::DoSelfCheck), Role::Secondary).phase(phase)).clicked();
+            });
+            self.stage_line(ui, crate::task::Kind::SelfCheck);
         });
         if again {
             let step = self.progress().first_open().unwrap_or(crate::nav::Step::Pin);
             self.wizard_open(step);
         }
-        let mut self_check = false;
-        stagger(ui, 3, |ui| {
-            card::card(ui, |ui| {
-                fold::fold(ui, "about-details", t(Key::SetEvidence), |ui| {
-                    ui.spacing_mut().item_spacing.y = tk::S3;
-                    // Each font face: file, index, origin (the two embedded ones with their licence).
-                    let fonts: Vec<String> = zikaron_ui::fonts::Role::ALL
-                        .iter()
-                        .map(|role| match self.shell.fonts.face(*role) {
-                            Some(f) => {
-                                let place = t(if f.place == zikaron_ui::fonts::Place::Embedded { Key::FontEmbedded } else { Key::FontFromSystem });
-                                match f.licence() {
-                                    Some(l) => format!("{} {} \u{b7} {} \u{b7} {place} \u{b7} {l}", role.as_str(), f.file, f.index),
-                                    None => format!("{} {} \u{b7} {} \u{b7} {place}", role.as_str(), f.file, f.index),
-                                }
-                            }
-                            None => format!("{} {}", role.as_str(), t(Key::Missing)),
-                        })
-                        .collect();
-                    let sink = match trace::sink() {
-                        Sink::Memory => t(Key::TraceMemory).to_string(),
-                        Sink::File(p) => width::file_name(&p.display().to_string()),
-                    };
-                    let flying = self.shell.tasks.flying();
-                    let last = match &self.shell.last {
-                        None => t(Key::NotRun).to_string(),
-                        Some(x) => format!("{} \u{b7} {} \u{b7} {}", x.found(), x.faces.iter().map(|f| f.bytes).sum::<u64>(), x.marks),
-                    };
-                    kv::kv(
-                        ui,
-                        &[
-                            (t(Key::SetCores), Val::mono(crate::sign::domains().join(" \u{b7} "))),
-                            (t(Key::BuildKind), Val::mono(build_kind().to_string())),
-                            (t(Key::FontGroup), Val::mono(fonts.join(" / "))),
-                            (t(Key::TraceSink), Val::mono(sink)),
-                            (t(Key::TaskInFlight), Val::mono(if flying.is_empty() { t(Key::Nothing).to_string() } else { flying.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(" ") })),
-                            (t(Key::TaskLastCheck), Val::mono(last)),
-                        ],
-                    );
-                    self_check = self.long_key(ui, t(Key::DoSelfCheck), Role::Secondary, true, crate::task::Kind::SelfCheck);
-                    self.stage_line(ui, crate::task::Kind::SelfCheck);
-                });
-            });
-        });
+        match go {
+            Some(Point::Step(s)) => self.wizard_open(s),
+            Some(Point::Backup) => self.bk_open(Bk::Export),
+            Some(Point::Network) => self.go(Place::Settings(Section::Network), now),
+            None => {}
+        }
+        // Each font face: file, index, origin (the two embedded ones with their licence).
+        let fonts: Vec<String> = zikaron_ui::fonts::Role::ALL
+            .iter()
+            .map(|role| match self.shell.fonts.face(*role) {
+                Some(f) => {
+                    let place = t(if f.place == zikaron_ui::fonts::Place::Embedded { Key::FontEmbedded } else { Key::FontFromSystem });
+                    match f.licence() {
+                        Some(l) => format!("{} {} \u{b7} {} \u{b7} {place} \u{b7} {l}", role.as_str(), f.file, f.index),
+                        None => format!("{} {} \u{b7} {} \u{b7} {place}", role.as_str(), f.file, f.index),
+                    }
+                }
+                None => format!("{} {}", role.as_str(), t(Key::Missing)),
+            })
+            .collect();
+        let sink = match trace::sink() {
+            Sink::Memory => t(Key::TraceMemory).to_string(),
+            Sink::File(p) => width::file_name(&p.display().to_string()),
+        };
+        let flying = self.shell.tasks.flying();
+        let rows = [
+            (t(Key::SetCores), Val::mono(crate::sign::domains().join(" \u{b7} "))),
+            (t(Key::BuildKind), Val::figure(build_kind().to_string())),
+            (t(Key::FontGroup), Val::figure(fonts.join("\n"))),
+            (t(Key::TraceSink), Val::mono(sink)),
+            (t(Key::TaskInFlight), if flying.is_empty() { Val::text(t(Key::Nothing)) } else { Val::figure(flying.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(" ")) }),
+        ];
+        stagger(ui, 2, |ui| details_card(ui, "about-details", &rows));
         // The third-party licences embedded in the binary (generated from Cargo.lock at build time): the crates,
         // then each licence text; only the lines in view are laid out.
-        stagger(ui, 4, |ui| {
-            card::card(ui, |ui| {
-                fold::fold(ui, "about-notices", t(Key::SetNotices), |ui| {
-                    ui.spacing_mut().item_spacing.y = tk::S3;
-                    hint(ui, &fill1(Key::SetNoticesCount, &crate::about::count().to_string()));
-                    let lines = crate::about::notice_lines();
-                    // One row height for drawing each line (its line height set to it) and for the scroll area's
-                    // row placement, with no item spacing: rows counted and rows drawn share one pitch, so the view
-                    // fills to the bottom.
-                    let row_h = Type::MonoSmall.line();
-                    ui.scope(|ui| {
+        stagger(ui, 3, |ui| {
+            card::form(ui, |ui, f| {
+                let _ = f.fold(ui, "about-notices", t(Key::SetNotices), &crate::about::count().to_string(), |ui, f| {
+                    f.free(ui, |ui| {
+                        let lines = crate::about::notice_lines();
+                        // One row height for drawing each line (its line height set to it) and for the scroll
+                        // area's row placement, with no item spacing: rows counted and rows drawn share one pitch,
+                        // so the view fills to the bottom.
+                        let row_h = Type::MonoSmall.line();
                         ui.spacing_mut().item_spacing.y = 0.0;
                         // Scroll both ways so a licence line is never cut short.
                         zikaron_ui::scroll::nested_rows(ui, egui::ScrollArea::both().id_salt("about-notices-text").max_height(320.0).auto_shrink([false, true]), row_h, lines.len(), |ui, range| {
@@ -1433,7 +1740,7 @@ impl Win {
                                 ui.add(egui::Label::new(egui::RichText::new(*l).font(Type::MonoSmall.font()).color(c(C::Ink2)).line_height(Some(row_h))).wrap_mode(egui::TextWrapMode::Extend));
                             }
                         });
-                    });
+                    })
                 });
             });
         });
@@ -1486,24 +1793,41 @@ impl Win {
     }
 }
 
-/// What the settings page keeps for the read-only networks while they are edited (interface only).
+/// Where a setup point still to set up is set up.
+#[derive(Clone, Copy, Debug)]
+enum Point {
+    Step(crate::nav::Step),
+    Backup,
+    Network,
+}
+
+/// The sheets of the data page that take a folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DirSheet {
+    /// Change the data folder.
+    Home,
+    /// Import a folder of grants.
+    GrantDir,
+    /// Move the data to an empty folder.
+    Migrate,
+    /// Adopt an existing ledger folder in place.
+    Adopt,
+}
+
+/// What the settings page keeps for the read-only networks while one is edited (interface only).
 #[derive(Default)]
 pub(super) struct ReadNetUx {
-    /// The rows open now (chain id, registry).
-    open: Vec<(u64, crate::key::Address)>,
-    /// What is typed into each open row.
-    drafts: Vec<((u64, crate::key::Address), Draft)>,
-    /// The one new row not yet saved.
-    new: Option<Draft>,
-    /// The row whose "remove" asks its question.
-    armed: Option<(u64, crate::key::Address)>,
+    /// The open sheet: the network it edits (none for a new one), and what is typed into it.
+    sheet: Option<(Option<(u64, crate::key::Address)>, Draft)>,
+    /// "Remove" asks its question.
+    armed: bool,
 }
 
 /// The cells of one row as typed.
 #[derive(Clone, Default)]
 pub(super) struct Draft {
-    /// Which preset filled it (0: by hand).
-    preset: usize,
+    /// Which row of the known table filled it.
+    preset: Option<usize>,
     name: String,
     chain: String,
     registry: String,
@@ -1511,30 +1835,49 @@ pub(super) struct Draft {
     nodes: String,
 }
 
-/// The preset menu of a network editor (the main network's and a new read-only network's): "by hand" first,
-/// then every row of the known deployments table (`deploy::KNOWN`), in order.
-pub(super) fn preset_menu(ui: &mut egui::Ui, salt: &str, at: usize) -> Option<usize> {
-    let labels: Vec<String> = std::iter::once(t(Key::U3Custom).to_string()).chain(crate::deploy::KNOWN.iter().map(|d| t(d.label).to_string())).collect();
-    let at = at.min(labels.len() - 1);
-    let items: Vec<menu::Item> = labels.iter().enumerate().map(|(i, l)| menu::Item::Row(menu::Row { label: l, check: Some(i == at), ..Default::default() })).collect();
-    menu::menu_key(ui, salt, &labels[at], false, 160.0, &items)
+/// The preset menu of a network sheet (the main network's and a new read-only network's): the rows of the known
+/// deployments table (`deploy::KNOWN`), in order; the row the cells equal now is checked. Returns the row picked.
+pub(super) fn preset_menu(ui: &mut egui::Ui, salt: &str, at: Option<usize>) -> Option<usize> {
+    let labels: Vec<&str> = crate::deploy::KNOWN.iter().map(|d| t(d.label)).collect();
+    let items: Vec<menu::Item> = labels.iter().enumerate().map(|(i, l)| menu::Item::Row(menu::Row { label: l, check: Some(at == Some(i)), ..Default::default() })).collect();
+    menu::menu_key(ui, salt, at.map(|i| labels[i]).unwrap_or(t(Key::ReadNetPreset)), false, 160.0, &items)
 }
 
-/// The cells a preset fills (`None` for "by hand", which keeps what was typed).
-pub(super) fn preset_cells(i: usize) -> Option<crate::deploy::Cells> {
-    i.checked_sub(1).and_then(|k| crate::deploy::KNOWN.get(k)).map(|d| d.cells())
+/// The same menu as a flat key inside a joined input (a read-only network's name).
+fn preset_inner(ui: &mut egui::Ui, salt: &str, at: Option<usize>) -> Option<usize> {
+    let labels: Vec<&str> = crate::deploy::KNOWN.iter().map(|d| t(d.label)).collect();
+    let items: Vec<menu::Item> = labels.iter().enumerate().map(|(i, l)| menu::Item::Row(menu::Row { label: l, check: Some(at == Some(i)), ..Default::default() })).collect();
+    menu::inner_menu_key(ui, salt, at.map(|i| labels[i]).unwrap_or(t(Key::ReadNetPreset)), 160.0, &items)
 }
 
 impl Draft {
     fn of(n: &crate::readnets::Net) -> Draft {
         Draft {
-            preset: 0,
+            preset: None,
             name: n.name.clone().unwrap_or_default(),
             chain: n.chain_id.to_string(),
             registry: n.registry.hex(),
             from: n.from_block.to_string(),
             nodes: n.nodes.join("\n"),
         }
+    }
+
+    /// The cells that do not read yet, by name.
+    fn missing(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.nodes.trim().is_empty() {
+            v.push(t(Key::SetNodes));
+        }
+        if self.chain.trim().parse::<u64>().is_err() {
+            v.push(t(Key::BasisChain));
+        }
+        if self.from.trim().parse::<u64>().is_err() {
+            v.push(t(Key::BasisFrom));
+        }
+        if crate::key::Address::parse(&self.registry).is_none() {
+            v.push(t(Key::SetRegistry));
+        }
+        v
     }
 
     fn save(&self, was: Option<(u64, crate::key::Address)>) -> Action {
@@ -1559,57 +1902,47 @@ fn read_tone(r: crate::widex::Reading) -> PillTone {
     }
 }
 
-/// One network's row: the caret (turned a quarter when open), its name, and its reading on the right.
-fn net_row(ui: &mut egui::Ui, salt: &str, name: &str, badge: Option<(&str, PillTone)>, open: bool) -> egui::Response {
-    use zikaron_ui::icons;
-    let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, tk::FORM_ROW_H), egui::Sense::click());
-    let id = ui.id().with(("readnet-row", salt));
-    let turn = motion::flag(ui.ctx(), id, open, tk::MID) * std::f32::consts::FRAC_PI_2;
-    let p = ui.painter().clone();
-    icons::draw_glyph_turned(&p, Glyph::Fwd, egui::Rect::from_center_size(egui::pos2(rect.left() + 6.0, rect.center().y), egui::vec2(12.0, 12.0)), c(C::Ink3), turn);
-    let mut right = rect.right();
-    if let Some((s, tone)) = badge {
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
-        right = mark::pill(&mut child, s, tone).rect.left() - tk::S2;
-    }
-    paint::at(&p, ui, egui::pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, name, Type::Body, c(C::Ink), (right - rect.left() - 20.0).max(0.0));
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// The cells of an open row: the preset (new rows only), the name (fixed for a chain the name table knows),
-/// chain id, registry, start block, nodes.
-fn net_cells(ui: &mut egui::Ui, d: &mut Draft, fresh: bool) {
-    ui.spacing_mut().item_spacing.y = tk::S3;
-    if fresh {
-        if let Some(i) = field(ui, t(Key::ReadNetPreset), None, |ui| preset_menu(ui, "readnet-preset", d.preset)) {
-            d.preset = i;
-            if let Some(c) = preset_cells(i) {
-                d.chain = c.chain;
-                d.registry = c.registry;
-                d.from = c.from;
-                d.nodes = c.nodes;
-            }
-        }
-    }
+/// The cells of a read-only network's sheet: the name (fixed for a chain the name table knows) with the known
+/// table's rows as presets inside its field, the nodes one per line, the chain id beside the start block, the
+/// registry.
+fn net_cells(ui: &mut egui::Ui, d: &mut Draft) {
     let known = d.chain.trim().parse::<u64>().ok().and_then(crate::readnets::known_name);
-    field(ui, t(Key::ReadNetName), None, |ui| match known {
-        Some(k) => paint::text(ui, t(k), Type::Body, c(C::Ink2)),
-        None => input::line(ui, &mut d.name, ""),
+    let mut preset = None;
+    let mono = fields::Look { mono: true, ..Default::default() };
+    fields::stack(ui, |ui, st| {
+        st.field(ui, t(Key::ReadNetName), None, None, |ui, w| {
+            let mut fixed = known.map(|k| t(k).to_string());
+            let text = match fixed.as_mut() {
+                Some(f) => f,
+                None => &mut d.name,
+            };
+            let look = fields::Look { read_only: known.is_some(), ..Default::default() };
+            let _ = fields::joined(ui, text, "", w, look, Some(|ui: &mut egui::Ui| preset = preset_inner(ui, "readnet-preset", d.preset)));
+        });
+        st.field(ui, t(Key::SetNodes), None, None, |ui, _| input::area_hint(ui, &mut d.nodes, 2, t(Key::OnePerLine)));
+        st.pair(
+            ui,
+            |ui, st| st.field(ui, t(Key::BasisChain), None, None, |ui, w| fields::line(ui, &mut d.chain, "", w, mono)),
+            |ui, st| st.field(ui, t(Key::BasisFrom), None, None, |ui, w| fields::line(ui, &mut d.from, "", w, mono)),
+        );
+        st.field(ui, t(Key::SetRegistry), None, None, |ui, w| fields::line(ui, &mut d.registry, "", w, mono));
     });
-    field(ui, t(Key::BasisChain), None, |ui| input::mono(ui, &mut d.chain, ""));
-    field(ui, t(Key::SetRegistry), None, |ui| input::mono(ui, &mut d.registry, ""));
-    field(ui, t(Key::BasisFrom), None, |ui| input::mono(ui, &mut d.from, ""));
-    field(ui, t(Key::SetNodes), None, |ui| input::area(ui, &mut d.nodes, 2));
+    if let Some(i) = preset {
+        let c = crate::deploy::KNOWN[i].cells();
+        d.preset = Some(i);
+        d.chain = c.chain;
+        d.registry = c.registry;
+        d.from = c.from;
+        d.nodes = c.nodes;
+    }
 }
 
 /// The validity's three cells on the "write alone" sheet, in order: the unit's word, the most the cell takes,
 /// and the unit in seconds. Together they run from a minute to a year (`machine::LASTS_MIN`, `LASTS_MAX`).
 const CLI_SPAN: [(Key, u64, u64); 3] = [(Key::CliLastsDays, 365, 86_400), (Key::CliLastsHours, 23, 3_600), (Key::CliLastsMinutes, 59, 60)];
-/// One cell's width, the gap between a unit and the next cell, and the room above and below the rule.
-pub(super) const CLI_CELL_W: f32 = 64.0;
-const CLI_CELL_GAP: f32 = 20.0;
-const CLI_RULE_GAP: f32 = 18.0;
+/// The number in each third of the validity's box, and the room between it and its unit (`zikaron_ui::lasts`).
+pub(super) const CLI_SPAN_NUM_W: f32 = zikaron_ui::lasts::NUM_W;
+pub(super) const CLI_SPAN_GAP: f32 = zikaron_ui::lasts::GAP;
 
 /// The validity as typed on the "write alone" sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1630,31 +1963,17 @@ enum Span {
 /// then not read).
 fn cli_span(cells: &[String; 3], never: bool) -> Span {
     use crate::machine::{Lasts, LASTS_MAX};
+    use zikaron_ui::lasts::Read;
     if never {
         return Span::Lasts(Lasts::Never);
     }
-    if cells.iter().all(|x| x.is_empty()) {
-        return Span::Empty;
-    }
-    let n: [Option<u64>; 3] = std::array::from_fn(|i| if cells[i].is_empty() { Some(0) } else { cells[i].parse().ok() });
-    let over: [bool; 3] = std::array::from_fn(|i| n[i].is_none_or(|v| v > CLI_SPAN[i].1));
-    if over.contains(&true) {
-        return Span::Over(over);
-    }
-    match (0..3).map(|i| n[i].unwrap_or(0) * CLI_SPAN[i].2).sum::<u64>() {
-        0 => Span::Zero,
-        s if s > LASTS_MAX => Span::PastYear,
-        s => Span::Lasts(Lasts::Secs(s)),
-    }
-}
-
-/// One cell as typed, kept to digits without leading zeros.
-fn cli_cell(typed: &str) -> String {
-    let digits: String = typed.chars().filter(|ch| ch.is_ascii_digit()).collect();
-    match digits.trim_start_matches('0') {
-        "" if digits.is_empty() => String::new(),
-        "" => "0".to_string(),
-        rest => rest.to_string(),
+    let parts = CLI_SPAN.map(|(_, most, unit)| (most, unit));
+    match zikaron_ui::lasts::read(cells, &parts) {
+        Read::Empty => Span::Empty,
+        Read::Over(over) => Span::Over(std::array::from_fn(|i| over.get(i).copied().unwrap_or(false))),
+        Read::Total(0) => Span::Zero,
+        Read::Total(s) if s > LASTS_MAX => Span::PastYear,
+        Read::Total(s) => Span::Lasts(Lasts::Secs(s)),
     }
 }
 
@@ -1686,6 +2005,40 @@ pub(super) fn cli_expiry_said(expires: Option<u64>) -> String {
 mod cli_lasts_tests {
     use super::*;
 
+    /// The line under the validity box takes no room while it has no words; words open it to its height (a gap and
+    /// a small line), passing through the heights between, and it closes again when they go.
+    #[test]
+    fn the_line_under_the_box_takes_room_only_with_words() {
+        let ctx = egui::Context::default();
+        let _ = zikaron_ui::skin::dress(&ctx);
+        let mut t = 1.0;
+        let mut run = |words: &str, dt: f64| {
+            t += dt;
+            let mut h = 0.0;
+            let input = egui::RawInput { time: Some(t), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let top = ui.cursor().min.y;
+                passing_line(ui, egui::Id::new("line"), words, false);
+                h = ui.cursor().min.y - top;
+            });
+            h
+        };
+        assert_eq!(run("", 0.1), 0.0, "no words, no room");
+        let full = tk::S2 + Type::Small.line();
+        let mut seen = vec![run("Until 2026-10-21", 0.016)];
+        for _ in 0..30 {
+            seen.push(run("Until 2026-10-21", 0.016));
+        }
+        assert!((seen.last().copied().unwrap_or(0.0) - full).abs() < 0.5, "open: {seen:?}");
+        assert!(seen.iter().any(|h| *h > 0.5 && *h < full - 0.5), "through the heights between: {seen:?}");
+        let mut gone = 1.0;
+        for _ in 0..30 {
+            gone = run("", 0.016);
+        }
+        assert_eq!(gone, 0.0, "closed again once the words go");
+    }
+
     fn cells(d: &str, h: &str, m: &str) -> [String; 3] {
         [d.to_string(), h.to_string(), m.to_string()]
     }
@@ -1714,10 +2067,10 @@ mod cli_lasts_tests {
     /// A cell keeps digits only, without leading zeros; a typed zero stays one zero.
     #[test]
     fn a_cell_keeps_its_digits() {
-        assert_eq!(cli_cell("0012"), "12");
-        assert_eq!(cli_cell("1a2"), "12");
-        assert_eq!(cli_cell("000"), "0");
-        assert_eq!(cli_cell("x"), "");
+        assert_eq!(zikaron_ui::lasts::digits("0012"), "12");
+        assert_eq!(zikaron_ui::lasts::digits("1a2"), "12");
+        assert_eq!(zikaron_ui::lasts::digits("000"), "0");
+        assert_eq!(zikaron_ui::lasts::digits("x"), "");
     }
 
     /// The line under the switch: the expiry from now for a validity, each cell past its most by name, zero and
@@ -1733,4 +2086,26 @@ mod cli_lasts_tests {
         assert_eq!(cli_span_said(Span::Empty, 0), (String::new(), false));
         assert_eq!(cli_span_said(Span::Lasts(Lasts::Never), 0), (String::new(), false));
     }
+}
+
+/// A line under a field that takes room only while it has words (`bad`: in the warning ink): it opens to its height
+/// and fades in as words come, and closes and fades out with the last words as they go, the sheet following it.
+fn passing_line(ui: &mut egui::Ui, id: egui::Id, words: &str, bad: bool) {
+    let open = motion::flag(ui.ctx(), id.with("open"), !words.is_empty(), tk::MID);
+    let last = id.with("last");
+    if !words.is_empty() {
+        ui.ctx().data_mut(|d| d.insert_temp(last, (words.to_string(), bad)));
+    }
+    if open <= 0.0 {
+        return;
+    }
+    let (said, bad) = if words.is_empty() { ui.ctx().data(|d| d.get_temp::<(String, bool)>(last)).unwrap_or_default() } else { (words.to_string(), bad) };
+    if open < 1.0 {
+        zikaron_ui::flow::mark_moving(ui.ctx());
+    }
+    let full = tk::S2 + Type::Small.line();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), full * open), egui::Sense::hover());
+    let line = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + tk::S2), egui::vec2(rect.width(), Type::Small.line()));
+    let ink = if bad { c(C::BadInk) } else { c(C::Ink2) };
+    paint::at(&ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())), ui, line.left_center(), egui::Align2::LEFT_CENTER, &said, Type::Small, ink.gamma_multiply(open), line.width());
 }

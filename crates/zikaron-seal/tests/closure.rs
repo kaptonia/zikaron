@@ -1,6 +1,6 @@
 //! The sealed layer carries no window: its whole dependency closure, as the lock file records it, holds none of
 //! the window family, so the command line that depends on it stays a command line. Its third-party
-//! dependencies are the closed seven of its manifest.
+//! dependencies are the closed eight of its manifest (`k256` for the key agreement of an addressed record package).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,7 +48,7 @@ fn the_sealed_layers_closure_holds_no_window() {
 }
 
 #[test]
-fn the_sealed_layers_third_party_crates_are_the_closed_seven() {
+fn the_sealed_layers_third_party_crates_are_the_closed_eight() {
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).expect("the manifest");
     let deps = manifest.split("[dependencies]").nth(1).expect("dependencies");
     let third: BTreeSet<&str> = deps
@@ -58,5 +58,5 @@ fn the_sealed_layers_third_party_crates_are_the_closed_seven() {
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.contains("path ="))
         .filter_map(|l| l.split(" =").next())
         .collect();
-    assert_eq!(third, BTreeSet::from(["aes", "chacha20poly1305", "ctr", "hkdf", "hmac", "scrypt", "sha2"]));
+    assert_eq!(third, BTreeSet::from(["aes", "chacha20poly1305", "ctr", "hkdf", "hmac", "k256", "scrypt", "sha2"]));
 }

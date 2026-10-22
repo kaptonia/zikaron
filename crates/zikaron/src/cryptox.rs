@@ -47,20 +47,33 @@ pub fn is_low_s(s: &[u8; 32]) -> bool {
 /// Law §5.5: the last 20 bytes of keccak256 over the 64-byte X||Y of the uncompressed key.
 fn address_of_key(vk: &VerifyingKey) -> [u8; 20] {
     let pt = vk.to_encoded_point(false);
-    let xy = &pt.as_bytes()[1..];
-    let h = keccak256(xy);
+    let mut key = [0u8; 65];
+    key.copy_from_slice(pt.as_bytes());
+    address_of_pubkey(&key)
+}
+
+/// Law §5.5 over a public key in hand: the last 20 bytes of keccak256 over the 64-byte X||Y of the uncompressed
+/// key (65 bytes, `04` first; the first byte is not read).
+pub fn address_of_pubkey(key: &[u8; 65]) -> [u8; 20] {
+    let h = keccak256(&key[1..]);
     let mut a = [0u8; 20];
     a.copy_from_slice(&h[12..]);
     a
 }
 
-/// Law §5.4, last item: recover the key from (digest, r, s, i) and give its address; `None` when recovery
-/// fails. r and s have passed the range and low-s tests; recid is 0 or 1.
-pub fn recover_address(digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32], recid: u8) -> Option<[u8; 20]> {
+/// Law §5.4, last item, the key itself: recover the public key from (digest, r, s, i), uncompressed (65 bytes,
+/// `04` first); `None` when recovery fails. r and s have passed the range and low-s tests; recid is 0 or 1.
+pub fn recover_pubkey(digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32], recid: u8) -> Option<[u8; 65]> {
     let sig = Signature::from_scalars(*r, *s).ok()?;
     let rid = RecoveryId::from_byte(recid)?;
     let vk = VerifyingKey::recover_from_prehash(digest, &sig, rid).ok()?;
-    Some(address_of_key(&vk))
+    vk.to_encoded_point(false).as_bytes().try_into().ok()
+}
+
+/// Law §5.4, last item: recover the key from (digest, r, s, i) and give its address; `None` when recovery
+/// fails. r and s have passed the range and low-s tests; recid is 0 or 1.
+pub fn recover_address(digest: &[u8; 32], r: &[u8; 32], s: &[u8; 32], recid: u8) -> Option<[u8; 20]> {
+    recover_pubkey(digest, r, s, recid).map(|k| address_of_pubkey(&k))
 }
 
 /// Law §5.7: RFC 6979 deterministic nonce, low-s encoding; returns (r, s, v) with v in {27, 28}.
@@ -78,4 +91,25 @@ pub fn sign_digest(privkey: &[u8; 32], digest: &[u8; 32]) -> Option<([u8; 32], [
 pub fn address_of_privkey(privkey: &[u8; 32]) -> Option<[u8; 20]> {
     let sk = SigningKey::from_slice(privkey).ok()?;
     Some(address_of_key(sk.verifying_key()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The key recovered from a signature is the signer's, and its address is the one the signature recovers to.
+    #[test]
+    fn the_recovered_key_is_the_signers_and_its_address_the_recovered_address() {
+        let key = [0x2a; 32];
+        let digest = keccak256(b"a transaction's signing payload");
+        let (r, s, v) = sign_digest(&key, &digest).expect("signed");
+        let recid = v - 27;
+        let pubkey = recover_pubkey(&digest, &r, &s, recid).expect("recovered");
+        assert_eq!(pubkey[0], 4);
+        assert_eq!(Some(address_of_pubkey(&pubkey)), address_of_privkey(&key));
+        assert_eq!(recover_address(&digest, &r, &s, recid), address_of_privkey(&key));
+        // Another digest recovers another key.
+        let other = recover_pubkey(&keccak256(b"another payload"), &r, &s, recid);
+        assert_ne!(other.map(|k| address_of_pubkey(&k)), address_of_privkey(&key));
+    }
 }

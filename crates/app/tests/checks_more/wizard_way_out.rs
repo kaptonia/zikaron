@@ -64,11 +64,28 @@ fn the_ledger_page_offers_to_set_up_a_ledger_only_without_one() {
     let dir = home_dir("no-ledger");
     super::seated(&mut s, &dir);
     assert!(matches!(apply(&mut s, Action::OpenHome { root: dir.display().to_string() }), Applied::Homed { .. }));
+    // What opening the home started (the ledger and grants reads) lands first: the key is judged on a read ledger.
+    landed(&mut s);
     let (mut s, drawn, step) = app::window::probe_ledger_set_up(&ctx, s, W, H);
-    assert!(drawn, "the key is drawn on the ledger page with no ledger");
+    assert!(drawn, "the key is drawn on the ledger page with no ledger (in flight: {:?})", s.tasks.flying());
     assert_eq!(step, "Genesis", "pressing it opens the wizard at Create the ledger");
-    assert!(matches!(apply(&mut s, Action::Genesis { statement: "now one".into() }), Applied::Genesised { .. }));
+    let made = apply(&mut s, Action::Genesis { statement: "now one".into() });
+    assert!(matches!(made, Applied::Genesised { .. }), "genesis: {made:?} (in flight: {:?})", s.tasks.flying());
+    landed(&mut s);
     let (_, drawn, _) = app::window::probe_ledger_set_up(&ctx, s, W, H);
     assert!(!drawn, "with a ledger the key is not drawn");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Read the ledger and the grants and receive what is in flight until nothing is (bounded).
+fn landed(s: &mut app::shell::Shell) {
+    let _ = apply(s, Action::ReadLedger);
+    let _ = apply(s, Action::ReadGrants);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    s.drain();
+    while !s.tasks.flying().is_empty() && std::time::Instant::now() < until {
+        s.drain();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    s.drain();
 }

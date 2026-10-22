@@ -48,13 +48,14 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
         }
         assert!(!code_only(&text).contains("include_bytes!"), "{name} 里有 include_bytes!:字节只住 fonts.rs");
     }
-    // The table's embedded files: the first choices, and the fallbacks that are embedded (Windows falls back to
-    // the embedded Chinese face).
+    // The table's embedded files: the first choices, the fallbacks that are embedded (Windows falls back to
+    // the embedded Chinese face), and the Latin weights of medium and strong text.
     let mut declared: Vec<&str> = ROLES
         .iter()
         .filter(|(_, _, _, p)| *p == Place::Embedded)
         .map(|(_, f, _, _)| *f)
         .chain(zikaron_ui::fonts::FALLBACK.iter().filter(|(_, _, _, p)| *p == Place::Embedded).map(|(_, f, _, _)| *f))
+        .chain(zikaron_ui::fonts::LATIN_WEIGHTS.iter().map(|(_, f)| *f))
         .collect();
     declared.sort();
     declared.dedup();
@@ -121,6 +122,9 @@ fn the_two_colour_tables_hold_the_designed_values() {
         (C::Ok, "#2F9E44", "#3FB25A"),
         (C::Warn, "#D9A12C", "#E0A93A"),
         (C::Bad, "#D13B30", "#E5534B"),
+        (C::KeyFace, "#FFFFFF", "#2C2E33"),
+        (C::KeyFaceHover, "#FBFBFC", "#313338"),
+        (C::KeyFacePress, "#F1F2F4", "#26282C"),
     ] {
         assert_eq!(hex(LIGHT[at(k)]), l, "{k:?} in the light table");
         assert_eq!(hex(DARK[at(k)]), d, "{k:?} in the dark table");
@@ -128,6 +132,10 @@ fn the_two_colour_tables_hold_the_designed_values() {
     // The scrim darkens only: black at 30 % light, 50 % dark.
     assert_eq!((LIGHT[at(C::Scrim)].r(), LIGHT[at(C::Scrim)].a()), (0, 77), "light scrim is black at 30 %");
     assert_eq!((DARK[at(C::Scrim)].r(), DARK[at(C::Scrim)].a()), (0, 128), "dark scrim is black at 50 %");
+    // The translucent roles: a grey tone at 9 % light and white at 7 % dark; glass at 97 % in both.
+    assert_eq!(LIGHT[at(C::Tone)].a(), 23, "light tone at 9 %");
+    assert_eq!(DARK[at(C::Tone)].a(), 18, "dark tone at 7 %");
+    assert_eq!((LIGHT[at(C::Glass)].a(), DARK[at(C::Glass)].a()), (247, 247), "glass at 97 % (the design's 93 % has a blur under it this toolkit draws no)");
 }
 
 /// The appearance blend is one value for the whole process, and tests run side by side: a test that moves it
@@ -153,14 +161,20 @@ fn the_blend_moves_every_role_between_its_two_values() {
     set_blend(0.0);
 }
 
-/// Corners: card 12, keys and inputs 8, type tags 6, sheets 14, pills fully round.
+/// Corners: card 16, keys 17 (a capsule at 34 high), inputs 10, type tags 12, sheets 22, menus 14 with rows of
+/// 9, the segmented track 17 round a thumb of 15, pills fully round.
 #[test]
 fn the_corners_are_the_designed_family() {
-    use zikaron_ui::tokens::{Radius, PILL_H};
-    assert_eq!(Radius::Card.px(), 12.0, "card corners");
-    assert_eq!(Radius::Ctl.px(), 8.0, "key and input corners");
-    assert_eq!(Radius::Tag.px(), 6.0, "type tag corners");
-    assert_eq!(Radius::Sheet.px(), 14.0, "sheet corners");
+    use zikaron_ui::tokens::{Radius, KEY_H, PILL_H};
+    assert_eq!(Radius::Card.px(), 16.0, "card corners");
+    assert_eq!(Radius::Key.px(), 17.0, "key corners");
+    assert!(Radius::Key.px() >= KEY_H / 2.0, "a key is a capsule");
+    assert_eq!(Radius::Field.px(), 10.0, "input corners");
+    assert_eq!(Radius::Tag.px(), 12.0, "type tag corners");
+    assert_eq!(Radius::Sheet.px(), 22.0, "sheet corners");
+    assert_eq!(Radius::Menu.px(), 14.0, "menu corners");
+    assert_eq!(f32::from(zikaron_ui::band::corners(Radius::Menu.px(), 34.0).nw), Radius::Menu.px() - zikaron_ui::band::GAP, "a menu row's lit corners: the menu's less the gap");
+    assert_eq!((Radius::Track.px(), Radius::Thumb.px()), (17.0, 15.0), "segmented track and thumb");
     assert!(Radius::Pill.px() >= PILL_H / 2.0, "pills are fully round");
 }
 
@@ -212,15 +226,17 @@ fn the_spacing_and_sizes_are_the_designed_ones() {
     assert_eq!((k::LABEL_W, k::KV_ROW_GAP, k::KV_COL_GAP), (132.0, 14.0, 20.0), "key-value rows");
     assert_eq!((k::SWITCH_W, k::SWITCH_H, k::SEG_H), (34.0, 20.0, 34.0), "switch and segments");
     assert_eq!((k::PILL_H, k::TAG_H, k::TAG_MIN_W, k::MARK), (24.0, 24.0, 52.0, 18.0), "pills, tags and marks");
-    assert_eq!((k::SHEET_W, k::SHEET_WIDE, k::SHEET_XWIDE), (440.0, 520.0, 640.0), "sheet widths");
+    assert_eq!((k::SHEET_W, k::SHEET_WIDE, k::SHEET_XWIDE), (460.0, 520.0, 640.0), "sheet widths");
     assert_eq!(k::RAIL_W, 216.0, "the rail");
 }
 
-/// Motion: fast 120, middle 200, slow 300 ms; loops of 1.2 s.
+/// Motion: fast 120, middle 200, slow 300 ms as designed, each at the kit's pace (0.7 of those); loops of 1.2 s,
+/// which the pace does not touch.
 #[test]
 fn the_timings_are_the_designed_ones() {
     use zikaron_ui::tokens as k;
-    assert_eq!((k::FAST, k::MID, k::SLOW, k::CYCLE), (0.12, 0.2, 0.3, 1.2));
+    assert_eq!(k::PACE, 0.7);
+    assert_eq!((k::FAST, k::MID, k::SLOW, k::CYCLE), (0.12 * k::PACE, 0.2 * k::PACE, 0.3 * k::PACE, 1.2));
     // The eased-out curve ends where it should and never overshoots; the spring does, and comes back.
     use zikaron_ui::motion::Curve;
     assert!((Curve::Ease.at(1.0) - 1.0).abs() < 1e-4 && Curve::Ease.at(0.0).abs() < 1e-4);
@@ -383,7 +399,7 @@ fn one_key_shape_six_roles() {
     assert_eq!(hex(primary_fill()), "#3B82F6", "the primary key is the accent");
     assert_eq!(hex(commit_fill()), "#A83A2C", "the commit key is cinnabar");
     assert_eq!(hex(face(Role::Guide).text), "#A83A2C", "the guide key's words are cinnabar");
-    assert_eq!(hex(face(Role::Guide).fill), "#FFFFFF", "the guide key is white");
+    assert_eq!(hex(face(Role::Guide).fill), "#FFF6F5", "the guide key lies on the pale cinnabar wash");
     let faces: Vec<_> = Role::ALL.iter().map(|k| face(*k)).collect();
     for (i, a) in faces.iter().enumerate() {
         for b in &faces[..i] {
@@ -404,8 +420,8 @@ fn one_key_shape_six_roles() {
     let ctx = egui::Context::default();
     let _ = zikaron_ui::skin::dress(&ctx);
     let mut sizes = Vec::new();
-    let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() }, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() }, |root| {
+        egui::CentralPanel::default().show_inside(root, |ui| {
             for k in [Role::Primary, Role::Secondary, Role::Guide, Role::Commit] {
                 sizes.push(zikaron_ui::button::key(ui, "键", k, true).rect.height());
             }
@@ -426,8 +442,8 @@ fn the_parts_draw_and_read_egui_input() {
     let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() };
     input.dropped_files.push(egui::DroppedFile { path: Some("/tmp/a-dropped-file".into()), ..Default::default() });
     let mut got_drop = Vec::new();
-    let out = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    let out = ctx.run_ui(input, |root| {
+        egui::CentralPanel::default().show_inside(root, |ui| {
             seg::seg(ui, "s", &[seg::Cell::from("a"), seg::Cell::from("b")], 0);
             seg::tabs(ui, "t", &["a", "b"], 0);
             let mut on = true;
@@ -458,7 +474,7 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
     let run = |ctx: &egui::Context, t: &mut Toasts, time: f64, events: Vec<egui::Event>| {
         let mut rects = Vec::new();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), events, ..Default::default() };
-        let _ = ctx.run(input, |ctx| rects = t.draw(ctx, 216.0).rects);
+        let _ = ctx.run_ui(input, |root| rects = t.draw(root.ctx(), 216.0).rects);
         rects
     };
     t.say("已上链 1 条", Tone::Note, 0.0);
@@ -547,7 +563,7 @@ fn a_new_toast_enters_once_the_one_it_replaces_has_left() {
     let run = |ctx: &egui::Context, t: &mut Toasts, time: f64| {
         let mut rects = Vec::new();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), ..Default::default() };
-        let _ = ctx.run(input, |ctx| rects = t.draw(ctx, 216.0).rects);
+        let _ = ctx.run_ui(input, |root| rects = t.draw(root.ctx(), 216.0).rects);
         rects
     };
     t.say_full("无法与节点建立安全连接。", "请检查节点地址,或更换节点。", "NODE_TLS · TLS_CONNECT · via proxy http://127.0.0.1:9", Tone::Bad, 0.0);
@@ -585,8 +601,8 @@ fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
         // The pointer over the column's right part, so the floating bar shows.
         let events = if i > 0 { vec![egui::Event::PointerMoved(egui::pos2(520.0, 200.0))] } else { Vec::new() };
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
-        out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+        out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(root, |ui| {
                 zikaron_ui::full::centered(ui, "bar-room", screen, 420.0, 0.0, |ui| {
                     for _ in 0..20 {
                         let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
@@ -629,8 +645,8 @@ fn a_centred_field_draws_its_number_and_its_hint_in_the_middle() {
         let mut out = egui::FullOutput::default();
         for time in [0.0, 0.1] {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))), time: Some(time), ..Default::default() };
-            out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show_inside(root, |ui| {
                     field = input::field(ui, &mut text, "0", 64.0, Look { mono: true, centred, ..Default::default() }).rect;
                 });
             });

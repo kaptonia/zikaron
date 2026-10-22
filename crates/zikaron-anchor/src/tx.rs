@@ -23,6 +23,9 @@ pub struct Tx {
     pub chain_id: Option<u64>,
     /// The §9.1 sender; `None` when this grammar gives it none.
     pub sender: Option<[u8; 20]>,
+    /// The sender's public key (uncompressed, 65 bytes), recovered from the signature with the sender: the sender
+    /// is its address. `None` exactly when `sender` is.
+    pub pubkey: Option<[u8; 65]>,
     /// Recipient; `None` for a contract creation.
     pub to: Option<[u8; 20]>,
     /// Calldata in the §9.1 sense: the top-level `data` field, the bytes the sender signed.
@@ -190,7 +193,7 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
     let r = scalar32(v, "r").ok_or(Bad::Shape("r"))?;
     let sig_s = scalar32(v, "s").ok_or(Bad::Shape("s"))?;
 
-    let nothing = Tx { hash, chain_id: None, sender: None, to, input: input.clone(), block_number, tx_type, raw: Vec::new() };
+    let nothing = Tx { hash, chain_id: None, sender: None, pubkey: None, to, input: input.clone(), block_number, tx_type, raw: Vec::new() };
 
     // No signature (system or deposit types): no sender in this grammar.
     if is_zero(&r) && is_zero(&sig_s) {
@@ -303,8 +306,9 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
         return Err(Bad::HashMismatch);
     }
     let digest = cryptox::keccak256(&payload);
-    let sender = cryptox::recover_address(&digest, &r, &sig_s, recid);
-    Ok(Tx { hash, chain_id, sender, to, input, block_number, tx_type, raw })
+    let pubkey = cryptox::recover_pubkey(&digest, &r, &sig_s, recid);
+    let sender = pubkey.as_ref().map(cryptox::address_of_pubkey);
+    Ok(Tx { hash, chain_id, sender, pubkey, to, input, block_number, tx_type, raw })
 }
 
 
@@ -344,7 +348,7 @@ pub fn from_raw(raw: &[u8]) -> Option<Tx> {
         }
     });
     let input = body.get(data_at).and_then(|x| x.bytes()).map(<[u8]>::to_vec).unwrap_or_default();
-    let nothing = Tx { hash, chain_id: None, sender: None, to, input: input.clone(), block_number: None, tx_type, raw: raw.to_vec() };
+    let nothing = Tx { hash, chain_id: None, sender: None, pubkey: None, to, input: input.clone(), block_number: None, tx_type, raw: raw.to_vec() };
     if r.iter().all(|x| *x == 0) && s.iter().all(|x| *x == 0) {
         return Some(nothing);
     }
@@ -384,8 +388,9 @@ pub fn from_raw(raw: &[u8]) -> Option<Tx> {
         (p, Some(chain), y as u8)
     };
     let digest = cryptox::keccak256(&payload);
-    let sender = cryptox::recover_address(&digest, &r, &s, recid);
-    Some(Tx { hash, chain_id, sender, to, input, block_number: None, tx_type, raw: raw.to_vec() })
+    let pubkey = cryptox::recover_pubkey(&digest, &r, &s, recid);
+    let sender = pubkey.as_ref().map(cryptox::address_of_pubkey);
+    Some(Tx { hash, chain_id, sender, pubkey, to, input, block_number: None, tx_type, raw: raw.to_vec() })
 }
 
 fn scalar_of(item: &crate::rlp::Item) -> Option<[u8; 32]> {

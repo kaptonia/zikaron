@@ -248,4 +248,4 @@ fn text(x: &OsString, at: usize) -> String {
     }
 }
 
-pub const USAGE: &str = "usage: zikaron <keygen|init|history|grant|revoke|adopt|attest|succeed|annotate|retract|anchor|scan|audit|check-grant|chain-check|depth|fpm-sign|ack-sign|badge|kit-export|kit-verify|hand-over|take-over|show|contract> [--flag value ...]";
+pub const USAGE: &str = "usage: zikaron <keygen|init|history|grant|revoke|adopt|attest|succeed|annotate|retract|anchor|scan|audit|check-grant|chain-check|depth|fpm-sign|ack-sign|badge|kit-export|kit-verify|hand-over|take-over|show|contract|mcp> [--flag value ...]";

@@ -13,6 +13,8 @@ struct AlertLine {
     /// Where a click leads: the page itself, so arriving opens what the line is about (the check fold, the
     /// grouping by issuer).
     to: Option<Place>,
+    /// The watched item the line reads (none for a sentinel alarm).
+    item: Option<crate::watchx::Item>,
 }
 
 impl Win {
@@ -87,17 +89,20 @@ impl Win {
         apply(&mut self.shell, Action::Audit);
     }
 
-    /// The lines the alerts page shows. When the queue row says the same as the unanchored row above it and
-    /// leads to the same place, the two merge into one line. Sentinel alarms follow, one line each.
+    /// The lines the alerts page shows: only what needs attention — a watched item that warns or is bad; never
+    /// one that is fine or not yet read, never the whole-machine backup (its state lives in settings, local data,
+    /// and in the settings check). When the queue row says the same as the unanchored row above it and leads to
+    /// the same place, the two merge into one line. Sentinel alarms follow, one line each.
     fn alert_lines(&self) -> Vec<AlertLine> {
         let role = self.shell.settings.role;
         let mut out: Vec<AlertLine> = Vec::new();
         let mut above: Option<(String, Option<Place>)> = None;
-        for row in self.shell.watch_rows() {
+        let rows = self.ux.watch_rows.clone().unwrap_or_else(|| self.shell.watch_rows());
+        for row in crate::watchx::needing_attention(rows) {
             let said = match (row.gap, row.item) {
                 (Some(g), _) => gap_say(g),
                 (None, crate::watchx::Item::AuditLabel) => label_human(&row.detail),
-                (None, _) => t(Key::U3WatchAllGood).to_string(),
+                (None, _) => String::new(),
             };
             let go = row.gap.map(|g| gap_place(g, role));
             let same = (said.clone(), go);
@@ -106,7 +111,7 @@ impl Win {
             }
             above = Some(same);
             let to = row.gap.map(gap_target);
-            out.push(AlertLine { mark: light_mark(row.light), title: t(item_key(row.item)).to_string(), said, go, to });
+            out.push(AlertLine { mark: light_mark(row.light), title: t(item_key(row.item)).to_string(), said, go, to, item: Some(row.item) });
         }
         for a in &self.shell.alarms {
             let said = match a.kind {
@@ -114,28 +119,38 @@ impl Win {
                 crate::sentinelx::Kind::Handed => t(Key::AlarmHandedPlain).to_string(),
             };
             let go = Some(crate::nav::home_of(Page::Vault, role));
-            out.push(AlertLine { mark: Mark::Bad, title: t(Key::PageSentinel).to_string(), said, go, to: go });
+            out.push(AlertLine { mark: Mark::Bad, title: t(Key::PageSentinel).to_string(), said, go, to: go, item: None });
         }
         out
     }
 
-    /// The rail's count: the lines on the alerts page that need something done.
+    /// The rail's count: the lines on the alerts page (each one needs something done).
     pub(super) fn alert_count(&self) -> usize {
-        self.alert_lines().iter().filter(|l| matches!(l.mark, Mark::Warn | Mark::Bad)).count()
+        self.alert_lines().len()
     }
 
-    /// Alerts: a mark, the item and its state; "go to …" on the right when something needs doing, and the whole
-    /// line leads there.
+    /// Alerts: a mark, the item and its state. Entries waiting to go on chain carry "put all on chain" at the
+    /// line's end; every other line is clicked whole and leads where it is handled (its chevron says so).
+    /// Nothing to attend to: a check and one sentence in the card.
     pub(super) fn alerts_page(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_rows(now);
         self.ensure_grants(now);
         let lines = self.alert_lines();
-        let links: Vec<Option<String>> = lines.iter().map(|l| l.go.map(|p| fill1(Key::GoPlace, self.place_title(p)))).collect();
+        let can_send = self.shell.queue.sendable() > 0 || self.shell.rows.as_ref().is_some_and(|(r, _)| !crate::kitx::unanchored(&r.iter().collect::<Vec<_>>()).1.is_empty());
         let mut go: Option<Place> = None;
+        let mut send = false;
         stagger(ui, 0, |ui| {
+            if lines.is_empty() {
+                card::card_pad(ui, egui::vec2(ALL_CLEAR_PAD_X, ALL_CLEAR_PAD_Y), |ui| all_clear(ui, t(Key::AlertsNone)));
+                return;
+            }
             card::form(ui, |ui, f| {
-                for (l, link) in lines.iter().zip(&links) {
-                    if f.big(ui, Some(l.mark), &l.title, &l.said, link.as_deref()).clicked() {
+                for l in &lines {
+                    let sends = matches!(l.item, Some(crate::watchx::Item::Unanchored | crate::watchx::Item::QueueBacklog)) && can_send;
+                    if sends {
+                        let (_, hit) = f.line(ui, Some(card::Lead::Mark(l.mark)), &l.title, &l.said, false, false, c(C::Ink), |ui| key::key(ui, t(Key::U3SendAll), Role::Secondary, true).clicked());
+                        send |= hit;
+                    } else if f.big(ui, Some(l.mark), &l.title, &l.said, l.go.map(|_| "")).clicked() {
                         go = l.to;
                     }
                 }
@@ -144,27 +159,30 @@ impl Win {
         // The last chain read's sentence with its code goes under details; the rail says it in plain words.
         if let Some((k, detail)) = self.shell.status.clone() {
             stagger(ui, 1, |ui| {
-                card::card(ui, |ui| {
-                    fold::fold(ui, "watch-status", t(Key::SetEvidence), |ui| paint::text(ui, &fill1(k, &detail), Type::MonoSmall, c(C::Ink2)));
+                card::form(ui, |ui, f| {
+                    let _ = f.fold(ui, "watch-status", t(Key::SetEvidence), "", |ui, f| f.note(ui, &fill1(k, &detail)));
                 });
             });
+        }
+        if send {
+            self.send_all_unanchored(now);
         }
         if let Some(p) = go {
             self.go(p, now);
         }
     }
+}
 
-    /// A place's name as the rail says it (links are named after where they land).
-    pub(super) fn place_title(&self, place: Place) -> &'static str {
-        use crate::nav::{tab, View};
-        match crate::nav::settle(place, self.shell.settings.role) {
-            Place::Home => t(Key::NavHome),
-            Place::SettingsHome | Place::Settings(_) => t(Key::NavSettings),
-            Place::View(View::Grants, tab::GRANTS_NEW) => t(Key::V2NewGrant),
-            Place::View(View::MyGrants, tab::HELD_RELICENSE) => t(Key::U4RelicenseTitle),
-            Place::View(View::Works, tab::WORKS_KIT) => t(Key::U3UseForKit),
-            Place::View(v, _) => t(v.key()),
-            Place::Page(p) => p.title(),
-        }
-    }
+/// The all-clear card's padding: 20 at the sides, 44 above and below.
+const ALL_CLEAR_PAD_X: f32 = 20.0;
+const ALL_CLEAR_PAD_Y: f32 = 44.0;
+
+/// The all-clear state: a large check, 10 below it one sentence in the second ink, centred.
+fn all_clear(ui: &mut egui::Ui, s: &str) {
+    const MARK: f32 = 40.0;
+    let w = ui.available_width();
+    let text = paint::galley(ui, s, Type::Body, c(C::Ink2));
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, MARK + 10.0 + text.size().y), egui::Sense::hover());
+    mark::paint_mark(ui.ctx(), ui.painter(), egui::pos2(rect.center().x, rect.top() + MARK / 2.0), Mark::Ok, MARK);
+    ui.painter().galley(egui::pos2(rect.center().x - text.size().x / 2.0, rect.top() + MARK + 10.0), text, c(C::Ink2));
 }

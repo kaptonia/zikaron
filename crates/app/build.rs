@@ -3,15 +3,23 @@
 //! `about::NOTICES` embeds them. The build fails if the notices cannot be generated.
 //!
 //! On Windows targets it also writes a compiled resource file (version info and icon) directly, without a
-//! resource compiler, and passes it to the linker.
+//! resource compiler, and passes it to the linker. On macOS targets it records that the app is built for
+//! SDK 26 (`macos_sdk.rs`).
 
 use std::path::{Path, PathBuf};
+
+include!("macos_sdk.rs");
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir.join("../..");
     println!("cargo:rerun-if-changed={}", workspace.join("Cargo.lock").display());
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=macos_sdk.rs");
+    println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    if let Some(arg) = macos_sdk_link_arg() {
+        println!("cargo:rustc-link-arg-bins={arg}");
+    }
     let target = std::env::var("TARGET").expect("TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let notices = zikaron_pack::notices::make(&cargo, &workspace.join("Cargo.toml"), &target, &["app"], &[])

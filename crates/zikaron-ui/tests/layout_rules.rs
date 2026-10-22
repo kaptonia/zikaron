@@ -102,10 +102,11 @@ fn wheel_over_nested(frames: usize, nested: bool) -> (f32, f32) {
         let mut events = Vec::new();
         if inner_rect.is_positive() {
             events.push(egui::Event::PointerMoved(inner_rect.center()));
-            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), modifiers: egui::Modifiers::NONE });
+            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE });
         }
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))), time: Some(i as f64 / 60.0), events, ..Default::default() };
-        let _ = ctx.run(input, |ctx| {
+        let _ = ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             egui::Area::new(egui::Id::new("window")).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 let outer = zikaron_ui::scroll::page(ui, egui::ScrollArea::vertical().id_salt("outer").max_height(560.0), |ui| {
                     for k in 0..10 {
@@ -151,10 +152,11 @@ fn a_nested_area_with_nothing_more_to_show_lets_the_wheel_reach_the_page() {
         let mut events = Vec::new();
         if inner_rect.is_positive() {
             events.push(egui::Event::PointerMoved(inner_rect.center()));
-            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), modifiers: egui::Modifiers::NONE });
+            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE });
         }
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))), time: Some(i as f64 / 60.0), events, ..Default::default() };
-        let _ = ctx.run(input, |ctx| {
+        let _ = ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             egui::Area::new(egui::Id::new("window")).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 outer_y = zikaron_ui::scroll::page(ui, egui::ScrollArea::vertical().id_salt("outer").max_height(560.0), |ui| {
                     ui.label("页面行");
@@ -196,10 +198,11 @@ fn a_nested_area_under_another_layer_keeps_nothing_of_its_wheel() {
         let mut events = Vec::new();
         if top_rect.is_positive() {
             events.push(egui::Event::PointerMoved(top_rect.center()));
-            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), modifiers: egui::Modifiers::NONE });
+            events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -3.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE });
         }
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))), time: Some(i as f64 / 60.0), events, ..Default::default() };
-        let _ = ctx.run(input, |ctx| {
+        let _ = ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             egui::Area::new(egui::Id::new("window")).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 under_y = zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("under").max_height(300.0), |ui| lines(ui, "页面行")).state.offset.y;
             });
@@ -223,7 +226,8 @@ fn a_cell_keeps_its_id_whatever_was_laid_before_it() {
     let id_with = |above: bool| {
         let mut got = None;
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() };
-        let _ = ctx.run(input, |ctx| {
+        let _ = ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             egui::Area::new(egui::Id::new("window")).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 if above {
                     ui.label("一行在上");
@@ -234,4 +238,26 @@ fn a_cell_keeps_its_id_whatever_was_laid_before_it() {
         got.expect("drawn")
     };
     assert_eq!(id_with(false), id_with(true), "the same cell, the same id");
+}
+
+/// A field's name stands as far over its control as the credential sheet's validity row's name stands over its
+/// box: the name centred on a key's height, then the row's gap (`fields::name_gap`).
+#[test]
+fn a_fields_name_stands_over_its_control_by_the_one_measure() {
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let (mut name_bottom, mut control_top) = (0.0, 0.0);
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), ..Default::default() };
+    let _ = ctx.run_ui(input, |ui| {
+        zikaron_ui::fields::stack(ui, |ui, st| {
+            let top = ui.cursor().min.y;
+            st.field(ui, "本机口令", None, None, |ui, w| {
+                control_top = ui.cursor().min.y;
+                let _ = ui.allocate_exact_size(egui::vec2(w, 44.0), egui::Sense::hover());
+            });
+            name_bottom = top + zikaron_ui::tokens::Type::Note.line();
+        });
+    });
+    let reference = (zikaron_ui::tokens::KEY_H - zikaron_ui::tokens::Type::Note.line()) / 2.0 + zikaron_ui::tokens::S2;
+    assert!((control_top - name_bottom - reference).abs() < 0.5, "name to control {} against the validity row's {reference}", control_top - name_bottom);
 }

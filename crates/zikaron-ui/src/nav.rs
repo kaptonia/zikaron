@@ -158,8 +158,13 @@ pub trait Pages {
     fn name(&self, route: &Self::Route) -> String;
     /// Whether a page is a detail (its large title is in the page).
     fn detail(&self, route: &Self::Route) -> bool;
-    /// A page's toolbar title.
+    /// A page's title.
     fn title(&self, route: &Self::Route) -> String;
+    /// Whether a page's title stands in the toolbar (a settings section's); every other page says its title once,
+    /// at the top of the page itself (a detail page in its own large title), and its toolbar carries no words.
+    fn title_in_bar(&self, _route: &Self::Route) -> bool {
+        true
+    }
     /// The keys at the right of a place's own page's toolbar.
     fn toolbar(&mut self, ui: &mut egui::Ui, route: &Self::Route, now: f64);
     /// A page's body.
@@ -312,6 +317,8 @@ pub fn entry_key(ctx: &egui::Context) -> u64 {
 pub fn page_area<T: Pages + ?Sized>(ui: &mut egui::Ui, t: &mut T, tips: (&str, &str), now: f64) {
     let ctx = ui.ctx().clone();
     let full = ui.max_rect();
+    // The page ground's faint accent wash in its top left corner, under everything on the page.
+    crate::material::ground_tint(ui.painter(), full);
     let route = route(t);
     let root = t.root_place(&route).is_some();
     let detail = !root && t.detail(&route);
@@ -324,6 +331,7 @@ pub fn page_area<T: Pages + ?Sized>(ui: &mut egui::Ui, t: &mut T, tips: (&str, &
     if detail {
         probe::inner_head(&ctx, &title);
     }
+    let in_bar = t.title_in_bar(&route);
     let (back_on, fwd_on) = {
         let h = hist(t);
         (!h.back.is_empty(), !h.fwd.is_empty())
@@ -331,11 +339,11 @@ pub fn page_area<T: Pages + ?Sized>(ui: &mut egui::Ui, t: &mut T, tips: (&str, &
     probe::history(&ctx, back_on, fwd_on);
     let bar = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), tk::TOOLBAR_H));
     ui.allocate_rect(bar, egui::Sense::hover());
-    // A detail page carries its large title in the page; the toolbar's title shows only once that has scrolled
-    // away.
+    // The title is said once: in the toolbar for a settings section, else at the top of the page (a detail page
+    // in its own large title).
     let scroll_y = t.frame().scroll_y;
-    let title_alpha = if detail { if scroll_y > 44.0 { 1.0 } else { 0.0 } } else { 1.0 };
-    let (moved, _) = toolbar::toolbar(ui, bar, &title, title_alpha, (back_on, fwd_on), scroll_y > 4.0, tips, |ui| {
+    let bar_title = if in_bar { title.as_str() } else { "" };
+    let (moved, _) = toolbar::toolbar(ui, bar, bar_title, 1.0, (back_on, fwd_on), scroll_y > 4.0, tips, |ui| {
         if root {
             probe::head_keys(ui.ctx());
             t.toolbar(ui, &route, now);
@@ -358,19 +366,40 @@ pub fn page_area<T: Pages + ?Sized>(ui: &mut egui::Ui, t: &mut T, tips: (&str, &
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(ENTRY_KEY), key));
     let p = motion::enter(&ctx, egui::Id::new("zikaron-page-entry"), key, 0.0, how.dur(), motion::Curve::Ease);
     let (off, alpha) = how.at(p);
+    let off = off * motion::travel(&ctx);
+    let scale = 1.0 + (how.scale(p) - 1.0) * motion::travel(&ctx);
+    let start = crate::flow::mark(&ctx, body.layer_id());
     let route_salt = motion::key_of(&(stack, name, key));
     let shown = crate::scroll::page(&mut body, egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt(("page", route_salt)).auto_shrink([false, false]), |ui| {
+        // A page whose title is in the toolbar keeps a breath between the toolbar and its first block.
+        let top = tk::S3;
         egui::Frame::new()
-            .inner_margin(egui::Margin { left: tk::PAGE_PAD as i8, right: tk::PAGE_PAD as i8, top: tk::S3 as i8, bottom: tk::PAGE_PAD as i8 })
+            .inner_margin(egui::Margin { left: tk::PAGE_PAD as i8, right: tk::PAGE_PAD as i8, top: top as i8, bottom: tk::PAGE_PAD as i8 })
             .show(ui, |ui| {
                 width::body(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = tk::CARD_GAP;
-                    motion::shifted(ui, off, alpha, |ui| {
-                        ui.spacing_mut().item_spacing.y = tk::CARD_GAP;
+                    ui.spacing_mut().item_spacing.y = tk::BLOCK_GAP;
+                    motion::shifted(ui, off, alpha, key, |ui| {
+                        ui.spacing_mut().item_spacing.y = tk::BLOCK_GAP;
+                        if !in_bar && !detail {
+                            crate::paint::text(ui, &title, crate::tokens::Type::Page, crate::palette::c(crate::palette::C::Ink));
+                        }
                         t.body(ui, &route, now);
                     });
                 });
             });
     });
+    // The page grows into place as a whole (its shapes scaled about the page's middle, its clip kept).
+    if scale < 1.0 {
+        let c = body_rect.center().to_vec2();
+        let tr = egui::emath::TSTransform { scaling: scale, translation: c * (1.0 - scale) };
+        ctx.graphics_mut(|g| {
+            if let Some(l) = g.get_mut(body.layer_id()) {
+                let end = l.next_idx().0;
+                for i in start..end {
+                    l.mutate_shape(egui::layers::ShapeIdx(i), |cs| cs.shape.transform(tr));
+                }
+            }
+        });
+    }
     t.frame_mut().scroll_y = shown.state.offset.y;
 }

@@ -547,6 +547,10 @@ pub fn machine_doc(rel: &str) -> Option<Doc> {
     None
 }
 
+/// The file earlier versions kept a first-grant checklist in. Nothing writes or reads it now; a home that still
+/// has one keeps it sealed with the rest (resealed under a new master key, carried in a whole-machine backup).
+pub const FIRST_WINDOW_FILE: &str = "first-window.json";
+
 /// The kind of a home file by its relative path (`None`: not sealed local data, e.g. record bundles exported
 /// into `kits/`, lock files, temporary files).
 pub fn home_doc(rel: &str) -> Option<Doc> {
@@ -556,7 +560,7 @@ pub fn home_doc(rel: &str) -> Option<Doc> {
     match parts.as_slice() {
         [s, f] if *s == settings && *f == crate::settings::FILE => Some(Doc::Settings),
         [s, f] if *s == settings && *f == crate::queue::FILE => Some(Doc::Queue),
-        [s, f] if *s == settings && *f == crate::wizard::FILE => Some(Doc::FirstWindow),
+        [s, f] if *s == settings && *f == FIRST_WINDOW_FILE => Some(Doc::FirstWindow),
         [s, f] if *s == settings && *f == crate::lastread::ANCHORED_FILE => Some(Doc::LastAudit),
         [s, f] if *s == settings && *f == crate::restorex::FILE => Some(Doc::Unfetched),
         [s, f] if *s == settings && *f == LABEL_FILE => Some(Doc::HomeLabel),

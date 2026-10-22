@@ -120,6 +120,8 @@ pub enum Kind {
     Archive,
     /// Ask the chain once: balance and chain time. Network calls never happen in the frame.
     Chain,
+    /// Ask the chain for its time alone (the latest block's), for a new grant's start: no key, no balance.
+    ChainTime,
     /// Reconcile once: assemble the audit input and have the core write the report.
     Reconcile,
     /// The self-audit clock: scan the chain, assemble the input, the core writes the report.
@@ -206,6 +208,12 @@ pub enum Kind {
     /// "Enable command line": putting the command line on the terminal's command path or taking it off
     /// (`zikaron_os::cli_path`), which may wait on the system's administrator dialog.
     CliPath,
+    /// Switch seat: the register written and the other seat's home opened and read, never in the frame; the shell
+    /// moves into it where it lands (`action::seat_landed`).
+    Seat,
+    /// Take a record package's originals out into a folder: the package read again and judged, the originals laid
+    /// out, checked and placed, never in the frame (`zikaron_glue::extract`).
+    Extract,
 }
 
 impl Kind {
@@ -214,10 +222,11 @@ impl Kind {
         match self {
             // What an interruption would leave half written: a key file, a backup, an export folder, a badge,
             // the key store's own pass, a reconciliation's report.
-            Kind::Keystore | Kind::Backup | Kind::Kit | Kind::Badge | Kind::Vault | Kind::Reconcile | Kind::Migrate => true,
+            Kind::Keystore | Kind::Backup | Kind::Kit | Kind::Badge | Kind::Vault | Kind::Reconcile | Kind::Migrate | Kind::Seat | Kind::Extract => true,
             // Network kinds (a node answers when it answers; each lands whole or not at all, and what it leaves
             // on disk is designed to be picked up again), and read-only kinds.
             Kind::Chain
+            | Kind::ChainTime
             | Kind::Audit
             | Kind::Anchor
             | Kind::Fetch
@@ -255,7 +264,7 @@ impl Kind {
     /// new kind must decide.
     pub fn writes_local(self) -> bool {
         match self {
-            Kind::Fetch | Kind::Audit | Kind::Review | Kind::Anchor | Kind::Reconcile | Kind::Keystore | Kind::Record | Kind::Migrate => true,
+            Kind::Fetch | Kind::Audit | Kind::Review | Kind::Anchor | Kind::Reconcile | Kind::Keystore | Kind::Record | Kind::Migrate | Kind::Seat => true,
             Kind::SelfCheck
             | Kind::Archive
             | Kind::Chain
@@ -281,12 +290,14 @@ impl Kind {
             | Kind::Basis
             | Kind::Gas
             | Kind::Take
+            | Kind::Extract
             | Kind::Path
-            | Kind::CliPath => false,
+            | Kind::CliPath
+            | Kind::ChainTime => false,
         }
     }
 
-    pub const ALL: [Kind; 35] = [
+    pub const ALL: [Kind; 38] = [
         Kind::SelfCheck,
         Kind::Archive,
         Kind::Chain,
@@ -322,6 +333,9 @@ impl Kind {
         Kind::Migrate,
         Kind::Path,
         Kind::CliPath,
+        Kind::Seat,
+        Kind::Extract,
+        Kind::ChainTime,
     ];
 
     /// Whether this kind's readings follow the ledger's source. Exhaustive, so a new kind must decide. Those
@@ -347,7 +361,7 @@ impl Kind {
             | Kind::Take
             | Kind::Record
             | Kind::Migrate => true,
-            Kind::SelfCheck | Kind::Anchor | Kind::Kit | Kind::Book | Kind::Diligence | Kind::Verify | Kind::Delivery | Kind::Badge | Kind::Check | Kind::Keystore | Kind::Vault | Kind::Publish | Kind::Fetch | Kind::Vet | Kind::Backup | Kind::ReadNet | Kind::Path | Kind::CliPath => false,
+            Kind::SelfCheck | Kind::Anchor | Kind::Kit | Kind::Book | Kind::Diligence | Kind::Verify | Kind::Delivery | Kind::Badge | Kind::Check | Kind::Keystore | Kind::Vault | Kind::Publish | Kind::Fetch | Kind::Vet | Kind::Backup | Kind::ReadNet | Kind::Path | Kind::CliPath | Kind::Seat | Kind::Extract | Kind::ChainTime => false,
         }
     }
 
@@ -388,6 +402,9 @@ impl Kind {
             Kind::Migrate => "migrate",
             Kind::Path => "path",
             Kind::CliPath => "clipath",
+            Kind::Seat => "seat",
+            Kind::Extract => "extract",
+            Kind::ChainTime => "chainTime",
         }
     }
 }
@@ -414,6 +431,10 @@ pub enum Done {
     Hashed { note_md: String, for_: Option<crate::anchorx::For>, files: Vec<(String, Result<crate::anchorx::Content, crate::fault::Fault>)> },
     /// This home was copied to `root` and the pointer written (`Kind::Migrate`); `old` is where it was.
     Copied { old: std::path::PathBuf, root: std::path::PathBuf },
+    /// The other seat entered on disk (`Kind::Seat`): what the shell moves into where it lands.
+    Seated(Seated),
+    /// A record package's originals were taken out (`Kind::Extract`): what was placed, and the records left.
+    Extracted { landed: zikaron_glue::extract::Landed, left: Vec<zikaron_glue::extract::Left> },
     /// The exit gate passed for this export, read for the home at `root`; the export itself runs where this
     /// lands.
     GatePassed { root: Option<std::path::PathBuf>, then: Box<crate::action::Action>, pass: Box<crate::exitgate::Pass> },
@@ -422,7 +443,7 @@ pub enum Done {
     /// A backup was opened with its password (nothing here changed).
     BackupSeen { summary: crate::backup::Summary },
     /// Attachment digests: each path as given, with its content-form hex32 or an error.
-    Vetted(Vec<(String, Result<String, crate::fault::Fault>)>),
+    Vetted(Vec<(String, Result<Vec<String>, crate::fault::Fault>)>),
     Check(crate::probe::Report),
     /// A home reading: bytes used, ledger entries, stray files.
     Archive {
@@ -437,6 +458,8 @@ pub enum Done {
         /// could not be counted (a file that does not open, a locked vault, machine settings that do not read).
         machine_items: Result<u64, crate::fault::Fault>,
     },
+    /// The chain's time, the latest block's (`Kind::ChainTime`).
+    ChainTime(u64),
     /// Chain readings. `None` means "not read", which the screen keeps apart from "read as zero".
     Chain {
         gas_wei: Option<u128>,
@@ -482,8 +505,10 @@ pub enum Done {
     /// index row records them, not the home open when it lands). Attachments from the interface that did not
     /// go in (paths as given): `left_out` were no longer originals of the chosen records when the kit was
     /// written; `unreadable` could not be read then (missing, no permission, symlink, device). Each is
-    /// reported separately.
-    Kit { root: std::path::PathBuf, publish: Option<String>, path: String, kit_id: String, entries: usize, files: usize, pulled: Vec<String>, dropped: Vec<String>, left_out: Vec<String>, unreadable: Vec<(String, crate::fault::Fault)> },
+    /// reported separately. `originals`: the package paths of the originals that went in.
+    /// `facts`: what the index row records of the package, read from the plain package by the export (a sealed one's
+    /// one-time key among them, never its recipient).
+    Kit { root: std::path::PathBuf, publish: Option<String>, path: String, kit_id: String, entries: usize, files: usize, pulled: Vec<String>, dropped: Vec<String>, originals: Vec<String>, left_out: Vec<String>, unreadable: Vec<(String, crate::fault::Fault)>, facts: crate::kitsindex::RowFacts },
     /// A grant table.
     Grants { r#gen: u64, rows: Vec<crate::grantx::Row> },
     /// Checked adoption rows, with the text they were checked against (the results count only for that text).
@@ -950,4 +975,26 @@ fn panic_said(p: &(dyn std::any::Any + Send)) -> String {
         return s.clone();
     }
     crate::lang::t(crate::lang::Key::Tail219Opaque).to_string()
+}
+
+/// What a seat switch read in the background, held once: the shell takes it where the task lands (`Done` is
+/// cloned as it is handed on, and an opened home with its lock is had once).
+#[derive(Clone)]
+pub struct Seated(pub std::sync::Arc<std::sync::Mutex<Option<crate::action::Seating>>>);
+
+impl Seated {
+    pub fn new(s: crate::action::Seating) -> Seated {
+        Seated(std::sync::Arc::new(std::sync::Mutex::new(Some(s))))
+    }
+
+    /// What it holds, the first time it is asked.
+    pub fn take(&self) -> Option<crate::action::Seating> {
+        self.0.lock().ok().and_then(|mut s| s.take())
+    }
+}
+
+impl std::fmt::Debug for Seated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Seated")
+    }
 }

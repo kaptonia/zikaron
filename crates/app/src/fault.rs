@@ -8,7 +8,6 @@
 //! 3. Evidence tail: both branches carry `tail`, and both constructors of [`Fault`] require it, so the
 //!    original error text cannot be lost.
 
-use std::io::ErrorKind;
 
 /// The closed table of known errors. It grows together with its plain words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -19,6 +18,8 @@ pub enum Known {
     FileMissing,
     /// No permission.
     Denied,
+    /// The system says a place on the way is not a folder (a file stands where a folder is expected).
+    NotAFolder,
     /// The local key vault does not hold this key.
     KeychainMissing,
     /// The system's entropy gave no usable key.
@@ -267,6 +268,45 @@ pub enum Known {
     KitFileBad,
     /// A record package asked for in a form that is not one of the two (`file`, `folder`; the word in the evidence).
     KitFormWord,
+    /// A record package's originals asked for with a word that is not `none` (the word in the evidence).
+    KitOriginalsWord,
+    /// Taking originals out: the package does not pass the kit law, or a single file does not read as one, when it is read
+    /// again to take them out (the verdict or the layout's code in the evidence).
+    ExtractKit,
+    /// Taking originals out: a path in the package is not a kit path (kit law §7.2).
+    ExtractPath,
+    /// Taking originals out: the package holds no original that matches its record.
+    ExtractNothing,
+    /// Taking originals out: two originals would take one name (the names in the evidence).
+    ExtractClash,
+    /// Taking originals out: what was chosen is not a folder.
+    ExtractNotFolder,
+    /// Taking originals out: the chosen folder holds items with these names already (in the evidence); nothing written.
+    ExtractExists,
+    /// Taking originals out: a link stands at a name in the chosen folder; never followed, nothing written.
+    ExtractLink,
+    /// Taking originals out: an original laid out does not match its record (the package changed meanwhile).
+    ExtractChanged,
+    /// Taking originals out: writing to disk failed, and what was placed was taken back.
+    ExtractLanding,
+    /// A record package addressed to one key: no identity on this machine opens it (none is its recipient); nothing opened is kept.
+    AddressedNotRecipient,
+    /// A record package addressed to one key: a segment after the first does not pass (changed, cut short, reordered, bytes added); nothing opened is kept (the segment in the evidence).
+    AddressedBroken,
+    /// A record package addressed to one key whose head does not read (cut short, a version not read here, a one-time key off the curve).
+    AddressedHead,
+    /// A record package addressed to one key, met where record packages are read for someone else's material: it is opened on the verify page only.
+    AddressedElsewhere,
+    /// The recipient's public key given is not a point of the curve (33 bytes compressed or 65 uncompressed); nothing exported.
+    AddressedKeyShape,
+    /// A record package addressed both to an address and to a public key: one is given, not both; nothing exported.
+    AddressedBoth,
+    /// A record package addressed to one key asked for as a folder: only the one-file form is sealed; nothing exported.
+    AddressedFolder,
+    /// Every network read through by every node, and no anchor this address signed: its key is not on chain; nothing exported.
+    AddressNotAnchored,
+    /// No key found for this address, and some network was not read through (each node's words in the evidence); nothing exported.
+    AddressChainUnread,
     /// Fetched file by file from the manifest and handed to the same kit verification.
     RemoteKit,
     /// The remote answered a status other than 200.
@@ -407,10 +447,52 @@ impl Known {
         Known::NodeRefused,
     ];
 
-    pub const ALL: [Known; 177] = [
+    /// Whether a refusal is the absence of an answer rather than a negative one (`zikaron/1` §9.4): the network kind
+    /// ([`Known::NETWORK`]), and an addressed package's chain not read through (`Why::unanswered`). The door marks
+    /// it so (the command line exits 4), whatever line of the window shows it: the status line takes the network
+    /// kind only, and a chain not read for sealing is said by a notice.
+    pub fn unanswered(self) -> bool {
+        Known::NETWORK.contains(&self) || self.addressed().is_some_and(zikaron_seal::addressed::Why::unanswered)
+    }
+
+    /// The addressed package's refusal this member is, in its one table.
+    pub fn addressed(self) -> Option<zikaron_seal::addressed::Why> {
+        use zikaron_seal::addressed::Why;
+        Some(match self {
+            Known::AddressedNotRecipient => Why::NotRecipient,
+            Known::AddressedBroken => Why::Broken,
+            Known::AddressedHead => Why::Head,
+            Known::AddressedElsewhere => Why::Elsewhere,
+            Known::AddressedKeyShape => Why::KeyShape,
+            Known::AddressedBoth => Why::Both,
+            Known::AddressedFolder => Why::Folder,
+            Known::AddressNotAnchored => Why::NotAnchored,
+            Known::AddressChainUnread => Why::ChainUnread,
+            _ => return None,
+        })
+    }
+
+    /// The member an addressed package's refusal is.
+    pub fn of_addressed(why: zikaron_seal::addressed::Why) -> Known {
+        use zikaron_seal::addressed::Why;
+        match why {
+            Why::NotRecipient => Known::AddressedNotRecipient,
+            Why::Broken => Known::AddressedBroken,
+            Why::Head => Known::AddressedHead,
+            Why::Elsewhere => Known::AddressedElsewhere,
+            Why::KeyShape => Known::AddressedKeyShape,
+            Why::Both => Known::AddressedBoth,
+            Why::Folder => Known::AddressedFolder,
+            Why::NotAnchored => Known::AddressNotAnchored,
+            Why::ChainUnread => Known::AddressChainUnread,
+        }
+    }
+
+    pub const ALL: [Known; 197] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
+        Known::NotAFolder,
         Known::KeychainMissing,
         Known::Entropy,
         Known::KeyMalformed,
@@ -538,6 +620,25 @@ impl Known {
         Known::GrantFileBad,
         Known::KitFileBad,
         Known::KitFormWord,
+        Known::KitOriginalsWord,
+        Known::ExtractKit,
+        Known::ExtractPath,
+        Known::ExtractNothing,
+        Known::ExtractClash,
+        Known::ExtractNotFolder,
+        Known::ExtractExists,
+        Known::ExtractLink,
+        Known::ExtractChanged,
+        Known::ExtractLanding,
+        Known::AddressedNotRecipient,
+        Known::AddressedBroken,
+        Known::AddressedHead,
+        Known::AddressedElsewhere,
+        Known::AddressedKeyShape,
+        Known::AddressedBoth,
+        Known::AddressedFolder,
+        Known::AddressNotAnchored,
+        Known::AddressChainUnread,
         Known::RemoteKit,
         Known::RemoteStatus,
         Known::RemoteRedirect,
@@ -592,6 +693,7 @@ impl Known {
             Known::FontMissing => "FONT_MISSING",
             Known::FileMissing => "FILE_MISSING",
             Known::Denied => "DENIED",
+            Known::NotAFolder => "NOT_A_FOLDER",
             Known::KeychainMissing => "KEYCHAIN_MISSING",
             Known::Entropy => "ENTROPY",
             Known::KeyMalformed => "KEY_MALFORMED",
@@ -719,6 +821,26 @@ impl Known {
             Known::GrantFileBad => "GRANT_FILE",
             Known::KitFileBad => "KIT_FILE",
             Known::KitFormWord => "KIT_FORM",
+            Known::KitOriginalsWord => "KIT_ORIGINALS",
+            Known::ExtractKit => "EXTRACT_KIT",
+            Known::ExtractPath => "EXTRACT_PATH",
+            Known::ExtractNothing => "EXTRACT_NOTHING",
+            Known::ExtractClash => "EXTRACT_CLASH",
+            Known::ExtractNotFolder => "EXTRACT_NOT_A_FOLDER",
+            Known::ExtractExists => "EXTRACT_EXISTS",
+            Known::ExtractLink => "EXTRACT_LINK",
+            Known::ExtractChanged => "EXTRACT_CHANGED",
+            Known::ExtractLanding => "EXTRACT_LANDING",
+            // The addressed package's refusals are spelled in its one table, both ends' (`zikaron_seal::addressed::Why`).
+            Known::AddressedNotRecipient
+            | Known::AddressedBroken
+            | Known::AddressedHead
+            | Known::AddressedElsewhere
+            | Known::AddressedKeyShape
+            | Known::AddressedBoth
+            | Known::AddressedFolder
+            | Known::AddressNotAnchored
+            | Known::AddressChainUnread => self.addressed().map(zikaron_seal::addressed::Why::code).unwrap_or_default(),
             Known::RemoteKit => "REMOTE_KIT",
             Known::RemoteStatus => "REMOTE_STATUS",
             Known::RemoteRedirect => "REMOTE_REDIRECT",
@@ -781,6 +903,7 @@ impl Known {
             Known::FontMissing => L::FaultWhatFontMissing,
             Known::FileMissing => L::FaultWhatFileMissing,
             Known::Denied => L::FaultWhatDenied,
+            Known::NotAFolder => L::FaultWhatNotAFolder,
             Known::KeychainMissing => L::FaultWhatKeychainMissing,
             Known::Entropy => L::FaultWhatEntropy,
             Known::KeyMalformed => L::FaultWhatKeyMalformed,
@@ -908,6 +1031,25 @@ impl Known {
             Known::GrantFileBad => L::FaultWhatGrantFileBad,
             Known::KitFileBad => L::FaultWhatKitFileBad,
             Known::KitFormWord => L::FaultWhatKitFormWord,
+            Known::KitOriginalsWord => L::FaultWhatKitOriginalsWord,
+            Known::ExtractKit => L::FaultWhatExtractKit,
+            Known::ExtractPath => L::FaultWhatExtractPath,
+            Known::ExtractNothing => L::FaultWhatExtractNothing,
+            Known::ExtractClash => L::FaultWhatExtractClash,
+            Known::ExtractNotFolder => L::FaultWhatExtractNotFolder,
+            Known::ExtractExists => L::FaultWhatExtractExists,
+            Known::ExtractLink => L::FaultWhatExtractLink,
+            Known::ExtractChanged => L::FaultWhatExtractChanged,
+            Known::ExtractLanding => L::FaultWhatExtractLanding,
+            Known::AddressedNotRecipient => L::FaultWhatAddressedNotRecipient,
+            Known::AddressedBroken => L::FaultWhatAddressedBroken,
+            Known::AddressedHead => L::FaultWhatAddressedHead,
+            Known::AddressedElsewhere => L::FaultWhatAddressedElsewhere,
+            Known::AddressedKeyShape => L::FaultWhatAddressedKeyShape,
+            Known::AddressedBoth => L::FaultWhatAddressedBoth,
+            Known::AddressedFolder => L::FaultWhatAddressedFolder,
+            Known::AddressNotAnchored => L::FaultWhatAddressNotAnchored,
+            Known::AddressChainUnread => L::FaultWhatAddressChainUnread,
             Known::RemoteKit => L::FaultWhatRemoteKit,
             Known::RemoteStatus => L::FaultWhatRemoteStatus,
             Known::RemoteRedirect => L::FaultWhatRemoteRedirect,
@@ -965,6 +1107,7 @@ impl Known {
             Known::FontMissing => Some(L::FaultNextFontMissing),
             Known::FileMissing => Some(L::FaultNextFileMissing),
             Known::Denied => Some(L::FaultNextDenied),
+            Known::NotAFolder => Some(L::FaultNextNotAFolder),
             Known::KeychainMissing => Some(L::FaultNextKeychainMissing),
             Known::Entropy => Some(L::FaultNextEntropy),
             Known::KeyMalformed => Some(L::FaultNextKeyMalformed),
@@ -1092,6 +1235,9 @@ impl Known {
             Known::GrantFileBad => Some(L::FaultNextGrantFileBad),
             Known::KitFileBad => Some(L::FaultNextKitFileBad),
             Known::KitFormWord => Some(L::FaultNextKitFormWord),
+            Known::KitOriginalsWord => Some(L::FaultNextKitOriginalsWord),
+            Known::ExtractKit | Known::ExtractPath | Known::ExtractNothing | Known::ExtractClash | Known::ExtractNotFolder | Known::ExtractExists | Known::ExtractLink | Known::ExtractChanged | Known::ExtractLanding => None,
+            Known::AddressedNotRecipient | Known::AddressedBroken | Known::AddressedHead | Known::AddressedElsewhere | Known::AddressedKeyShape | Known::AddressedBoth | Known::AddressedFolder | Known::AddressNotAnchored | Known::AddressChainUnread => None,
             Known::RemoteKit => Some(L::FaultNextRemoteKit),
             Known::RemoteStatus => Some(L::FaultNextRemoteStatus),
             Known::RemoteRedirect => Some(L::FaultNextRemoteRedirect),
@@ -1149,6 +1295,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::FontMissing => "系统里找不到这一面字体,界面会改用别的面顶上",
         Known::FileMissing => "这一档不在盘上",
         Known::Denied => "没有权限读写这一处",
+        Known::NotAFolder => "路上那一处不是文件夹",
         Known::KeychainMissing => "本机密钥库里还没有这一枚",
         Known::Entropy => "系统熵这一趟取不出可用的钥",
         Known::KeyMalformed => "取回来的那一枚钥形不对,不硬凑",
@@ -1276,6 +1423,25 @@ pub fn translate(k: Known) -> &'static str {
         Known::GrantFileBad => "授权文件拆不开",
         Known::KitFileBad => "单文件记录包拆不开",
         Known::KitFormWord => "记录包的形只认 file 或 folder",
+        Known::KitOriginalsWord => "记录包的原件只认 none",
+        Known::ExtractKit => "取出时记录包没过包验或拆不开",
+        Known::ExtractPath => "记录包里有不合包内路径形制的路径",
+        Known::ExtractNothing => "包里没有与记录对得上的原件",
+        Known::ExtractClash => "两份原件要取成同一个名字",
+        Known::ExtractNotFolder => "所选的不是文件夹",
+        Known::ExtractExists => "所选文件夹里已有同名者",
+        Known::ExtractLink => "所选文件夹里那个名字是链接",
+        Known::ExtractChanged => "取出的原件与记录对不上",
+        Known::ExtractLanding => "取出时写盘失败,已撤回",
+        Known::AddressedNotRecipient => "没有一个本机身份开得了这份加密记录包",
+        Known::AddressedBroken => "加密记录包有一段过不了认证",
+        Known::AddressedHead => "加密记录包的头读不成",
+        Known::AddressedElsewhere => "这是加密记录包",
+        Known::AddressedKeyShape => "所填公钥不是曲线上的点",
+        Known::AddressedBoth => "接收方地址与公钥都填了",
+        Known::AddressedFolder => "加密只用于单文件记录包",
+        Known::AddressNotAnchored => "各网络都读完了,没有这个地址自己签的锚",
+        Known::AddressChainUnread => "有网络没读完,没找到这个地址的公钥",
         Known::RemoteKit => "取回的记录包没过包验",
         Known::RemoteStatus => "发布地址上没有这一份",
         Known::RemoteRedirect => "发布地址转向别处",
@@ -1667,15 +1833,10 @@ pub fn whole_within_ceiling(typed: &str, not_a_number: crate::lang::Key) -> Resu
     }
 }
 
-/// Classifies an I/O error. Only the table's members are recognized; everything else goes to the unknown
-/// branch, never guessed.
+/// Classifies an I/O error by the one table of system errors both ends use (`zikaron_seal::Trouble::io`). Only the
+/// table's members are recognized; everything else goes to the unknown branch, never guessed.
 pub fn classify(e: &std::io::Error, subject: &str) -> Fault {
-    let tail = format!("{subject}: {e}");
-    match e.kind() {
-        ErrorKind::NotFound => Fault::known(Known::FileMissing, tail),
-        ErrorKind::PermissionDenied => Fault::known(Known::Denied, tail),
-        _ => Fault::unknown(tail),
-    }
+    Fault::from(zikaron_seal::Trouble::io(e, subject))
 }
 
 /// The sealed layer's code as this fault table's member (`None`: a system error with no code of its own, said as
@@ -1685,6 +1846,7 @@ pub fn known_of_sealed(c: zikaron_seal::Code) -> Option<Known> {
     Some(match c {
         C::FileMissing => Known::FileMissing,
         C::Denied => Known::Denied,
+        C::NotAFolder => Known::NotAFolder,
         C::Unknown => return None,
         C::Locked => Known::Locked,
         C::LockedOut => Known::LockedOut,
@@ -1797,7 +1959,7 @@ impl zikaron_seal::Coded for Fault {
         use zikaron_seal::Code as C;
         let k = self.which()?;
         [
-            C::FileMissing, C::Denied, C::Locked, C::LockedOut, C::KeyboxMissing, C::KeyboxShape, C::KeyboxSlot, C::KeyboxLocked,
+            C::FileMissing, C::Denied, C::NotAFolder, C::Locked, C::LockedOut, C::KeyboxMissing, C::KeyboxShape, C::KeyboxSlot, C::KeyboxLocked,
             C::KeyboxNotEmpty, C::KdfBelowFloor, C::KeystoreParams, C::KeyMalformed, C::PinSet, C::PinShape, C::PinWrong,
             C::RecoveryNoMatch, C::RecoveryNotPrimary, C::LocalSeal, C::Ledger, C::ContentShape, C::SettingsShape, C::QueueShape,
             C::MachineShape, C::IdentitiesShape, C::CredentialExpired, C::CredentialMissing, C::CredentialShape, C::HomeHeld, C::HomeOtherMachine,

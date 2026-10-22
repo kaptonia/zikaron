@@ -78,7 +78,7 @@ pub(super) fn genesis(shell: &mut Shell, statement: &str) -> Result<(String, Enq
 /// [`enqueue`]; since the person pressed nothing, no confirmation card is shown and the root waits for the
 /// next anchoring.
 pub(super) fn backfill_root(shell: &mut Shell) {
-    if !shell.rooted || shell.unfetched.is_some() || shell.may_write_entries().is_err() || shell.settings.chain_id.is_none() {
+    if !shell.rooted || shell.unfetched.is_some() || shell.settings.chain_id.is_none() {
         return;
     }
     // Only a complete reading counts (`auditx::whole`): in an incomplete one, a root missing from the anchor
@@ -89,9 +89,14 @@ pub(super) fn backfill_root(shell: &mut Shell) {
         _ => None,
     };
     let Some(known) = known else { return };
-    let Some(home) = shell.home.as_ref() else { return };
-    let Ok(root) = crate::ledgerx::root_of(home) else { return };
+    // The ledger's root as opening read it, off the window's thread (`Shell::kits_root`, `ledgerx::root_of`).
+    let Some(root) = shell.kits_root.clone() else { return };
     if known.iter().any(|id| id.eq_ignore_ascii_case(&root)) || shell.queue.has(&root) || shell.queue.anchored_here(&root) {
+        return;
+    }
+    // Only with a root to queue is the write gate asked (it reads the disk), and the root queued: a ledger recorded
+    // before its genesis was queued, once.
+    if shell.may_write_entries().is_err() {
         return;
     }
     let _ = enqueue(shell, &root);

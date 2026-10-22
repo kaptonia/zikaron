@@ -177,6 +177,15 @@ pub enum Reason {
     /// entries elsewhere) or its ledger's own entries break its chain (`token` the code as the desktop spells it,
     /// `detail` its evidence); nothing was written.
     ReadOnly,
+    /// `kit-verify --originals-to`: the originals were not taken out (`token` says why, as `zikaron_glue::extract` codes it;
+    /// `names` the names already in the folder or clashing, `detail` the path or the system's words); nothing was written.
+    Extract,
+    /// A record package addressed to one key, refused (`token` the code in the addressed package's one table,
+    /// `zikaron_seal::addressed::Why`, as the desktop spells it; `detail` its evidence, never a recipient): opening it,
+    /// no key offered is its recipient, a segment fails, its head does not read; sealing one to an address, no anchor
+    /// the address signed is on any network read through, or (exit 4) some network was not read through; read where
+    /// packages are read but not opened. Nothing was written.
+    Addressed,
 }
 
 impl Reason {
@@ -223,10 +232,12 @@ impl Reason {
             Reason::OnChain => "E_ON_CHAIN",
             Reason::SendRefused => "E_SEND_REFUSED",
             Reason::ReadOnly => "E_READ_ONLY",
+            Reason::Extract => "E_EXTRACT",
+            Reason::Addressed => "E_ADDRESSED",
         }
     }
 
-    pub const ALL: [Reason; 41] = [
+    pub const ALL: [Reason; 43] = [
         Reason::Args,
         Reason::Unreadable,
         Reason::Key,
@@ -268,6 +279,8 @@ impl Reason {
         Reason::OnChain,
         Reason::SendRefused,
         Reason::ReadOnly,
+        Reason::Extract,
+        Reason::Addressed,
     ];
 }
 
@@ -318,6 +331,8 @@ pub enum Key {
     Originals,
     LeftOut,
     Handoff,
+    /// `kit-verify --originals-to`: the names the originals were taken out under, in order.
+    Taken,
 }
 
 impl Key {
@@ -366,10 +381,11 @@ impl Key {
             Key::Originals => "originals",
             Key::LeftOut => "leftOut",
             Key::Handoff => "handoff",
+            Key::Taken => "taken",
         }
     }
     /// The whole set; `CLI-SCHEMA.md` section 7 lists it cell by cell (checked by the tests).
-    pub const ALL: [Key; 43] = [
+    pub const ALL: [Key; 44] = [
         Key::Ok,
         Key::Reason,
         Key::Detail,
@@ -413,6 +429,7 @@ impl Key {
         Key::Originals,
         Key::LeftOut,
         Key::Handoff,
+        Key::Taken,
     ];
 
 }

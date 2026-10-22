@@ -11,8 +11,7 @@
 use crate::datepick;
 use crate::menu::{self, Item};
 
-use crate::paint;
-use crate::palette::{c, Lift, C};
+use crate::palette::{c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
@@ -39,7 +38,7 @@ pub struct Spec<'a> {
 /// (`YYYY-MM-DD` or empty).
 pub type Keep<'k> = &'k dyn Fn(usize, &str, &str, &str) -> bool;
 
-const PAD: f32 = 5.0;
+const PAD: f32 = crate::band::GAP;
 const INSET: f32 = 10.0;
 /// The rows' column at most this high; more rows scroll.
 const LIST_MAX_H: f32 = 336.0;
@@ -66,7 +65,9 @@ pub fn key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, caret: 
     if resp.clicked() {
         menu::toggle(ui.ctx(), id);
     }
-    show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), false, spec, items, keep)
+    let picked = show_from(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), false, spec, items, keep);
+    menu::stay(ui, id, resp.rect);
+    picked
 }
 
 /// Draw an open picker under `anchor` (aligned to its left edge when `left`, its right edge otherwise), inside
@@ -99,9 +100,9 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
     let h = PAD + INSET + head_h + INSET + list_h + PAD;
     let drop = crate::layer::drop_card(ctx, anchor, bounds, vec2(w, h), left);
     let (rect, origin) = (drop.rect, drop.origin);
+    crate::layer::card_at(ctx, id, rect);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
-    let scale = 0.97 + 0.03 * e;
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + drop.moved * (1.0 - e) });
+    drop.enter(ctx, layer, e);
     crate::layer::place(ctx, layer, parent);
     let mut guarded = false;
     let mut picked = None;
@@ -111,7 +112,8 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
         guarded = crate::layer::under(ui, crate::layer::Under::Guard);
         crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
-        paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
+        crate::material::paint(ui.painter(), rect, Radius::Menu, crate::material::Level::Float, 0.0);
+        menu::card_is(ctx, rect);
         let inner = Rect::from_min_max(pos2(rect.left() + INSET, rect.top() + PAD + INSET), pos2(rect.right() - INSET, rect.bottom() - PAD));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
         child.spacing_mut().item_spacing.y = tokens::S2;
@@ -128,20 +130,25 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             });
         }
         let top = inner.top() + head_h + INSET;
-        ui.painter().hline((rect.left() + 11.0)..=(rect.right() - 11.0), top - INSET / 2.0, egui::Stroke::new(1.0_f32, c(C::Line2)));
+        // The head's line goes on after the rows: the first row's lit edge lies under it.
+        let line = egui::Shape::hline((rect.left() + 11.0)..=(rect.right() - 11.0), top - PAD - crate::band::LINE_HALF, egui::Stroke::new(1.0_f32, c(C::Line2)));
         let list = Rect::from_min_max(pos2(rect.left() + PAD, top), pos2(rect.right() - PAD, top + list_h));
         let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
         if kept.is_empty() {
+            ui.painter().add(line);
             lu.painter().text(list.center(), egui::Align2::CENTER_CENTER, spec.empty, Type::Note.font(), c(C::Ink3));
             return;
         }
         crate::scroll::nested(&mut lu, egui::ScrollArea::vertical().id_salt(id.with("rows")).max_height(list_h).auto_shrink([false, true]), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for i in &kept {
+            for (n, i) in kept.iter().enumerate() {
                 let it = &items[*i];
                 let (rr, _) = ui.allocate_exact_size(vec2(list.width(), row_h(it)), egui::Sense::hover());
+                // Under the head's line, the rows one after another, the last at the card's foot.
+                let below = if n + 1 == kept.len() { crate::band::Bound::Edge } else { crate::band::Bound::Row };
+                let above = if n == 0 { crate::band::Bound::Line } else { crate::band::Bound::Row };
                 let resp = match it {
-                    Item::Row(r) => menu::draw_row(ui, id.with(("row", *i)), rr, r, false),
+                    Item::Row(r) => menu::draw_row(ui, id.with(("row", *i)), rr, r, (above, below)),
                     Item::Who(wr) => menu::draw_who(ui, id.with(("who", *i)), rr, wr),
                     _ => continue,
                 };
@@ -150,6 +157,7 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
                 }
             }
         });
+        ui.painter().add(line);
         ui.allocate_rect(rect, egui::Sense::hover());
     });
     ctx.data_mut(|d| d.insert_temp(id.with("typed"), typed));

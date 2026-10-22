@@ -327,18 +327,20 @@ pub fn path_of(home: &Home) -> PathBuf {
     writer::lock_path(home.root())
 }
 
-/// Whether the held lock is this home's writer lock.
+/// Whether the writer lock held (at `held`, from [`writer_path`]) is this home's.
 ///
 /// `flock` is per open file descriptor: a second descriptor to the same lock file in the same process counts
 /// as another holder, so re-entering one's own home (switching roles, entering a home after import) would make
 /// this process a reader. The lock is therefore taken once per process and reused when re-entering the same
 /// home. Paths are compared after resolving aliases such as `/tmp` and `/private/tmp`.
-pub fn holds_writer(held: Option<&Lock>, home: &Home) -> bool {
-    let Some(l) = held else { return false };
-    if !l.mode().writable() {
-        return false;
-    }
-    crate::home::same_place(l.path(), &path_of(home))
+pub fn holds_writer_at(held: Option<&std::path::Path>, home: &Home) -> bool {
+    held.map(|p| crate::home::same_place(p, &path_of(home))).unwrap_or(false)
+}
+
+/// Where the held lock is, when it is a writer's: what opening a home (off the window's thread when switching seat)
+/// takes with it to ask [`holds_writer_at`].
+pub fn writer_path(held: Option<&Lock>) -> Option<&std::path::Path> {
+    held.filter(|l| l.mode().writable()).map(|l| l.path())
 }
 
 /// Take the lock (`zikaron_seal::writer::take`): obtained means writer (or [`Mode::OtherMachine`] per the

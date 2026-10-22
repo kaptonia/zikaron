@@ -3,6 +3,72 @@ use super::*;
 /// Height of the home page's top row (the drop zone and the card beside it).
 const TOP_H: f32 = 150.0;
 
+/// The least height of the grantee's drop zone: its row is as tall as the check card beside it.
+const GRANTEE_TOP_H: f32 = 110.0;
+
+/// The home pages' top row: the first block takes 1.25 parts of the row and the second one part, 16 apart;
+/// stacked when the second would be narrower than `HOME_PAIR_MIN`.
+fn home_pair(ui: &mut egui::Ui, draw: impl FnMut(&mut egui::Ui, card::Side)) {
+    let w = ui.available_width();
+    let first = ((w - tk::CARD_GAP) * 1.25 / 2.25).floor();
+    card::form_and_result(ui, first, HOME_PAIR_MIN, draw);
+}
+
+/// The narrowest the second block of the home pages' top row lies beside the first.
+const HOME_PAIR_MIN: f32 = 270.0;
+
+/// The least height of a home page's figure tile.
+const TILE_H: f32 = 122.0;
+
+/// The home pages' figure tiles sit a card gap under the top row.
+fn tiles_close_up(ui: &mut egui::Ui) {
+    ui.add_space(tk::CARD_GAP - ui.spacing().item_spacing.y);
+}
+
+/// A home page's figure tile, `TILE_H` high at least: its name (small, second ink), 6 under it the figure
+/// (22, semibold, a mark before it when given), and the small line under that in the third ink; 18 × 20
+/// inside. It lifts a point on hover and presses to 0.99.
+fn home_tile(ui: &mut egui::Ui, tile: &card::Tile) -> egui::Response {
+    const PAD: egui::Vec2 = egui::vec2(20.0, 18.0);
+    const FIG_LINE: f32 = 28.0;
+    let w = ui.available_width();
+    let content = Type::Small.line() + 6.0 + FIG_LINE + if tile.sub.is_empty() { 0.0 } else { 6.0 + Type::Small.line() };
+    let h = (content + PAD.y * 2.0).max(TILE_H).max(zikaron_ui::grid::cell_height(ui));
+    let sense = if tile.clickable { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), sense);
+    let st = motion::states(ui.ctx(), resp.id, resp.hovered(), resp.is_pointer_button_down_on(), resp.has_focus(), tile.clickable);
+    let lift = if tile.clickable { st.hover } else { 0.0 };
+    let press = 1.0 - 0.01 * if tile.clickable { st.press } else { 0.0 };
+    let r = paint::scaled(rect.translate(egui::vec2(0.0, -lift)), press);
+    let p = ui.painter();
+    zikaron_ui::material::paint(p, r, tk::Radius::Card, zikaron_ui::material::Level::Card, lift);
+    let inner = r.shrink2(PAD);
+    // The lines centred in the tile: a tile made taller than its lines keeps as much above them as below.
+    let y0 = inner.top() + ((inner.height() - content) / 2.0).max(0.0);
+    let title = width::elide_to(ui, tile.title, Type::Small.font(), inner.width());
+    p.text(egui::pos2(inner.left(), y0), egui::Align2::LEFT_TOP, &title, Type::Small.font(), c(C::Ink2));
+    let fy = y0 + Type::Small.line() + 6.0;
+    let mut x = inner.left();
+    if let Some(m) = tile.mark {
+        mark::paint_mark(ui.ctx(), p, egui::pos2(x + 9.0, fy + FIG_LINE / 2.0), m, tk::MARK);
+        x += 18.0 + 8.0;
+    }
+    let font = if tile.mono_figure { Type::Mono.font() } else { Type::Figure.font() };
+    let fit = width::elide_to(ui, tile.figure, font.clone(), (inner.right() - x).max(0.0));
+    let line = egui::Rect::from_min_max(egui::pos2(x, fy), egui::pos2(inner.right(), fy + FIG_LINE));
+    paint::rolling(ui, resp.id.with("figure"), line, &fit, font, tile.figure_colour.unwrap_or(c(C::Ink)));
+    if !tile.sub.is_empty() {
+        let fit = width::elide_to(ui, tile.sub, Type::Small.font(), inner.width());
+        p.text(egui::pos2(inner.left(), fy + FIG_LINE + 6.0), egui::Align2::LEFT_TOP, fit, Type::Small.font(), c(C::Ink3));
+    }
+    zikaron_ui::probe::tile(ui.ctx(), rect, title == tile.title);
+    if tile.clickable {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
 impl Win {
     pub(super) fn page_home(&mut self, ui: &mut egui::Ui, now: f64) {
         self.home_fetch(ui, now);
@@ -12,20 +78,16 @@ impl Win {
         }
     }
 
-    /// When this home is behind the chain (the exit gate found anchors it lacks): a card leading to the fetch form.
+    /// When this home is behind the chain (the exit gate found anchors it lacks): one banner with its key, leading
+    /// to the fetch form.
     fn home_fetch(&mut self, ui: &mut egui::Ui, now: f64) {
-        // While a conflict waits on its confirmation sheet (`conflict_sheet`), the fetch card stays hidden.
+        // While a conflict waits on its confirmation sheet (`conflict_sheet`), the fetch banner stays hidden.
         if self.shell.fetch_conflict.is_some() {
             return;
         }
         let Some(crate::restorex::State::NewerElsewhere { missing }) = self.shell.unfetched else { return };
-        let mut go = false;
-        card::card(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = tk::S3;
-            states::banner(ui, states::Banner::Bad, t(Key::FetchCardTitle), |_| ());
-            hint(ui, &fill1(Key::FetchCardSay, &missing.to_string()));
-            keys_row(ui, |ui| go = key::key(ui, t(Key::DoFetchLedger), Role::Secondary, true).clicked());
-        });
+        let go = states::banner(ui, states::Banner::Bad, t(Key::FetchCardTitle), |ui| key::key(ui, t(Key::DoFetchLedger), Role::Secondary, true).clicked());
+        zikaron_ui::callout::callout(ui, &fill1(Key::FetchCardSay, &missing.to_string()));
         if go {
             self.go(Place::Settings(Section::Data), now);
         }
@@ -40,12 +102,15 @@ impl Win {
         let mut send: Option<usize> = None;
         let mut open_audit = false;
         stagger(ui, 0, |ui| {
-            card::grid2(ui, "home-top", 2, |ui, i| {
-                if i == 0 {
+            home_pair(ui, |ui, side| match side {
+                card::Side::Main => {
                     let d = drop::zone(ui, "home-drop", Some(Glyph::Inbox), &[t(Key::WbDropTitle), t(Key::DropClickAny)], None, TOP_H, drop::Shape::Column, true);
                     new_record = self.drop_or_pick(ui.ctx(), "home-drop-1", &d, crate::platform::Pick::FileOrFolder, now);
-                } else if let Some(n) = self.send_card(ui) {
-                    send = Some(n);
+                }
+                card::Side::Side => {
+                    if let Some(n) = self.send_card(ui) {
+                        send = Some(n);
+                    }
                 }
             });
         });
@@ -75,6 +140,7 @@ impl Win {
             (None, _) => (dash.clone(), t(Key::WbNotRead).to_string()),
             (Some(_), None) => (dash.clone(), t(Key::WbNoChainTime).to_string()),
         };
+        tiles_close_up(ui);
         stagger(ui, 1, |ui| {
             card::grid3(ui, "home-tiles", 3, |ui, i| {
                 let tile = match i {
@@ -82,7 +148,7 @@ impl Win {
                     1 => card::Tile { title: t(Key::NavWorksView), figure: &works_fig, mark: None, figure_colour: None, sub: &works_sub, mono_figure: false, clickable: true },
                     _ => card::Tile { title: t(Key::WbExpiring), figure: &exp_fig, mark: None, figure_colour: None, sub: &exp_sub, mono_figure: false, clickable: true },
                 };
-                if card::tile(ui, &tile).clicked() {
+                if home_tile(ui, &tile).clicked() {
                     match i {
                         0 => {
                             open_audit = true;
@@ -141,48 +207,25 @@ impl Win {
         }
     }
 
-    /// The home page's "to be anchored" card; the whole card is the key. Amber edge with a count when entries
-    /// wait, a spinner and no clicks while a batch is in flight, green "all anchored" when nothing waits.
-    /// Returns the batch to send when clicked.
+    /// The home page's "to be anchored" card: its name, the count, and how it stands at its foot. Waiting
+    /// entries: the whole card is the key (nothing more is said); in flight: a spinner (a warning when no node
+    /// can be asked for the receipt); all anchored: a check. Returns the batch to send when clicked.
     fn send_card(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let sendable = self.shell.queue.sendable();
         let busy = self.shell.queue.len().saturating_sub(sendable);
         let state = if sendable > 0 { 0 } else if busy > 0 { 1 } else { 2 };
-        let w = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TOP_H.max(zikaron_ui::grid::cell_height(ui))), if state == 0 { egui::Sense::click() } else { egui::Sense::hover() });
-        let id = resp.id;
-        let hot = motion::flag(ui.ctx(), id.with("hot"), state == 0 && resp.hovered(), tk::FAST);
-        let press = motion::to(ui.ctx(), id.with("press"), if state == 0 && resp.is_pointer_button_down_on() { 0.99 } else { 1.0 }, tk::FAST, motion::Curve::Ease);
-        // The edge fades between amber (waiting or in flight) and green (all anchored) over 300 ms.
-        let amber = motion::flag(ui.ctx(), id.with("amber"), state != 2, tk::SLOW);
-        let r = paint::scaled(rect.translate(egui::vec2(0.0, -hot)), press);
-        let p = ui.painter();
-        paint::surface(p, r, tk::Radius::Card, c(C::Surface), if hot > 0.5 { zikaron_ui::palette::Lift::Hover } else { zikaron_ui::palette::Lift::Card });
-        let edge = zikaron_ui::palette::mix(c(C::OkEdge), zikaron_ui::palette::mix(c(C::WarnEdge), c(C::Warn), hot), amber);
-        p.rect_stroke(r, tk::Radius::Card.egui(), egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Outside);
         let n = if state == 1 { busy } else { sendable };
-        let x = r.left() + 22.0;
-        let lines = [r.top() + r.height() * 0.25, r.center().y, r.top() + r.height() * 0.75];
-        p.text(egui::pos2(x, lines[0]), egui::Align2::LEFT_CENTER, t(Key::ItemUnanchored), Type::Note.font(), c(C::Ink2));
-        p.text(egui::pos2(x, lines[1]), egui::Align2::LEFT_CENTER, fill1(Key::U3EntriesCount, &n.to_string()), Type::Figure.font(), c(C::Ink));
-        let (words, colour) = match state {
-            0 => (t(Key::SendClickToAnchor), c(C::WarnInk)),
-            1 => (t(Key::LampSubmitted), c(C::WarnInk)),
-            _ => (t(Key::SendAllDone), c(C::OkInk)),
+        let foot = match state {
+            // Waiting: the card is the key, and says so.
+            0 => Some((None, t(Key::SendClickToAnchor))),
+            // In flight: spin, unless no node can be asked for the receipt (the queue page says why).
+            1 if self.shell.resume_blocked.is_none() => Some((Some(Mark::Busy), t(Key::LampSubmitted))),
+            1 => Some((Some(Mark::Warn), t(Key::LampSubmitted))),
+            _ => Some((Some(Mark::Ok), t(Key::SendAllDone))),
         };
-        let mut sx = x;
-        // In flight: spin, unless no node can be asked for the receipt (the queue page says why).
-        if state == 1 && self.shell.resume_blocked.is_none() {
-            mark::spinner(ui.ctx(), p, egui::pos2(sx + 5.0, lines[2]), 4.25, 1.5, colour, 0.9);
-            sx += 16.0;
-        }
-        p.text(egui::pos2(sx, lines[2]), egui::Align2::LEFT_CENTER, words, Type::Small.font(), colour);
-        if state == 0 {
-            let clicked = resp.clicked();
-            let _ = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-            return clicked.then_some(sendable);
-        }
-        None
+        let figure = fill1(Key::U3EntriesCount, &n.to_string());
+        let clicked = zikaron_ui::figcard::figure_card(ui, t(Key::ItemUnanchored), &figure, foot, TOP_H, state == 0).clicked();
+        (state == 0 && clicked).then_some(sendable)
     }
 
     fn home_grantee(&mut self, ui: &mut egui::Ui, now: f64) {
@@ -190,24 +233,21 @@ impl Win {
         let mut check = false;
         let mut held: Option<String> = None;
         self.ensure_held(now);
+        // The check card (the grant code, "start check" at its foot) and, as tall as it, the record kit's drop zone.
+        let mut card_h = GRANTEE_TOP_H;
         stagger(ui, 0, |ui| {
-            card::grid2(ui, "home-top", 2, |ui, i| {
-                if i == 0 {
-                    card::card(ui, |ui| {
-                        ui.set_min_height(TOP_H - tk::CARD_PAD_Y * 2.0);
-                        ui.spacing_mut().item_spacing.y = 10.0;
-                        card_title(ui, t(Key::WbCheckTitle));
-                        zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("home-code").max_height(52.0), |ui| input::area(ui, &mut self.typed.ck_typed, 2));
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = tk::S3;
-                            if self.long_key(ui, t(Key::DoCheck), Role::Primary, !self.typed.ck_typed.trim().is_empty(), crate::task::Kind::Check) {
-                                check = true;
-                            }
-                            paint::text(ui, t(Key::WbCheckHint), Type::Small, c(C::Ink3));
-                        });
+            home_pair(ui, |ui, side| match side {
+                card::Side::Main => {
+                    let (can, phase) = (!self.typed.ck_typed.trim().is_empty(), self.phase_of(crate::task::Kind::Check));
+                    let top = ui.cursor().min.y;
+                    fields::card(ui, |ui, st| {
+                        st.field(ui, t(Key::WbCheckTitle), None, None, |ui, _| input::area_hint(ui, &mut self.typed.ck_typed, 2, t(Key::WbCheckHint)));
+                        st.foot(ui, |ui| check |= key::show(ui, key::Key::new(t(Key::DoCheck), Role::Primary).enabled(can).phase(phase)).clicked());
                     });
-                } else {
-                    let d = drop::zone(ui, "home-verify", Some(Glyph::Kit), &[t(Key::WbVerifyDrop), t(Key::DropClickAny)], None, TOP_H, drop::Shape::Column, true);
+                    card_h = (ui.min_rect().bottom() - top).max(GRANTEE_TOP_H);
+                }
+                card::Side::Side => {
+                    let d = drop::zone(ui, "home-verify", Some(Glyph::Inbox), &[t(Key::WbVerifyDrop), t(Key::DropClickAny)], None, card_h, drop::Shape::Column, true);
                     // A dropped or picked record kit or record file goes straight to record verification, which
                     // runs at once.
                     if let Some(first) = self.drop_or_pick(ui.ctx(), "home-drop-2", &d, crate::platform::Pick::FileOrFolder, now) {
@@ -243,19 +283,20 @@ impl Win {
             (None, Some(h)) => (h.len().to_string(), t(Key::U4NotChecked).to_string()),
             (None, None) => (dash.clone(), t(Key::WbNotRead).to_string()),
         };
-        let (received, received_colour) = match self.shell.checked.as_ref().map(|x| &x.file) {
-            Some(crate::checkx::Side::Compared(d)) if d.matched() => (t(Key::DeliveryMatch).to_string(), Some(c(C::OkInk))),
-            Some(crate::checkx::Side::Compared(_)) => (t(Key::DeliveryMismatch).to_string(), Some(c(C::BadInk))),
+        let (received, received_mark) = match self.shell.checked.as_ref().map(|x| &x.file) {
+            Some(crate::checkx::Side::Compared(d)) if d.matched() => (t(Key::DeliveryMatch).to_string(), Some(Mark::Ok)),
+            Some(crate::checkx::Side::Compared(_)) => (t(Key::DeliveryMismatch).to_string(), Some(Mark::Bad)),
             _ => (dash.clone(), None),
         };
+        tiles_close_up(ui);
         stagger(ui, 1, |ui| {
             card::grid3(ui, "home-tiles", 3, |ui, i| {
                 let tile = match i {
                     0 => card::Tile { title: t(Key::WbVault), figure: &need, mark: None, figure_colour: need_red.then(|| c(C::BadInk)), sub: &need_sub, mono_figure: false, clickable: true },
                     1 => card::Tile { title: t(Key::U4HeldLive), figure: &live, mark: None, figure_colour: None, sub: &live_sub, mono_figure: false, clickable: true },
-                    _ => card::Tile { title: t(Key::PageDelivery), figure: &received, mark: None, figure_colour: received_colour, sub: t(Key::U4DeliveryTileSub), mono_figure: false, clickable: true },
+                    _ => card::Tile { title: t(Key::PageDelivery), figure: &received, mark: received_mark, figure_colour: None, sub: "", mono_figure: false, clickable: true },
                 };
-                if card::tile(ui, &tile).clicked() {
+                if home_tile(ui, &tile).clicked() {
                     to = Some(match i {
                         0 | 1 => Place::View(crate::nav::View::MyGrants, 0),
                         _ => Place::View(crate::nav::View::Verify, crate::nav::tab::VERIFY_CHECK),
@@ -267,13 +308,11 @@ impl Win {
         // anchored.
         let mut recent: Vec<(Mark, String, Place, Option<String>)> = Vec::new();
         if let Some(x) = self.shell.checked.as_ref() {
-            let v = x.judged.verdict.as_str();
-            let (k, m) = if v == green {
-                (Key::U3CheckAllPass, Mark::Ok)
-            } else if v == zikaron_kit::tokens::CheckVerdict::Fail.as_str() {
-                (Key::U3CheckFail, Mark::Bad)
-            } else {
-                (Key::U3CheckSomeMissing, Mark::Warn)
+            // The check page's own summary (grant, file and terms together).
+            let (k, m) = match crate::checkx::summary(x) {
+                crate::checkx::Summary::AllMatch => (Key::U3CheckAllPass, Mark::Ok),
+                crate::checkx::Summary::Mismatched(_) => (Key::U3CheckFail, Mark::Bad),
+                crate::checkx::Summary::Incomplete => (Key::U3CheckSomeMissing, Mark::Warn),
             };
             recent.push((m, fill1(Key::U4RecentChecked, t(k)), Place::View(crate::nav::View::Verify, crate::nav::tab::VERIFY_CHECK), None));
         }
@@ -286,7 +325,8 @@ impl Win {
             recent.push((Mark::Bad, fill1(k, &name), Place::View(crate::nav::View::MyGrants, 0), Some(a.grant.clone())));
         }
         if let Some(v) = self.shell.verified.as_ref() {
-            let ok = v.mismatches.is_empty();
+            // The verify page's own head.
+            let ok = super::verify::verified_head(v).1 == Mark::Ok;
             recent.push((if ok { Mark::Ok } else { Mark::Bad }, fill2(Key::U4RecentVerified, &width::file_name(&v.path), t(if ok { Key::U4NoMismatch } else { Key::U3CheckFail })), Place::View(crate::nav::View::Verify, crate::nav::tab::VERIFY_WORK), None));
         }
         let queued = self.shell.queue.len();

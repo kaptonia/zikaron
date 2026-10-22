@@ -141,7 +141,7 @@ pub fn anchor(ledger: &str, wait: std::time::Duration) -> Answer {
 
 fn run(home: &mut Opened, wait: std::time::Duration) -> Result<Answer, Fail> {
     let cli = home.machine_settings()?;
-    zikaron_anchor::rpc::set_choice(zikaron_send::node::route_of(cli.proxy.as_deref()));
+    zikaron_send::node::take_machine_route(cli.proxy.as_deref());
     let ground = home.ground()?;
     let queue = home.read_queue()?;
     let count = queue.sendable();
@@ -306,6 +306,12 @@ fn answer_of(l: &Landed) -> Answer {
     }
 }
 
+/// A home's nodes for `chain`, as its settings list them, in settings order: the one reading of them for a send
+/// and for a scan of the home (`verbs::scan`).
+pub(crate) fn nodes_of(g: &zikaron_seal::ground::Ground, chain: u64) -> Vec<Endpoint> {
+    g.endpoints.iter().filter_map(|spec| Endpoint::parse(spec)).filter(|e| e.chain == chain).collect()
+}
+
 /// The home's chain as its settings place it: the registry and that chain's nodes, in settings order.
 struct Place {
     registry: [u8; 20],
@@ -315,7 +321,7 @@ struct Place {
 impl Place {
     fn of(g: &zikaron_seal::ground::Ground, chain: u64) -> Result<Place, Fail> {
         let registry = g.registry.ok_or_else(|| Trouble::text(Code::NoRegistry, ""))?;
-        let eps: Vec<Endpoint> = g.endpoints.iter().filter_map(|spec| Endpoint::parse(spec)).filter(|e| e.chain == chain).collect();
+        let eps = nodes_of(g, chain);
         if eps.is_empty() {
             return Err(Trouble::text(Code::NoEndpoint, chain.to_string()).into());
         }

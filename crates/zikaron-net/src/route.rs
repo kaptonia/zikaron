@@ -354,6 +354,12 @@ pub fn follow_the_terminal() {
     read_system_with(terminal);
 }
 
+/// Follow the system the way the desktop does from now on: the system's proxy settings alone, never a terminal's
+/// proxy variables (undoes [`follow_the_terminal`]).
+pub fn follow_the_system() {
+    read_system_with(platform);
+}
+
 fn terminal() -> Option<SystemProxies> {
     zikaron_os::proxy::for_the_terminal().map(|p| SystemProxies::from_platform(&p))
 }

@@ -1,23 +1,9 @@
 //! Painting shared by every control: raised surfaces, text by role, and single lines that elide instead of
 //! wrapping.
 
-use crate::palette::{self, c, Lift, C};
+use crate::palette::{self, c, C};
 use crate::tokens::{Radius, Type};
 use egui::{Color32, Painter, Rect};
-
-/// A raised surface: soft shadows, a fill, and the half-point ring of its elevation.
-pub fn surface(p: &Painter, rect: Rect, radius: Radius, fill: Color32, lift: Lift) {
-    let (ring, shadows) = palette::lift(lift);
-    let r = radius.egui();
-    for s in shadows.iter().rev() {
-        if s.color.a() == 0 {
-            continue;
-        }
-        let sh = egui::Shadow { offset: [0, s.y.round() as i8], blur: s.blur.round().clamp(0.0, 255.0) as u8, spread: 0, color: s.color };
-        p.add(sh.as_shape(rect, r));
-    }
-    p.rect(rect, r, fill, egui::Stroke::new(0.5_f32, ring), egui::StrokeKind::Outside);
-}
 
 /// A flat surface: fill and a one-point line.
 pub fn flat(p: &Painter, rect: Rect, radius: Radius, fill: Color32, line: Color32) {
@@ -114,7 +100,7 @@ pub fn qr(ui: &mut egui::Ui, modules: &[Vec<bool>], side: f32) -> Rect {
     let n = modules.len();
     let (plate, _) = ui.allocate_exact_size(egui::vec2(side + 2.0 * QR_PAD, side + 2.0 * QR_PAD), egui::Sense::hover());
     let p = ui.painter_at(plate.expand(24.0));
-    surface(&p, plate, Radius::Sheet, palette::QR_PLATE, Lift::Card);
+    crate::material::plate(&p, plate, Radius::Tag, palette::QR_PLATE);
     crate::probe::qr(ui.ctx(), plate);
     if n < 21 {
         return plate;
@@ -138,4 +124,35 @@ pub fn qr(ui: &mut egui::Ui, modules: &[Vec<bool>], side: f32) -> Rect {
         p.rect_filled(Rect::from_min_size(at + egui::vec2(2.0 * cell, 2.0 * cell), egui::vec2(3.0 * cell, 3.0 * cell)), round(1.0), palette::QR_FINDER);
     }
     plate
+}
+
+/// Words that roll when they change (a figure on a tile): the old words rise out of `line` and fade while the
+/// new ones rise in from below (0.3 s); first seen, they are simply there. Drawn left-aligned in `line`,
+/// centred on it, clipped to it.
+pub fn rolling(ui: &egui::Ui, id: egui::Id, line: Rect, s: &str, font: egui::FontId, colour: Color32) {
+    let ctx = ui.ctx();
+    let now = crate::motion::now(ui.ctx());
+    let kid = id.with("rolling");
+    let (cur, prev, at) = ctx.data(|d| d.get_temp::<(String, String, f64)>(kid)).unwrap_or((s.to_string(), String::new(), f64::NEG_INFINITY));
+    let (prev, at) = if cur != s {
+        ctx.data_mut(|d| d.insert_temp(kid, (s.to_string(), cur.clone(), now)));
+        (cur, now)
+    } else {
+        if ctx.data(|d| d.get_temp::<(String, String, f64)>(kid)).is_none() {
+            ctx.data_mut(|d| d.insert_temp(kid, (s.to_string(), String::new(), f64::NEG_INFINITY)));
+        }
+        (prev, at)
+    };
+    let t = ((now - at) as f32 / crate::tokens::SLOW).clamp(0.0, 1.0);
+    let p = ui.painter().with_clip_rect(line.expand2(egui::vec2(4.0, 2.0)).intersect(ui.clip_rect()));
+    let y = line.center().y;
+    if t >= 1.0 || prev.is_empty() || now < at {
+        p.text(egui::pos2(line.left(), y), egui::Align2::LEFT_CENTER, s, font, colour);
+        return;
+    }
+    ctx.request_repaint();
+    let e = crate::motion::Curve::Ease.at(t);
+    let dy = line.height() * 0.6 * crate::motion::travel(ctx);
+    p.text(egui::pos2(line.left(), y - dy * e), egui::Align2::LEFT_CENTER, prev, font.clone(), colour.gamma_multiply(1.0 - e));
+    p.text(egui::pos2(line.left(), y + dy * (1.0 - e)), egui::Align2::LEFT_CENTER, s, font, colour.gamma_multiply(e));
 }

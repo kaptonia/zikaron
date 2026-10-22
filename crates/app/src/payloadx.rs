@@ -104,6 +104,10 @@ pub fn take_full(typed: &str) -> Result<Taken, Fault> {
         return Ok(Taken { form: Form::Payload, hops: decode(&code)?, file: None });
     }
     let p = Path::new(t);
+    // A record package sealed to one key is opened on the verify page alone: refused here by name.
+    if zikaron_glue::addressed::is_addressed_at(p) {
+        return Err(Fault::known(Known::AddressedElsewhere, p.display().to_string()));
+    }
     if crate::grantfilex::is_grant_file(p) {
         let o = crate::grantfilex::open(p)?;
         return Ok(Taken { form: Form::GrantFile, hops: o.hops.clone(), file: Some((p.to_path_buf(), o)) });

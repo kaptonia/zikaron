@@ -38,10 +38,15 @@ impl Win {
     pub(super) fn bk_open(&mut self, b: Bk) {
         self.sheets_clear();
         self.ux.bk_clear();
+        // The folder a backup is saved to: the one last chosen, else where the last backup went, else the
+        // documents folder.
         if self.ux.bk_dir.is_empty() {
             if let Some(b) = &self.shell.machine.backup {
                 self.ux.bk_dir = std::path::Path::new(&b.path).parent().map(|p| p.display().to_string()).unwrap_or_default();
             }
+        }
+        if self.ux.bk_dir.is_empty() {
+            self.ux.bk_dir = self.shell.documents.clone();
         }
         self.shell.backup_peek = None;
         self.ux.bk = Some(b);
@@ -72,45 +77,40 @@ impl Win {
             self.auto(Action::Measure, now);
         }
         match which {
+            // What goes in and where it is saved, one group (the folder chosen at the bottom left); the backup's
+            // own password twice; what forgetting it means, in a call box; the passcode last. The file's name,
+            // header and cipher stay with the data page's details.
             Bk::Export => {
                 let pin_full = self.ux.bk_pin.chars() == len;
-                let stem = format!("{}.{}", crate::backup::file_stem((self.shell.clock)()), crate::backup::EXT);
                 let content = self.data_content();
+                let mut picked = None;
                 let out = sheet::show(
                     ctx,
-                    sheet::Spec::new("bk-export", tk::SHEET_WIDE),
+                    sheet::Spec::new("bk-export", tk::SHEET_W),
                     self,
                     |ui, me| {
                         sheet::title(ui, t(Key::BackupExportTitle), "");
-                        kv::kv(ui, &[(t(Key::DataContent), Val::text(content.clone()))]);
-                        field(ui, t(Key::IdPinGate), None, |ui| {
-                            pin::pin_row(ui, "bk-export-pin", &mut me.ux.bk_pin, len, me.ux.pin_shake, !busy, true);
+                        fields::stack(ui, |ui, st| {
+                            zikaron_ui::fields::rows(ui, |ui, f| {
+                                content_row(f, ui, &content);
+                                f.folder(ui, t(Key::IdStore), &me.ux.bk_dir, t(Key::PickNone));
+                                let stem = format!("{}.{}", crate::backup::file_stem((me.shell.clock)()), crate::backup::EXT);
+                                details_row(
+                                    ui,
+                                    f,
+                                    "bk-export-details",
+                                    &[
+                                        (t(Key::BackupFileName), Val::mono(stem)),
+                                        (t(Key::BackupHeader), Val::figure(t(Key::BackupHeaderSay).to_string())),
+                                        (t(Key::BackupCipher), Val::figure(t(Key::DataBackupHowSay).to_string())),
+                                        (t(Key::BackupWithout), Val::text(t(Key::BackupWithoutSay))),
+                                    ],
+                                );
+                            });
+                            st.field(ui, t(Key::BackupPasswordPlain), None, None, |ui, w| secret_strength(ui, "bk-export-pw", &mut me.ux.bk_pw, t(Key::IdPasswordHint), w));
+                            st.field(ui, t(Key::BackupPasswordAgain), None, None, |ui, w| secret_again(ui, "bk-export-pw2", &mut me.ux.bk_pw2, &me.ux.bk_pw, w));
+                            pin_field(st, ui, t(Key::IdPinGate), None, "bk-export-pin", &mut me.ux.bk_pin, me.ux.pin_shake, !busy);
                         });
-                        field(ui, t(Key::BackupPassword), None, |ui| {
-                            input::secret_line(ui, &mut me.ux.bk_pw, "");
-                            // The strength bar is only a hint (12 or more characters with a symbol reads as strong).
-                            if !me.ux.bk_pw.is_empty() {
-                                let (lit, m, k) = match crate::keystore::strength(me.ux.bk_pw.expose()) {
-                                    crate::keystore::Strength::Weak => (1, Mark::Bad, Key::StrengthWeak),
-                                    crate::keystore::Strength::Fair => (2, Mark::Warn, Key::StrengthFair),
-                                    crate::keystore::Strength::Strong => (3, Mark::Ok, Key::StrengthStrong),
-                                };
-                                pin::strength(ui, lit, m, t(k));
-                            }
-                        });
-                        field(ui, t(Key::BackupPasswordAgain), None, |ui| input::secret_line(ui, &mut me.ux.bk_pw2, ""));
-                        Self::place_row(ui, Key::IdStore, &mut me.ux.bk_dir);
-                        states::note_box(ui, t(Key::BackupForgetNote));
-                        details(
-                            ui,
-                            "bk-export-details",
-                            &[
-                                (t(Key::BackupFileName), Val::mono(stem.clone())),
-                                (t(Key::BackupHeader), Val::mono(t(Key::BackupHeaderSay).to_string())),
-                                (t(Key::BackupCipher), Val::mono(t(Key::DataBackupHowSay).to_string())),
-                                (t(Key::BackupWithout), Val::text(t(Key::BackupWithoutSay))),
-                            ],
-                        );
                         show_trouble(ui);
                     },
                     |ui, me| {
@@ -126,31 +126,35 @@ impl Win {
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                         if busy {
                             sheet::foot_note(ui, t(Key::VaultBusy));
+                        } else {
+                            picked = foot_pick(ui, "bk-export", crate::platform::Pick::Folder);
                         }
                     },
                 );
+                if let Some(p) = picked {
+                    self.ux.bk_dir = p;
+                }
                 esc = out.esc;
             }
+            // The backup file in one row (chosen at the bottom left), its password; from settings the passcode
+            // and, in a call box, what it replaces. The words while it works stand in the foot.
             Bk::Restore(from) if from != RestoreFrom::Locked || self.ux.bk_step == BkStep::Pick => {
                 let settings = from == RestoreFrom::Settings;
                 let pin_full = self.ux.bk_pin.chars() == len;
+                let mut picked = None;
                 let out = sheet::show(
                     ctx,
                     sheet::Spec::new("bk-restore", tk::SHEET_W),
                     self,
                     |ui, me| {
                         sheet::title(ui, t(Key::BackupRestoreTitle), "");
-                        pick_path(ui, &mut me.ux.bk_path, crate::platform::Pick::File);
-                        field(ui, t(Key::BackupPasswordPlain), None, |ui| input::secret_line(ui, &mut me.ux.bk_pw, ""));
-                        if settings {
-                            field(ui, t(Key::IdPinGate), None, |ui| {
-                                pin::pin_row(ui, "bk-restore-pin", &mut me.ux.bk_pin, len, me.ux.pin_shake, !busy, true);
-                            });
-                            states::note_box(ui, t(Key::BackupReplaceNote));
-                        }
-                        if busy {
-                            sheet::foot_note(ui, t(Key::PrimaryResealing));
-                        }
+                        fields::stack(ui, |ui, st| {
+                            zikaron_ui::fields::rows(ui, |ui, f| file_row(f, ui, t(Key::DataBackupFile), &me.ux.bk_path));
+                            st.field(ui, t(Key::BackupPasswordPlain), None, None, |ui, w| input::secret_line_w_marked(ui, &mut me.ux.bk_pw, "", w, false));
+                            if settings {
+                                pin_field(st, ui, t(Key::IdPinGate), None, "bk-restore-pin", &mut me.ux.bk_pin, me.ux.pin_shake, !busy);
+                            }
+                        });
                         show_trouble(ui);
                     },
                     |ui, me| {
@@ -173,8 +177,16 @@ impl Win {
                             });
                         }
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, !busy).clicked();
+                        if busy {
+                            sheet::foot_note(ui, t(Key::PrimaryResealing));
+                        } else {
+                            picked = foot_pick(ui, "bk-restore", crate::platform::Pick::File);
+                        }
                     },
                 );
+                if let Some(p) = picked {
+                    self.ux.bk_path = p;
+                }
                 esc = out.esc && !busy;
                 // The lock screen card: once the backup has opened with its password, confirm before replacing.
                 if from == RestoreFrom::Locked && self.shell.backup_peek.is_some() {
@@ -191,8 +203,12 @@ impl Win {
                     self,
                     |ui, _me| {
                         sheet::title(ui, t(Key::BackupConfirmTitle), "");
-                        kv::kv(ui, &[(t(Key::BackupConfirmFile), Val::text(file.clone())), (t(Key::DataContent), Val::text(content.clone()))]);
-                        states::note_box(ui, t(Key::BackupConfirmNote));
+                        fields::stack(ui, |ui, _st| {
+                            zikaron_ui::fields::rows(ui, |ui, f| {
+                                let _ = f.info(ui, t(Key::BackupConfirmFile), card::Show::Text(&file));
+                                content_row(f, ui, &content);
+                            });
+                        });
                     },
                     |ui, _me| {
                         sure = page::Pen::new().press(ui, t(Key::DoReplace), true).clicked();
@@ -207,17 +223,19 @@ impl Win {
                 }
             }
             Bk::Restore(_) => {
-                // The new passcode, set once and entered again (the passcode rules); then everything is
-                // resealed under a new master key.
-                let label = t(if self.ux.pin_again.is_empty() { Key::BackupNewPin } else { Key::PinAgain });
+                // The new passcode, set once and entered again (the passcode rules under the cells); then
+                // everything is resealed under a new master key.
+                let again = !self.ux.pin_again.is_empty();
+                let label = t(if again { Key::PinAgain } else { Key::BackupNewPin });
                 let out = sheet::show(
                     ctx,
                     sheet::Spec::new("bk-new-pin", tk::SHEET_W),
                     self,
                     |ui, me| {
-                        sheet::title(ui, label, t(Key::PinRules));
-                        ui.vertical_centered(|ui| {
-                            let row = pin::pin_row(ui, "bk-new-pin", &mut me.ux.pin, len, me.ux.pin_shake, !busy, true);
+                        sheet::title(ui, t(Key::BackupNewPin), "");
+                        fields::stack(ui, |ui, st| {
+                            let line = (!again).then(|| (t(Key::PinRules), false));
+                            let row = pin_field(st, ui, label, line, "bk-new-pin", &mut me.ux.pin, me.ux.pin_shake, !busy);
                             if row.full && me.ux.pin_again.is_empty() {
                                 first_pin = true;
                             } else if row.full && !busy {
@@ -228,42 +246,48 @@ impl Win {
                                 });
                             }
                         });
-                        if busy {
-                            sheet::foot_note(ui, t(Key::PrimaryResealing));
-                        }
                         show_trouble(ui);
                     },
                     |ui, _me| {
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, !busy).clicked();
+                        if busy {
+                            sheet::foot_note(ui, t(Key::PrimaryResealing));
+                        }
                     },
                 );
                 esc = out.esc && !busy;
             }
+            // What it is under the title; when it last went and what came since, and the folder (chosen at the
+            // bottom left), one group; the same sheet for the first export and every later one.
             Bk::Mirror => {
                 let last = self.shell.settings.mirror.clone();
                 let since = match self.shell.archive.as_ref().map(|a| (a.items, a.mirror.clone())) {
                     Some((n, crate::mirror::Mirrored::At { entries, .. })) => fill1(Key::U3EntriesCount, &n.saturating_sub(entries).to_string()),
                     _ => "\u{2014}".to_string(),
                 };
+                let last_said = last.as_ref().map(|r| crate::when::when(r.at)).unwrap_or_else(|| t(Key::DataBackupNever).to_string());
+                // Where the mirror goes: the folder chosen last, else where the last export went, else a folder
+                // of its own in the documents folder.
                 if self.typed.mirror_out.is_empty() {
-                    if let Some(r) = &last {
-                        self.typed.mirror_out = crate::mirror::folder_of(std::path::Path::new(&r.path)).display().to_string();
-                    }
+                    self.typed.mirror_out = match &last {
+                        Some(r) => crate::mirror::folder_of(std::path::Path::new(&r.path)).display().to_string(),
+                        None => mirror_default(&self.shell.documents),
+                    };
                 }
+                let mut picked = None;
                 let out = sheet::show(
                     ctx,
                     sheet::Spec::new("bk-mirror", tk::SHEET_W),
                     self,
                     |ui, me| {
                         sheet::title(ui, t(Key::MirrorTitle), t(Key::MirrorNote));
-                        Self::place_row(ui, Key::MirrorWhere, &mut me.typed.mirror_out);
-                        kv::kv(
-                            ui,
-                            &[
-                                (t(Key::MirrorLastOut), last.as_ref().map(|r| Val::mono(crate::when::when(r.at))).unwrap_or_else(|| Val::text(t(Key::DataBackupNever)))),
-                                (t(Key::MirrorSince), Val::text(since.clone())),
-                            ],
-                        );
+                        fields::stack(ui, |ui, _st| {
+                            zikaron_ui::fields::rows(ui, |ui, f| {
+                                let _ = f.info(ui, t(Key::MirrorLastOut), card::Show::Text(&last_said));
+                                let _ = f.info(ui, t(Key::MirrorSince), card::Show::Text(&since));
+                                f.folder(ui, t(Key::MirrorWhere), &me.typed.mirror_out, t(Key::PickNone));
+                            });
+                        });
                         show_trouble(ui);
                     },
                     |ui, me| {
@@ -271,8 +295,12 @@ impl Win {
                             go = Some(Action::ExportMirror { to: me.typed.mirror_out.trim().to_string() });
                         }
                         close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                        picked = foot_pick(ui, "bk-mirror", crate::platform::Pick::Folder);
                     },
                 );
+                if let Some(p) = picked {
+                    self.typed.mirror_out = p;
+                }
                 esc = out.esc;
             }
         }
@@ -335,4 +363,31 @@ impl Ux {
     pub(super) fn bk_close(&mut self) {
         self.bk_clear();
     }
+}
+
+/// Where a ledger mirror goes until a folder is chosen: a folder of its own in the documents folder.
+fn mirror_default(docs: &str) -> String {
+    if docs.is_empty() {
+        return String::new();
+    }
+    std::path::Path::new(&docs).join("ledger-mirror").display().to_string()
+}
+
+/// The row saying what a backup holds: its name whole, the list after it cut in the middle when it does not
+/// fit (its first and last parts stay), whole on hover.
+pub(super) fn content_row(f: &mut card::Form, ui: &mut egui::Ui, content: &str) {
+    let title = t(Key::DataContent);
+    let _ = f.line(ui, None, title, "", false, false, c(C::Ink), |ui| {
+        // The row's name sits left of the value, 16 apart; the value takes the rest. The name is set 15 in the
+        // medium face: the key face (14, medium) scaled, with a point to spare.
+        let key_w = ui.painter().layout_no_wrap(title.to_string(), key::key_font(), c(C::Ink)).size().x;
+        let named = key_w * Type::Body.size() / Type::Key.size() + 1.0;
+        let room = (ui.available_width() - named - 16.0).max(40.0);
+        let font = Type::Note.font();
+        let shown = width::elide_mid(ui, content, font.clone(), room);
+        let r = ui.label(egui::RichText::new(&shown).font(font).color(c(C::Ink2)));
+        if shown != content {
+            let _ = zikaron_ui::layer::tip(r, content);
+        }
+    });
 }

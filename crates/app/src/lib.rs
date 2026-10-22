@@ -27,6 +27,7 @@
 pub mod action;
 pub mod anchorx;
 pub mod about;
+pub mod addressedx;
 pub mod adoptx;
 pub mod auditx;
 pub mod exitgate;
@@ -113,5 +114,4 @@ pub mod watchx;
 pub mod widex;
 pub mod window;
 pub mod when;
-pub mod wizard;
 pub mod zlibx;

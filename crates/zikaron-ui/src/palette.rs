@@ -71,10 +71,37 @@ pub enum C {
     Knob,
     /// The drag veil over the whole window.
     Veil,
+    /// A flat grey tone laid over whatever is under it (fields, tags, segmented and switch tracks, quiet keys),
+    /// on hover and pressed.
+    Tone,
+    ToneHover,
+    TonePress,
+    /// A white key's face at rest, on hover and pressed.
+    KeyFace,
+    KeyFaceHover,
+    KeyFacePress,
+    /// A white key's half-point edge, at rest and lit.
+    KeyEdge,
+    KeyEdgeHover,
+    /// A white key's two drop shadows (the near one and the soft one).
+    KeyDrop,
+    KeyDrop2,
+    /// The faint accent wash in the page ground's top left corner.
+    GroundTint,
+    /// A list row's ground under the pointer.
+    RowHover,
+    /// The accent wash at the top of a glass surface (menus, toasts, sheets).
+    GlassTint,
+    /// The half-point rim around raised surfaces.
+    Ring,
+    /// The thread of light along a glass surface's top edge.
+    Hi,
+    /// The translucent ground of menus, toasts and sheets.
+    Glass,
 }
 
 impl C {
-    pub const ALL: [C; 44] = [
+    pub const ALL: [C; 60] = [
         C::Ground,
         C::Surface,
         C::Rail,
@@ -119,6 +146,22 @@ impl C {
         C::Scrim,
         C::Knob,
         C::Veil,
+        C::Tone,
+        C::ToneHover,
+        C::TonePress,
+        C::KeyFace,
+        C::KeyFaceHover,
+        C::KeyFacePress,
+        C::KeyEdge,
+        C::KeyEdgeHover,
+        C::KeyDrop,
+        C::KeyDrop2,
+        C::GroundTint,
+        C::RowHover,
+        C::GlassTint,
+        C::Ring,
+        C::Hi,
+        C::Glass,
     ];
 }
 
@@ -137,7 +180,7 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
 }
 
 /// The light table, in `C::ALL` order.
-pub const LIGHT: [Color32; 44] = [
+pub const LIGHT: [Color32; 60] = [
     rgb(0xfa, 0xfa, 0xfc),
     rgb(0xff, 0xff, 0xff),
     rgb(0xf2, 0xf2, 0xf5),
@@ -182,10 +225,26 @@ pub const LIGHT: [Color32; 44] = [
     rgba(0, 0, 0, 77),
     rgb(0xff, 0xff, 0xff),
     rgba(250, 250, 252, 184),
+    rgba(118, 118, 128, 23),
+    rgba(118, 118, 128, 36),
+    rgba(118, 118, 128, 51),
+    rgb(0xff, 0xff, 0xff),
+    rgb(0xfb, 0xfb, 0xfc),
+    rgb(0xf1, 0xf2, 0xf4),
+    rgba(16, 24, 40, 33),
+    rgba(16, 24, 40, 43),
+    rgba(16, 24, 40, 18),
+    rgba(16, 24, 40, 10),
+    rgba(59, 130, 246, 11),
+    rgba(59, 130, 246, 13),
+    rgba(59, 130, 246, 9),
+    rgba(0, 0, 0, 15),
+    rgba(255, 255, 255, 242),
+    rgba(255, 255, 255, 247),
 ];
 
 /// The dark table, in `C::ALL` order.
-pub const DARK: [Color32; 44] = [
+pub const DARK: [Color32; 60] = [
     rgb(0x17, 0x18, 0x1b),
     rgb(0x1f, 0x20, 0x24),
     rgb(0x1b, 0x1c, 0x20),
@@ -228,8 +287,24 @@ pub const DARK: [Color32; 44] = [
     rgb(0x2a, 0x2b, 0x31),
     rgb(0x33, 0x34, 0x3a),
     rgba(0, 0, 0, 128),
-    rgb(0xf2, 0xf2, 0xf5),
+    rgb(0xff, 0xff, 0xff),
     rgba(23, 24, 27, 199),
+    rgba(255, 255, 255, 18),
+    rgba(255, 255, 255, 28),
+    rgba(255, 255, 255, 41),
+    rgb(0x2c, 0x2e, 0x33),
+    rgb(0x31, 0x33, 0x38),
+    rgb(0x26, 0x28, 0x2c),
+    rgba(255, 255, 255, 26),
+    rgba(255, 255, 255, 36),
+    rgba(0, 0, 0, 89),
+    rgba(0, 0, 0, 51),
+    rgba(79, 143, 247, 15),
+    rgba(79, 143, 247, 20),
+    rgba(79, 143, 247, 13),
+    rgba(255, 255, 255, 18),
+    rgba(255, 255, 255, 13),
+    rgba(36, 38, 44, 247),
 ];
 
 /// The blend between the two tables: 0 light, 1 dark, stored as `f32` bits. Set once per frame by `skin`.
@@ -264,6 +339,9 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 pub fn distinct(table: &[Color32]) -> usize {
     table.iter().enumerate().filter(|(i, a)| !table[..*i].contains(a)).count()
 }
+
+/// The switch knob runs from its role's white at the top to this at its foot, in both appearances.
+pub const KNOB_FOOT: Color32 = Color32::from_rgb(0xf3, 0xf4, 0xf6);
 
 /// Text on solid blue, cinnabar, green and red grounds.
 pub const ON_SOLID: Color32 = Color32::WHITE;
@@ -307,64 +385,6 @@ impl Tone {
             Tone::Blue => C::AccentInk,
         })
     }
-}
-
-/// Elevation: cards at rest, lifted on hover, the drop-downs (menus, search pickers, the date picker: they
-/// open over the page beside their field, so they lift as a hovered card does, not as a sheet), floating
-/// layers (sheets), and the toast (a small floating strip: a shorter, lighter shadow than a sheet's). Each
-/// is a half-point ring plus soft shadows; the dark table carries its own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lift {
-    Card,
-    Hover,
-    Menu,
-    Float,
-    Toast,
-}
-
-/// One soft shadow: y offset, blur, color.
-#[derive(Clone, Copy, Debug)]
-pub struct Soft {
-    pub y: f32,
-    pub blur: f32,
-    pub color: Color32,
-}
-
-const fn soft(y: f32, blur: f32, r: u8, g: u8, b: u8, a: u8) -> Soft {
-    Soft { y, blur, color: rgba(r, g, b, a) }
-}
-
-/// The ring color and shadows of an elevation, from the current blend.
-pub fn lift(l: Lift) -> (Color32, [Soft; 2]) {
-    let (ring_l, sh_l, ring_d, sh_d) = match l {
-        Lift::Card => (
-            rgba(0, 0, 0, 15),
-            [soft(1.0, 2.0, 16, 24, 40, 10), soft(6.0, 16.0, 16, 24, 40, 10)],
-            rgba(255, 255, 255, 15),
-            [soft(1.0, 2.0, 0, 0, 0, 77), soft(0.0, 0.0, 0, 0, 0, 0)],
-        ),
-        Lift::Hover | Lift::Menu => (
-            rgba(0, 0, 0, 15),
-            [soft(2.0, 4.0, 16, 24, 40, 13), soft(12.0, 28.0, 16, 24, 40, 20)],
-            rgba(255, 255, 255, 20),
-            [soft(12.0, 28.0, 0, 0, 0, 89), soft(0.0, 0.0, 0, 0, 0, 0)],
-        ),
-        Lift::Float => (
-            rgba(0, 0, 0, 20),
-            [soft(18.0, 48.0, 16, 24, 40, 46), soft(2.0, 6.0, 16, 24, 40, 15)],
-            rgba(255, 255, 255, 20),
-            [soft(18.0, 48.0, 0, 0, 0, 140), soft(0.0, 0.0, 0, 0, 0, 0)],
-        ),
-        Lift::Toast => (
-            rgba(0, 0, 0, 15),
-            [soft(4.0, 12.0, 16, 24, 40, 20), soft(1.0, 3.0, 16, 24, 40, 10)],
-            rgba(255, 255, 255, 20),
-            [soft(4.0, 12.0, 0, 0, 0, 90), soft(0.0, 0.0, 0, 0, 0, 0)],
-        ),
-    };
-    let t = blend();
-    let s = |a: Soft, b: Soft| Soft { y: a.y + (b.y - a.y) * t, blur: a.blur + (b.blur - a.blur) * t, color: mix(a.color, b.color, t) };
-    (mix(ring_l, ring_d, t), [s(sh_l[0], sh_d[0]), s(sh_l[1], sh_d[1])])
 }
 
 /// The canvas color the window is cleared to before anything is drawn (the page ground).

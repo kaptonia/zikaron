@@ -6,6 +6,14 @@ use zikaron_ui::egui::{self, Event, Pos2, Rect};
 use zikaron_ui::fonts::{self, Face, Found, Place, Role};
 use zikaron_ui::{button, input, layer};
 
+/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
+/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
+fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
+    top.set_clip_rect(ctx.content_rect());
+    panel.show_inside(&mut top, add)
+}
+
 const SCREEN: egui::Vec2 = egui::Vec2 { x: 1180.0, y: 800.0 };
 
 struct Frames {
@@ -25,7 +33,8 @@ impl Frames {
         self.t += dt;
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
-        self.ctx.run(input, |ctx| {
+        self.ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             ui(ctx);
             layer::fade_out(ctx);
         })
@@ -73,7 +82,7 @@ struct Seen {
 /// response.
 fn page(ctx: &egui::Context, text: &mut String, row: bool, area: bool, ask: bool, plain: bool) -> Seen {
     let mut seen = Seen { focus: false, id: egui::Id::NULL };
-    egui::CentralPanel::default().show(ctx, |ui| {
+    central(ctx, egui::CentralPanel::default(), |ui| {
         if row {
             let _ = button::key(ui, "上面多出来的一行", button::Role::Secondary, true);
             ui.label("又一行字");

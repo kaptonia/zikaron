@@ -3,6 +3,12 @@
 //! here once; the desktop's known deployments table (`app::deploy`) takes its rows from here, and the command line's
 //! `anchor` takes from here where to start asking whether a hash is already anchored.
 
+/// The registry build's runtime code hash (keccak-256 of the runtime bytecode), `0x` and sixty-four lowercase hex
+/// digits, pinned from the protocol base (`base/zikaron-core/contracts/CODEHASH.md`): a read-only network's registry
+/// is read only when its nodes give this code at it (`zikaron_send::fingerprint`). Copied here so no build reads
+/// `base/`; the desktop's tests compare it with `BASE-LOCK.json`.
+pub const CODE_HASH: &str = "0xfa97a1d9b22fab2b52f4e27c9a965b32734c40001b565ab365d05c887118f57d";
+
 /// One deployment row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {

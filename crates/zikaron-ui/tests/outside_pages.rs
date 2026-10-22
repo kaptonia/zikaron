@@ -127,13 +127,14 @@ impl Bench {
         self.t += 0.1;
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(self.t), events, ..Default::default() };
         let (o, now) = (&mut self.o, self.t);
-        self.ctx.run(input, |ctx| {
+        self.ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             probe::begin(ctx);
             let mut picked = None;
-            egui::SidePanel::left("rail").exact_width(RAIL_W).resizable(false).frame(egui::Frame::NONE).show(ctx, |ui| {
+            egui::Panel::left("rail").exact_size(RAIL_W).resizable(false).frame(egui::Frame::NONE).show_inside(root, |ui| {
                 picked = nav::rail_list(ui, &*o, 400.0);
             });
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(root, |ui| {
                 nav::page_area(ui, o, ("Back", "Forward"), now);
             });
             if let Some(p) = picked {

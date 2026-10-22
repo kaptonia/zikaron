@@ -83,7 +83,7 @@ const QUIET: OnOk = OnOk::Quiet;
 const SAID: OnErr = OnErr::Said;
 
 /// The table: one row per kind, in the order of [`Kind::ALL`].
-pub const TABLE: [Landing; 35] = [
+pub const TABLE: [Landing; 38] = [
     row(Kind::SelfCheck, TOAST, SAID),
     row(Kind::Archive, TOAST, SAID),
     // The settings page's chain row shows a failed read instead of the previous result.
@@ -129,6 +129,13 @@ pub const TABLE: [Landing; 35] = [
     // Installing or removing the command line on PATH gets a toast; a refusal (another install there, the
     // system dialog cancelled) is reported with its reason.
     row(Kind::CliPath, TOAST, SAID),
+    // A seat switch lands where the shell moves into the other seat (`action::seat_landed`); its answer goes back to
+    // the seat control that pressed it.
+    row(Kind::Seat, OnOk::Back(Back::Said), OnErr::Back(Back::Said)),
+    // Taking originals out: a toast says how many were taken, or why none were.
+    row(Kind::Extract, TOAST, SAID),
+    // The chain's time for a new grant's start: it shows in place, and a failed read only on the grant form.
+    row(Kind::ChainTime, QUIET, SAID),
 ];
 
 /// The row of a kind.

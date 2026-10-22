@@ -18,6 +18,13 @@
 //! `kits` directory. A hand-filled link overrides it and is recorded in [`OVERRIDES`] (read only by this app).
 //! When the publish base changes, rows without an override are reassembled; overridden rows are kept.
 //!
+//! ─── `oneTimeKey` ───
+//!
+//! A package sealed to one key (`addressedx`) is one file whose manifest cannot be read without that key, so its
+//! row carries the package's one-time public key (its head, random for each package and naming no recipient): the
+//! local copy is told to be this package by it ([`drop_copy`]). The row's other cells were read from the plain
+//! package before it was sealed and came back with the export ([`RowFacts`]). No row records a recipient.
+//!
 //! ─── `anchoredOn` ───
 //!
 //! Where the kit says it is anchored: the chain id, registry and start block of the home it was exported
@@ -108,7 +115,31 @@ pub struct Row {
     pub note_md: String,
     pub link: Option<String>,
     pub anchored_on: Option<AnchoredOn>,
+    /// A sealed package's one-time public key (hex), by which its local copy is told apart; `None` for a plain one.
+    pub one_time: Option<String>,
 }
+
+/// What a row records of a package besides where and when: its original digests, the author's note, where it says
+/// it is anchored, and a sealed package's one-time key. Read from the plain package by the export itself and carried
+/// back with its result, so the index never reads the landed package back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowFacts {
+    pub contents: Vec<String>,
+    pub note_md: String,
+    pub anchored_on: Option<AnchoredOn>,
+    pub one_time: Option<String>,
+}
+
+impl RowFacts {
+    /// The facts of the plain package at `kit` (a folder or one file), as its manifest says them.
+    pub fn of_kit(kit: &Path) -> Result<RowFacts, Fault> {
+        let (contents, note_md, anchored_on) = manifest_row_facts(kit)?;
+        Ok(RowFacts { contents, note_md, anchored_on, one_time: None })
+    }
+}
+
+/// The member a sealed package's one-time key is written under.
+const ONE_TIME: &str = "oneTimeKey";
 
 /// Where the index file is.
 pub fn path_in(machine: &Path) -> PathBuf {
@@ -146,6 +177,9 @@ fn row_value(r: &Row) -> Value {
         m.push(("link".to_string(), Value::Str(l.clone())));
     }
     m.push((note_key().to_string(), Value::Str(r.note_md.clone())));
+    if let Some(k) = &r.one_time {
+        m.push((ONE_TIME.to_string(), Value::Str(k.clone())));
+    }
     m.push(("path".to_string(), Value::Str(r.path.clone())));
     m.push(("root".to_string(), Value::Str(r.root.clone())));
     Value::Obj(m)
@@ -191,7 +225,7 @@ pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
             None => None,
             Some(a) => Some(anchored_of(a).ok_or_else(bad)?),
         };
-        out.push(Row { id, created, root, path, contents, note_md, link: str_of(k, "link"), anchored_on });
+        out.push(Row { id, created, root, path, contents, note_md, link: str_of(k, "link"), anchored_on, one_time: str_of(k, ONE_TIME) });
     }
     Ok(Some(out))
 }
@@ -302,17 +336,17 @@ fn manifest_of(kit: &Path) -> Result<Vec<u8>, Fault> {
     std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))
 }
 
-/// Add a row after an export. Rows are keyed by bundle directory path: the same bundle exported to two places
-/// is two rows, and exporting again to the same place replaces the row. `link` uses that path's override,
-/// otherwise the default.
-pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, created: u64, publish: Option<&str>) -> Result<Row, Fault> {
-    let (contents, note_md, anchored_on) = manifest_row_facts(kit)?;
+/// Add a row after an export, with the facts the export read (`facts`). Rows are keyed by bundle directory path: the
+/// same bundle exported to two places is two rows, and exporting again to the same place replaces the row. `link`
+/// uses that path's override, otherwise the default.
+pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, created: u64, publish: Option<&str>, facts: RowFacts) -> Result<Row, Fault> {
+    let RowFacts { contents, note_md, anchored_on, one_time } = facts;
     let root = crate::ledgerx::root_of(home)?;
     let mut rows = read(machine)?.unwrap_or_default();
     let o = overrides(machine)?;
     let path = crate::home::plain_path(kit.to_path_buf()).display().to_string();
     let link = o.iter().find(|(k, _)| *k == path).map(|(_, l)| l.clone()).or_else(|| default_for(publish, &home.dir(crate::home::Slot::Kits), kit));
-    let row = Row { id: id.to_string(), created, root, path, contents, note_md, link, anchored_on };
+    let row = Row { id: id.to_string(), created, root, path, contents, note_md, link, anchored_on, one_time };
     rows.retain(|r| r.path != row.path);
     rows.push(row.clone());
     write(machine, &rows)?;
@@ -367,8 +401,9 @@ pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str
 }
 
 /// Delete the local copy. The row is always removed; the bundle directory is deleted only when its manifest's
-/// bundle id equals the row's `id`, so a directory that is gone or now holds another bundle is never touched.
-/// The ledger is not affected. Returns the removed row and whether the directory was deleted.
+/// bundle id equals the row's `id`, and a sealed package's file only when its head's one-time key equals the row's,
+/// so a directory or file that is gone or now holds another bundle is never touched. The ledger is not affected.
+/// Returns the removed row and whether the directory was deleted.
 pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     let mut rows = read(machine)?.unwrap_or_default();
     let Some(at) = rows.iter().position(|r| r.path == path) else {
@@ -376,8 +411,11 @@ pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     };
     let row = rows[at].clone();
     let dir = PathBuf::from(&row.path);
-    let manifest = manifest_of(&dir).ok();
-    let same = manifest.map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(&b)).eq_ignore_ascii_case(&row.id)).unwrap_or(false);
+    let same = match (&row.one_time, crate::addressedx::one_time_of(&dir)) {
+        (Some(k), Some(head)) => zikaron::hexfmt::encode(&head).eq_ignore_ascii_case(k),
+        (Some(_), None) => false,
+        (None, _) => manifest_of(&dir).ok().map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(&b)).eq_ignore_ascii_case(&row.id)).unwrap_or(false),
+    };
     if same && dir.is_file() {
         std::fs::remove_file(&dir).map_err(|e| classify(&e, &row.path))?;
     } else if same {

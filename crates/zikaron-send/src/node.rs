@@ -473,6 +473,16 @@ pub fn route_of(proxy: Option<&str>) -> zikaron_net::Choice {
     }
 }
 
+/// Take this machine's proxy setting as the way out from now on, as the desktop takes it: [`route_of`] its member,
+/// "follow the system" read from the system's settings alone, never from a terminal's proxy variables (which a
+/// process started by an AI app or a script may carry unseen). The one place the command line's roads that read or
+/// send by a home's settings with the credential take their way (`scan --ledger`, `kit-export --to --ledger`,
+/// `anchor --ledger`), unless `--proxy` was given.
+pub fn take_machine_route(proxy: Option<&str>) {
+    zikaron_net::follow_the_system();
+    zikaron_net::set_choice(route_of(proxy));
+}
+
 pub fn ask(eps: &[Endpoint], method: &str, params: &Value) -> Result<Reading, Trouble> {
     ask_with(eps, method, params, false).map_err(|(t, _)| t)
 }

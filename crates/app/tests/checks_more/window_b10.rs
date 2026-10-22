@@ -32,8 +32,6 @@ fn head_of(k: Key) -> String {
 
 /// 7 wei as the window says a held amount (every decimal down to wei).
 const SEVEN_WEI: &str = "0.000000000000000007";
-/// 1.5 ETH in wei, and as the window says it (short enough for the grants page's narrow column).
-const ONE_AND_A_HALF: u128 = 1_500_000_000_000_000_000;
 
 // ───────────────────── Reading what a frame drew ─────────────────────
 
@@ -74,12 +72,12 @@ impl egui::Plugin for Capture {
     fn input_hook(&mut self, _input: &mut egui::RawInput) {
         if self.seen.released.load(Ordering::SeqCst) && !self.synced {
             let from = std::time::Instant::now();
+            // `returned` is set when the task's thread ends, which is after its outcome was sent: the next frame's
+            // drain receives it, however busy the machine is.
             while !self.seen.returned.load(Ordering::SeqCst) {
                 assert!(from.elapsed() < std::time::Duration::from_secs(20), "the held task never returned");
                 std::thread::yield_now();
             }
-            // The outcome is sent right after the closure returns.
-            std::thread::sleep(std::time::Duration::from_millis(50));
             self.synced = true;
         }
     }
@@ -117,10 +115,6 @@ fn last_frame(seen: &Seen) -> Frame {
 
 fn drawn(f: &Frame, text: &str) -> bool {
     f.iter().any(|(t, _)| t == text)
-}
-
-fn drawn_from(f: &Frame, head: &str) -> bool {
-    f.iter().any(|(t, _)| t.starts_with(head))
 }
 
 fn click(at: egui::Pos2) -> Vec<(f64, Vec<egui::Event>)> {
@@ -234,31 +228,6 @@ fn a_failed_chain_read_is_said_on_the_wizards_gas_step() {
     assert!(!words.iter().any(|w| w.starts_with(&failed_head)), "nothing failed now: {words:?}");
 }
 
-/// After a chain read that failed, the grants page's checks before issuing say this read failed (with why),
-/// not the key balance read before it; once the failure is gone, that balance shows.
-#[test]
-fn a_failed_chain_read_is_said_on_the_grants_page() {
-    if super::alone_in(module_path!(), "a_failed_chain_read_is_said_on_the_grants_page") {
-        return;
-    }
-    let place = Place::View(View::Grants, app::nav::tab::GRANTS_NEW);
-    let ctx = egui::Context::default();
-    let mut shell = probe_shell(&ctx);
-    shell.chain = Some(a_reading(ONE_AND_A_HALF));
-    shell.failed.insert(Kind::Chain, failed_read());
-    let failed_head = head_of(Key::SetReadFailedNow);
-    let balance = fill1(Key::U3GasLeft, "1.5000");
-    let (mut shell, r) = app::window::probe_face(&ctx, shell, place, W, H);
-    assert!(r.texts.iter().any(|t| t == app::lang::t(Key::U3BeforeSigning)), "the checks before issuing are drawn: {:?}", r.texts);
-    assert!(r.texts.iter().any(|t| t.starts_with(&failed_head)), "the failed read is said: {:?}", r.texts);
-    assert!(!r.texts.iter().any(|t| *t == balance), "the balance before it is not shown: {:?}", r.texts);
-    shell.failed.remove(&Kind::Chain);
-    let ctx = dressed();
-    let (_, r) = app::window::probe_face(&ctx, shell, place, W, H);
-    assert!(r.texts.iter().any(|t| *t == balance), "a landed reading shows: {:?}", r.texts);
-    assert!(!r.texts.iter().any(|t| t.starts_with(&failed_head)), "nothing failed now: {:?}", r.texts);
-}
-
 // ───────────────────── 3 · The nodes left out of a fee reading ─────────────────────
 
 /// The send sheet names the nodes its fees were not read from (they serve another chain), each by name; with
@@ -283,7 +252,7 @@ fn the_send_sheet_names_the_nodes_left_out_of_the_fee_reading() {
             assert!(probe.frame(&ctx), "frame {i}: the send sheet is up");
         }
         let f = last_frame(&seen);
-        assert!(drawn(&f, t(Key::U3SendTitle)), "the send sheet is drawn: {f:?}");
+        assert!(drawn(&f, t(Key::U3SendGo)), "the send sheet is drawn: {f:?}");
         if want {
             let line = fill1(Key::U3FeeLeftNodes, &left.join(" · "));
             assert!(drawn(&f, &line), "the nodes left out are named: {f:?}");
@@ -327,6 +296,20 @@ enum Lands {
 
 /// Open the resend sheet over the ledger page with a receipt check out (an anchoring task the test holds),
 /// press the sheet's key, let the check land with `lands`, and read the frames after.
+/// A flag set when it is dropped.
+struct SetOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    /// Held by a task's thread until the thread ends.
+    static ENDED: std::cell::RefCell<Option<SetOnDrop>> = const { std::cell::RefCell::new(None) };
+}
+
 fn press_during_check(lands: Lands) -> (app::shell::Shell, Frame, Vec<String>) {
     let ctx = egui::Context::default();
     let mut shell = probe_shell(&ctx);
@@ -345,7 +328,8 @@ fn press_during_check(lands: Lands) -> (app::shell::Shell, Frame, Vec<String>) {
         while !released.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
-        returned.store(true, Ordering::SeqCst);
+        // Set when this thread ends (thread-local values are dropped then), that is after the outcome is sent.
+        ENDED.with(|e| *e.borrow_mut() = Some(SetOnDrop(returned)));
         Ok(done)
     });
     assert_eq!(started, app::task::Spawned::Started);

@@ -82,56 +82,44 @@ pub fn gate_said(net: &Net) -> (Reading, Option<Fault>) {
 /// [`gate_said`] against a given code hash (`0x` and 64 lowercase hex digits): the product passes its pin;
 /// tests pass the hash of a code of their own, so every form of the gate is reached without the pinned build.
 pub fn gate_said_against(net: &Net, pinned: &str) -> (Reading, Option<Fault>) {
-    let mut same = 0usize;
-    let (mut first, mut words): (Option<Fault>, Vec<String>) = (None, Vec::new());
-    for url in &net.nodes {
-        let Some(mut ep) = crate::chainx::endpoint_at(url) else {
-            words.push(format!("{}: not a node address", zikaron_net::sayable(url)));
-            continue;
-        };
-        // Both questions use patience (`zikaron_anchor::patience::ask`, as every read does): a node that
-        // rate-limits once is waited out, not counted as down.
-        let served = match zikaron_anchor::patience::ask(ep.as_mut(), "eth_chainId", &Value::Arr(Vec::new())) {
-            Ok(s) => s,
-            Err(t) => {
-                first.get_or_insert(crate::chainx::said_fault(url, &t));
-                words.push(crate::chainx::trouble_said(url, &t));
-                continue;
+    let (reading, said, _) = gate_counted_against(net, pinned);
+    (reading, said)
+}
+
+/// [`gate_said_against`], also returning the network on the nodes that counted and no other (a node behind the
+/// registry's deployment, answering no code there, is not asked for its anchors).
+fn gate_counted_against(net: &Net, pinned: &str) -> (Reading, Option<Fault>, Net) {
+    use crate::chainx::{FingerprintGate as Gate, FingerprintMiss as Why};
+    // The gate is the sender's, one for the desktop and the command line; this end words a network no node counted
+    // for: the first node trouble's fault, retold with every node's words.
+    let (gate, counted) = crate::chainx::fingerprint_gate_counted(net.chain_id, &net.registry.0, &net.nodes, pinned);
+    let on_counted = Net { nodes: net.nodes.iter().filter(|u| counted.contains(u)).cloned().collect(), ..net.clone() };
+    let (reading, said) = match gate {
+        Gate::Agreed(n) => (Reading::Agreed(n), None),
+        Gate::Single => (Reading::Single, None),
+        Gate::Fingerprint => (Reading::Fingerprint, None),
+        Gate::Down(misses) => {
+            let (mut first, mut words): (Option<Fault>, Vec<String>) = (None, Vec::new());
+            for m in &misses {
+                let url = m.url.as_str();
+                match &m.why {
+                    Why::NotAddress => words.push(format!("{}: not a node address", zikaron_net::sayable(url))),
+                    Why::Trouble(t) => {
+                        first.get_or_insert(crate::chainx::said_fault(url, t));
+                        words.push(crate::chainx::trouble_said(url, t));
+                    }
+                    Why::OtherChain(said) => words.push(format!("{}: eth_chainId {said}", zikaron_net::sayable(url))),
+                    Why::NoCode => words.push(format!("{}: eth_getCode answered no code", zikaron_net::sayable(url))),
+                }
             }
-        };
-        if !zikaron_anchor::scan::endpoint_serves(&served, net.chain_id) {
-            words.push(format!("{}: eth_chainId {}", zikaron_net::sayable(url), served.as_str().unwrap_or("?")));
-            continue;
-        }
-        let params = Value::Arr(vec![Value::Str(net.registry.hex()), Value::Str("latest".to_string())]);
-        let code = match zikaron_anchor::patience::ask(ep.as_mut(), "eth_getCode", &params) {
-            Ok(c) => c,
-            Err(t) => {
-                first.get_or_insert(crate::chainx::said_fault(url, &t));
-                words.push(crate::chainx::trouble_said(url, &t));
-                continue;
-            }
-        };
-        let Some(bytes) = code.as_str().and_then(zikaron::hexfmt::decode) else {
-            words.push(format!("{}: eth_getCode answered no code", zikaron_net::sayable(url)));
-            continue;
-        };
-        if zikaron::hexfmt::encode(&zikaron::cryptox::keccak256(&bytes)) != pinned {
-            return (Reading::Fingerprint, None);
-        }
-        same += 1;
-    }
-    match same {
-        0 => {
             let f = match first.filter(|f| f.which().is_some()) {
                 Some(f) => f.retold(words.join(" · ")),
                 None => Fault::known(Known::Unreachable, words.join(" · ")),
             };
             (Reading::Down, Some(f))
         }
-        1 => (Reading::Single, None),
-        n => (Reading::Agreed(n), None),
-    }
+    };
+    (reading, said, on_counted)
 }
 
 /// A network this pass did not read, named.
@@ -240,7 +228,8 @@ fn windows(main: Option<(&[Endpoint], &Ground)>, nets: &[Net], missed: &mut Vec<
         // network per home, so a duplicate can remain after a home change) joins the main window when the gate
         // admits it, and is never reported as missed: the main network already reads that registry.
         let is_main = main.map(|(_, g)| n.is(g.chain, &g.registry)).unwrap_or(false);
-        let reading = gate(n);
+        let (reading, _, n) = gate_counted_against(n, crate::pinned::CODE_HASH);
+        let n = &n;
         if is_main && !reading.admits() {
             continue;
         }

@@ -105,7 +105,7 @@ fn boxed(ui: &mut egui::Ui, fill: egui::Color32, line: egui::Color32, add: impl 
     egui::Frame::new()
         .fill(fill)
         .stroke(egui::Stroke::new(1.0_f32, line))
-        .corner_radius(Radius::Menu.egui())
+        .corner_radius(Radius::Tag.egui())
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -118,7 +118,7 @@ fn boxed(ui: &mut egui::Ui, fill: egui::Color32, line: egui::Color32, add: impl 
 pub fn note_box(ui: &mut egui::Ui, s: &str) {
     egui::Frame::new()
         .fill(c(C::Rail))
-        .corner_radius(Radius::Ctl.egui())
+        .corner_radius(Radius::Tag.egui())
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -152,7 +152,7 @@ pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut
     egui::Frame::new()
         .fill(fill)
         .stroke(egui::Stroke::new(if kind == Banner::Ok { 0.0_f32 } else { 1.0_f32 }, line))
-        .corner_radius(Radius::Menu.egui())
+        .corner_radius(Radius::Tag.egui())
         .inner_margin(pad)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -231,8 +231,8 @@ pub fn checks(ui: &mut egui::Ui, rows: &[(Mark, String, Option<String>)], two_ac
 pub fn done_state(ui: &mut egui::Ui, id_salt: &str, done: &str, sub: &str) {
     let id = ui.id().with(("zikaron-done", id_salt));
     let a = motion::age(ui.ctx(), id, 0);
-    let circle = ((a / 0.52).clamp(0.0, 1.0), a < 0.52);
-    let tick = (((a - 0.42) / 0.3).clamp(0.0, 1.0), a < 0.72);
+    let circle = ((a / (0.52 * crate::tokens::PACE)).clamp(0.0, 1.0), a < 0.52 * crate::tokens::PACE);
+    let tick = (((a - 0.42 * crate::tokens::PACE) / (0.3 * crate::tokens::PACE)).clamp(0.0, 1.0), a < 0.72 * crate::tokens::PACE);
     if circle.1 || tick.1 {
         ui.ctx().request_repaint();
     }
@@ -290,7 +290,7 @@ pub struct Answer<'a> {
 pub fn answers(ui: &mut egui::Ui, rows: &[Answer]) {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0_f32, c(C::Line)))
-        .corner_radius(Radius::Menu.egui())
+        .corner_radius(Radius::Tag.egui())
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -304,7 +304,7 @@ pub fn answers(ui: &mut egui::Ui, rows: &[Answer]) {
                     ui.set_width(ui.available_width());
                     crate::width::then(
                         ui,
-                        |ui| mark::pill_pop(ui, a.pill, a.tone, 0.1 + 0.07 * k as f32),
+                        |ui| mark::pill_pop(ui, a.pill, a.tone, (0.1 + 0.07 * k as f32) * crate::tokens::PACE),
                         |ui, room| {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 2.0;

@@ -87,6 +87,8 @@ impl Win {
                     crate::lang::filln(Key::SaidKitLeftOut, &[&folder_of(&path), &left_out.len().to_string(), &unreadable.len().to_string()]),
                     Tone::Bad,
                 ),
+                // A package sealed to one key: said as such, nothing of its recipient.
+                Ok(Done::Kit { facts, .. }) if facts.one_time.is_some() => (t(Key::SaidKitAddressed).to_string(), Tone::Note),
                 Ok(Done::Kit { path, .. }) => (fill1(Key::SaidKit, &folder_of(&std::path::Path::new(&path).parent().map(|p| p.display().to_string()).unwrap_or_default())), Tone::Note),
                 Ok(Done::Keystore(crate::task::Keystore::BackedUp { path, .. })) => (fill1(Key::SaidKeyBackedUp, &folder_of(&path)), Tone::Note),
                 Ok(Done::BackupMade { path, .. }) => (fill1(Key::SaidBackupMade, &width::file_name(&path)), Tone::Note),
@@ -101,7 +103,8 @@ impl Win {
                 Ok(Done::CliPath(zikaron_os::cli_path::State::Off)) => (t(Key::SaidCliPathOff).to_string(), Tone::Note),
                 Ok(Done::CliPath(_)) => continue,
                 // These kinds were filtered out above (`said`).
-                Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) => continue,
+                Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) | Ok(Done::Seated(_)) => continue,
+                Ok(Done::Extracted { landed, .. }) => (fill1(Key::SaidExtracted, &landed.names.len().to_string()), Tone::Note),
                 // An export's gate passed: the shell ran the export; its answer is in `gate_said`, handled below.
                 Ok(Done::GatePassed { .. }) => continue,
                 // Attachment digests land silently; their row updates itself.
@@ -114,6 +117,8 @@ impl Win {
                 ),
                 // The new key's history is shown on its sheet, not a toast.
                 Ok(Done::Sighting { .. }) => continue,
+                // The chain's time shows in place on the grant form.
+                Ok(Done::ChainTime(_)) => continue,
                 // A read-only network's reading shows on its own row, not a toast.
                 Ok(Done::NetRead { .. }) => continue,
                 // The main network's chain settings checked on save: saved, or not saved because of the fingerprint

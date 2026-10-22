@@ -1,5 +1,6 @@
-//! Toasts: one pill centered at the top of the main area (the whole window when there is no rail). It drops
-//! in from 10 above and fades in over 260 ms, and leaves the same way backwards (260 ms, back up 10). An
+//! Toasts: one pill centered at the top of the main area (the whole window when there is no rail). It opens as
+//! a capsule: from 0.55 of its width to its whole width in 0.5 s, its words fading in after; it leaves fading
+//! and narrowing a little (260 ms). Under reduced motion it only fades. An
 //! ordinary sentence has a green check and leaves after 3.2 s; an error has a red cross, two lines (what
 //! happened, what to do next), and "details" and "close"; it stays 6 s, and stays while its details are open.
 //! An alert (raised by the watch) has the alerts page's mark on the warning colour and "close", and stays as
@@ -15,8 +16,7 @@
 use crate::button::{self, Key, Role};
 use crate::icons::{self, Glyph};
 use crate::motion::{self, Curve};
-use crate::paint;
-use crate::palette::{self, c, Lift, C};
+use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
@@ -57,9 +57,14 @@ struct Slip {
 /// How long an ordinary toast and an error toast stay.
 pub const LIFE_NOTE: f64 = 3.2;
 pub const LIFE_BAD: f64 = 6.0;
-const IN: f32 = 0.26;
-/// Leaving is the entrance backwards: the same time, back up to where it dropped in from.
-const OUT: f32 = IN;
+/// The capsule opens over `IN` from `NARROW` of its width; its words come in from `WORDS_FROM` over `WORDS_IN`.
+const IN: f32 = 0.5 * crate::tokens::PACE;
+const NARROW: f32 = 0.55;
+const WORDS_FROM: f32 = 0.18 * crate::tokens::PACE;
+const WORDS_IN: f32 = 0.24 * crate::tokens::PACE;
+/// Leaving: fading and narrowing to `LEAVE_TO` of its width.
+const OUT: f32 = 0.26 * crate::tokens::PACE;
+const LEAVE_TO: f32 = 0.85;
 
 impl Slip {
     fn life(&self) -> f64 {
@@ -155,7 +160,7 @@ impl Toasts {
 
     /// Draw, centered over `[left, right]` of the window, 14 from its top.
     pub fn draw(&mut self, ctx: &egui::Context, left: f32) -> Drawn {
-        let now = ctx.input(|i| i.time);
+        let now = crate::motion::now(ctx);
         let mut out = Drawn::default();
         if let Some(cur) = &self.cur {
             if !cur.open && now - cur.born > cur.life() {
@@ -178,10 +183,12 @@ impl Toasts {
         let labels = self.labels.clone();
         let mut close = false;
         let mut flip = false;
+        let travel = motion::travel(ctx);
         for (s, at) in self.leaving.clone() {
             let p = ((now - at) as f32 / OUT).clamp(0.0, 1.0);
             let e = Curve::Ease.at(1.0 - p);
-            let r = paint_slip(ctx, &s, center_x, screen, &labels, e, vec2(0.0, -10.0 * (1.0 - e)), 0.98 + 0.02 * e, false);
+            let wide = 1.0 - (1.0 - LEAVE_TO) * (1.0 - e) * travel;
+            let r = paint_slip(ctx, &s, center_x, screen, &labels, Shown { card: e, words: e, wide, scale: 1.0 }, false);
             out.rects.push(r.0);
         }
         // Waiting for the one leaving to leave: not drawn, and nothing to press.
@@ -189,20 +196,23 @@ impl Toasts {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((s.entered - now).max(0.0)));
         }
         if let Some(s) = self.cur.clone().filter(|s| now >= s.entered) {
-            let enter_t = ((now - s.entered) as f32 / IN).clamp(0.0, 1.0);
+            let since = (now - s.entered) as f32;
+            let enter_t = (since / IN).clamp(0.0, 1.0);
             let e = Curve::Ease.at(enter_t);
-            if enter_t < 1.0 {
+            let card = Curve::Ease.at((since / (0.2 * crate::tokens::PACE)).clamp(0.0, 1.0));
+            let words = Curve::Ease.at(((since - WORDS_FROM) / WORDS_IN).clamp(0.0, 1.0));
+            if enter_t < 1.0 || words < 1.0 {
                 ctx.request_repaint();
             }
-            let bump_t = ((now - s.bumped) as f32 / 0.22).clamp(0.0, 1.0);
+            let bump_t = ((now - s.bumped) as f32 / (0.22 * crate::tokens::PACE)).clamp(0.0, 1.0);
             let bump = if bump_t < 1.0 {
                 ctx.request_repaint();
                 motion::keys(&[(0.0, 1.0), (0.45, 1.035), (1.0, 1.0)], Curve::Ease.at(bump_t))
             } else {
                 1.0
             };
-            let scale = (0.98 + 0.02 * e) * bump;
-            let (r, act) = paint_slip(ctx, &s, center_x, screen, &labels, e, vec2(0.0, -10.0 * (1.0 - e)), scale, true);
+            let wide = 1.0 - (1.0 - NARROW) * (1.0 - e) * travel;
+            let (r, act) = paint_slip(ctx, &s, center_x, screen, &labels, Shown { card, words, wide, scale: bump }, true);
             out.rects.insert(0, r);
             match act {
                 Some(SlipAct::Close) => close = true,
@@ -244,8 +254,18 @@ enum SlipAct {
     Key(usize),
 }
 
-#[allow(clippy::too_many_arguments)]
-fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels: &[String; 3], alpha: f32, off: egui::Vec2, scale: f32, live: bool) -> (Rect, Option<SlipAct>) {
+/// How much of a toast shows: its card's opacity, its words' opacity, how much of its width the capsule spans,
+/// and its scale (the bump of a sentence said again).
+#[derive(Clone, Copy)]
+struct Shown {
+    card: f32,
+    words: f32,
+    wide: f32,
+    scale: f32,
+}
+
+fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels: &[String; 3], shown: Shown, live: bool) -> (Rect, Option<SlipAct>) {
+    let (alpha, scale) = (shown.card, shown.scale);
     let bad = s.tone == Tone::Bad;
     let two = !s.next.is_empty() || !s.raw.is_empty();
     let max_w = 560.0_f32.min(screen.width() - 32.0);
@@ -284,16 +304,20 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
     let rect = Rect::from_min_size(pos2((center_x - w / 2.0).round(), screen.top() + 14.0), vec2(w, h));
     let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(("zikaron-toast", s.id)));
     let c0 = rect.center();
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: (c0.to_vec2() * (1.0 - scale)) + off });
+    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: c0.to_vec2() * (1.0 - scale) });
     let mut act = None;
     // Placed on nothing: a press beside the toast reaches the page.
     crate::layer::place(ctx, layer, None);
     crate::layer::area(layer.id, egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(live).show(ctx, |ui| {
         ui.multiply_opacity(alpha);
         let (r, _) = ui.allocate_exact_size(rect.size(), egui::Sense::hover());
-        let p = ui.painter();
         let radius = if two { Radius::Sheet } else { Radius::Pill };
-        paint::surface(p, r, radius, c(C::Surface), Lift::Toast);
+        // The capsule as wide as it has opened; the words inside it, coming in after it.
+        let capsule = Rect::from_center_size(r.center(), vec2((r.width() * shown.wide).max(r.height()), r.height()));
+        crate::material::paint(ui.painter(), capsule, radius, crate::material::Level::Toast, 0.0);
+        ui.set_clip_rect(capsule.intersect(ui.clip_rect()));
+        ui.multiply_opacity(if alpha > 0.0 { (shown.words / alpha).min(1.0) } else { 0.0 });
+        let p = ui.painter();
         // The icon and the keys share one height, by one judgement: on the first line when there is more than
         // one, so opening the details below never moves them; centred on a one-line pill.
         let line_y = if two { r.top() + pad_y + 10.0 } else { r.center().y };
@@ -325,7 +349,7 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
             let kr = Rect::from_min_size(pos2(kx, line_y - 10.0), vec2(kw, 20.0));
             let resp = ui.interact(kr, egui::Id::new(("zikaron-toast-key", s.id, *which)), egui::Sense::click());
             let colour = if *which == 201 { c(C::Ink2) } else { c(C::AccentInk) };
-            let k = Key::new(label, Role::Link);
+            let k = Key::new(label, Role::Plain);
             if *which == 201 {
                 ui.painter().text(kr.left_center(), egui::Align2::LEFT_CENTER, label, crate::button::key_font(), colour);
                 if resp.hovered() {

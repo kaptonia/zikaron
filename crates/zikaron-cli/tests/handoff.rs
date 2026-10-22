@@ -199,3 +199,26 @@ fn scan_takes_its_basis_from_a_home_or_a_file_never_both() {
     let (code, _, err) = run(&w.0, &h, &["scan", "--endpoint", "1=http://127.0.0.1:9"]);
     assert_eq!((code, err.as_str()), (2, "E_ARGS --basis --ledger"));
 }
+
+/// `scan --ledger <a home's ledger>` with neither `--endpoint` nor `--fixture` takes the home's own nodes, opening the
+/// home with the credential as a send does: without the credential it is refused by the credential's reason, never
+/// misuse. A plain folder with neither is misuse, and so is `--fixture` beside `--ledger`.
+#[test]
+fn a_scan_of_a_home_with_neither_takes_its_nodes_through_the_credential() {
+    let w = scratch("scan-home");
+    let h = w.0.join("user");
+    std::fs::create_dir_all(&h).expect("user home");
+    a_ledger(&w.0, &h, "a");
+    let (code, out, err) = run(&w.0, &h, &["scan", "--ledger", "a"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (2, "", "E_ARGS --fixture --endpoint"), "a plain folder: misuse");
+    let home = w.0.join("kept");
+    let label = zikaron_seal::envelope::label_path(&home);
+    std::fs::create_dir_all(label.parent().expect("settings")).expect("settings");
+    std::fs::write(&label, b"{}").expect("a label: a home the desktop keeps");
+    let ledger = home.join("ledger").display().to_string();
+    let (code, out, err) = run(&w.0, &h, &["scan", "--ledger", &ledger]);
+    assert_eq!((code, member(&out, "reason")), (1, "E_CREDENTIAL_MISSING".into()), "{out} {err}");
+    std::fs::write(w.0.join("rec.json"), b"{}").expect("a recording");
+    let (code, _, err) = run(&w.0, &h, &["scan", "--fixture", "rec.json", "--ledger", &ledger]);
+    assert_eq!((code, err.as_str()), (2, "E_ARGS --ledger"));
+}

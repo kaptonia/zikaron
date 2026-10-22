@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "MIT"
 
@@ -35,7 +35,9 @@ zikaron-seal = { path = "../zikaron-seal" }
 # actions): its words for the sender's codes, its home under this machine's seal, its key's signing port.
 zikaron-send = { path = "../zikaron-send" }
 # Third party: the egui family. On the app side only the `window` module touches it.
-eframe = { version = "0.33", default-features = false, features = ["glow"] }
+eframe = { version = "0.34", default-features = false, features = ["glow"] }
+# The window's native handle, as eframe hands it, for the platform piece to put the system's material under it.
+raw-window-handle = "0.6"
 # Third-party cryptography: on the app side only the `cryptx` module touches these (phrases and private-key
 # derivation). scrypt, AES-128-CTR, HKDF, HMAC-SHA256 and XChaCha20-Poly1305 are the sealed layer's (`zikaron-seal`).
 bip39 = { version = "2", default-features = false, features = ["alloc"] }
@@ -44,10 +46,16 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha2 = "0.10"
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 
+# macOS: the window drawn through Metal (`wgpu`, Metal alone), which presents one frame per refresh of the screen at
+# its own rate (120 Hz on a ProMotion screen); OpenGL there hands two frames to one refresh, unevenly.
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = ["glow", "wgpu_no_default_features"] }
+wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
+
 # H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
 # portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.33", default-features = false, features = ["glow", "x11", "wayland"] }
+eframe = { version = "0.34", default-features = false, features = ["glow", "x11", "wayland"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 log = "0.4"
 # The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).

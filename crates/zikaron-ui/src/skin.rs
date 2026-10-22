@@ -1,7 +1,7 @@
 //! Skin: install the settled numbers and colors into egui once, and follow the appearance every frame.
 //!
 //! After `dress` no color, corner or font size needs writing again. The appearance (light, dark, or the
-//! system's) blends the two color tables over `tokens::SLOW`; while it moves, the colors egui itself uses
+//! system's) blends the two color tables over `THEME` (0.32 s); while it moves, the colors egui itself uses
 //! (panel fill, selection, scroll bars) are installed again each frame.
 
 use crate::palette::{self, c, C};
@@ -35,7 +35,7 @@ impl Appearance {
 
 /// Install everything once: sizes, spacing and the colors of the current blend.
 pub fn apply(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
     install_colors(&mut style.visuals);
     use egui::{FontFamily as F, FontId, TextStyle as T};
     style.text_styles = [
@@ -97,7 +97,7 @@ fn install_colors(v: &mut egui::Visuals) {
     v.window_corner_radius = Radius::Sheet.egui();
     v.menu_corner_radius = Radius::Menu.egui();
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = Radius::Ctl.egui();
+        w.corner_radius = Radius::Field.egui();
         w.bg_stroke = egui::Stroke::new(1.0_f32, c(C::Line));
         w.fg_stroke = egui::Stroke::new(1.0_f32, c(C::Ink));
         w.expansion = 0.0;
@@ -111,7 +111,10 @@ fn install_colors(v: &mut egui::Visuals) {
     v.widgets.open.bg_fill = c(C::Hover);
 }
 
-/// Follow the appearance this frame: ease the blend toward light (0) or dark (1) over 300 ms and install
+/// How long a change of appearance takes: the whole window cross-fades from one appearance to the other.
+pub const THEME: f32 = 0.32 * crate::tokens::PACE;
+
+/// Follow the appearance this frame: ease the blend toward light (0) or dark (1) over [`THEME`] and install
 /// the blended colors while it moves. Returns the blend.
 pub fn follow(ctx: &egui::Context, a: Appearance) -> f32 {
     let dark = match a {
@@ -120,10 +123,10 @@ pub fn follow(ctx: &egui::Context, a: Appearance) -> f32 {
         Appearance::System => ctx.system_theme() == Some(egui::Theme::Dark),
     };
     let before = palette::blend();
-    let b = crate::motion::to(ctx, egui::Id::new("zikaron-appearance"), if dark { 1.0 } else { 0.0 }, tokens::SLOW, crate::motion::Curve::Ease);
+    let b = crate::motion::to(ctx, egui::Id::new("zikaron-appearance"), if dark { 1.0 } else { 0.0 }, THEME, crate::motion::Curve::Ease);
     palette::set_blend(b);
     if (b - before).abs() > f32::EPSILON {
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.global_style()).clone();
         install_colors(&mut style.visuals);
         ctx.set_style_of(egui::Theme::Light, style.clone());
         ctx.set_style_of(egui::Theme::Dark, style);
@@ -140,6 +143,8 @@ pub struct Dressed {
 /// Dress: install skin and fonts at once. The window and the test hooks both call it.
 pub fn dress(ctx: &egui::Context) -> Dressed {
     apply(ctx);
+    // The window's words, kept each frame for a change of language to play out (`flow::retext`).
+    let _ = ctx.plugin_or_default::<crate::flow::Words>();
     let found = crate::fonts::find();
     let mut missing = crate::fonts::install(ctx, &found);
     missing.sort_by_key(|r| r.as_str());
@@ -160,7 +165,7 @@ pub struct Installed {
 }
 
 pub fn installed(ctx: &egui::Context) -> Installed {
-    let s = ctx.style();
+    let s = ctx.global_style();
     let size = |t: egui::TextStyle| s.text_styles.get(&t).map(|f| f.size).unwrap_or(0.0);
     let body = size(egui::TextStyle::Body);
     let small = size(egui::TextStyle::Small);

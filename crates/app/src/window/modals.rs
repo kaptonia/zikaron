@@ -6,6 +6,7 @@
 //! open under them; while the passcode gate is up no sheet is drawn.
 
 use super::*;
+use zikaron_ui::sheetparts as parts;
 
 impl Win {
     // ─── Which sheet is open ───
@@ -17,12 +18,17 @@ impl Win {
             || u3.confirm.is_some()
             || u3.form.is_some()
             || u3.kit_pick.is_some()
+            || u3.work_pick
             || self.clash_modal
             || self.ux.u4.import_open
             || self.ux.u4.confirm.is_some()
             || self.ux.id_modal.is_some()
             || self.ux.confirm_genesis
             || self.ux.confirm_adopt
+            || self.net_sheet_open()
+            || self.ux.dir_sheet.is_some()
+            || self.ux.snapshot_sheet
+            || self.ux.out_sheet.is_some()
     }
 
     /// Close every sheet; the wizard stays.
@@ -35,6 +41,7 @@ impl Win {
         self.ux.u3.form = None;
         self.ux.u3.succeed_confirm = false;
         self.ux.u3.kit_pick = None;
+        self.ux.u3.work_pick = false;
         self.clash_modal = false;
         self.ux.u4.import_open = false;
         self.ux.u4.import_err = None;
@@ -47,6 +54,12 @@ impl Win {
         self.ux.sheet_shake = None;
         self.ux.bk_clear();
         self.cli_close();
+        self.net_sheets_clear();
+        self.ux.dir_sheet = None;
+        self.ux.dir_waiting = false;
+        self.ux.snapshot_sheet = false;
+        self.ux.out_sheet = None;
+        self.ux.out_waiting = false;
     }
 
     /// Whether any sheet is up (Esc belongs to it, not to the layer under it).
@@ -60,9 +73,14 @@ impl Win {
             || self.ux.u3.confirm.is_some()
             || self.ux.u3.form.is_some()
             || self.ux.u3.kit_pick.is_some()
+            || self.ux.u3.work_pick
             || self.ux.u4.import_open
             || self.ux.u4.confirm.is_some()
             || self.clash_modal
+            || self.net_sheet_open()
+            || self.ux.dir_sheet.is_some()
+            || self.ux.snapshot_sheet
+            || self.ux.out_sheet.is_some()
     }
 
     /// Close every sheet and the wizard.
@@ -203,18 +221,12 @@ impl Win {
         self.act(Action::TakeDropped { path: p }, now);
     }
 
-    /// After content is taken, an empty record name takes the content's name (a file without its extension, a
-    /// folder or repository whole).
+    /// After content is taken, an empty record name takes the content's whole name.
     pub(super) fn took_named(&mut self) {
         if self.typed.work_note.trim().is_empty() {
             if let Some(c) = self.shell.content.as_ref() {
-                let name = width::file_name(&c.subject);
-                // A file's name loses its extension; a folder or repository keeps its whole name.
-                let stem = match (c.size, name.rsplit_once('.')) {
-                    (Some(_), Some((s, _))) if !s.is_empty() => s.to_string(),
-                    _ => name,
-                };
-                self.typed.work_note = stem;
+                // The whole name, extension and all, file or folder alike (`report.tar.gz` stays itself).
+                self.typed.work_note = width::file_name(&c.subject);
             }
         }
     }
@@ -222,12 +234,18 @@ impl Win {
     // ─── Drawing ───
 
     /// The confirmation sheet shown when a fetch finds this home at odds with the fetched ledger: the entries
-    /// that would remain only in the old data, "cancel", and "fetch and replace" (this home is kept as old data
-    /// and a fresh one receives the fetched ledger, using the password the fetch was given).
+    /// that would remain only in the old data (a table), what that means, "cancel", and "fetch and replace" (this
+    /// home is kept as old data and a fresh one receives the fetched ledger, using the password the fetch was
+    /// given).
     fn conflict_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let Some(c) = self.shell.fetch_conflict.clone() else { return };
         let ready = !self.typed.fetch_from.trim().is_empty() && !self.ux.fetch_held.is_empty() && !self.shell.tasks.in_flight(crate::task::Kind::Fetch);
-        let rows: Vec<(String, Val)> = c.rows.iter().map(|(r, at)| (format!("#{} \u{b7} {}", r.seq, human_summary(r)), Val::text(at.map(crate::when::short).unwrap_or_default()))).collect();
+        // One row per entry: its number, what it is, when it was queued.
+        let rows: Vec<table::Row> = c
+            .rows
+            .iter()
+            .map(|(r, at)| table::Row { cells: vec![table::Cell::Seq(r.seq), table::Cell::Text(human_summary(r)), table::Cell::Mono(at.map(crate::when::short).unwrap_or_default())], ..Default::default() })
+            .collect();
         let (mut sure, mut close) = (false, false);
         let out = sheet::show(
             ctx,
@@ -235,9 +253,8 @@ impl Win {
             self,
             |ui, _me| {
                 sheet::title(ui, &fill1(Key::ConflictTitle, &c.offline.to_string()), "");
-                states::note_box(ui, t(Key::ConflictSay));
-                let refs: Vec<(&str, Val)> = rows.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                kv::kv(ui, &refs);
+                let cols = [table::SEQ, table::col(t(Key::U3Entry), table::Col::Fr(1.0)), table::col_r(t(Key::U3QueuedAt), table::Col::Px(120.0))];
+                let _ = table::table(ui, "fetch-conflict", &cols, true, &rows, "");
             },
             |ui, _me| {
                 sure = page::Pen::new().press(ui, t(Key::DoFetchReplace), ready).clicked();
@@ -261,6 +278,12 @@ impl Win {
             return;
         }
         self.cli_sheet(ctx, now);
+        self.net_edit_sheet(ctx, now);
+        self.read_net_sheet(ctx, now);
+        self.publish_sheet(ctx, now);
+        self.publish_edit_sheet(ctx, now);
+        self.extract_sheet(ctx, now);
+        self.dir_sheet(ctx, now);
         self.estimate_due(ctx);
         self.new_anchor_sheet(ctx, now);
         self.conflict_sheet(ctx, now);
@@ -281,6 +304,7 @@ impl Win {
             None => {}
         }
         self.kit_pick_sheet(ctx);
+        self.grant_work_pick_sheet(ctx);
         self.clash_sheet(ctx);
         self.add_grant_sheet(ctx, now);
         self.relicense_sheet(ctx, now);
@@ -337,19 +361,25 @@ impl Win {
         self.ux.u3.confirm = Some(U3Confirm::NoEstimate { count, why: f.human().to_string(), next: f.next().to_string(), raw: f.raw() });
     }
 
-    /// New record: choose the content, name it, optionally say for whom; then the confirmation step (file, for
-    /// whom, cost; the fingerprint and the ledger's place under details).
+    /// New record, one step: the content in a group (its file and size, or "not chosen", or a batch of files
+    /// with "clear"; its fingerprint; what it costs; the ledger's place under details), its name, optionally
+    /// for whom and a linked repository (two folds with their summaries), and the key that writes it at the foot
+    /// ("choose file" at the bottom left, or a file dropped on the sheet).
     fn new_anchor_sheet(&mut self, ctx: &egui::Context, now: f64) {
-        let Some(step) = self.ux.u3.new_anchor else { return };
+        if self.ux.u3.new_anchor.is_none() {
+            return;
+        }
+        // A batch down to one file (the others signed before a stop) is that file chosen alone: it is taken as one,
+        // so the sheet shows its size and fingerprint; a batch is two files or more.
+        if self.typed.batch_files.len() == 1 && !self.shell.tasks.in_flight(crate::task::Kind::Take) && !self.shell.tasks.in_flight(crate::task::Kind::Record) {
+            let one = std::mem::take(&mut self.typed.batch_files);
+            self.take_for_record(one, now);
+        }
         let content = self.shell.content.clone();
         let batch = self.typed.batch_files.clone();
         let ready = content.is_some() || !batch.is_empty();
         let hashing_now = self.shell.tasks.in_flight(crate::task::Kind::Take);
         let recording_now = self.shell.tasks.in_flight(crate::task::Kind::Record);
-        // Both keys of the sheet (the guide key, then the commit) say what the write will do.
-        let go = t(self.anchor_key());
-        let go_commit = t(self.anchor_key());
-        let note = t(if self.shell.settings.auto_anchor { Key::U3AnchorHintOn } else { Key::U3AnchorHint });
         let root = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
         let repo_say = match (&self.shell.settings.repo, self.shell.repo_since.as_ref()) {
             (None, _) => t(Key::U3RepoNone).to_string(),
@@ -358,123 +388,127 @@ impl Win {
         };
         let for_say = {
             let f = &self.typed.for_fields;
-            if f.iter().all(|x| x.trim().is_empty()) {
-                t(Key::None_).to_string()
-            } else {
-                f.iter().map(|x| x.trim()).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ")
-            }
+            let said = f.iter().map(|x| x.trim()).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ");
+            (!said.is_empty()).then_some(said)
         };
-        let cost = t(if self.shell.settings.auto_anchor { Key::U3CostSendNext } else { Key::U3CostQueue });
+        let auto = self.shell.settings.auto_anchor;
+        // The key says what the write does (into the ledger, or on chain at once), as the grant's confirmation does.
+        let go = t(self.anchor_key());
+        let cost = t(if auto { Key::U3CostSendNext } else { Key::U3CostQueue });
         let mut picked: Option<Vec<String>> = None;
-        let (mut next, mut back, mut close, mut commit, mut register, mut check_repo, mut clear_batch) = (false, false, false, false, false, false, false);
-        let slide = if step == 1 { sheet::Slide::Forward } else { sheet::Slide::Back };
+        let (mut repo_picked, mut chose): (Option<String>, Option<String>) = (None, None);
+        let (mut close, mut commit, mut ask_repo, mut check_repo, mut clear_batch) = (false, false, false, false, false);
         let out = sheet::show(
             ctx,
-            sheet::Spec::new("new-record", tk::SHEET_WIDE).step(step as u64, slide),
+            sheet::Spec::new("new-record", tk::SHEET_W),
             self,
             |ui, me| {
-                if step == 0 {
-                    sheet::title(ui, t(Key::V2NewAnchor), "");
-                    let chosen: Option<(String, String)> = if !batch.is_empty() {
-                        Some((fill1(Key::BatchChosen, &batch.len().to_string()), String::new()))
-                    } else {
-                        content.as_ref().map(|x| (fill1(Key::U3Chosen, &width::file_name(&x.subject)), x.size.map(size_say).unwrap_or_else(|| x.detail.clone())))
-                    };
-                    let d = drop::zone(
-                        ui,
-                        "new-record-drop",
-                        Some(Glyph::Inbox),
-                        &[t(Key::U3DropTitle), t(Key::DropClickAny)],
-                        chosen.as_ref().map(|(a, b)| (a.as_str(), b.as_str(), t(Key::DropClickSwap))),
-                        140.0,
-                        drop::Shape::Column,
-                        true,
-                    );
-                    if !d.dropped.is_empty() {
-                        picked = Some(d.dropped.clone());
-                    } else if let Some(p) = path_answer(ui.ctx(), egui::Id::new("zikaron-path-new-record"), d.clicked, crate::platform::Pick::FileOrFolder) {
-                        picked = Some(vec![p]);
+                sheet::title(ui, t(Key::V2NewAnchor), "");
+                // A file dropped while the sheet is up is taken as if chosen (the sheet draws no drop zone).
+                let dropped = drop::take_dropped(ui.ctx());
+                if !dropped.is_empty() {
+                    picked = Some(dropped);
+                }
+                if me.typed.repo_path.is_empty() {
+                    if let Some(r) = &me.shell.settings.repo {
+                        me.typed.repo_path = r.path.clone();
                     }
+                }
+                card::form(ui, |ui, f| {
+                    // The content: one file, folder or repository (its name whole, elided in the middle, and its
+                    // size), or a batch of files (one row each, "clear" with their count).
+                    let file = Some(card::Lead::Glyph(Glyph::File));
                     if !batch.is_empty() {
+                        clear_batch = f.act(ui, t(Key::U3File), &fill1(Key::BatchChosen, &batch.len().to_string()), key::Key::new(t(Key::PickClear), Role::Secondary)).clicked();
                         for p in &batch {
-                            let room = ui.available_width();
-                            paint::line(ui, &width::file_name(p), Type::Small, c(C::Ink2), room);
+                            let _ = f.line(ui, file, &width::file_name(p), "", false, false, c(C::Ink), |_| ());
                         }
-                        clear_batch = key::link(ui, t(Key::PickClear)).clicked();
-                    }
-                    field(ui, t(Key::U3WorkName), None, |ui| input::line(ui, &mut me.typed.work_note, ""));
-                    fold::fold(ui, "new-record-for", t(Key::ForFold), |ui| {
-                        card::grid(ui, "new-record-for-grid", 4, 180.0, |ui, i| {
-                            let k = [Key::ForApp, Key::ForIdentity, Key::ForRef, Key::ForSeat][i];
-                            field(ui, t(k), None, |ui| input::line(ui, &mut me.typed.for_fields[i], ""));
-                        });
-                        hint(ui, t(Key::ForNote));
-                    });
-                    fold::fold(ui, "new-record-more", t(Key::U3MoreOptions), |ui| {
-                        if me.typed.repo_path.is_empty() {
-                            if let Some(r) = &me.shell.settings.repo {
-                                me.typed.repo_path = r.path.clone();
+                    } else {
+                        match content.as_ref() {
+                            Some(x) => {
+                                let size = x.size.map(size_say).unwrap_or_else(|| x.detail.clone());
+                                let name = width::file_name(&x.subject);
+                                let room = (ui.available_width() * 0.55).max(40.0);
+                                let _ = f.line(ui, file, t(Key::U3File), "", false, false, c(C::Ink), |ui| {
+                                    if !size.is_empty() {
+                                        paint::text(ui, &size, Type::Small, c(C::Ink3));
+                                    }
+                                    let shown = width::elide_mid(ui, &name, Type::Note.font(), room);
+                                    let r = paint::text(ui, &shown, Type::Note, c(C::Ink));
+                                    if shown != name {
+                                        let _ = zikaron_ui::layer::tip(r, &name);
+                                    }
+                                });
+                                let hex = x.hex();
+                                if let Some(v) = f.info(ui, t(Key::ContentHash), card::Show::Short(&hex)) {
+                                    tell_copied(ui.ctx(), Some(v));
+                                }
+                            }
+                            None => {
+                                let _ = f.line(ui, file, t(Key::U3File), "", false, false, c(C::Ink), |ui| paint::text(ui, t(Key::PickNone), Type::Note, c(C::Ink3)));
                             }
                         }
-                        field(ui, t(Key::U3RepoLabel), None, |ui| pick_path(ui, &mut me.typed.repo_path, crate::platform::Pick::Folder));
-                        hint(ui, &repo_say);
-                        keys_row(ui, |ui| {
-                            register = key::key(ui, t(Key::DoRegisterRepo), Role::Secondary, !me.typed.repo_path.trim().is_empty()).clicked();
-                            check_repo = key::key(ui, t(Key::DoCheckRepo), Role::Secondary, true).clicked();
+                    }
+                    let _ = f.info(ui, t(Key::CfCost), card::Show::Text(cost));
+                    details_row(ui, f, "new-record-details", &[(t(Key::CfWhere), Val::mono(root.clone()))]);
+                });
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, t(Key::U3WorkName), None, None, |ui, w| fields::line(ui, &mut me.typed.work_note, "", w, fields::Look::default()));
+                });
+                card::form(ui, |ui, f| {
+                    // For whom: optional as a whole (said once, in its summary); within it the role may stay empty.
+                    let for_summary = for_say.clone().unwrap_or_else(|| t(Key::U3Optional).to_string());
+                    let _ = f.fold(ui, "new-record-for", t(Key::ForTitle), &for_summary, |ui, f| {
+                        f.panel(ui, |ui| {
+                            fields::stack(ui, |ui, st| {
+                                for (i, k) in [Key::ForApp, Key::ForIdentity, Key::ForRef, Key::ForSeatName].into_iter().enumerate() {
+                                    st.field(ui, t(k), None, None, |ui, w| fields::line(ui, &mut me.typed.for_fields[i], "", w, fields::Look::default()));
+                                }
+                            });
                         });
                     });
-                } else {
-                    sheet::title(ui, go_commit, "");
-                    let file = if batch.is_empty() { content.as_ref().map(|x| width::file_name(&x.subject)).unwrap_or_default() } else { fill1(Key::BatchChosen, &batch.len().to_string()) };
-                    kv::kv(ui, &[(t(Key::U3File), Val::text(file)), (t(Key::ForFold), Val::text(for_say.clone())), (t(Key::CfCost), Val::text(cost))]);
-                    states::note_box(ui, t(Key::U3AnchorNote));
-                    let hex = if batch.is_empty() { content.as_ref().map(|x| x.hex()).unwrap_or_default() } else { t(Key::None_).to_string() };
-                    details(ui, "new-record-details", &[(t(Key::ContentHash), Val::mono(hex)), (t(Key::CfWhere), Val::mono(root.clone()))]);
-                }
+                    // A linked Git repository: "add" chooses its folder and links it; "check" reads its commits.
+                    let repo = me.typed.repo_path.trim().to_string();
+                    let linked = if repo.is_empty() { t(Key::U3RepoNone).to_string() } else { width::file_name(&repo) };
+                    let _ = f.fold(ui, "new-record-more", t(Key::U3MoreOptions), &linked, |ui, f| {
+                        let sub = if repo.is_empty() { t(Key::PickNone).to_string() } else { width::file_name(&repo) };
+                        ask_repo = f.act(ui, t(Key::RepoName), &sub, key::Key::new(t(Key::DoRegisterRepo), Role::Secondary)).clicked();
+                        check_repo = f.act(ui, &repo_say, "", key::Key::new(t(Key::DoCheckRepo), Role::Secondary)).clicked();
+                    });
+                });
+                repo_picked = path_answer(ui.ctx(), egui::Id::new("zikaron-path-new-record-repo"), ask_repo, crate::platform::Pick::Folder);
             },
             |ui, _me| {
-                if step == 0 {
-                    // While the fingerprint is computed (`Kind::Take`) the key shows a spinner and ignores presses;
-                    // "back" stays.
-                    let hashing = if hashing_now { Phase::Busy { frac: None } } else { Phase::Idle };
-                    next = key::show(ui, key::Key::new(go, Role::Guide).enabled(ready).phase(hashing).busy_text(t(Key::U3Hashing))).clicked();
-                    close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
-                    sheet::foot_note(ui, note);
-                } else {
-                    // While fingerprints are computed and entries written (`Kind::Record`) the key shows a spinner
-                    // and ignores presses; "back" stays.
-                    let recording = if recording_now { Phase::Busy { frac: None } } else { Phase::Idle };
-                    commit = page::Pen::new().press_saying(ui, go_commit, t(Key::U3Recording), ready, recording).clicked();
-                    close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        back = key::show(ui, key::Key::new(t(Key::WizPrev), Role::Plain).lead(Glyph::Back)).clicked();
-                    });
-                }
+                // While the fingerprint is computed (`Kind::Take`) or the entries written (`Kind::Record`) the key
+                // shows a spinner, says which, and ignores presses; "cancel" stays.
+                let busy = hashing_now || recording_now;
+                let phase = if busy { Phase::Busy { frac: None } } else { Phase::Idle };
+                let busy_say = t(if hashing_now { Key::U3Hashing } else { Key::U3Recording });
+                commit = page::Pen::new().press_saying(ui, go, busy_say, ready, phase).clicked();
+                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                // "Choose file" at the bottom left: a file, a folder or a repository, as a drop takes.
+                let asked = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| key::key(ui, t(Key::PickFile), Role::Secondary, true).clicked()).inner;
+                chose = path_answer(ui.ctx(), egui::Id::new("zikaron-path-new-record"), asked, crate::platform::Pick::FileOrFolder);
             },
         );
-        if let Some(paths) = picked {
+        if let Some(paths) = picked.or(chose.map(|p| vec![p])) {
             self.take_for_record(paths, now);
         }
         if clear_batch {
             self.typed.batch_files.clear();
         }
-        if register {
+        if let Some(p) = repo_picked {
+            self.typed.repo_path = p;
             let a = Action::RegisterRepo { path: self.typed.repo_path.clone() };
             self.act(a, now);
         }
         if check_repo {
             self.act(Action::CheckRepo, now);
         }
-        if next {
-            self.ux.u3.new_anchor = Some(1);
-        }
-        if back {
-            self.ux.u3.new_anchor = Some(0);
-        }
         if close || out.esc {
             self.ux.u3.new_anchor = None;
         }
-        if commit {
+        if commit && !hashing_now && !recording_now {
             self.record_now(now);
         }
     }
@@ -540,9 +574,9 @@ impl Win {
         }
     }
 
-    /// Put on chain: the first n entries and the gas cap (loading until estimated), with the gas figure under
-    /// details. Pressing runs "sign, broadcast" in the key; the sheet closes once the broadcast lands. A failed
-    /// estimate turns the sheet to "cannot estimate gas" with a retry.
+    /// Put on chain: the first n entries, the gas estimate and the gas cap (estimating until they land). Pressing
+    /// runs "sign, broadcast" in the key; the sheet closes once the broadcast lands. A failed estimate turns the
+    /// sheet to "cannot estimate gas" with a retry.
     fn send_sheet(&mut self, ctx: &egui::Context, count: usize, failed: Option<(String, String, String)>, now: f64) {
         // Pressed and landed: close (the broadcast clears the estimate; a failure is shown on the key).
         if let Some(stamp) = self.ux.u3.sending {
@@ -592,29 +626,33 @@ impl Win {
             self,
             |ui, _me| match &failed {
                 None => {
+                    // The batch, its estimate and its cap.
                     sheet::title(ui, t(Key::U3SendTitle), "");
-                    let cap_val = if gas.is_some() { Val::mono(fill1(Key::SetGasSay, &cap)) } else { Val::Loading(110.0) };
-                    kv::kv(ui, &[(t(Key::LedgerEntries), Val::text(first.clone())), (t(Key::U3FeeCap), cap_val)]);
+                    let cap_say = fill1(Key::SetGasSay, &cap);
+                    let gas_say = gas.map(|g| g.to_string()).unwrap_or_default();
+                    card::form(ui, |ui, f| {
+                        let _ = f.info(ui, t(Key::LedgerEntries), card::Show::Text(&first));
+                        // Until the estimate lands both figures say it is estimating.
+                        let _ = f.info(ui, t(Key::U3GasEstimate), if gas.is_some() { card::Show::Mono(&gas_say) } else { card::Show::Empty(t(Key::U3Estimating)) });
+                        let _ = f.info(ui, t(Key::U3FeeCap), if gas.is_some() { card::Show::Mono(&cap_say) } else { card::Show::Empty(t(Key::U3Estimating)) });
+                    });
                     // Where the cap came from: one line when it is the fallback pair, once the figures are in.
                     if let (Some(_), Some(k)) = (gas, crate::chainx::fee_source_line(fees_now.as_ref())) {
-                        states::okline(ui, Mark::Warn, t(k));
+                        zikaron_ui::callout::callout(ui, t(k));
                     }
                     // Name each node the fees were not read from (it serves another chain).
                     if gas.is_some() && !fees_left.is_empty() {
-                        states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &fees_left.join(" · ")));
+                        zikaron_ui::callout::callout(ui, &fill1(Key::U3FeeLeftNodes, &fees_left.join(" · ")));
                     }
-                    if let Some(g) = gas {
-                        details(ui, "send-details", &[(t(Key::U3GasEstimate), Val::mono(g.to_string()))]);
-                    }
-                    states::note_box(ui, t(Key::U3SendNote));
                 }
                 Some((why, next, raw)) => {
+                    // Why it could not be estimated and what to do first, then the batch, the raw error last.
                     sheet::title(ui, t(Key::U3NoEstimateTitle), "");
-                    kv::kv(ui, &[(t(Key::LedgerEntries), Val::text(first.clone())), (t(Key::U3NoEstimateWhy), Val::text(why.clone()))]);
-                    fold::fold(ui, "no-estimate-details", t(Key::SetEvidence), |ui| {
-                        paint::text(ui, raw, Type::MonoSmall, c(C::Ink2));
+                    err_call(ui, "no-estimate", why, next, "", "");
+                    card::form(ui, |ui, f| {
+                        let _ = f.info(ui, t(Key::LedgerEntries), card::Show::Text(&first));
+                        details_row(ui, f, "no-estimate-details", &[(t(Key::U3NoEstimateWhy), Val::mono(raw.clone()))]);
                     });
-                    states::note_box(ui, next);
                 }
             },
             |ui, me| {
@@ -683,21 +721,23 @@ impl Win {
             sheet::Spec::new("bump", tk::SHEET_W),
             self,
             |ui, _me| {
+                // The figures (the details last: the gas and the batch's transactions, the first sent and each
+                // resend, one a line).
                 sheet::title(ui, t(if unheld { Key::U3ResendKey } else { Key::U3BumpTitle }), "");
-                let at_gas = |per_gas: u64| Val::mono(fill1(Key::SetGasSay, &eth_cap(u128::from(per_gas) * u128::from(stuck.sent.gas_limit))));
-                let mut rows = vec![(t(Key::LedgerEntries), Val::text(entries.to_string()))];
-                if !unheld {
-                    rows.push((t(Key::U3BumpOldCap), at_gas(stuck.sent.max_fee)));
-                }
-                rows.push((t(Key::U3BumpPriceNow), at_gas(base_now)));
-                rows.push((t(Key::U3BumpNewCap), Val::mono(fill1(Key::SetGasSay, &eth_cap(fees.cap_wei())))));
-                kv::kv(ui, &rows);
+                let at_gas = |per_gas: u64| fill1(Key::SetGasSay, &eth_cap(u128::from(per_gas) * u128::from(stuck.sent.gas_limit)));
+                card::form(ui, |ui, f| {
+                    let _ = f.info(ui, t(Key::LedgerEntries), card::Show::Text(&entries.to_string()));
+                    if !unheld {
+                        let _ = f.info(ui, t(Key::U3BumpOldCap), card::Show::Mono(&at_gas(stuck.sent.max_fee)));
+                    }
+                    let _ = f.info(ui, t(Key::U3BumpPriceNow), card::Show::Mono(&at_gas(base_now)));
+                    let _ = f.info(ui, t(Key::U3BumpNewCap), card::Show::Mono(&fill1(Key::SetGasSay, &eth_cap(fees.cap_wei()))));
+                    details_row(ui, f, "bump-details", &[(t(Key::U3GasEstimate), Val::mono(stuck.sent.gas_limit.to_string())), (t(Key::SendTx), Val::mono(stuck.txs.join("\n")))]);
+                });
                 // Name each node the current price was not read from (it serves another chain).
                 if !stuck.left.is_empty() {
-                    states::okline(ui, Mark::Warn, &fill1(Key::U3FeeLeftNodes, &stuck.left.iter().map(crate::chainx::said_of).collect::<Vec<_>>().join(" · ")));
+                    zikaron_ui::callout::callout(ui, &fill1(Key::U3FeeLeftNodes, &stuck.left.iter().map(crate::chainx::said_of).collect::<Vec<_>>().join(" · ")));
                 }
-                states::note_box(ui, &fill1(if unheld { Key::U3UnheldNote } else { Key::U3BumpNote }, &crate::queue::RESENDS_MAX.to_string()));
-                details(ui, "bump-details", &[(t(Key::U3GasEstimate), Val::mono(stuck.sent.gas_limit.to_string())), (t(Key::CfWhere), Val::mono(stuck.txs.join(" ")))]);
             },
             |ui, _me| {
                 let phase = if waiting { Phase::Busy { frac: None } } else { Phase::Idle };
@@ -728,7 +768,7 @@ impl Win {
     }
 
     /// Delete a record (retraction convention): which record, with the fingerprint and the ledger's place under
-    /// details.
+    /// details in the same group, then what deleting does.
     fn delete_record_sheet(&mut self, ctx: &egui::Context, subject: &str, now: f64) {
         let row = self.shell.rows.as_ref().and_then(|(r, _)| r.iter().find(|x| x.id == subject).cloned());
         let root = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
@@ -739,12 +779,13 @@ impl Win {
             self,
             |ui, _me| {
                 sheet::title(ui, t(Key::V2DeleteTitle), "");
-                kv::kv(ui, &[(t(Key::U3Work), Val::text(row.as_ref().map(human_summary).unwrap_or_default()))]);
-                states::note_box(ui, t(Key::V2DeleteNote));
-                details(ui, "delete-details", &[(t(Key::ContentHash), Val::mono(row.as_ref().and_then(|x| x.work.clone()).unwrap_or_default())), (t(Key::CfWhere), Val::mono(root.clone()))]);
+                card::form(ui, |ui, f| {
+                    let _ = f.info(ui, t(Key::U3Work), card::Show::Text(&row.as_ref().map(human_summary).unwrap_or_default()));
+                    details_row(ui, f, "delete-details", &[(t(Key::ContentHash), Val::mono(row.as_ref().and_then(|x| x.work.clone()).unwrap_or_default())), (t(Key::CfWhere), Val::mono(root.clone()))]);
+                });
             },
             |ui, _me| {
-                go = page::Pen::new().press(ui, t(Key::V2DeleteGo), true).clicked();
+                go = page::Erase::press(ui, t(Key::V2DeleteGo), true).clicked();
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
             },
         );
@@ -756,35 +797,52 @@ impl Win {
         }
     }
 
-    /// Sign a grant (a sublicense when it has an upstream): record, validity, terms file and cost up front;
-    /// upstream, grantee and fingerprints under details.
+    /// Sign a grant (a sublicense when it has an upstream), all of it at a glance: grantee, record, validity
+    /// (its days and length), terms file, exclusivity with upstream and scope, and cost; that a grant once
+    /// signed can only be revoked; the grantee's whole address, the upstream and the fingerprints under details.
     fn grant_confirm_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let upstream = self.typed.g_upstream.trim().to_string();
         let record = if upstream.is_empty() { self.work_label(self.typed.g_work.trim()) } else { self.held_record_name(&upstream) };
-        let window = self.window_days(match (self.typed.g_from.trim().parse::<u64>(), self.typed.g_to.trim().parse::<u64>()) {
+        let window = match (self.typed.g_from.trim().parse::<u64>(), self.typed.g_to.trim().parse::<u64>()) {
             (Ok(a), Ok(b)) => Some((a, b)),
             _ => None,
-        });
+        };
+        let grantee = self.typed.g_grantee.trim().to_string();
         let terms = self.ux.u3.terms.as_ref().filter(|x| x.hex == self.typed.g_terms.trim()).map(|x| x.name.clone()).unwrap_or_else(|| t(Key::TermsTyped).to_string());
+        let terms_ok = self.ux.u3.terms.as_ref().is_some_and(|x| x.hex == self.typed.g_terms.trim());
+        let more = [
+            t(if self.typed.g_exclusive { Key::ExclusiveMark } else { Key::GrantSumNonExclusive }).to_string(),
+            if upstream.is_empty() { t(Key::GrantSumNoUpstream).to_string() } else { head_tail(&upstream) },
+            t(if self.typed.g_scope.trim().is_empty() { Key::GrantSumNoScope } else { Key::GrantSumScope }).to_string(),
+        ]
+        .join(" \u{b7} ");
         let cost = t(if self.shell.settings.auto_anchor { Key::U3CostSendNext } else { Key::U3CostQueue });
         let go_label = t(self.anchor_key());
         let mut raw: Vec<(&str, Val)> = Vec::new();
         if !upstream.is_empty() {
             raw.push((t(Key::U4Upstream), Val::mono(upstream.clone())));
         }
-        raw.push((t(Key::U3ToWhom), Val::mono(self.typed.g_grantee.trim().to_string())));
+        raw.push((t(Key::U3ToWhom), Val::mono(grantee.clone())));
         raw.push((t(Key::ContentHash), Val::mono(self.typed.g_work.trim().to_string())));
         raw.push((t(Key::U3TermsHash), Val::mono(self.typed.g_terms.trim().to_string())));
         let (mut go, mut close) = (false, false);
         let out = sheet::show(
             ctx,
-            sheet::Spec::new("grant-confirm", tk::SHEET_WIDE),
+            sheet::Spec::new("grant-confirm", tk::SHEET_W),
             self,
             |ui, _me| {
                 sheet::title(ui, t(if upstream.is_empty() { Key::U3GrantKey } else { Key::U4RelicenseGo }), "");
-                kv::kv(ui, &[(t(Key::U3Work), Val::text(record.clone())), (t(Key::U3Window), Val::text(window.clone())), (t(Key::U3TermsFile), Val::text(terms.clone())), (t(Key::CfCost), Val::text(cost))]);
-                states::note_box(ui, t(Key::U3GrantNote));
-                details(ui, "grant-confirm-details", &raw);
+                let mut copied = None;
+                card::form(ui, |ui, f| {
+                    copied = f.info(ui, t(Key::U3ToWhom), card::Show::Short(&grantee));
+                    let _ = f.info(ui, t(Key::U3Work), card::Show::Text(&record));
+                    f.with(ui, t(Key::U3Window), "", |ui| grants::span_trail_days(ui, window));
+                    let _ = f.info(ui, t(Key::U3TermsDoc), if terms_ok { card::Show::Text(&terms) } else { card::Show::Empty(&terms) });
+                    let _ = f.info(ui, t(Key::U3GrantMore), card::Show::Text(&more));
+                    let _ = f.info(ui, t(Key::CfCost), card::Show::Text(cost));
+                });
+                tell_copied(ui.ctx(), copied);
+                card::form(ui, |ui, f| details_row(ui, f, "grant-confirm-details", &raw));
             },
             |ui, _me| {
                 go = page::Pen::new().press(ui, go_label, true).clicked();
@@ -802,12 +860,12 @@ impl Win {
         }
     }
 
-    /// Revoke a grant: the record and its original validity, with the grantee and the optional ruling file
-    /// fingerprint under details.
+    /// Revoke a grant: the record, its original validity and the grantee, the optional ruling file fingerprint
+    /// as a field of its own.
     fn revoke_sheet(&mut self, ctx: &egui::Context, grant: &str, now: f64) {
         let g = self.shell.grants.as_ref().and_then(|x| x.iter().find(|r| r.id == grant).cloned());
         let record = g.as_ref().map(|x| self.work_label(&x.work)).unwrap_or_default();
-        let window = self.window_days(g.as_ref().and_then(|x| x.window));
+        let window = grants::span_say(g.as_ref().and_then(|x| x.window));
         let grantee = g.as_ref().map(|x| x.grantee.clone()).unwrap_or_default();
         let (mut go, mut close) = (false, false);
         let out = sheet::show(
@@ -816,11 +874,15 @@ impl Win {
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::U3RevokeTitle), "");
-                kv::kv(ui, &[(t(Key::U3Work), Val::text(record.clone())), (t(Key::U3OldWindow), Val::text(window.clone()))]);
-                states::note_box(ui, t(Key::U3RevokeNote));
-                fold::fold(ui, "revoke-details", t(Key::SetEvidence), |ui| {
-                    kv::kv(ui, &[(t(Key::U3ToWhom), Val::mono(grantee.clone()))]);
-                    field(ui, t(Key::RevokeCase), None, |ui| input::mono(ui, &mut me.ux.u3.revoke_case, t(Key::U3Optional)));
+                let mut copied = None;
+                card::form(ui, |ui, f| {
+                    let _ = f.info(ui, t(Key::U3Work), card::Show::Text(&record));
+                    let _ = f.info(ui, t(Key::U3OldWindow), card::Show::Text(&window));
+                    copied = if grantee.is_empty() { f.info(ui, t(Key::U3ToWhom), card::Show::Empty(t(Key::WbNotRead))) } else { f.info(ui, t(Key::U3ToWhom), card::Show::Short(&grantee)) };
+                });
+                tell_copied(ui.ctx(), copied);
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, t(Key::RevokeCaseName), Some(t(Key::U3Optional)), None, |ui, w| fields::line(ui, &mut me.ux.u3.revoke_case, "0x\u{2026}", w, fields::Look { mono: true, ..Default::default() }));
                 });
             },
             |ui, _me| {
@@ -837,8 +899,8 @@ impl Win {
         }
     }
 
-    /// The exclusive-grant clash (read only): what happened, what to do, the ids under error details, and the
-    /// grants it clashes with.
+    /// The exclusive-grant clash (read only, so its one key is "close"): what happened, what to do, the ids
+    /// under error details, and one row for each grant it clashes with.
     fn clash_sheet(&mut self, ctx: &egui::Context) {
         if !self.clash_modal {
             return;
@@ -851,12 +913,12 @@ impl Win {
             self,
             |ui, _me| {
                 sheet::title(ui, t(Key::ClashTitle), "");
-                states::err_box(ui, "clash-what", t(Key::ClashBody), t(Key::ExclusiveNote), t(Key::U3RawError), &rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>().join("\n"));
-                let lines: Vec<(Mark, String, Option<String>)> = rows
-                    .iter()
-                    .map(|r| (Mark::Bad, fill2(Key::ClashRow, &r.seq.to_string(), &window_short(r.window)), Some(t(Key::ExclusiveMark).to_string())))
-                    .collect();
-                states::checks(ui, &lines, false);
+                err_call(ui, "clash-what", t(Key::ClashBody), t(Key::ExclusiveNote), t(Key::U3RawError), &rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>().join("\n"));
+                card::form(ui, |ui, f| {
+                    for r in &rows {
+                        f.row_with(ui, Some(Mark::Bad), &fill2(Key::ClashRow, &r.seq.to_string(), &grants::span_say(r.window)), "", card::Value::Text(t(Key::ExclusiveMark)), |_| {});
+                    }
+                });
             },
             |ui, _me| {
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
@@ -929,65 +991,57 @@ impl Win {
         let mut flip: Option<String> = None;
         let mut copy: Option<String> = None;
         let mut booked: Option<String> = None;
-        let table = |ui: &mut egui::Ui, off: &std::collections::BTreeSet<String>, flip: &mut Option<String>, select_all: &mut bool| {
+        // Whose anchors: this machine's key, or another key (its address typed, the field kept while empty).
+        let mode_id = egui::Id::new("zikaron-adopt-other");
+        let other_mode = other || ctx.data(|d| d.get_temp::<bool>(mode_id)).unwrap_or(false);
+        let mut mode_to: Option<bool> = None;
+        // The anchors found: a head row (what they are, how many, "select all"), one row per anchor with its state
+        // and its switch, the raw values under details.
+        let list = |ui: &mut egui::Ui, off: &std::collections::BTreeSet<String>, flip: &mut Option<String>, select_all: &mut bool| {
             let title = t(if other { Key::U3AdOnChain } else { Key::U3AdEarlier });
-            match (&listed, &failed) {
+            zikaron_ui::fields::rows(ui, |ui, f| match (&listed, &failed) {
                 (Some(rows), _) => {
-                    width::then_line(
-                        ui,
-                        |ui| {
-                            if !rows.is_empty() && key::link(ui, t(Key::U3AdSelectAll)).clicked() {
-                                *select_all = true;
-                            }
-                        },
-                        |ui, room| {
-                            width::cell(ui, egui::vec2(room, Type::Note.line().max(Type::Small.line())), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.spacing_mut().item_spacing.x = tk::S1;
-                                paint::text(ui, title, Type::Note, c(C::Ink2));
-                                paint::text(ui, &fill2(Key::U3AdCount, &chain_name, &rows.len().to_string()), Type::Small, c(C::Ink3));
-                            });
-                        },
-                    );
+                    let count = fill2(Key::U3AdCount, &chain_name, &rows.len().to_string());
+                    let _ = f.line(ui, None, title, count.trim_start_matches(|ch: char| ch == '\u{b7}' || ch.is_whitespace()), false, false, c(C::Ink), |ui| {
+                        if !rows.is_empty() && key::key(ui, t(Key::U3AdSelectAll), Role::Secondary, true).clicked() {
+                            *select_all = true;
+                        }
+                    });
                     if rows.is_empty() {
-                        hint(ui, t(Key::Nothing));
+                        let _ = f.info(ui, t(Key::Nothing), card::Show::Empty(""));
                         return;
                     }
-                    let cols = [table::col("", table::Col::Px(48.0)), table::col(t(Key::U3AdColTime), table::Col::Fr(1.0)), table::col_r(t(Key::U3State), table::Col::Px(110.0))];
-                    let lines: Vec<table::Row> = rows
-                        .iter()
-                        .map(|k| {
-                            let state = k.state();
-                            let passed = state == Some(RowState::Passed);
-                            let on = passed && !off.contains(&key_of(k));
-                            let (say, tone) = match state {
-                                Some(RowState::Passed) => (t(Key::AuditPass), PillTone::Ok),
-                                Some(RowState::NoSuchTx) => (t(Key::U3AdNoTx), PillTone::Bad),
-                                Some(RowState::WrongSender) => (t(Key::U3AdWrongSender), PillTone::Bad),
-                                Some(RowState::WrongDigest) => (t(Key::U3AdWrongDigest), PillTone::Bad),
-                                Some(RowState::InLedger) => (t(Key::U3AdInLedger), PillTone::Grey),
-                                None => (t(Key::None_), PillTone::Grey),
-                            };
-                            table::Row {
-                                cells: vec![table::Cell::Switch(on, passed), table::Cell::Mono(crate::when::when(k.time)), table::Cell::Pill(say.to_string(), tone)],
-                                click: passed,
-                                gone: false,
-                                on,
-                            }
-                        })
-                        .collect();
-                    if let Some(i) = table::table(ui, "adopt-rows", &cols, true, &lines, "").clicked {
-                        *flip = Some(key_of(&rows[i]));
+                    for k in rows {
+                        let state = k.state();
+                        let passed = state == Some(RowState::Passed);
+                        let on = passed && !off.contains(&key_of(k));
+                        let (say, tone) = match state {
+                            Some(RowState::Passed) => (t(Key::AuditPass), PillTone::Ok),
+                            Some(RowState::NoSuchTx) => (t(Key::U3AdNoTx), PillTone::Bad),
+                            Some(RowState::WrongSender) => (t(Key::U3AdWrongSender), PillTone::Bad),
+                            Some(RowState::WrongDigest) => (t(Key::U3AdWrongDigest), PillTone::Bad),
+                            Some(RowState::InLedger) => (t(Key::U3AdInLedger), PillTone::Grey),
+                            None => (t(Key::None_), PillTone::Grey),
+                        };
+                        // The anchor's time leads its row in the monospace face.
+                        let (row, flipped) = f.line(ui, None, "", "", false, false, c(C::Ink), |ui| {
+                            let s = toggle::switch(ui, on, passed).clicked();
+                            mark::pill(ui, say, tone);
+                            s
+                        });
+                        ui.painter().text(egui::pos2(row.rect.left(), row.rect.center().y), egui::Align2::LEFT_CENTER, crate::when::when(k.time), Type::MonoSmall.font(), c(C::Ink));
+                        if flipped {
+                            *flip = Some(key_of(k));
+                        }
                     }
                     let raw: Vec<(String, String)> = rows.iter().map(|k| (crate::when::when(k.time), fill2(Key::AdBlockAt, &k.block.to_string(), &crate::ledgerx::short(&k.row.content)))).collect();
-                    let raw_rows: Vec<(&str, Val)> = raw.iter().map(|(a, b)| (a.as_str(), Val::mono(b.clone()))).collect();
-                    details(ui, "adopt-rows-details", &raw_rows);
+                    let raw_rows: Vec<(&str, Val)> = raw.iter().map(|(a, b)| (a.as_str(), Val::figure(b.clone()))).collect();
+                    details_row(ui, f, "adopt-rows-details", &raw_rows);
                 }
-                (None, Some(f)) => {
-                    paint::text(ui, title, Type::Note, c(C::Ink2));
-                    states::checks(ui, &[(Mark::Bad, f.human().to_string(), None)], false);
+                (None, Some(fl)) => {
+                    let _ = f.line(ui, Some(card::Lead::Mark(Mark::Bad)), title, fl.human(), false, false, c(C::Ink), |_| ());
                 }
                 (None, None) => {
-                    paint::text(ui, title, Type::Note, c(C::Ink2));
                     // Do not query an address still being typed: say what it should look like instead of "verifying".
                     let say = if !formed {
                         Key::FaultNextAddressShape
@@ -996,95 +1050,96 @@ impl Win {
                     } else {
                         Key::U4ChainUnread
                     };
-                    hint(ui, t(say));
+                    let _ = f.line(ui, None, title, t(say), false, false, c(C::Ink), |_| ());
                 }
-            }
+            });
         };
         let out = sheet::show(
             ctx,
             sheet::Spec::new("adopt", tk::SHEET_XWIDE),
             self,
             |ui, me| {
-                sheet::title(ui, t(Key::U3AdoptTitle), "");
+                if let Some(i) = parts::title_seg(ui, t(Key::U3AdoptTitle), "adopt-mode", &[t(Key::U3AdOwnKey), t(Key::U3AdOtherKey)], usize::from(other_mode)) {
+                    mode_to = Some(i == 1);
+                }
                 let off = me.ux.u3.adopt_off.clone();
-                if !other {
-                    table(ui, &off, &mut flip, &mut select_all);
-                }
-                field(ui, t(Key::IdAddress), None, |ui| {
-                    let heads: Vec<String> = book.iter().map(|a| head_tail(a)).collect();
-                    let items: Vec<menu::Item> = heads.iter().map(|h| menu::Item::Row(menu::Row { lead: t(Key::Address), label: h, mono: true, ..Default::default() })).collect();
-                    let spec = pick::Spec { hint: t(Key::SearchAddress), empty: t(Key::SearchNone), w: PICK_W, dates: None };
-                    let keep = |i: usize, q: &str, _: &str, _: &str| matches(q, &[&book[i]]);
-                    let mut picked = None;
-                    width::then(
-                        ui,
-                        |ui| picked = pick::key(ui, "adopt-book", t(Key::U3SeenBeforeDots), !book.is_empty(), false, &spec, &items, &keep),
-                        |ui, room| input::field(ui, &mut me.typed.ad_key, "0x\u{2026}", room, input::Look { mono: true, ..Default::default() }),
-                    );
-                    if let Some(i) = picked {
-                        booked = book.get(i).cloned();
+                fields::stack(ui, |ui, st| {
+                    if other_mode {
+                        // Another key's anchors: its address (the address book beside it), the holder's signature (its
+                        // state, the text to send and the signature pasted back, both under details), then the anchors.
+                        st.field(ui, t(Key::IdAddress), None, None, |ui, w| {
+                            let heads: Vec<String> = book.iter().map(|a| head_tail(a)).collect();
+                            let items: Vec<menu::Item> = heads.iter().map(|h| menu::Item::Row(menu::Row { lead: t(Key::Address), label: h, mono: true, ..Default::default() })).collect();
+                            let spec = pick::Spec { hint: t(Key::SearchAddress), empty: t(Key::SearchNone), w: PICK_W, dates: None };
+                            let keep = |i: usize, q: &str, _: &str, _: &str| matches(q, &[&book[i]]);
+                            let mut picked = None;
+                            ui.allocate_ui_with_layout(egui::vec2(w, tk::INPUT_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                width::then(
+                                    ui,
+                                    |ui| picked = pick::key(ui, "adopt-book", t(Key::U3SeenBeforeDots), !book.is_empty(), true, &spec, &items, &keep),
+                                    |ui, room| fields::line(ui, &mut me.typed.ad_key, "0x\u{2026}", room, fields::Look { mono: true, ..Default::default() }),
+                                );
+                            });
+                            if let Some(i) = picked {
+                                booked = book.get(i).cloned();
+                            }
+                        });
+                        zikaron_ui::fields::rows(ui, |ui, f| {
+                            let (word, tone) = match sig_ok {
+                                None => (t(Key::U3AdWait), PillTone::Warn),
+                                Some(true) => (t(Key::AuditPass), PillTone::Ok),
+                                Some(false) => (t(Key::DeliveryMismatch), PillTone::Bad),
+                            };
+                            let _ = f.info(ui, t(Key::U3AdCosign), card::Show::Pill(word, tone));
+                            if f.act(ui, t(Key::ChannelText), "", key::Key::new(t(Key::U3AdCopy), Role::Secondary).enabled(text.is_some())).clicked() {
+                                copy = text.clone();
+                            }
+                            paste = f.act(ui, t(Key::U3AdSig), "", key::Key::new(t(Key::U3AdPaste), Role::Secondary)).clicked();
+                            details_row(
+                                ui,
+                                f,
+                                "adopt-sig-details",
+                                &[
+                                    (t(Key::ChannelText), text.clone().map(Val::mono).unwrap_or_else(|| Val::text(t(Key::None_)))),
+                                    (t(Key::U3AdSig), if sig.is_empty() { Val::text(t(Key::None_)) } else { Val::mono(sig.clone()) }),
+                                ],
+                            );
+                        });
                     }
-                });
-                if other {
-                    table(ui, &off, &mut flip, &mut select_all);
-                    card::flat(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = tk::S2;
-                        width::then(
-                            ui,
-                            |ui| {
-                                let (word, tone) = match sig_ok {
-                                    None => (t(Key::U3AdWait), PillTone::Warn),
-                                    Some(true) => (t(Key::AuditPass), PillTone::Ok),
-                                    Some(false) => (t(Key::DeliveryMismatch), PillTone::Bad),
-                                };
-                                mark::pill_pop(ui, word, tone, 0.0);
-                            },
-                            |ui, room| {
-                                paint::line(ui, t(Key::U3AdCosign), Type::Strong, c(C::Ink), room);
-                            },
-                        );
-                        hint(ui, t(Key::U3AdSendTo));
-                        width::then(
-                            ui,
-                            |ui| {
-                                if key::key(ui, t(Key::U3AdCopy), Role::Secondary, text.is_some()).clicked() {
-                                    copy = text.clone();
-                                }
-                            },
-                            |ui, room| paint::line(ui, t(Key::ChannelText), Type::Body, c(C::Ink), room),
-                        );
-                        width::then(
-                            ui,
-                            |ui| paste = key::key(ui, t(Key::U3AdPaste), Role::Secondary, true).clicked(),
-                            |ui, room| paint::line(ui, t(Key::U3AdSig), Type::Body, c(C::Ink), room),
-                        );
-                        hint(ui, t(Key::U3AdResign));
-                        details(
-                            ui,
-                            "adopt-sig-details",
-                            &[
-                                (t(Key::ChannelText), Val::mono(text.clone().unwrap_or_else(|| t(Key::None_).to_string()))),
-                                (t(Key::U3AdSig), Val::mono(if sig.is_empty() { t(Key::None_).to_string() } else { sig.clone() })),
-                            ],
-                        );
+                    list(ui, &off, &mut flip, &mut select_all);
+                    // Rows typed by hand: opened in place in its own group, what the check found on the fold's row.
+                    let proved = match (me.shell.proofs.as_ref(), me.shell.proofs_rows.as_deref()) {
+                        (Some(p), Some(rows)) if rows == hand => fill2(Key::SaidProofs, &p.len().to_string(), &p.iter().filter(|x| x.ok()).count().to_string()),
+                        _ => String::new(),
+                    };
+                    zikaron_ui::fields::rows(ui, |ui, f| {
+                        f.fold(ui, "adopt-hand", t(Key::U3AdByHand), &proved, |ui, f| {
+                            f.free(ui, |ui| input::area_hint(ui, &mut me.typed.ad_rows, 2, t(Key::AdHandHint)));
+                            f.keys(ui, |ui| verify_hand = key::key(ui, t(Key::U3AdCheckHand), Role::Secondary, !hand.is_empty() && !busy).clicked());
+                        });
                     });
-                }
-                fold::fold(ui, "adopt-hand", t(Key::U3AdByHand), |ui| {
-                    input::area_hint(ui, &mut me.typed.ad_rows, 2, t(Key::AdHandHint));
-                    verify_hand = key::key(ui, t(Key::U3AdCheckHand), Role::Secondary, !hand.is_empty() && !busy).clicked();
-                    if let (Some(p), Some(rows)) = (me.shell.proofs.as_ref(), me.shell.proofs_rows.as_deref()) {
-                        if rows == hand {
-                            hint(ui, &fill2(Key::SaidProofs, &p.len().to_string(), &p.iter().filter(|x| x.ok()).count().to_string()));
-                        }
-                    }
                 });
             },
             |ui, _me| {
                 go = page::Pen::new().press(ui, &fill1(Key::U3AdGo, &n.to_string()), n > 0).clicked();
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
-                sheet::foot_note(ui, &fill1(Key::U3AdCan, &n.to_string()));
             },
         );
+        match mode_to {
+            Some(true) => {
+                ctx.data_mut(|d| d.insert_temp(mode_id, true));
+            }
+            // This machine's key: the address typed for another key is let go.
+            Some(false) => {
+                ctx.data_mut(|d| d.insert_temp(mode_id, false));
+                self.typed.ad_key.clear();
+                self.typed.ad_sig.clear();
+            }
+            None => {}
+        }
+        if close || out.esc || go {
+            ctx.data_mut(|d| d.insert_temp(mode_id, false));
+        }
         if let Some(k) = flip {
             if !self.ux.u3.adopt_off.remove(&k) {
                 self.ux.u3.adopt_off.insert(k);
@@ -1148,45 +1203,49 @@ impl Win {
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::TagHandover), "");
-                if !step {
-                    field(ui, t(Key::U3HandTo), None, |ui| {
-                        input::mono(ui, &mut me.typed.sc_to, "0x\u{2026}");
-                        if busy && formed {
-                            paint::text(ui, t(Key::VaultBusy), Type::Small, c(C::Ink3));
+                fields::stack(ui, |ui, st| {
+                    if !step {
+                        // What the scan of the new key found stands under its field.
+                        let found = if busy && formed {
+                            Some((t(Key::VaultBusy).to_string(), false))
                         } else if let Some((_, anchors, _)) = &sighting {
-                            states::okline(ui, if *anchors == 0 { Mark::Ok } else { Mark::Bad }, &fill1(Key::SaidSighting, &anchors.to_string()));
-                        } else if let Some(f) = &failed {
-                            states::okline(ui, Mark::Bad, f.human());
-                        }
-                    });
-                    field(ui, t(Key::U3HandKind), None, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = tk::S3;
+                            Some((fill1(Key::SaidSighting, &anchors.to_string()), *anchors != 0))
+                        } else {
+                            failed.as_ref().map(|f| (f.human().to_string(), true))
+                        };
+                        let bad = found.as_ref().is_some_and(|(_, b)| *b);
+                        st.field(ui, t(Key::U3HandTo), None, found.as_ref().map(|(s, bad)| (s.as_str(), *bad)), |ui, w| fields::line(ui, &mut me.typed.sc_to, "0x\u{2026}", w, fields::Look { mono: true, bad, ..Default::default() }));
+                        st.field(ui, t(Key::U3HandKind), None, None, |ui, _| {
                             let items: Vec<menu::Item> = words.iter().enumerate().map(|(i, w)| menu::Item::Row(menu::Row { label: w, check: Some(kind_now == Some(i)), ..Default::default() })).collect();
-                            picked = menu::menu_key(ui, "succeed-kind", t(Key::U3HandKindPick), true, 160.0, &items);
-                            if kind_now.is_some() {
-                                paint::text(ui, &fill1(Key::PickerChosen, &kind_words), Type::Note, c(C::Ink2));
-                            }
+                            let shown = if kind_now.is_some() { kind_words.as_str() } else { t(Key::U3HandKindPick) };
+                            picked = menu::menu_key(ui, "succeed-kind", shown, true, 160.0, &items);
                         });
-                    });
-                    field(ui, t(Key::U3HandSay), None, |ui| input::line(ui, &mut me.typed.sc_statement, t(Key::U3Optional)));
-                    states::note_box(ui, t(Key::U3SucceedNote));
-                } else {
-                    kv::kv(ui, &[(t(Key::U3HandKind), Val::text(kind_words.clone())), (t(Key::U3HandSay), Val::text(say.clone()))]);
-                    states::note_box(ui, t(Key::U3SucceedNote));
-                    details(ui, "succeed-details", &[(t(Key::U3HandTo), Val::mono(to.clone()))]);
-                }
+                        st.field(ui, t(Key::U3HandSay), Some(t(Key::U3Optional)), None, |ui, w| fields::line(ui, &mut me.typed.sc_statement, "", w, fields::Look::default()));
+                    } else {
+                        // What will be written, the new key's address among it (copied from its row).
+                        let mut copied = None;
+                        zikaron_ui::fields::rows(ui, |ui, f| {
+                            copied = f.info(ui, t(Key::U3HandTo), card::Show::Short(&to));
+                            let _ = f.info(ui, t(Key::U3HandKind), if kind_words.is_empty() { card::Show::Empty(t(Key::Nothing)) } else { card::Show::Text(&kind_words) });
+                            // An empty statement is written as the kind's plain words: shown so, in the quiet ink.
+                            let _ = f.info(ui, t(Key::U3HandSay), match (say.is_empty(), me.typed.sc_statement.trim().is_empty()) {
+                                (true, _) => card::Show::Empty(t(Key::Nothing)),
+                                (false, true) => card::Show::Empty(&say),
+                                (false, false) => card::Show::Text(&say),
+                            });
+                        });
+                        tell_copied(ui.ctx(), copied);
+                    }
+                });
             },
             |ui, _me| {
                 if !step {
-                    next = page::Page::new().primary_with(ui, t(Key::U3SucceedGo), clean && kind_now.is_some()).1.clicked();
+                    next = page::Page::new().primary_with(ui, t(Key::WizardNext), clean && kind_now.is_some()).1.clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
                 } else {
                     commit = page::Pen::new().press(ui, t(Key::U3SucceedGo), true).clicked();
                     close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        back = key::show(ui, key::Key::new(t(Key::WizPrev), Role::Plain).lead(Glyph::Back)).clicked();
-                    });
+                    back = foot_left(ui, t(Key::WizPrev));
                 }
             },
         );
@@ -1226,54 +1285,50 @@ impl Win {
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::U3AnnotateTitle), "");
-                field(ui, t(Key::AnnotateText), None, |ui| input::area_words(ui, &mut me.typed.annotate_note, 2, ""));
-                states::note_box(ui, t(Key::U3AnnotateNote));
-                field(ui, t(Key::U3AnnotateWhich), None, |ui| {
-                    if !read {
-                        hint(ui, t(Key::U3AnnotateNoRows));
-                        return;
-                    }
-                    // A picker over this ledger, newest first: number, type, summary and first anchor time.
-                    let faces: Vec<(String, String, String)> = rows
-                        .iter()
-                        .map(|row| {
-                            let (tag, summary, _) = row_face(&rows, &reading, row);
-                            let at = row.anchored_at.map(crate::when::when).unwrap_or_else(|| t(Key::V2StateLanded).to_string());
-                            (format!("#{}", row.seq), format!("{tag} \u{b7} {summary}"), at)
-                        })
-                        .collect();
-                    let items: Vec<menu::Item> = faces.iter().map(|(seq, label, at)| menu::Item::Row(menu::Row { lead: seq, label, trail: at, ..Default::default() })).collect();
-                    let words = date_words();
-                    let spec = pick::Spec {
-                        hint: t(Key::SearchLedger),
-                        empty: t(Key::SearchNone),
-                        w: PICK_WIDE_W,
-                        dates: Some(pick::Dates { words: &words, today: today_of((me.shell.clock)()), from_hint: t(Key::DateFrom), to_hint: t(Key::DateTo) }),
-                    };
-                    let keep = |i: usize, q: &str, from: &str, to: &str| matches(q, &[&faces[i].0, &faces[i].1, &rows[i].id]) && crate::when::within(rows[i].anchored_at, from, to);
-                    let current = rows.iter().position(|r| me.typed.annotate_subject.trim().eq_ignore_ascii_case(&r.id));
-                    let mut picked = None;
-                    width::then(
-                        ui,
-                        |ui| picked = pick::key(ui, "annotate-pick", t(Key::KitPickOpen), true, false, &spec, &items, &keep),
-                        |ui, room| match current {
-                            Some(i) => {
-                                paint::line(ui, &format!("{} {}", faces[i].0, faces[i].1), Type::Body, c(C::Ink), room);
-                            }
-                            None => {
-                                paint::line(ui, t(Key::U3AnnotatePickHint), Type::Note, c(C::Ink2), room);
-                            }
-                        },
-                    );
-                    if let Some(i) = picked {
-                        me.typed.annotate_subject = rows[i].id.clone();
-                    }
-                });
-                fold::fold(ui, "annotate-more", t(Key::U3MoreOptions), |ui| {
-                    field(ui, t(Key::U3AnnotateTyped), None, |ui| input::mono(ui, &mut me.typed.annotate_subject, t(Key::DetailPickHint)));
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, t(Key::AnnotateText), None, None, |ui, _| input::area_words(ui, &mut me.typed.annotate_note, 3, ""));
+                    st.field(ui, t(Key::U3AnnotateWhich), None, None, |ui, w| {
+                        // A picker over this ledger, newest first: number, type, summary and first anchor time; the
+                        // entry chosen stands in the field, "select" inside its right end.
+                        let faces: Vec<(String, String, String)> = rows
+                            .iter()
+                            .map(|row| {
+                                let (tag, summary, _) = row_face(&rows, &reading, row);
+                                let at = row.anchored_at.map(crate::when::when).unwrap_or_else(|| t(Key::V2StateLanded).to_string());
+                                (format!("#{}", row.seq), format!("{tag} \u{b7} {summary}"), at)
+                            })
+                            .collect();
+                        let items: Vec<menu::Item> = faces.iter().map(|(seq, label, at)| menu::Item::Row(menu::Row { lead: seq, label, trail: at, ..Default::default() })).collect();
+                        let words = date_words();
+                        let spec = pick::Spec {
+                            hint: t(Key::SearchLedger),
+                            empty: t(Key::SearchNone),
+                            w: PICK_WIDE_W,
+                            dates: Some(pick::Dates { words: &words, today: today_of((me.shell.clock)()), from_hint: t(Key::DateFrom), to_hint: t(Key::DateTo) }),
+                        };
+                        let keep = |i: usize, q: &str, from: &str, to: &str| matches(q, &[&faces[i].0, &faces[i].1, &rows[i].id]) && crate::when::within(rows[i].anchored_at, from, to);
+                        let current = rows.iter().position(|r| me.typed.annotate_subject.trim().eq_ignore_ascii_case(&r.id));
+                        let mut shown = current.map(|i| format!("{} {}", faces[i].0, faces[i].1)).unwrap_or_default();
+                        let hint = if read { t(Key::U3AnnotatePickHint) } else { t(Key::U3AnnotateNoRows) };
+                        let look = fields::Look { icon: Some(Glyph::File), read_only: true, ..Default::default() };
+                        let (_, picked) = fields::joined(ui, &mut shown, hint, w, look, Some(|ui: &mut egui::Ui| zikaron_ui::formparts::inner_pick(ui, "annotate-pick", t(Key::KitPickOpen), false, true, read, &spec, &items, &keep)));
+                        if let Some(i) = picked.flatten() {
+                            me.typed.annotate_subject = rows[i].id.clone();
+                        }
+                    });
+                    zikaron_ui::fields::rows(ui, |ui, f| {
+                        f.fold(ui, "annotate-more", t(Key::U3MoreOptions), "", |ui, f| {
+                            f.panel(ui, |ui| {
+                                fields::stack(ui, |ui, st| {
+                                    st.field(ui, t(Key::U3AnnotateTyped), None, None, |ui, w| fields::line(ui, &mut me.typed.annotate_subject, t(Key::DetailPickHint), w, fields::Look { mono: true, ..Default::default() }));
+                                });
+                            });
+                        });
+                    });
                 });
             },
             |ui, _me| {
+                // Always pressable: an empty note is refused by the action, which says why (one judgement).
                 go = page::Pen::new().press(ui, t(Key::U3AnnotateGo), true).clicked();
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
             },
@@ -1311,7 +1366,10 @@ impl Win {
         let signed = self.shell.attested.clone();
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
         let trouble = self.ux.u3.attest_trouble.clone();
+        let pin_full = self.ux.pin.chars() == crate::keybox::PIN_LEN;
         let (mut sign, mut close) = (false, false);
+        // The passcode's last character signs, as the key does.
+        let mut filled = false;
         let mut copy: Option<String> = None;
         let out = sheet::show(
             ctx,
@@ -1319,57 +1377,63 @@ impl Win {
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::U3AttestTitle), "");
-                field(ui, t(Key::U3AttestPaste), None, |ui| input::area(ui, &mut me.typed.at_text, 3));
-                if let Some(f) = &trouble {
-                    states::hint_ex(ui, f.human(), true);
-                }
-                if let Some((cl, blocks)) = &claim {
+                // The text pasted (why it does not read under it); who claims and how many anchors, their details
+                // folded in the same group; then the passcode that signs, or the signature to copy back.
+                fields::stack(ui, |ui, st| {
+                    let line = trouble.as_ref().map(|f| (f.human(), true));
+                    st.field(ui, t(Key::U3AttestPaste), None, line, |ui, _| input::area(ui, &mut me.typed.at_text, 3));
+                    let Some((cl, blocks)) = &claim else { return };
                     let anchors: Vec<String> = cl
                         .rows
                         .iter()
                         .zip(blocks.iter())
                         .map(|(r, b)| format!("{} \u{b7} {}", b.map(|x| x.to_string()).unwrap_or_else(|| t(Key::None_).to_string()), crate::ledgerx::short(&r.content)))
                         .collect();
-                    kv::kv(ui, &[(t(Key::U3AttestAnchors), Val::text(fill1(Key::AnchorsN, &cl.rows.len().to_string())))]);
-                    details(
-                        ui,
-                        "attest-details",
-                        &[
-                            (t(Key::U3AttestWho), Val::mono(cl.adopter.clone())),
-                            (t(Key::U3AttestAnchors), Val::mono(format!("{} \u{b7} {}", cl.rows.len(), anchors.join(" / ")))),
-                            (t(Key::U3AttestHead), Val::mono(cl.prev.clone())),
-                        ],
-                    );
+                    let mut copied = None;
+                    zikaron_ui::fields::rows(ui, |ui, f| {
+                        copied = f.info(ui, t(Key::U3AttestWho), card::Show::Short(&cl.adopter));
+                        let _ = f.info(ui, t(Key::U3AttestAnchors), card::Show::Text(&fill1(Key::AnchorsN, &cl.rows.len().to_string())));
+                        details_row(
+                            ui,
+                            f,
+                            "attest-details",
+                            &[
+                                (t(Key::U3AttestWho), kv::Val::mono(cl.adopter.clone())),
+                                (t(Key::U3AttestAnchors), kv::Val::mono(anchors.join("\n"))),
+                                (t(Key::U3AttestHead), kv::Val::mono(cl.prev.clone())),
+                            ],
+                        );
+                    });
+                    tell_copied(ui.ctx(), copied);
                     match &signed {
                         Some((_, s)) => {
-                            width::then(
-                                ui,
-                                |ui| {
-                                    if key::key(ui, t(Key::U3AdCopy), Role::Secondary, true).clicked() {
-                                        copy = Some(s.clone());
-                                    }
-                                },
-                                |ui, room| paint::line(ui, t(Key::U3AttestDone), Type::Body, c(C::Ink), room),
-                            );
-                        }
-                        None => {
-                            field(ui, t(Key::U3AttestPin), None, |ui| {
-                                if pin::pin_row(ui, "attest-pin", &mut me.ux.pin, crate::keybox::PIN_LEN, me.ux.pin_shake, !busy, false).full {
-                                    sign = true;
+                            zikaron_ui::fields::rows(ui, |ui, f| {
+                                if f.act(ui, t(Key::U3AttestDone), "", key::Key::new(t(Key::U3AdCopy), Role::Secondary)).clicked() {
+                                    copy = Some(s.clone());
                                 }
                             });
                         }
+                        None => {
+                            let row = pin_field(st, ui, t(Key::U3AttestPin), None, "attest-pin", &mut me.ux.pin, me.ux.pin_shake, !busy);
+                            filled = row.full && row.changed;
+                        }
                     }
-                }
+                });
             },
             |ui, _me| {
-                close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                if signed.is_some() {
+                    close = page::Page::new().primary(ui, t(Key::CfBack)).1.clicked();
+                } else {
+                    sign = page::Pen::new().press(ui, t(Key::U3AdSig), claim.is_some() && pin_full && !busy).clicked();
+                    close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                }
             },
         );
         if let Some(x) = copy {
             ctx.copy_text(x);
             self.toasts.say(t(Key::U3CopiedSig), Tone::Note, now);
         }
+        sign |= filled && claim.is_some() && !busy;
         if sign {
             let pin = std::mem::take(&mut self.ux.pin);
             let r = self.act(Action::AttestFor { text: text.clone(), pin }, now);
@@ -1385,8 +1449,9 @@ impl Win {
         }
     }
 
-    /// Add a held grant: paste the grant code or drop a grant file (read and checked at once). It is stored
-    /// only after verification; otherwise the two sentences are shown with the raw error folded.
+    /// Add a held grant: paste the grant code or drop a grant file (read and checked at once, said under the
+    /// code), and this machine's own names for the grant and its issuer. It is stored only after verification;
+    /// otherwise the two sentences are shown with the raw error folded.
     fn add_grant_sheet(&mut self, ctx: &egui::Context, now: f64) {
         if !self.ux.u4.import_open {
             return;
@@ -1401,32 +1466,54 @@ impl Win {
             self.ux.u4.grant_file_seen = Some((typed.clone(), seen));
         }
         let seen = self.ux.u4.grant_file_seen.as_ref().and_then(|(_, x)| x.clone());
+        // What the code cell says under it: the grant file read, or why not; a pasted grant code (unlike a grant
+        // file) carries no issuer ledger, said before adding.
+        let code = typed.to_ascii_lowercase().starts_with(zikaron_kit::tokens::BADGE_PREFIX);
+        let check: Option<(String, bool)> = match &seen {
+            Some(Ok(said)) => Some((said.clone(), false)),
+            Some(Err(f)) => Some((f.human().to_string(), true)),
+            None if code => Some((t(Key::V2CodeCarriesNoLedger).to_string(), false)),
+            None => None,
+        };
+        // The typed text names a grant file: the file shows in its row, and the code area starts empty.
+        let file = seen.is_some().then(|| width::file_name(&typed));
+        let (code_line, file_line) = if file.is_some() { (None, check.clone()) } else { (check.clone(), None) };
         let (mut go, mut close) = (false, false);
-        let mut dropped: Option<String> = None;
+        let (mut dropped, mut picked): (Option<String>, Option<String>) = (None, None);
         let out = sheet::show(
             ctx,
             sheet::Spec::new("add-grant", tk::SHEET_W).shake(self.ux.sheet_shake),
             self,
             |ui, me| {
                 sheet::title(ui, t(Key::V2AddGrant), "");
-                input::area_hint(ui, &mut me.typed.vt_typed, 3, t(Key::V2PasteGrant));
-                let d = drop::zone(ui, "add-grant-drop", None, &[t(Key::U3CheckDrop), t(Key::DropClickFile)], None, 64.0, drop::Shape::Column, true);
-                dropped = match d.dropped.first() {
-                    Some(p) => Some(p.clone()),
-                    None => path_answer(ui.ctx(), egui::Id::new("zikaron-path-add-grant"), d.clicked, crate::platform::Pick::File),
-                };
-                match &seen {
-                    Some(Ok(said)) => states::okline(ui, Mark::Ok, said),
-                    Some(Err(f)) => states::okline(ui, Mark::Bad, f.human()),
-                    None => {}
-                }
-                // A pasted grant code (unlike a grant file) carries no issuer ledger: say so before adding.
-                if me.typed.vt_typed.trim().to_ascii_lowercase().starts_with(zikaron_kit::tokens::BADGE_PREFIX) {
-                    states::okline(ui, Mark::Warn, t(Key::V2CodeCarriesNoLedger));
-                }
-                // The user's own names for this grant and its issuer, kept on this machine only.
-                field(ui, t(Key::V2GrantNote), None, |ui| input::line(ui, &mut me.typed.vt_note, t(Key::V2GrantNoteHint)));
-                field(ui, t(Key::V2IssuerNote), None, |ui| input::line(ui, &mut me.typed.vt_issuer_note, t(Key::V2IssuerNoteHint)));
+                // A grant file dropped while the sheet is up is taken as if chosen (the sheet draws no drop zone).
+                dropped = drop::take_dropped(ui.ctx()).into_iter().next();
+                fields::stack(ui, |ui, st| {
+                    st.field(ui, t(Key::U3CheckPaste), None, code_line.as_ref().map(|(s, bad)| (s.as_str(), *bad)), |ui, _| {
+                        if file.is_some() {
+                            let mut fresh = String::new();
+                            let _ = input::area_hint(ui, &mut fresh, 3, t(Key::V2PasteGrant));
+                            if !fresh.is_empty() {
+                                me.typed.vt_typed = fresh;
+                            }
+                        } else {
+                            let _ = input::area_hint(ui, &mut me.typed.vt_typed, 3, t(Key::V2PasteGrant));
+                        }
+                    });
+                    // The grant file: chosen at the bottom left, or dropped on the sheet.
+                    card::form(ui, |ui, f| {
+                        let _ = f.line(ui, Some(card::Lead::Glyph(Glyph::File)), t(Key::SourceGrantFile), "", false, false, c(C::Ink), |ui| match file.as_deref() {
+                            Some(n) => ui.label(egui::RichText::new(n).font(Type::Note.font()).color(c(C::Ink))),
+                            None => ui.label(egui::RichText::new(t(Key::PickNone)).font(Type::Note.font()).color(c(C::Ink3))),
+                        });
+                    });
+                    if let Some((said, bad)) = file_line.as_ref() {
+                        st.says(ui, &[(if *bad { Mark::Bad } else { Mark::Ok }, said.as_str())]);
+                    }
+                    // The user's own names for this grant and its issuer, kept on this machine only.
+                    st.field(ui, t(Key::V2GrantNote), Some(t(Key::U3Optional)), None, |ui, w| fields::line(ui, &mut me.typed.vt_note, t(Key::AddGrantNoteHint), w, fields::Look::default()));
+                    st.field(ui, t(Key::V2IssuerNote), Some(t(Key::U3Optional)), None, |ui, w| fields::line(ui, &mut me.typed.vt_issuer_note, t(Key::AddIssuerNoteHint), w, fields::Look::default()));
+                });
                 if let Some((what, next, raw)) = err.as_ref() {
                     states::err_box(ui, "add-grant-err", what, next, t(Key::U3RawError), raw);
                 }
@@ -1434,9 +1521,10 @@ impl Win {
             |ui, me| {
                 go = page::Page::new().primary_with(ui, t(Key::V2AddGrantGo), !me.typed.vt_typed.trim().is_empty()).1.clicked();
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+                picked = foot_pick(ui, "add-grant", crate::platform::Pick::File);
             },
         );
-        if let Some(p) = dropped {
+        if let Some(p) = dropped.or(picked) {
             self.typed.vt_typed = p;
             self.ux.u4.import_err = None;
         }
@@ -1470,14 +1558,16 @@ impl Win {
         }
     }
 
-    /// Sublicense: which record, whose, and the upstream validity, with ids under details. "Draft…" fills the
-    /// upstream and record into the form and opens the sublicense page.
+    /// Sublicense: which record, whose, and the upstream validity, with ids under details. "Draft" (a guide key:
+    /// it only opens the form) fills the upstream and record into the form and opens the sublicense page. The
+    /// folder sheets over a grant's page are drawn from here too (`grants::OutSheet`).
     fn relicense_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        self.out_sheet(ctx, now);
         let Some(U4Confirm::Relicense { grant }) = self.ux.u4.confirm.clone() else { return };
         let h = self.shell.held.clone().unwrap_or_default().into_iter().find(|x| x.id.eq_ignore_ascii_case(&grant));
         let record = self.held_record_name(&grant);
         let issuer = self.held_issuer_name(&grant);
-        let window = self.window_days(h.as_ref().and_then(|x| x.window));
+        let window = h.as_ref().and_then(|x| x.window);
         let (mut go, mut close) = (false, false);
         let out = sheet::show(
             ctx,
@@ -1485,20 +1575,26 @@ impl Win {
             self,
             |ui, _me| {
                 sheet::title(ui, t(Key::U4RelicenseTitle), "");
-                kv::kv(ui, &[(t(Key::U3Work), Val::text(record.clone())), (t(Key::U3Issuer), Val::text(issuer.clone())), (t(Key::U4WindowCap), Val::text(window.clone()))]);
-                states::note_box(ui, t(Key::U4RelicenseConfirmNote));
-                details(
-                    ui,
-                    "relicense-details",
-                    &[
-                        (t(Key::U4Upstream), Val::mono(grant.clone())),
-                        (t(Key::U3Issuer), Val::mono(h.as_ref().map(|x| x.author.clone()).unwrap_or_default())),
-                        (t(Key::U3Work), Val::mono(h.as_ref().map(|x| x.work.clone()).unwrap_or_default())),
-                    ],
-                );
+                card::form(ui, |ui, f| {
+                    let _ = f.info(ui, t(Key::U3Work), card::Show::Text(&record));
+                    let _ = f.info(ui, t(Key::U3Issuer), card::Show::Text(&issuer));
+                    f.with(ui, t(Key::U4WindowCap), "", |ui| grants::span_trail(ui, window));
+                });
+                card::form(ui, |ui, f| {
+                    details_row(
+                        ui,
+                        f,
+                        "relicense-details",
+                        &[
+                            (t(Key::U4Upstream), Val::mono(grant.clone())),
+                            (t(Key::U3Issuer), Val::mono(h.as_ref().map(|x| x.author.clone()).unwrap_or_default())),
+                            (t(Key::U3Work), Val::mono(h.as_ref().map(|x| x.work.clone()).unwrap_or_default())),
+                        ],
+                    )
+                });
             },
             |ui, _me| {
-                go = page::Pen::new().press(ui, t(Key::U4ToDrafter), h.is_some()).clicked();
+                go = page::Guide::key(ui, t(Key::U4ToDrafter), h.is_some()).clicked();
                 close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
             },
         );
@@ -1517,4 +1613,34 @@ impl Win {
             self.push(Route::Relicense, now);
         }
     }
+}
+
+/// A failure told in a sheet in the callout's form: the bad wash with no edge, corner 12, 10 × 12 inside, the
+/// failure mark (16) before the words; what happened in the strong role and the bad ink, what to do next under
+/// it, the raw error folded under its title.
+fn err_call(ui: &mut egui::Ui, id_salt: &str, what: &str, next: &str, raw_title: &str, raw: &str) {
+    const MARK: f32 = 16.0;
+    const LINE: f32 = 19.0;
+    egui::Frame::new().fill(c(C::BadWash)).corner_radius(tk::Radius::Tag.egui()).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let (spot, _) = ui.allocate_exact_size(egui::vec2(MARK, LINE), egui::Sense::hover());
+            mark::paint_mark(ui.ctx(), ui.painter(), spot.center(), Mark::Bad, MARK);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let room = ui.available_width();
+                ui.label(egui::RichText::new(what).font(Type::Strong.font()).color(c(C::BadInk)));
+                if !next.is_empty() {
+                    let g = paint::wrapped(ui, next, Type::Small.font(), c(C::Ink2), LINE, room);
+                    let (r, _) = ui.allocate_exact_size(g.size(), egui::Sense::hover());
+                    ui.painter().galley(r.min, g, c(C::Ink2));
+                }
+                if !raw.is_empty() {
+                    ui.add_space(4.0);
+                    fold::fold(ui, id_salt, raw_title, |ui| paint::text(ui, raw, Type::MonoSmall, c(C::Ink3)));
+                }
+            });
+        });
+    });
 }

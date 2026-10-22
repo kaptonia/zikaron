@@ -2,27 +2,55 @@ use super::*;
 
 /// Enters one seat of an identity: opens that seat's home (without writing the machine pointer, since identity
 /// homes are recorded in the register), aligns the seat in settings, reads the key once, and rereads the
-/// identity table.
+/// identity table. The disk half ([`entering`]) and the shell half ([`entered`]) run here back to back; switching
+/// seat runs the first in the background and the second where it lands.
 pub(super) fn enter(shell: &mut Shell, row: &crate::identity::Row, seat: crate::roles::Role) -> Result<(), crate::fault::Fault> {
+    let e = entering(row, seat, &OpeningAsk::of(shell))?;
+    entered(shell, e);
+    shell.refresh_anchor()?;
+    shell.seat_identities(Some(crate::register::view()?));
+    Ok(())
+}
+
+/// A seat entered on disk and not yet in the shell: the seat, and its home opened (none for an empty seat).
+#[derive(Debug)]
+pub struct Entering {
+    seat: crate::roles::Role,
+    opening: Option<Opening>,
+}
+
+/// The disk half of entering a seat ([`enter`]): its home opened, the shell not touched.
+pub(super) fn entering(row: &crate::identity::Row, seat: crate::roles::Role, ask: &OpeningAsk) -> Result<Entering, crate::fault::Fault> {
     // An empty seat has no home to open: the seat still switches and readings are reread, but no home opens.
     // `signing_key` then refuses because the home does not belong to the current seat, so nothing can be
     // signed from it, and the UI says the seat is unoccupied and how to fill it.
     let home = row.home(seat);
+    let mut opened_at = None;
     if let Some(root) = home.as_ref() {
-        open_home_at(shell, &root.display().to_string(), false)?;
+        let mut o = opening(&root.display().to_string(), false, ask)?;
+        // The seat aligned in its own home's settings here, with the other writes of opening, never where the shell
+        // moves in.
+        o.seat_written(seat)?;
+        opened_at = Some(o);
+    }
+    Ok(Entering { seat, opening: opened_at })
+}
+
+/// The shell half of entering a seat: the shell moves into its home, or, with none, releases the home it had. It
+/// cannot fail (see [`opened`]): a seat switch landing here after its register moved is had whole.
+pub(super) fn entered(shell: &mut Shell, e: Entering) {
+    let Entering { seat, opening } = e;
+    let homed = opening.is_some();
+    if let Some(o) = opening {
+        opened(shell, o);
     }
     // With no home the shell releases the home and lock, and each page shows the "no home" state. The seat is
     // set only on the shell, never written into the other seat's home (a home's settings belong to its own
     // seat); the register still records it.
-    if home.is_none() {
+    if !homed {
         shell.close_home();
         shell.settings.role = seat;
-    } else if shell.settings.role != seat {
-        shell.commit_settings(|s| s.role = seat)?;
     }
-    shell.refresh_anchor()?;
-    shell.seat_identities(Some(crate::register::view()?));
-    Ok(())
 }
 
 /// The last step of creating an identity. The copy check runs on the UI thread so mistakes show at once;
@@ -199,18 +227,6 @@ pub(super) fn imported(form: ImportForm, seat: crate::roles::Role, network: &str
             })?
         }
     };
-    Ok(row)
-}
-
-pub(super) fn switch_identity(shell: &mut Shell, id: &str) -> Result<crate::identity::Row, crate::fault::Fault> {
-    // Land on the seat in use if the identity occupies it, else on its first occupied seat
-    // (`Row::seat_here_or_first`), so an identity occupying only the user seat lands there.
-    let seat = crate::register::view()?
-        .find(id)
-        .map(|r| r.seat_here_or_first(shell.settings.role))
-        .unwrap_or(crate::roles::Role::Author);
-    let row = crate::register::change(|reg| crate::identity::switch(reg, id, seat))?;
-    enter(shell, &row, seat)?;
     Ok(row)
 }
 

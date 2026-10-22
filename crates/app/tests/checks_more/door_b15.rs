@@ -400,7 +400,7 @@ fn a_record_package_through_the_door_is_the_desktops_export() {
     }
     let (b, mut shell) = Bench::new("kit");
     let out = b.root.join("kit-out");
-    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string(), form: "folder".into() }) {
+    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string(), form: "folder".into(), recipient: String::new(), recipient_key: String::new(), originals: "none".into() }) {
         Applied::Trouble(f) => f.which().map(|k| k.as_str().to_string()).unwrap_or_default(),
         other => panic!("{other:?}"),
     };
@@ -549,6 +549,9 @@ fn a_shell_let_go_of_closes_its_door() {
 /// verified, and a failing one is refused with nothing written. The door passes the halves on unchanged.
 #[test]
 fn a_cosignature_is_both_halves_or_none_judged_once() {
+    if super::alone_in(module_path!(), "a_cosignature_is_both_halves_or_none_judged_once") {
+        return;
+    }
     let (b, mut shell) = Bench::new("cosign");
     let rows = format!("31337 0x{} bare 0x{}", "11".repeat(32), "77".repeat(32));
     let seq = |shell: &Shell| shell.home.as_ref().and_then(|h| app::ledgerx::head(h).ok().flatten()).map(|(n, _)| n);

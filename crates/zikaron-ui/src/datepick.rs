@@ -1,24 +1,30 @@
 //! **The date field** (the "from · to" pair of a search row): one field in the single-line field's frame
-//! (38 high, corner 8, 12 inside left and right) that opens a month calendar on a floating card.
+//! (38 high, corner 10, 12 inside left and right) that opens a calendar on a floating card.
 //!
 //! The card is drawn the way the menus are ([`crate::menu`]): a floating surface (menu corner, menu shadow),
 //! 5 inside, growing from its anchor corner from 0.97 and rising 4 over 120 ms, played backwards when it
 //! leaves; a press outside the card, Esc, or picking a day closes it. Opened inside a pick list or a sheet it
-//! hangs above that overlay, and its Esc closes the calendar only ([`crate::layer`]).
+//! hangs above that overlay, and its Esc closes the calendar only ([`crate::layer`]). It stays with its field
+//! while the page scrolls under it ([`crate::layer::follow`]).
 //!
-//! The calendar: a head row "‹ month ›"; under it one row of weekdays (the smallest type, ink three); six rows
-//! of seven day cells (32 × 30, corner 6): light grey on hover, a step darker when pressed, the chosen day
-//! solid accent with white figures, today framed by a 2-point accent line, days outside the month in ink
-//! three (still pickable). Under a separator, one row of two menu rows, "today · clear" (the whole row
-//! filled with the accent on hover, like a menu row).
+//! The calendar has three levels in the same card, one size: **days** (a head "‹ month ›", one row of weekdays
+//! in the smallest type, six rows of seven day cells 32 × 30, corner 6), **months** (the head "‹ year ›" and the
+//! twelve months, four rows of three) and **years** (the head "‹ first – last ›" and twelve years, four rows of
+//! three: a decade and the year either side of it). The head's words of the days and months levels are a key:
+//! pressed, the card goes up a level; a month or a year picked goes back down one, and a day picked closes the
+//! card. ‹ › turn a month, a year or ten years. A level coming in fades and grows in place (0.2 s). Cells light
+//! at once under the pointer (the soft ground; a step darker pressed); the chosen day, month or year is a solid
+//! accent key's ground with white figures; today, this month and this year are framed by a 1.5-point accent
+//! line; days outside the month and the two years outside the decade are in ink three (still pickable). Under a
+//! separator, one row of two menu rows, "today · clear" (the whole row filled with the accent on hover, like a
+//! menu row), on every level.
 //!
 //! **This control only picks a day**, written `YYYY-MM-DD`. What counts as today, which zone the days are in
 //! and how a list is filtered by them are the caller's.
 
 use crate::icons::{self, Glyph};
 
-use crate::paint;
-use crate::palette::{self, c, Lift, C};
+use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
@@ -29,6 +35,9 @@ pub struct Words<'a> {
     /// The month row's words for a year and a month (the year and the month, each followed by its word in
     /// the current language), written by the caller.
     pub month: fn(i32, u32) -> String,
+    /// A year alone and a month alone (the months and years levels).
+    pub year: fn(i32) -> String,
+    pub month_alone: fn(u32) -> String,
     pub today: &'a str,
     pub clear: &'a str,
 }
@@ -109,7 +118,14 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
     let id = ui.id().with(("zikaron-date", id_salt));
     let (rect, resp) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::click());
     let open = crate::menu::is_open(ui.ctx(), id);
-    ui.painter().add(crate::input::frame_of(ui.ctx(), rect, id, open));
+    let edge = if open {
+        crate::input::Edge::Focus
+    } else if resp.hovered() {
+        crate::input::Edge::Hover
+    } else {
+        crate::input::Edge::Rest
+    };
+    ui.painter().add(crate::input::frame_shape(ui.ctx(), rect, id, edge));
     let inner = rect.shrink2(vec2(tokens::INPUT_PAD_X, 0.0));
     let icon_x = inner.right() - tokens::INPUT_ICON / 2.0;
     icons::glyph_at(ui.painter(), Glyph::Calendar, pos2(icon_x, rect.center().y), tokens::INPUT_ICON, c(C::Ink3));
@@ -124,7 +140,9 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
         let (y, m, _) = parse(value).unwrap_or(today);
         ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
     }
-    match calendar(ui.ctx(), Some(ui.layer_id()), id, rect, ui.clip_rect(), value, today, words) {
+    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, rect, ui.clip_rect(), value, today, words);
+    crate::menu::stay(ui, id, rect);
+    match picked {
         Some(v) if v != *value => {
             *value = v;
             true
@@ -133,101 +151,318 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
     }
 }
 
+/// A calendar hung from a control the caller drew (a date block of [`span`], whose calendar goes by
+/// [`block_salt`], from the same `ui`): pressing `resp` opens or closes it on the month of `value` (today's month
+/// when there is none); a day picked lands in `value`. "Clear" leaves `value` as it was (a block always holds a
+/// day). Returns whether `value` changed this frame.
+pub fn hang(ui: &mut egui::Ui, id_salt: &str, resp: &egui::Response, value: &mut String, today: Day, words: &Words) -> bool {
+    let id = ui.id().with(("zikaron-date", id_salt));
+    if resp.clicked() {
+        crate::menu::toggle(ui.ctx(), id);
+        let (y, m, _) = parse(value).unwrap_or(today);
+        ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
+    }
+    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), value, today, words);
+    crate::menu::stay(ui, id, resp.rect);
+    match picked {
+        Some(v) if !v.is_empty() && v != *value => {
+            *value = v;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// One date block's words: the month (with the year, when the span crosses one) over the day.
+#[derive(Clone, Copy, Debug)]
+pub struct Block<'a> {
+    pub month: &'a str,
+    pub day: &'a str,
+}
+
+/// A block's inside margin, least width, and the room between a block and the words beside it.
+const BLOCK_PAD_X: f32 = 12.0;
+const BLOCK_MIN_W: f32 = 52.0;
+const BLOCK_GAP: f32 = 12.0;
+
+/// How wide one block is: its wider line and its margins.
+fn block_w(ui: &egui::Ui, b: Block) -> f32 {
+    let w = |s: &str, t: Type| ui.painter().layout_no_wrap(s.to_string(), t.font(), egui::Color32::BLACK).size().x;
+    (w(b.month, Type::Micro).max(w(b.day, Type::Strong)) + BLOCK_PAD_X * 2.0).max(BLOCK_MIN_W).ceil()
+}
+
+/// How wide a [`span`] is.
+pub fn span_width(ui: &egui::Ui, from: Block, between: &str, to: Block) -> f32 {
+    let mid = ui.painter().layout_no_wrap(between.to_string(), Type::Note.font(), egui::Color32::BLACK).size().x.ceil();
+    block_w(ui, from) + BLOCK_GAP + mid + BLOCK_GAP + block_w(ui, to)
+}
+
+/// The id salt the calendar of block `i` of a [`span`] goes by (0 the start, 1 the end), for [`hang`].
+pub fn block_salt(id_salt: &str, i: usize) -> String {
+    format!("{id_salt}-{i}")
+}
+
+/// A span of days (a validity window): two date blocks as tall as a field, each the month small over the day,
+/// and between them the words that say how long it is. The months, days and words roll in place when they change
+/// (a preset picked). A block `live` (`live[0]` the start, `live[1]` the end) is a control, lit under the pointer,
+/// that the caller hangs a calendar from ([`hang`] with [`block_salt`]); the others only show. Returns the two
+/// blocks' responses.
+pub fn span(ui: &mut egui::Ui, id_salt: &str, from: Block, between: &str, to: Block, live: [bool; 2]) -> [egui::Response; 2] {
+    let id = ui.id().with(("zikaron-span", id_salt));
+    let (fw, tw) = (block_w(ui, from), block_w(ui, to));
+    let w = span_width(ui, from, between, to);
+    let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
+    let mut out: Vec<egui::Response> = Vec::with_capacity(2);
+    for (i, (b, bw, left)) in [(from, fw, rect.left()), (to, tw, rect.right() - tw)].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(left, rect.top()), vec2(bw, tokens::INPUT_H));
+        let bid = id.with(i);
+        let live = live[i];
+        let resp = ui.interact(r, bid, if live { egui::Sense::click() } else { egui::Sense::hover() });
+        let open = live && crate::menu::is_open(ui.ctx(), ui.id().with(("zikaron-date", block_salt(id_salt, i).as_str())));
+        block_ground(ui, r, bid, live, open, live && crate::flow::pointer_on(ui, r), resp.is_pointer_button_down_on());
+        let line = |s: &str, t: Type, y: f32, ink: egui::Color32, salt: &str| {
+            let sw = ui.painter().layout_no_wrap(s.to_string(), t.font(), egui::Color32::BLACK).size().x;
+            let l = Rect::from_center_size(pos2(r.center().x, y), vec2(sw, t.line()));
+            crate::paint::rolling(ui, bid.with(salt), l, s, t.font(), ink);
+        };
+        line(b.month, Type::Micro, r.top() + 3.0 + Type::Micro.line() / 2.0, c(C::Ink2), "month");
+        line(b.day, Type::Strong, r.top() + 1.0 + Type::Micro.line() + Type::Strong.line() / 2.0, c(C::Ink), "day");
+        out.push(if live { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp });
+    }
+    let mid = Rect::from_min_max(pos2(rect.left() + fw + BLOCK_GAP, rect.top()), pos2(rect.right() - tw - BLOCK_GAP, rect.bottom()));
+    crate::paint::rolling(ui, id.with("between"), mid, between, Type::Note.font(), c(C::Ink2));
+    let to_resp = out.pop().expect("two blocks");
+    let from_resp = out.pop().expect("two blocks");
+    [from_resp, to_resp]
+}
+
+/// A date block's ground: a grey tone when it only shows; a control's, a white key face with its half-point edge
+/// and drops, a step darker under the pointer and pressed, ringed while its calendar is open.
+fn block_ground(ui: &egui::Ui, r: Rect, id: egui::Id, live: bool, open: bool, lit: bool, down: bool) {
+    let p = ui.painter();
+    let round = Radius::Tag.egui();
+    if !live {
+        p.rect_filled(r, round, c(C::Tone));
+        return;
+    }
+    let ring = crate::motion::flag(ui.ctx(), id.with("open"), open, tokens::FAST);
+    if ring > 0.0 {
+        p.rect_stroke(r.expand(2.0), egui::CornerRadius::same(Radius::Tag.px() as u8 + 2), egui::Stroke::new(4.0_f32, c(C::Focus).gamma_multiply(ring)), egui::StrokeKind::Middle);
+    }
+    p.add(crate::material::drop(r, round, 1.0, 3.0, c(C::KeyDrop2)));
+    p.add(crate::material::drop(r, round, 1.0, 1.0, c(C::KeyDrop)));
+    let face = if down { C::KeyFacePress } else if lit { C::KeyFaceHover } else { C::KeyFace };
+    p.rect_filled(r, round, c(face));
+    p.add(crate::material::rim(r, round, c(if lit || down { C::KeyEdgeHover } else { C::KeyEdge })));
+}
+
+/// Which level the calendar shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Level {
+    Days,
+    Months,
+    Years,
+}
+
+/// The calendar's page: its level, the year and month it stands on, and when the level last changed.
+#[derive(Clone, Copy, Debug)]
+struct View {
+    level: Level,
+    y: i32,
+    m: u32,
+    at: f64,
+}
+
+/// The first of the twelve years the years level shows around `y`: its decade, with the year before and the year
+/// after it (those two in the quiet ink, as days outside the month are).
+fn decade(y: i32) -> i32 {
+    y.div_euclid(10) * 10 - 1
+}
+
+/// One cell of a calendar level: lit under the pointer, a step darker pressed, solid when chosen, framed when it
+/// is today's; a month or a year (`wide`) lies on a grey tone even at rest. Returns whether it was picked.
+#[allow(clippy::too_many_arguments)]
+fn cell(ui: &mut egui::Ui, id: egui::Id, r: Rect, words: &str, chosen: bool, now_ring: bool, quiet: bool, wide: bool, alpha: f32) -> bool {
+    let resp = ui.interact(r, id, egui::Sense::click());
+    let lit = crate::flow::pointer_on(ui, r);
+    let p = ui.painter();
+    let round = if wide { Radius::Menu } else { Radius::Cell };
+    if chosen {
+        p.add(crate::material::drop(r, round.egui(), 1.0, 2.0, crate::material::ink(46.0).gamma_multiply(alpha)));
+        p.add(crate::material::solid(r, round.px(), c(C::Accent).gamma_multiply(alpha)));
+    } else if lit {
+        let press = resp.is_pointer_button_down_on();
+        p.rect_filled(r, round.egui(), c(if press { C::TonePress } else { C::ToneHover }).gamma_multiply(alpha));
+    } else if wide {
+        p.rect_filled(r, round.egui(), c(C::Tone).gamma_multiply(alpha));
+    }
+    if now_ring && !chosen {
+        p.rect_stroke(r, round.egui(), egui::Stroke::new(1.5_f32, c(C::Accent).gamma_multiply(alpha)), egui::StrokeKind::Inside);
+    }
+    let ink = if chosen { palette::ON_SOLID } else if now_ring { c(C::AccentInk) } else if quiet { c(C::Ink3) } else { c(C::Ink) };
+    let font = if chosen || now_ring { egui::FontId::new(Type::Body.size(), crate::fonts::strong()) } else { Type::Body.font() };
+    p.text(r.center(), egui::Align2::CENTER_CENTER, words, font, ink.gamma_multiply(alpha));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
 /// The open calendar card; returns the day picked (`Some("")` is clear).
 #[allow(clippy::too_many_arguments)]
 fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
     if !crate::menu::is_open(ctx, id) {
         return None;
     }
+    let now = crate::motion::now(ctx);
     let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
     let view_id = id.with("view");
-    let view = ctx.data(|d| d.get_temp::<(i32, u32)>(view_id)).unwrap_or((today.0, today.1));
+    let (vy, vm) = ctx.data(|d| d.get_temp::<(i32, u32)>(view_id)).unwrap_or((today.0, today.1));
+    // The level: a new opening starts on the days of its month.
+    let level_id = id.with("level");
+    let opened = ctx.data(|d| d.get_temp::<u64>(id.with("opened"))).unwrap_or(0);
+    let mut view = ctx.data(|d| d.get_temp::<(u64, View)>(level_id)).filter(|(o, _)| *o == opened).map(|(_, v)| v).unwrap_or(View { level: Level::Days, y: vy, m: vm, at: f64::NEG_INFINITY });
+    if view.level == Level::Days {
+        view.y = vy;
+        view.m = vm;
+    }
     let w = CELL_W * 7.0 + PAD * 2.0 + 6.0;
     let h = PAD + HEAD_H + WEEK_H + CELL_H * 6.0 + SEP_H + ROW_H + PAD;
     let drop = crate::layer::drop_card(ctx, anchor, bounds, vec2(w, h), true);
     let (rect, origin) = (drop.rect, drop.origin);
+    crate::layer::card_at(ctx, id, rect);
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
-    let scale = 0.97 + 0.03 * e;
-    ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: origin.to_vec2() * (1.0 - scale) + drop.moved * (1.0 - e) });
+    drop.enter(ctx, layer, e);
     let chosen = parse(value);
     let mut picked: Option<String> = None;
-    let mut turn = 0;
+    let mut next = view;
     crate::layer::place(ctx, layer, parent);
     let mut guarded = false;
+    // A level coming in fades and grows in place.
+    let come = ((now - view.at) as f32 / tokens::MID).clamp(0.0, 1.0);
+    if come < 1.0 {
+        ctx.request_repaint();
+    }
+    let come_e = crate::motion::Curve::Ease.at(if now < view.at { 1.0 } else { come });
     crate::layer::over(ctx, layer).show(ctx, |ui| {
         // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
         // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
         guarded = crate::layer::under(ui, crate::layer::Under::Guard);
         crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
-        paint::surface(ui.painter(), rect, Radius::Menu, c(C::Surface), Lift::Menu);
+        crate::material::paint(ui.painter(), rect, Radius::Menu, crate::material::Level::Float, 0.0);
         let left = rect.left() + PAD + 3.0;
-        // Head row: ‹ month ›.
+        // Head row: ‹ words ›.
         let head = Rect::from_min_size(pos2(left, rect.top() + PAD), vec2(CELL_W * 7.0, HEAD_H));
+        let mut turn = 0;
         for (k, glyph, at) in [(-1, Glyph::Back, head.left()), (1, Glyph::Fwd, head.right() - CELL_W)] {
             let r = Rect::from_min_size(pos2(at, head.top() + (HEAD_H - CELL_H) / 2.0), vec2(CELL_W, CELL_H));
             let resp = ui.interact(r, id.with(("turn", k)), egui::Sense::click());
-            if resp.hovered() {
-                let press = resp.is_pointer_button_down_on();
-                ui.painter().rect_filled(r, egui::CornerRadius::same(6), c(if press { C::Press } else { C::Hover }));
-            }
-            icons::glyph_at(ui.painter(), glyph, r.center(), 14.0, c(C::Ink2));
+            crate::button::paint_icon_key_at(ui, r, &resp, glyph, true, Radius::Cell.px());
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 turn = k;
             }
         }
-        let title = (words.month)(view.0, view.1);
-        ui.painter().text(head.center(), egui::Align2::CENTER_CENTER, title, Type::Key.font(), c(C::Ink));
-        // Weekday row.
-        let wy = head.bottom() + WEEK_H / 2.0;
-        for (i, wd) in words.weekdays.iter().enumerate() {
-            ui.painter().text(pos2(left + CELL_W * (i as f32 + 0.5), wy), egui::Align2::CENTER_CENTER, *wd, Type::Micro.font(), c(C::Ink3));
-        }
-        // Six rows of seven days.
-        let top = head.bottom() + WEEK_H;
-        for (i, day) in grid(view).into_iter().enumerate() {
-            let (col, row) = ((i % 7) as f32, (i / 7) as f32);
-            let r = Rect::from_min_size(pos2(left + CELL_W * col, top + CELL_H * row), vec2(CELL_W, CELL_H)).shrink(1.0);
-            let resp = ui.interact(r, id.with(("day", i)), egui::Sense::click());
-            let on = chosen == Some(day);
-            let here = (day.0, day.1) == view;
-            if on {
-                ui.painter().rect_filled(r, egui::CornerRadius::same(6), c(C::Accent));
-            } else if resp.hovered() {
-                let press = resp.is_pointer_button_down_on();
-                ui.painter().rect_filled(r, egui::CornerRadius::same(6), c(if press { C::Press } else { C::Hover }));
+        let title = match view.level {
+            Level::Days => (words.month)(view.y, view.m),
+            Level::Months => (words.year)(view.y),
+            Level::Years => {
+                let d0 = decade(view.y);
+                format!("{} \u{2013} {}", (words.year)(d0), (words.year)(d0 + 11))
             }
-            if day == today && !on {
-                ui.painter().rect_stroke(r, egui::CornerRadius::same(7), egui::Stroke::new(2.0_f32, c(C::Accent)), egui::StrokeKind::Inside);
+        };
+        // The head's words: a key that goes up a level (the years level's words are not a key).
+        let g = ui.painter().layout_no_wrap(title, Type::Key.font(), c(C::Ink));
+        let tr = Rect::from_center_size(head.center(), vec2(g.size().x + 20.0, CELL_H));
+        if view.level != Level::Years {
+            let resp = ui.interact(tr, id.with("up"), egui::Sense::click());
+            let lit = crate::flow::pointer_on(ui, tr);
+            if lit {
+                ui.painter().rect_filled(tr, Radius::Cell.egui(), c(if resp.is_pointer_button_down_on() { C::TonePress } else { C::Tone }));
             }
-            let ink = if on { palette::ON_SOLID } else if here { c(C::Ink) } else { c(C::Ink3) };
-            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, day.2.to_string(), Type::Body.font(), ink);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                picked = Some(fmt(day));
+                next = View { level: if view.level == Level::Days { Level::Months } else { Level::Years }, at: now, ..view };
             }
         }
-        // The separator and the foot row of two menu rows: today · clear.
-        let sep_y = top + CELL_H * 6.0 + SEP_H / 2.0;
-        ui.painter().hline((rect.left() + 11.0)..=(rect.right() - 11.0), sep_y, egui::Stroke::new(1.0_f32, c(C::Line2)));
-        let foot_top = top + CELL_H * 6.0 + SEP_H;
+        ui.painter().galley(pos2(tr.center().x - g.size().x / 2.0, tr.center().y - g.size().y / 2.0), g, c(C::Ink));
+        if turn != 0 {
+            next = match view.level {
+                Level::Days => {
+                    let (y, m) = shift((view.y, view.m), turn);
+                    View { y, m, ..next }
+                }
+                Level::Months => View { y: view.y + turn, ..next },
+                Level::Years => View { y: view.y + 10 * turn, ..next },
+            };
+            // Only the years a day can be written in (`YYYY`, read back by `parse`).
+            next.y = next.y.clamp(1, 9999);
+        }
+        // The level's page: the room of the weekdays and the six rows of days.
+        let top = head.bottom();
+        let page = Rect::from_min_size(pos2(left, top), vec2(CELL_W * 7.0, WEEK_H + CELL_H * 6.0));
+        let k = 0.96 + 0.04 * come_e * crate::motion::travel(ctx) + 0.04 * (1.0 - crate::motion::travel(ctx));
+        let at = |r: Rect| Rect::from_center_size(page.center() + (r.center() - page.center()) * k, r.size() * k);
+        let a = come_e;
+        match view.level {
+            Level::Days => {
+                let wy = top + WEEK_H / 2.0;
+                for (i, wd) in words.weekdays.iter().enumerate() {
+                    let r = at(Rect::from_center_size(pos2(left + CELL_W * (i as f32 + 0.5), wy), vec2(CELL_W, WEEK_H)));
+                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *wd, Type::Micro.font(), c(C::Ink3).gamma_multiply(a));
+                }
+                let rows_top = top + WEEK_H;
+                for (i, day) in grid((view.y, view.m)).into_iter().enumerate() {
+                    let (col, row) = ((i % 7) as f32, (i / 7) as f32);
+                    let r = at(Rect::from_min_size(pos2(left + CELL_W * col, rows_top + CELL_H * row), vec2(CELL_W, CELL_H)).shrink(1.0));
+                    let here = (day.0, day.1) == (view.y, view.m);
+                    if cell(ui, id.with(("day", i)), r, &day.2.to_string(), chosen == Some(day), day == today, !here, false, a) {
+                        picked = Some(fmt(day));
+                    }
+                }
+            }
+            Level::Months => {
+                let (cw, ch) = (page.width() / 3.0, page.height() / 4.0);
+                for m in 1..=12u32 {
+                    let (col, row) = (((m - 1) % 3) as f32, ((m - 1) / 3) as f32);
+                    let r = at(Rect::from_min_size(pos2(page.left() + cw * col, page.top() + ch * row), vec2(cw, ch)).shrink2(vec2(4.0, 6.0)));
+                    let on = chosen.map(|d| (d.0, d.1) == (view.y, m)).unwrap_or(false);
+                    if cell(ui, id.with(("month", m)), r, &(words.month_alone)(m), on, (today.0, today.1) == (view.y, m), false, true, a) {
+                        next = View { level: Level::Days, m, at: now, ..view };
+                    }
+                }
+            }
+            Level::Years => {
+                let (cw, ch) = (page.width() / 3.0, page.height() / 4.0);
+                let d0 = decade(view.y);
+                for k in 0..12 {
+                    let y = d0 + k;
+                    let (col, row) = ((k % 3) as f32, (k / 3) as f32);
+                    let r = at(Rect::from_min_size(pos2(page.left() + cw * col, page.top() + ch * row), vec2(cw, ch)).shrink2(vec2(4.0, 6.0)));
+                    let on = chosen.map(|d| d.0 == y).unwrap_or(false);
+                    if cell(ui, id.with(("year", k)), r, &(words.year)(y), on, today.0 == y, k == 0 || k == 11, true, a) {
+                        next = View { level: Level::Months, y, at: now, ..view };
+                    }
+                }
+            }
+        }
+        // The foot row of two keys on a grey tone, 6 apart: today · clear.
+        let foot_top = top + WEEK_H + CELL_H * 6.0 + SEP_H;
         let half = (rect.width() - PAD * 2.0) / 2.0;
         for (k, label) in [(0, words.today), (1, words.clear)] {
             let r = Rect::from_min_size(pos2(rect.left() + PAD + half * k as f32, foot_top), vec2(half, ROW_H));
             let resp = ui.interact(r, id.with(("foot", k)), egui::Sense::click());
-            let hot = resp.hovered();
-            if hot {
-                ui.painter().rect_filled(r, egui::CornerRadius::same(6), c(C::Accent));
-            }
-            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, label, Type::Key.font(), if hot { palette::ON_SOLID } else { c(C::Ink) });
+            let hot = crate::flow::pointer_on(ui, r);
+            let face = if k == 0 { Rect::from_min_max(r.min, pos2(r.right() - 3.0, r.bottom())) } else { Rect::from_min_max(pos2(r.left() + 3.0, r.top()), r.max) };
+            let ground = if hot && resp.is_pointer_button_down_on() { C::TonePress } else if hot { C::ToneHover } else { C::Tone };
+            ui.painter().rect_filled(face, Radius::Cell.egui(), c(ground));
+            ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, label, Type::Key.font(), c(C::Ink));
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 picked = Some(if k == 0 { fmt(today) } else { String::new() });
             }
         }
         ui.allocate_rect(rect, egui::Sense::hover());
     });
-    if turn != 0 {
-        ctx.data_mut(|d| d.insert_temp(view_id, shift(view, turn)));
+    if next.level == Level::Days {
+        ctx.data_mut(|d| d.insert_temp(view_id, (next.y, next.m)));
     }
+    ctx.data_mut(|d| d.insert_temp(level_id, (opened, next)));
     crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin, drop.moved);
     // Esc closes this card only (the list or sheet it was opened from stays).
     let esc = crate::layer::esc(ctx, id);

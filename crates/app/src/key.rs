@@ -21,7 +21,11 @@
 //! 4. [`Secret::with_tx_key`]: lends the bytes to the anchoring crate for exactly one anchoring transaction,
 //!    with exactly one caller, and leads to no file;
 //! 5. [`reveal_once`]: consumes the `Secret` (so once-only is structural); the string it returns lives in UI
-//!    state and never enters a file.
+//!    state and never enters a file;
+//! 6. [`Secret::public`]: the derived public key (compressed), which cannot lead back to the key either;
+//! 7. the key agreement of a record package addressed to this key (`zikaron_seal::addressed::Recipient`, the one
+//!    place below): the bytes go to the sealed layer's Diffie-Hellman for one shared value and nothing else.
+//!    Agreeing decrypts; it signs nothing and leads to no file.
 
 use crate::fault::{classify, Fault, Known};
 use crate::keybox;
@@ -91,6 +95,11 @@ impl Secret {
         cryptox::address_of_privkey(&self.0).map(Address)
     }
 
+    /// This key's public key, compressed (33 bytes): what someone sealing a record package to this key needs.
+    pub fn public(&self) -> Option<[u8; 33]> {
+        zikaron_seal::crypto::public_of(&self.0)
+    }
+
     /// The signing exit: lends the bytes to the `sign` module for exactly one call.
     ///
     /// It lends rather than signs so that every call site of the actual signing primitive (the core's
@@ -132,6 +141,19 @@ impl Secret {
         let mut buf = Wipe(self.0);
         crate::cryptx::aes128_ctr(key, iv, &mut buf.0);
         buf.0.to_vec()
+    }
+}
+
+/// The agreement exit, the only one: a record package addressed to this key is opened with the shared value of
+/// this key and the package's one-time key. The bytes are lent to the sealed layer's Diffie-Hellman for that one
+/// value; nothing signs, nothing is written.
+impl zikaron_seal::addressed::Recipient for Secret {
+    fn public(&self) -> [u8; 33] {
+        Secret::public(self).unwrap_or([0; 33])
+    }
+
+    fn agree(&self, one_time: &[u8; 33]) -> Option<[u8; 32]> {
+        zikaron_seal::crypto::agree(&self.0, one_time)
     }
 }
 
@@ -279,8 +301,15 @@ pub(crate) fn load_at(acct: &str) -> Result<Option<Secret>, Fault> {
     // without it, locking would clear the master key but leave this key in a heap buffer and on the stack.
     zikaron_os::wipe(&mut raw);
     zikaron_os::wipe(&mut b);
-    got.ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::filln(crate::lang::Key::Tail164, &[&(acct).to_string()])))
-        .map(Some)
+    let got = got.ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::filln(crate::lang::Key::Tail164, &[&(acct).to_string()])))?;
+    // A key slot is named by its key's address (`places::key_slot`): a key whose address is another is not this
+    // slot's key, refused for this slot alone, as the command line refuses it.
+    if let Some(want) = crate::places::slot_address(acct) {
+        if got.address() != Some(want) {
+            return Err(Fault::known(Known::KeyMalformed, crate::lang::filln(crate::lang::Key::TailKeyNotSlots, &[&(acct).to_string()])));
+        }
+    }
+    Ok(Some(got))
 }
 
 /// Reads bytes as a key and computes its address. `None` for the wrong shape.

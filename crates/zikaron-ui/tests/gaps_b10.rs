@@ -5,6 +5,14 @@
 use zikaron_ui::egui::{self, pos2, vec2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::{layer, mark, menu, table};
 
+/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
+/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
+fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
+    top.set_clip_rect(ctx.content_rect());
+    panel.show_inside(&mut top, add)
+}
+
 const SCREEN: egui::Vec2 = egui::Vec2 { x: 1180.0, y: 800.0 };
 
 struct Frames {
@@ -25,7 +33,8 @@ impl Frames {
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
         // Two pixels a point, as the window has on the screens it ships to (layout rounds to pixels).
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
-        self.ctx.run(input, |ctx| {
+        self.ctx.run_ui(input, |root| {
+            let ctx = &root.ctx().clone();
             ui(ctx);
             layer::fade_out(ctx);
         })
@@ -69,7 +78,7 @@ enum Anchor {
 /// A page with one menu key at a fixed place. Returns the key's rect and the menu's id (as the key makes it).
 fn page(ctx: &egui::Context, which: Anchor) -> (Rect, egui::Id) {
     let mut at = (Rect::NOTHING, egui::Id::NULL);
-    egui::CentralPanel::default().show(ctx, |ui| {
+    central(ctx, egui::CentralPanel::default(), |ui| {
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("anchor").max_rect(Rect::from_min_size(pos2(400.0, 300.0), vec2(200.0, 40.0))));
         let id = child.id().with(("zikaron-menu", "m"));
         match which {
@@ -161,7 +170,7 @@ fn a_pill_cut_short_shows_its_whole_words_on_hover() {
     let mut f = Frames::new();
     let mut r = Rect::NOTHING;
     let draw = |ctx: &egui::Context, r: &mut Rect| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(100.0, 100.0), vec2(60.0, 30.0))));
             *r = mark::pill(&mut child, words, zikaron_ui::palette::Tone::Warn).rect;
         });
@@ -188,7 +197,7 @@ fn a_table_tag_past_its_cap_is_elided_and_whole_on_hover() {
     let row = table::Row { cells: vec![table::Cell::Tag(tag.into()), table::Cell::Text("封面设计".into())], ..Default::default() };
     let cols = [table::TYPE, table::col("记录", table::Col::Fr(1.0))];
     let draw = |ctx: &egui::Context| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        central(ctx, egui::CentralPanel::default(), |ui| {
             table::table(ui, "tags", &cols, false, std::slice::from_ref(&row), "无");
         });
     };

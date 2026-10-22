@@ -47,7 +47,7 @@ fn one(q: &Request, f: &str) -> String {
 /// the door (the command line refuses `--home` with it), and a flag not in its row is not accepted. Handing the
 /// ledger to another key (`succeed`) is not listed: final and rare, it is done on the desktop by hand only.
 /// `CLI-SCHEMA.md` §11 documents it (checked by the tests).
-const ROWS: [Row; 10] = [
+const ROWS: [Row; 11] = [
     Row { flags: &["statement"], make: |q| Action::Genesis { statement: one(q, "statement") } },
     Row { flags: &["file", "note"], make: |q| Action::RecordWork { note_md: one(q, "note"), files: vec![one(q, "file")], for_: None } },
     Row {
@@ -79,11 +79,29 @@ const ROWS: [Row; 10] = [
     Row { flags: &["subject", "note"], make: |q| Action::Retract { subject: one(q, "subject"), note_md: one(q, "note") } },
     // Sending the queue: whether it is sent or left for the user depends on the setting ([`turn_of`]).
     Row { flags: &[], make: |_| Action::SendBatch { count: 0 } },
-    // `--as`: the form's word as given (`folder`, `file`; none is one file), judged by the action layer.
+    // `--as`: the form's word as given (`folder`, `file`; none is one file), judged by the action layer. `--to` and
+    // `--to-key`: the recipient a one-file package is sealed to (an address, its key found on this desktop's networks;
+    // or a key), judged by the action layer too, as the export sheet's two fields are. The chosen records' originals
+    // go in as the export page takes them unless `--originals none` (the word judged by the action layer too).
     Row {
-        flags: &["entry", "note", "out", "as"],
-        make: |q| Action::ExportKit { from: String::new(), to: String::new(), ids: q.many("entry").join("\n"), attach: String::new(), note: one(q, "note"), out: one(q, "out"), form: one(q, "as") },
+        flags: &["entry", "note", "out", "as", "to", "to-key", "originals"],
+        make: |q| Action::ExportKit {
+            from: String::new(),
+            to: String::new(),
+            ids: q.many("entry").join("\n"),
+            attach: String::new(),
+            note: one(q, "note"),
+            out: one(q, "out"),
+            form: one(q, "as"),
+            recipient: one(q, "to"),
+            recipient_key: one(q, "to-key"),
+            originals: one(q, "originals"),
+        },
     },
+    // Verifying a record package on this desktop's networks, as the verify page does (a package addressed to one of
+    // its identities opened with it first); `--originals-to`: the originals then taken out there, as the page's
+    // "take out originals" does, once the verification has landed ([`Shell::door_step`]).
+    Row { flags: &["kit", "originals-to"], make: |q| Action::VerifyWork { path: one(q, "kit"), work: String::new(), then_to: one(q, "originals-to") } },
 ];
 
 /// Converts the JSON array from a `--anchors` file into the adoption page's rows, one line per element:
@@ -174,6 +192,12 @@ pub enum Doing {
     Record { answer: Sender<Reply>, serial: u64 },
     /// A record package (`Kind::Kit`).
     Kit { answer: Sender<Reply>, serial: u64 },
+    /// A record package's verification (`Kind::Verify`); `then_to`, when not empty, the folder its originals are
+    /// taken out into once it lands (`Kind::Extract`, the page's own action).
+    Verify { answer: Sender<Reply>, serial: u64, then_to: String },
+    /// Taking the originals of a verified package out (`Kind::Extract`), answered with the verification's facts
+    /// (`verified`) and what was taken.
+    Extract { answer: Sender<Reply>, serial: u64, verified: Box<Reply> },
     /// The estimate before sending (`Kind::Gas`), followed by the send, as the send key does.
     Estimate { answer: Sender<Reply>, count: usize, serial: u64 },
     /// The sending, then the receipt wait it starts (`Kind::Anchor`): `serial` is the one awaited now. Answered
@@ -213,8 +237,9 @@ pub fn turn_of(shell: &Shell, q: &Request) -> Result<Turn, Fault> {
     Ok(Turn::Act(act))
 }
 
-/// A refusal as the door reports it: the code, the evidence, whether it is a network refusal (no answer
-/// rather than a negative one, `Known::NETWORK`), and its message in both languages. The sender's "already on
+/// A refusal as the door reports it: the code, the evidence, whether it is the absence of an answer rather than a
+/// negative one (`Known::unanswered`: the network kind, and a chain not read through for sealing), and its message
+/// in both languages. The sender's "already on
 /// chain" goes as its own reply, its evidence as values (the hashes, the earliest transaction and block), so
 /// both of the command line's roads answer it alike.
 pub fn refused(f: &Fault) -> Reply {
@@ -226,7 +251,7 @@ pub fn refused(f: &Fault) -> Reply {
         return Reply::Unheard { tx: tx.to_string(), detail: f.tail().to_string() };
     }
     let (code, network, (zh, en)) = match f.which() {
-        Some(k) => (k.as_str().to_string(), Known::NETWORK.contains(&k), crate::lang::both(f.what_key().unwrap_or(k.what()))),
+        Some(k) => (k.as_str().to_string(), k.unanswered(), crate::lang::both(f.what_key().unwrap_or(k.what()))),
         None => (f.class().as_str().to_string(), false, (f.said(), f.said())),
     };
     Reply::Refused { code, tail: f.tail().to_string(), network, zh: zh.to_string(), en: en.to_string() }
@@ -376,11 +401,16 @@ impl Shell {
                     self.door_send(&answer, Reply::OnDesktop);
                     return;
                 }
+                let then_to = match &act {
+                    Action::VerifyWork { then_to, .. } => then_to.trim().to_string(),
+                    _ => String::new(),
+                };
                 let got = crate::action::apply(self, act);
-                match (got, self.tasks.serial_of(Kind::Record), self.tasks.serial_of(Kind::Kit)) {
-                    (Applied::Started(Kind::Record), Some(serial), _) => self.door_doing = Some(Doing::Record { answer, serial }),
-                    (Applied::Started(Kind::Kit), _, Some(serial)) => self.door_doing = Some(Doing::Kit { answer, serial }),
-                    (other, _, _) => self.door_answer(answer, other),
+                match (got, self.tasks.serial_of(Kind::Record), self.tasks.serial_of(Kind::Kit), self.tasks.serial_of(Kind::Verify)) {
+                    (Applied::Started(Kind::Record), Some(serial), _, _) => self.door_doing = Some(Doing::Record { answer, serial }),
+                    (Applied::Started(Kind::Kit), _, Some(serial), _) => self.door_doing = Some(Doing::Kit { answer, serial }),
+                    (Applied::Started(Kind::Verify), _, _, Some(serial)) => self.door_doing = Some(Doing::Verify { answer, serial, then_to }),
+                    (other, _, _, _) => self.door_answer(answer, other),
                 }
             }
         }
@@ -462,11 +492,56 @@ impl Shell {
             Doing::Kit { answer, serial } => {
                 let Some(o) = mine(serial) else { return Some(Doing::Kit { answer, serial }) };
                 let reply = match &o.result {
-                    Ok(Done::Kit { path, kit_id, entries, files, dropped, .. }) => {
-                        Reply::Kit { kit_id: kit_id.clone(), path: path.clone(), entries: *entries as u64, files: *files as u64, dropped: dropped.clone() }
-                    }
+                    Ok(Done::Kit { path, kit_id, entries, files, dropped, originals, left_out, unreadable, .. }) => Reply::Kit {
+                        kit_id: kit_id.clone(),
+                        path: path.clone(),
+                        entries: *entries as u64,
+                        files: *files as u64,
+                        dropped: dropped.clone(),
+                        originals: originals.clone(),
+                        // What did not go in, as the command line's own export names it: no longer the bytes
+                        // recorded, or not there to read.
+                        left_out: left_out.iter().cloned().chain(unreadable.iter().map(|(p, _)| p.clone())).collect(),
+                    },
                     Ok(_) => unexpected(Kind::Kit),
                     Err(f) => refused(f),
+                };
+                self.door_send(&answer, reply);
+                None
+            }
+            Doing::Verify { answer, serial, then_to } => {
+                let Some(o) = mine(serial) else { return Some(Doing::Verify { answer, serial, then_to }) };
+                let reply = match &o.result {
+                    Ok(Done::Verified(v)) => verified_reply(v),
+                    Ok(_) => unexpected(Kind::Verify),
+                    Err(f) => refused(f),
+                };
+                // Verified and asked to take the originals out: the page's own action, the package read again and
+                // judged there; answered when it lands.
+                if let (Reply::Verified { .. }, false, Ok(Done::Verified(v))) = (&reply, then_to.is_empty(), &o.result) {
+                    let take = Action::ExtractOriginals { kit: v.path.clone(), to: then_to };
+                    return match (crate::action::apply(self, take), self.tasks.serial_of(Kind::Extract)) {
+                        (Applied::Started(Kind::Extract), Some(serial)) => Some(Doing::Extract { answer, serial, verified: Box::new(reply) }),
+                        (other, _) => {
+                            self.door_answer(answer, other);
+                            None
+                        }
+                    };
+                }
+                self.door_send(&answer, reply);
+                None
+            }
+            Doing::Extract { answer, serial, verified } => {
+                let Some(o) = mine(serial) else { return Some(Doing::Extract { answer, serial, verified }) };
+                let reply = match (&o.result, *verified) {
+                    (Ok(Done::Extracted { landed, .. }), Reply::Verified { kit_id, entries, records, .. }) => Reply::Verified {
+                        kit_id,
+                        entries,
+                        records,
+                        taken: Some(zikaron_glue::door::Taken { path: landed.to.display().to_string(), names: landed.names.clone() }),
+                    },
+                    (Ok(_), _) => unexpected(Kind::Extract),
+                    (Err(f), _) => refused(f),
                 };
                 self.door_send(&answer, reply);
                 None
@@ -515,10 +590,31 @@ impl Shell {
     }
 }
 
+/// The door's facts of a verification as it landed: the kit law's refusal (a package that does not pass, or a place
+/// that is no record package), or the package's id, its entries and each record's facts as the page judged them
+/// (`zikaron_glue::recordcheck`, the one judge).
+fn verified_reply(v: &crate::verifyx::Verified) -> Reply {
+    match &v.kit {
+        Some(k) if k.ok => Reply::Verified {
+            kit_id: k.kit_id.clone(),
+            entries: k.entries as u64,
+            records: v.records.iter().map(|r| zikaron_glue::door::Record { entry_id: r.id.clone(), content: r.content.clone(), original: r.original, chain: r.chain }).collect(),
+            taken: None,
+        },
+        Some(k) => Reply::KitRefused { verdict: k.verdict.clone(), subject: Some(k.subject.clone()).filter(|x| !x.is_empty()) },
+        None => Reply::KitRefused { verdict: zikaron_kit::tokens::KitFailToken::ManifestAbsent.as_str().to_string(), subject: None },
+    }
+}
+
 impl Doing {
     fn answer(&self) -> &Sender<Reply> {
         match self {
-            Doing::Record { answer, .. } | Doing::Kit { answer, .. } | Doing::Estimate { answer, .. } | Doing::Send { answer, .. } => answer,
+            Doing::Record { answer, .. }
+            | Doing::Kit { answer, .. }
+            | Doing::Verify { answer, .. }
+            | Doing::Extract { answer, .. }
+            | Doing::Estimate { answer, .. }
+            | Doing::Send { answer, .. } => answer,
         }
     }
 }

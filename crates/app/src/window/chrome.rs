@@ -60,7 +60,8 @@ impl Win {
     // ─── The frame ───
 
     /// One frame of the shell: rail, toolbar and page; the wizard and the gate over them; sheets over all.
-    pub(super) fn chrome(&mut self, ctx: &egui::Context, now: f64) {
+    pub(super) fn chrome(&mut self, ui: &mut egui::Ui, now: f64) {
+        let ctx = &ui.ctx().clone();
         self.ux.now = now;
         if self.ux.nav.place.is_none() {
             let start = self.ux.nav.hist.get(&self.ux.nav.stack).map(|h| h.bottom().clone());
@@ -96,14 +97,18 @@ impl Win {
             self.wizard_by_itself();
         }
         if self.rail_shown() {
-            self.chrome_rail(ctx, now);
+            self.chrome_rail(ui, now);
         }
         // A page that takes drops in its own zones says so as it draws (`takes_drops`).
         self.ux.page_drops = false;
-        self.chrome_page(ctx, now);
+        self.chrome_page(ui, now);
         // The full-window layers: the first-run wizard, and the passcode gate above it.
         if self.ux.wizard.is_some() && !gate {
             self.wizard_layer(ctx, now);
+        } else {
+            // However the wizard is left (its way out, its last step), it goes at once and the window comes in as
+            // a page does.
+            zikaron_ui::covers::gone(ctx, "wizard");
         }
         self.gate(ctx, now);
         // Sheets lie above everything, the gate and the wizard included.
@@ -112,7 +117,8 @@ impl Win {
     }
 
     /// The side rail.
-    fn chrome_rail(&mut self, ctx: &egui::Context, now: f64) {
+    fn chrome_rail(&mut self, ui: &mut egui::Ui, now: f64) {
+        let ctx = &ui.ctx().clone();
         let role = self.shell.settings.role;
         let in_settings = self.ux.nav.stack == self.stack_of(self.settings_place());
         let mut picked: Option<P> = None;
@@ -124,12 +130,12 @@ impl Win {
         let (words, voice, progress, sync) = self.status_say();
         let pin_set = !self.shell.vault.absent();
         let (id_name, id_kind) = self.id_chip_words();
-        let panel = egui::SidePanel::left("rail")
-            .exact_width(tk::RAIL_W)
+        let panel = egui::Panel::left("rail")
+            .exact_size(tk::RAIL_W)
             .resizable(false)
             .show_separator_line(false)
             .frame(rail::panel_frame())
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 // On macOS the top of the rail is the window's handle (there is no title bar): dragging here
                 // drags the window. Elsewhere the system's title bar does that.
@@ -144,7 +150,8 @@ impl Win {
                     menu::toggle(ctx, egui::Id::new("zikaron-id-menu"));
                 }
                 chip = Some(r.rect);
-                let cur = usize::from(role == crate::roles::Role::Grantee);
+                // The seat a switch goes to shows at once, while the switch runs in the background (`Shell::seat_wish`).
+                let cur = usize::from(self.shell.seat_wish.unwrap_or(role) == crate::roles::Role::Grantee);
                 if rail::seat(ui, [t(Key::IdSeatAuthor), t(Key::IdSeatGrantee)], cur).is_some() {
                     switch = true;
                 }
@@ -165,7 +172,7 @@ impl Win {
             });
         rail::edge(ctx, panel.response.rect);
         if let Some(r) = chip {
-            self.id_menu(ctx, r, now);
+            self.id_menu(ctx, r, panel.response.rect, now);
         }
         if lock {
             self.lock_now(now);
@@ -206,9 +213,10 @@ impl Win {
         }
     }
 
-    /// The identity menu under the chip: switch identity (each "kind · name", the current one marked), new
-    /// identity, import key, identity keys. No lock here (the rail has its own).
-    fn id_menu(&mut self, ctx: &egui::Context, anchor: egui::Rect, now: f64) {
+    /// The identity menu under the chip: switch identity (each identity's name over its kind, the one in use
+    /// saying so), new identity, import key, identity keys. No lock here (the rail has its own).
+    /// It stays inside the rail: as far from the rail's right edge as the chip is from its left, a long name cut.
+    fn id_menu(&mut self, ctx: &egui::Context, anchor: egui::Rect, rail: egui::Rect, now: f64) {
         let id = egui::Id::new("zikaron-id-menu");
         if !menu::is_open(ctx, id) {
             return;
@@ -216,9 +224,11 @@ impl Win {
         let rows: Vec<crate::identity::Row> = self.shell.identities.as_ref().map(|r| r.rows.clone()).unwrap_or_default();
         let current = self.shell.identities.as_ref().and_then(|r| r.now().map(|(x, _)| x.id.clone()));
         let primary = self.shell.primary.as_ref().map(|(p, _)| p.clone());
+        // The menu's width less its own 10 of padding; a row takes its label and 24 more.
+        let min_w = (rail.width() - 2.0 * (anchor.left() - rail.left()).max(0.0) - 10.0).max(120.0);
         // The identity list: each identity is two lines, its name and its
         // kind, with "primary" and "in use" at the end of the second line.
-        let names: Vec<&str> = rows.iter().map(|r| if r.label.trim().is_empty() { t(Key::Unnamed) } else { r.label.as_str() }).collect();
+        let names: Vec<String> = rows.iter().map(|r| elide_in(ctx, if r.label.trim().is_empty() { t(Key::Unnamed) } else { r.label.as_str() }, Type::Key.font(), min_w - 24.0)).collect();
         let tags: Vec<Vec<&str>> = rows
             .iter()
             .map(|r| {
@@ -232,18 +242,18 @@ impl Win {
                 v
             })
             .collect();
-        // The identity lens menu: a title, the identities (the one in use under the blue lens), then the
-        // actions in two groups.
+        // A title, the identities (arrows and return move among them and pick one), then the actions in two
+        // groups.
         let mut items: Vec<menu::Item> = vec![menu::Item::Head(t(Key::IdSwitchTitle))];
         for (i, r) in rows.iter().enumerate() {
-            items.push(menu::Item::Who(menu::Who { name: names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
+            items.push(menu::Item::Who(menu::Who { name: &names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
         }
         items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::IdNewTitle)));
         items.push(menu::row(t(Key::IdImportTitle)));
         items.push(menu::Item::Sep);
         items.push(menu::row(t(Key::SetKeys)));
-        if let Some(i) = menu::show(ctx, id, anchor, true, 236.0, &items) {
+        if let Some(i) = menu::show(ctx, id, anchor, true, min_w, &items) {
             let n = rows.len();
             if i >= 1 && i <= n {
                 let r = &rows[i - 1];
@@ -294,6 +304,12 @@ impl Win {
             None => t(Key::NavReadNever).to_string(),
         };
         (words, rail::Voice::Quiet, None, sync)
+    }
+
+    /// Whether the status line at the rail's foot reports a task of kind `k` while it runs (every long task the
+    /// person starts, wherever the rail is drawn): what it reports is not drawn again in the page.
+    pub(super) fn status_reports(&self, k: crate::task::Kind) -> bool {
+        task_long(k) && self.rail_shown()
     }
 
     /// The long task the person started that is still running (the latest one).
@@ -395,9 +411,13 @@ impl Win {
     }
 
     /// The page area: toolbar and body (the shell's, over this product's pages).
-    fn chrome_page(&mut self, ctx: &egui::Context, now: f64) {
+    fn chrome_page(&mut self, ui: &mut egui::Ui, now: f64) {
+        let ctx = &ui.ctx().clone();
         let covered = !self.rail_shown();
-        egui::CentralPanel::default().frame(rail::page_frame()).show(ctx, |ui| {
+        // Under a cover (the wizard, the gate) the page paints no ground: the cover paints its own, and the
+        // wizard's column lets the system's material through.
+        let frame = if covered { egui::Frame::NONE } else { rail::page_frame() };
+        egui::CentralPanel::default().frame(frame).show_inside(ui, |ui| {
             if covered {
                 return;
             }
@@ -516,4 +536,24 @@ fn grip_acts(ctx: &egui::Context, r: &egui::Response) {
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
+}
+
+/// `s` cut with an ellipsis to fit `max_w` in `font` (for words laid out without a ui of their own).
+fn elide_in(ctx: &egui::Context, s: &str, font: egui::FontId, max_w: f32) -> String {
+    let width = |w: &str| ctx.fonts_mut(|f| f.layout_no_wrap(w.to_string(), font.clone(), egui::Color32::BLACK).size().x);
+    if width(s) <= max_w {
+        return s.to_string();
+    }
+    let cs: Vec<char> = s.chars().collect();
+    let cut = |keep: usize| cs[..keep].iter().collect::<String>() + "\u{2026}";
+    let (mut lo, mut hi) = (0usize, cs.len().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(&cut(mid)) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
 }

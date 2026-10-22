@@ -64,6 +64,20 @@ pub mod names_member {
     pub const TO: &str = "to";
 }
 
+/// The table read back ([`names_table`]'s shape): (original name, kit name) per row. A table that does not read,
+/// and any row not of the shape, gives nothing: an item it does not name keeps its kit name.
+pub fn names_read(bytes: &[u8]) -> Vec<(String, String)> {
+    use zikaron::json::Value;
+    let Ok(v) = zikaron::json::parse(bytes) else { return Vec::new() };
+    let Some(Value::Arr(rows)) = v.member(names_member::NAMES) else { return Vec::new() };
+    rows.iter()
+        .filter_map(|r| match (r.member(names_member::FROM), r.member(names_member::TO)) {
+            (Some(Value::Str(from)), Some(Value::Str(to))) => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The table of original names to kit names: canonical JSON `{"names":[{"from":original,"to":kit name},…]}`,
 /// sorted by kit name.
 pub fn names_table(names: &[(String, String)]) -> Vec<u8> {

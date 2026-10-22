@@ -70,12 +70,32 @@ pub fn over(ctx: &Context, layer: LayerId) -> egui::Area {
 /// Record the shapes a layer drew this pass (call right after drawing it). `dur`, `to_scale` and `moved` are
 /// its entrance's time and the scale and offset it entered from.
 pub fn keep(ctx: &Context, key: Id, layer: LayerId, dur: f32, to_scale: f32, center: egui::Pos2, moved: Vec2) {
+    // Under reduced motion a leaving only fades: no scale and no travel, for every overlay alike.
+    let k = crate::motion::travel(ctx);
+    let (to_scale, moved) = (1.0 + (to_scale - 1.0) * k, moved * k);
     let shapes: Vec<egui::epaint::ClippedShape> = ctx.graphics(|g| g.get(layer).map(|l| l.all_entries().cloned().collect()).unwrap_or_default());
-    let pass = ctx.cumulative_pass_nr();
+    let pass = crate::motion::pass(ctx);
     ctx.data_mut(|d| {
         let t = d.get_temp_mut_or_default::<Vec<(Id, Snap)>>(table_id());
         t.retain(|(k, _)| *k != key);
         t.push((key, Snap { layer, shapes, pass, left_at: None, dur, to_scale, center, moved }));
+    });
+}
+
+/// Forget the recorded layers `gone` names (by their `key`): they leave at once, with no copy played back over
+/// what is under them (a cover that hands the whole window to the page it uncovers).
+pub fn forget(ctx: &Context, gone: impl Fn(Id) -> bool) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(Id, Snap)>>(table_id()).retain(|(k, _)| !gone(*k)));
+}
+
+/// Turn the leaving of a recorded layer (`key`) toward `moved`: the offset it reaches at the end of its leaving
+/// (a wizard step's card leaves toward the side it is left on, known only when the next one comes).
+pub fn steer(ctx: &Context, key: Id, moved: Vec2) {
+    let moved = moved * crate::motion::travel(ctx);
+    ctx.data_mut(|d| {
+        if let Some(t) = d.get_temp_mut_or_default::<Vec<(Id, Snap)>>(table_id()).iter_mut().find(|(k, _)| *k == key) {
+            t.1.moved = moved;
+        }
     });
 }
 
@@ -91,7 +111,7 @@ fn leaving_alpha(s: &Snap, now: f64) -> Option<f32> {
 /// (the layers it records with [`keep`]) is still leaving, the entrance takes up where the leaving stands now
 /// and that leaving stops: an overlay opened again halfway out comes back from halfway, not from nothing.
 pub fn entrance(ctx: &Context, keys: &[Id], age_id: Id, dur: f32) -> f32 {
-    let now = ctx.input(|i| i.time);
+    let now = crate::motion::now(ctx);
     let back = ctx.data_mut(|d| {
         let t = d.get_temp_mut_or_default::<Vec<(Id, Snap)>>(table_id());
         let mut at: Option<f32> = None;
@@ -130,8 +150,8 @@ pub fn leaving_colour(col: egui::Color32, alpha: f32) -> egui::Color32 {
 
 /// Draw the layers that have left and are still fading. Call once per frame, after everything else.
 pub fn fade_out(ctx: &Context) {
-    let pass = ctx.cumulative_pass_nr();
-    let now = ctx.input(|i| i.time);
+    let pass = crate::motion::pass(ctx);
+    let now = crate::motion::now(ctx);
     let mut snaps: Vec<(Id, Snap)> = ctx.data(|d| d.get_temp::<Vec<(Id, Snap)>>(table_id())).unwrap_or_default();
     let mut keep_going = Vec::new();
     for (key, mut s) in snaps.drain(..) {
@@ -211,7 +231,9 @@ pub fn under(ui: &mut egui::Ui, under: Under) -> bool {
         let painted = ground(ui);
         ui.painter().rect_filled(painted, 0.0, fill);
     }
-    let pressed = ui.interact(all, ui.id().with("zikaron-under"), sense).clicked();
+    let under_resp = ui.interact(all, ui.id().with("zikaron-under"), sense);
+    crate::hand::sink(ui.ctx(), under_resp.id);
+    let pressed = under_resp.clicked();
     ui.set_clip_rect(clip);
     matches!(under, Under::Guard) && pressed
 }
@@ -235,7 +257,8 @@ pub fn ground(ui: &mut egui::Ui) -> Rect {
 /// lands here and does nothing (it neither closes the card nor reaches what is under it). Its rows, drawn after
 /// it, take their own presses.
 pub fn body(ui: &mut egui::Ui, card: Rect) {
-    let _ = ui.interact(card, ui.id().with("zikaron-card-body"), egui::Sense::click());
+    let r = ui.interact(card, ui.id().with("zikaron-card-body"), egui::Sense::click());
+    crate::hand::sink(ui.ctx(), r.id);
 }
 
 /// Where a floating card of `size` hangs off `anchor`: 6 under it, aligned to its left edge when `left` (its
@@ -251,6 +274,17 @@ pub struct Drop {
     pub moved: Vec2,
 }
 
+impl Drop {
+    /// The card's entrance at eased progress `e`: from 97 % of its size at `origin` and from `moved` away, both
+    /// scaled by [`crate::motion::travel`] (none under "reduce motion"; the fade is the caller's). The one
+    /// entrance of every drop card (menus, pickers, the date card); their leave is [`keep`].
+    pub fn enter(&self, ctx: &Context, layer: egui::LayerId, e: f32) {
+        let k = crate::motion::travel(ctx);
+        let scale = 1.0 - 0.03 * (1.0 - e) * k;
+        ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: self.origin.to_vec2() * (1.0 - scale) + self.moved * (1.0 - e) * k });
+    }
+}
+
 pub fn drop_card(ctx: &Context, anchor: Rect, bounds: Rect, size: Vec2, left: bool) -> Drop {
     let screen = ctx.content_rect();
     let (room_l, room_r) = (bounds.left().max(screen.left()), bounds.right().min(screen.right()));
@@ -259,13 +293,16 @@ pub fn drop_card(ctx: &Context, anchor: Rect, bounds: Rect, size: Vec2, left: bo
     let x = x.clamp(room_l + 8.0, (room_r - size.x - 8.0).max(room_l + 8.0));
     let below = anchor.bottom() + 6.0;
     let above = anchor.top() - 6.0 - size.y;
-    // Under the anchor when it fits there; else above when it fits there; fitting neither side, on the side with
-    // more room, held inside the window (over the anchor if it must): never past an edge.
+    // Under the anchor when it fits there, or when what the anchor scrolls in can scroll it there (the card's
+    // owner then takes the page along: [`follow`]); else above when it fits there; fitting neither side, on the
+    // side with more room, held inside the window (over the anchor if it must): never past an edge.
     let room_below = screen.bottom() - 8.0 - below;
     let room_above = anchor.top() - 6.0 - (screen.top() + 8.0);
-    let up = if size.y <= room_below { false } else if size.y <= room_above { true } else { room_above > room_below };
+    let scroll = crate::scroll::room_below(ctx, anchor).min((anchor.top() - bounds.top().max(screen.top())).max(0.0));
+    let carried = size.y > room_below && size.y + REVEAL_FOOT - 8.0 <= room_below + scroll;
+    let up = if size.y <= room_below || carried { false } else if size.y <= room_above { true } else { room_above > room_below };
     let y = if up { above } else { below };
-    let y = y.clamp(screen.top() + 8.0, (screen.bottom() - 8.0 - size.y).max(screen.top() + 8.0));
+    let y = if carried { y } else { y.clamp(screen.top() + 8.0, (screen.bottom() - 8.0 - size.y).max(screen.top() + 8.0)) };
     let rect = Rect::from_min_size(egui::pos2(x, y), size);
     let origin = match (left, up) {
         (true, false) => rect.left_top(),
@@ -274,6 +311,56 @@ pub fn drop_card(ctx: &Context, anchor: Rect, bounds: Rect, size: Vec2, left: bo
         (false, true) => rect.right_bottom(),
     };
     Drop { rect, origin, moved: egui::vec2(0.0, if up { 4.0 } else { -4.0 }) }
+}
+
+/// How far above the window's bottom a card that took its page along ends.
+pub const REVEAL_FOOT: f32 = 32.0;
+
+fn card_rect_id(id: Id) -> Id {
+    id.with("zikaron-card-at")
+}
+
+/// Record where a floating card under `id` lies this frame (its owner reads it in [`follow`]), and when it opened
+/// (a card not drawn the pass before opens now).
+pub fn card_at(ctx: &Context, id: Id, rect: Rect) {
+    let (now, pass) = (crate::motion::now(ctx), crate::motion::pass(ctx));
+    ctx.data_mut(|d| {
+        let opened = match d.get_temp::<(f64, u64)>(card_rect_id(id).with("seen")) {
+            Some((at, last)) if last + 1 >= pass => at,
+            _ => now,
+        };
+        d.insert_temp(card_rect_id(id).with("seen"), (opened, pass));
+        d.insert_temp(card_rect_id(id), rect);
+    });
+}
+
+/// A floating card stays with its anchor (call it from the anchor's own `ui`, after the card is drawn, while it
+/// is open): the wheel turned anywhere off the card scrolls what the anchor scrolls in, and the card, placed from
+/// its anchor each frame, goes along; a card that hangs past the window's foot as it opens takes the page along
+/// until it ends [`REVEAL_FOOT`] above it (never taking the anchor past the top); and once the anchor has scrolled out of view
+/// the card closes. Returns whether it should close.
+pub fn follow(ui: &egui::Ui, id: Id, anchor: Rect) -> bool {
+    let ctx = ui.ctx();
+    let Some(card) = ctx.data(|d| d.get_temp::<Rect>(card_rect_id(id))) else { return false };
+    let view = ui.clip_rect();
+    if !view.intersects(anchor) {
+        return true;
+    }
+    let over_card = ctx.pointer_hover_pos().map(|p| card.contains(p)).unwrap_or(false);
+    let wheel = ctx.input(|i| i.smooth_scroll_delta);
+    if !over_card && wheel != Vec2::ZERO {
+        ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
+        ctx.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+    }
+    // The page is taken along only as the card opens (as a fold's body is revealed while it grows): the wheel
+    // after that is the person's, never turned back.
+    let opened = ctx.data(|d| d.get_temp::<(f64, u64)>(card_rect_id(id).with("seen"))).map(|(at, _)| at).unwrap_or(0.0);
+    let opening = ((crate::motion::now(ctx) - opened) as f32) < crate::tokens::SLOW + 0.05;
+    let screen = ctx.content_rect();
+    if opening && card.top() >= anchor.bottom() && card.bottom() + REVEAL_FOOT > screen.bottom() + 0.5 {
+        crate::fold::reveal(ui, Rect::from_min_max(anchor.min, egui::pos2(anchor.right(), card.bottom() + REVEAL_FOOT)));
+    }
+    false
 }
 
 /// Whether `ui`'s layer is the one on top at `at`'s centre: the topmost layer there that takes presses (egui's
@@ -304,7 +391,7 @@ struct Esc {
 /// this one was opened last. Every overlay that closes on Esc asks here, each frame it is drawn, under its own
 /// key; one Esc so closes one overlay (the date card over a pick list, not the list too).
 pub fn esc(ctx: &Context, key: Id) -> bool {
-    let pass = ctx.cumulative_pass_nr();
+    let pass = crate::motion::pass(ctx);
     let pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let tid = Id::new("zikaron-esc-owners");
     ctx.data_mut(|d| {

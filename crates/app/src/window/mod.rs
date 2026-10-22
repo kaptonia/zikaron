@@ -31,7 +31,7 @@ use zikaron_ui::mark::Mark;
 use zikaron_ui::palette::{c, Tone as PillTone, C};
 use zikaron_ui::toast::{Toasts, Tone};
 use zikaron_ui::tokens::{self as tk, Type};
-use zikaron_ui::{card, datepick, drop, fold, full, input, kv, mark, menu, motion, page, paint, pick, pin, rail, seg, sheet, skin, states, table, toggle, width};
+use zikaron_ui::{card, datepick, drop, fields, fold, full, input, kv, mark, menu, motion, page, paint, pick, pin, rail, seg, sheet, skin, states, table, toggle, width};
 
 /// Initial window size.
 pub const W: f32 = 1180.0;
@@ -74,6 +74,9 @@ struct Typed {
     kit_attach: String,
     kit_note: String,
     kit_out: String,
+    /// The export sheet's recipient, when the package is encrypted: an address, or a public key (one of the two).
+    kit_to: String,
+    kit_to_key: String,
     /// Badge location (the shared location picker; empty means this home's kits).
     badge_out: String,
     g_grantee: String,
@@ -87,10 +90,14 @@ struct Typed {
     g_history: String,
     g_from: String,
     g_to: String,
+    /// A custom validity: the start's day ("YYYY-MM-DD"), its hour and minute, and how long it lasts (days, hours,
+    /// minutes). The window's two cells above are made from them.
+    g_start_day: String,
+    g_start_at: [String; 2],
+    g_lasts: [String; 3],
     g_scope: String,
     g_upstream: String,
     g_exclusive: bool,
-    wiz_said: String,
     // Revocation, adoption, succession and others' ledgers.
     ad_rows: String,
     ad_sig: String,
@@ -109,6 +116,8 @@ struct Typed {
     dg_from: String,
     dg_to: String,
     dg_snapshot: String,
+    /// Where originals are taken out to: the documents folder at first, the last one used after (this run).
+    extract_to: String,
     vf_path: String,
     vf_work: String,
     vt_typed: String,
@@ -146,6 +155,14 @@ struct Win {
     ux: Ux,
     /// Asks the user for a path (the system file dialog; a windowless run supplies its own).
     asker: crate::platform::Asker,
+    /// The native window the system's material lies under, and whether that material is in the dark appearance
+    /// now (`None`: no material, the app paints its own ground).
+    backdrop: Option<(zikaron_os::Window, bool, bool)>,
+    /// Whether this window follows the system's "reduce motion" (the real window does; a headless frame keeps
+    /// full motion, so its readings do not depend on the machine it runs on), what it said last, and when.
+    asks_motion: bool,
+    reduced: bool,
+    motion_asked: Option<f64>,
 }
 
 /// The four kinds of written output: the landing toast says where each went and, when that differs from the
@@ -166,12 +183,45 @@ const OLD_DATA_TAG: u64 = u64::MAX;
 const CLI_SWITCHES_TAG: u64 = u64::MAX - 1;
 
 impl Win {
-    /// One frame. `update` only calls this and does not use `eframe::Frame`, so tests can run the same code in
-    /// a headless frame (`probe_face`).
-    fn draw(&mut self, ctx: &egui::Context) {
+    /// One frame, in the root `ui`. `App::ui` only calls this and does not use `eframe::Frame`, so tests can run
+    /// the same code in a headless frame (`probe_face`).
+    fn draw(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        // The system's "reduce motion", asked now and then (moves and scales then arrive at once; fades stay).
+        let now = zikaron_ui::motion::now(&ctx);
+        if self.asks_motion && self.motion_asked.map(|at| now < at || now - at > 2.0).unwrap_or(true) {
+            self.motion_asked = Some(now);
+            self.reduced = zikaron_os::reduce_motion();
+        }
+        zikaron_ui::motion::set_reduced(&ctx, self.reduced);
+        let spoke = crate::lang::lang();
+        self.draw_frame(ui);
+        // A value copied from a row (its copy key) is said once, without the value.
+        if ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("zikaron-copied"))).is_some() {
+            self.toasts.say(t(Key::SaidCopied), Tone::Note, now);
+        }
+        // The words changed language this frame: the changed words cross-fade in place, keys and labels grow or
+        // shrink to their new words (one place for the whole window and the first-run wizard).
+        if crate::lang::lang() != spoke {
+            zikaron_ui::flow::retext(&ctx);
+        }
+        // The pointing hand over whatever takes a click, decided once for the whole frame.
+        zikaron_ui::hand::finish(&ctx);
+    }
+
+    fn draw_frame(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         zikaron_ui::probe::begin(ctx);
-        let now = ctx.input(|i| i.time);
-        skin::follow(ctx, self.appearance());
+        let now = zikaron_ui::motion::now(&ctx);
+        let blend = skin::follow(ctx, self.appearance());
+        // The window's appearance follows the app's: light or dark, and whether it follows the system's.
+        let follows = self.appearance() == skin::Appearance::System;
+        if let Some((w, dark, followed)) = self.backdrop.as_mut() {
+            if (blend > 0.5) != *dark || follows != *followed {
+                (*dark, *followed) = (blend > 0.5, follows);
+                zikaron_os::backdrop_appearance(*w, *dark, *followed);
+            }
+        }
         // Every landing goes through the one registry (`landing`).
         self.land(ctx, now);
         // Results of requests made through the command line's door are reported like a click's.
@@ -254,7 +304,7 @@ impl Win {
 
         self.shortcuts(ctx, now);
         // Rail, toolbar and page; the first-run wizard and the passcode gate as full-window layers; sheets above all.
-        self.chrome(ctx, now);
+        self.chrome(ui, now);
         self.tick(ctx, now);
         // If a place asked for a path this frame, open the dialog now without blocking the frame.
         self.paths_ask(ctx);
@@ -312,14 +362,15 @@ fn folder_of(path: &str) -> String {
 }
 
 impl eframe::App for Win {
-    fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
-        self.draw(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
+        self.draw(ui);
     }
 
     /// Clear the canvas to the page ground. The default is black, which would show as a dark band in any gap
     /// between two surfaces.
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
-        zikaron_ui::palette::canvas()
+        // Over the system's material the canvas is clear: the page's own panel paints its ground.
+        if zikaron_ui::material::glass() { [0.0; 4] } else { zikaron_ui::palette::canvas() }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -378,7 +429,7 @@ impl Win {
     /// delivers nothing; a failed dialog is reported by name like any task refusal. An answer no place takes
     /// within two frames is dropped: the place that asked is gone.
     fn paths_landed(&mut self, ctx: &egui::Context, landed: &[crate::task::Outcome]) {
-        let pass = ctx.cumulative_pass_nr();
+        let pass = zikaron_ui::motion::pass(ctx);
         for o in landed.iter().filter(|o| o.kind == crate::task::Kind::Path) {
             let ticket = ctx.data_mut(|d| d.get_temp_mut_or_default::<PathMail>(path_mail()).ticket.take());
             match &o.result {
@@ -409,7 +460,7 @@ impl Win {
         // One dialog at a time: a place asking while one is open (perhaps hidden behind the window) is told so,
         // never left with nothing happening.
         if self.shell.tasks.in_flight(crate::task::Kind::Path) {
-            let now = ctx.input(|i| i.time);
+            let now = zikaron_ui::motion::now(&ctx);
             self.toasts.say(t(Key::PathAlreadyOpen), Tone::Note, now);
             return;
         }
@@ -430,6 +481,7 @@ fn task_key(k: crate::task::Kind) -> Key {
         Kind::SelfCheck => Key::TaskSelfCheck,
         Kind::Archive => Key::TaskArchive,
         Kind::Chain => Key::TaskChain,
+        Kind::ChainTime => Key::TaskChainTime,
         Kind::Reconcile => Key::TaskReconcile,
         Kind::Audit => Key::TaskAudit,
         Kind::Ledger => Key::TaskLedger,
@@ -462,6 +514,8 @@ fn task_key(k: crate::task::Kind) -> Key {
         Kind::Migrate => Key::TaskMigrate,
         Kind::Path => Key::TaskPath,
         Kind::CliPath => Key::TaskCliPath,
+        Kind::Seat => Key::TaskSeat,
+        Kind::Extract => Key::DoExtract,
     }
 }
 
@@ -497,20 +551,18 @@ impl Win {
 
     /// The number of the entry just written, as written ("#12"): another writer may have moved the head
     /// meanwhile, so it is never guessed beforehand.
-    fn new_seq(&self) -> String {
-        self.shell.landed.as_ref().map(|(_, n)| format!("#{n}")).unwrap_or_default()
-    }
-
-    /// An entry named for a toast: "#seq" when the table knows it, else a short id.
+    /// An entry named for a toast: what it is in words when the table knows it (never its sequence number), else
+    /// a short id.
     fn entry_say(&self, id: &str) -> String {
         self.shell
             .rows
             .as_ref()
-            .and_then(|(rows, _)| rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{}", r.seq)))
+            .and_then(|(rows, _)| rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(human_summary))
             .unwrap_or_else(|| crate::ledgerx::short(id))
     }
 
-    /// A record named by its content fingerprint: "#seq · name" when this ledger anchored it.
+    /// A record named by its content fingerprint: its name when this ledger anchored it (a toast names things in
+    /// words, never by sequence number).
     fn work_seq_say(&self, work: &str) -> String {
         self.shell
             .rows
@@ -518,7 +570,7 @@ impl Win {
             .and_then(|(rows, _)| {
                 rows.iter()
                     .find(|r| r.kind == zikaron::tokens::EntryType::History && r.work.as_deref().map(|w| w.eq_ignore_ascii_case(work)).unwrap_or(false))
-                    .map(|r| format!("#{} · {}", r.seq, human_summary(r)))
+                    .map(human_summary)
             })
             .unwrap_or_else(|| t(Key::UnnamedRecord).to_string())
     }
@@ -628,20 +680,18 @@ impl Win {
                 (String::new(), Tone::Note)
             }
             Applied::Annotated(_) => {
-                let seq = self.new_seq();
                 // An entry was written, so the table is stale: clear it to reread.
                 self.shell.stale_rows();
-                (fill1(Key::SaidAnnotated, &seq), Tone::Note)
+                (t(Key::SaidAnnotated).to_string(), Tone::Note)
             }
             Applied::Retracted { queued, local, .. } => {
-                let seq = self.new_seq();
                 self.shell.stale_rows();
                 self.shell.stale_grants();
                 if local {
                     // Never published: the pair stays local and is not anchored.
-                    (fill1(Key::SaidRetractedLocal, &seq), Tone::Note)
+                    (t(Key::SaidRetractedLocal).to_string(), Tone::Note)
                 } else {
-                    (fill2(Key::SaidRetracted, &seq, &queued.to_string()), Tone::Note)
+                    (fill1(Key::SaidRetracted, &queued.to_string()), Tone::Note)
                 }
             }
             Applied::Basis { chain } => (fill1(Key::SaidBasis, &chain.to_string()), Tone::Note),
@@ -649,9 +699,8 @@ impl Win {
             // The fingerprint is computed quietly; the chosen file shows only its name and size.
             Applied::Took { .. } => (String::new(), Tone::Note),
             Applied::Recorded { queued, .. } => {
-                let seq = self.new_seq();
                 self.shell.stale_rows();
-                (fill2(Key::SaidQueued, &seq, &queued.to_string()), Tone::Note)
+                (fill1(Key::SaidQueued, &queued.to_string()), Tone::Note)
             }
             Applied::RecordedBatch { ids, stopped, queued, .. } => {
                 self.shell.stale_rows();
@@ -677,17 +726,15 @@ impl Win {
             Applied::Since { grew, .. } => (fill1(Key::SaidSincePlain, &grew.map(|n| n.to_string()).unwrap_or_else(|| t(Key::RepoUnknown).to_string())), Tone::Note),
             Applied::Gas { gas, .. } => (fill1(Key::SaidGas, &gas.to_string()), Tone::Note),
             Applied::Picked { items, pulled } => (fill2(Key::SaidPicked, &items.to_string(), &pulled.to_string()), Tone::Note),
-            Applied::Queued { id, queued, .. } => {
-                let seq = self.entry_say(&id);
+            Applied::Queued { queued, .. } => {
                 self.shell.stale_rows();
-                (fill2(Key::SaidQueued, &seq, &queued.to_string()), Tone::Note)
+                (fill1(Key::SaidQueued, &queued.to_string()), Tone::Note)
             }
             Applied::Granted { queued, .. } => {
-                let seq = self.new_seq();
                 self.shell.stale_rows();
                 self.shell.stale_grants();
                 self.ux.u4.relicense_signed = true;
-                (fill2(Key::SaidGranted, &seq, &queued.to_string()), Tone::Note)
+                (fill1(Key::SaidGranted, &queued.to_string()), Tone::Note)
             }
             Applied::GrantFileExported { path, why, hops, terms, .. } => {
                 // When the location differs from the choice, a second sentence says where it went.
@@ -706,22 +753,19 @@ impl Win {
                 self.clash_modal = n > 0;
                 (fill1(Key::SaidClashed, &n.to_string()), if n > 0 { Tone::Bad } else { Tone::Note })
             }
-            Applied::Ticked { step, next } => (fill2(Key::SaidTicked, step, next.unwrap_or(t(Key::WizardDone))), Tone::Note),
-            Applied::Restarted => (t(Key::SaidRestarted).to_string(), Tone::Note),
             Applied::Revoked { queued, .. } => {
-                let seq = self.ux.u3.revoking.take().unwrap_or_default();
+                let _ = self.ux.u3.revoking.take();
                 self.shell.stale_rows();
-                (fill2(Key::SaidRevoked, &seq, &queued.to_string()), Tone::Note)
+                (fill1(Key::SaidRevoked, &queued.to_string()), Tone::Note)
             }
-            Applied::Storied { grant, revocations } => (fill2(Key::SaidStoried, &self.entry_say(&grant), &revocations.to_string()), Tone::Note),
+            Applied::Storied { grant: _, revocations } => (fill1(Key::SaidStoried, &revocations.to_string()), Tone::Note),
             // A claim was read or signed: the result is on the sheet.
             Applied::ClaimRead => (String::new(), Tone::Note),
             Applied::Attested { .. } => (t(Key::SaidAttestedPlain).to_string(), Tone::Note),
             Applied::Cosigned { .. } => (t(Key::SaidCosignedPlain).to_string(), Tone::Note),
             Applied::Adopted { cosigned, .. } => {
-                let seq = self.new_seq();
                 self.shell.stale_rows();
-                (fill2(Key::SaidAdopted2, &seq, t(if cosigned { Key::Yes } else { Key::NotYet })), Tone::Note)
+                (fill1(Key::SaidAdopted2, t(if cosigned { Key::Yes } else { Key::NotYet })), Tone::Note)
             }
             Applied::Succeeded { queued, .. } => {
                 self.shell.stale_rows();
@@ -924,6 +968,9 @@ impl Win {
                 | Applied::WordsHidden
                 | Applied::IdentityMade { .. }
                 | Applied::IdentitySwitched { .. }
+                // A switch runs in the background (`Kind::Seat`): the sheet closes at once, and the landing says how
+                // it went.
+                | Applied::Started(crate::task::Kind::Seat)
                 | Applied::IdentityDeleted { .. }
                 | Applied::IdentityNamed { .. }
                 | Applied::KeyBackedUp { .. }
@@ -1032,6 +1079,7 @@ fn task_of(a: &Action) -> Option<crate::task::Kind> {
     Some(match a {
         Action::CheckPayload { .. } => Kind::Check,
         Action::VerifyWork { .. } => Kind::Verify,
+        Action::ExtractOriginals { .. } => Kind::Extract,
         Action::ReadBook { .. } => Kind::Book,
         Action::Diligence { .. } => Kind::Diligence,
         Action::ExportKit { .. } => Kind::Kit,
@@ -1041,6 +1089,7 @@ fn task_of(a: &Action) -> Option<crate::task::Kind> {
         Action::Reconcile => Kind::Reconcile,
         Action::Measure => Kind::Archive,
         Action::ReadChain => Kind::Chain,
+        Action::ReadChainTime => Kind::ChainTime,
         Action::ReadReadNetwork { .. } => Kind::ReadNet,
         Action::SelfCheck => Kind::SelfCheck,
         Action::CheckPublished { .. } => Kind::Publish,
@@ -1058,6 +1107,8 @@ pub enum Start {
     Page(Page),
     /// A place; `true` in the second field opens the wizard at start (used by test drivers).
     Place(Place, bool),
+    /// One of the geometry reading's scenes, staged as that reading stages it (used by test drivers).
+    Scene(Scene),
 }
 
 /// Layout readings of one face at a given viewport, for layout tests (the judgment is made elsewhere).
@@ -1117,6 +1168,9 @@ struct WorkLine {
 /// Interface-side state of the window. Never written to disk.
 #[derive(Default)]
 struct Ux {
+    /// Watch rows given by a headless reading in place of the shell's (the alerts page and the rail's count read
+    /// these when set); never set by the window itself.
+    watch_rows: Option<Vec<crate::watchx::Row>>,
     /// Where the wizard was opened from (seat, stack, place); its way out returns there.
     wiz_from: Option<(crate::roles::Role, Stack, Option<Place>, Option<History>)>,
     /// The wizard's "exit?" card is up (new words not yet checked).
@@ -1174,16 +1228,23 @@ struct Ux {
     /// This frame's interface time.
     now: f64,
     /// Inputs opened in settings sections.
-    open_home: bool,
-    open_grant_dir: bool,
-    open_nodes: bool,
-    /// The settings publication field was filled once from the settings file.
-    publish_seeded: bool,
+    /// The data page's folder sheet, and whether it waits for the move it started.
+    dir_sheet: Option<settings::DirSheet>,
+    dir_waiting: bool,
+    /// The usage limit the data page's cell was last filled from.
+    cap_seed: Option<u64>,
+    /// The network sheet is open; a check it started is out.
+    net_sheet: bool,
+    basis_waiting: bool,
+    /// The "check publication" sheet is open; the publish address's sheet is open.
+    publish_sheet: bool,
+    publish_edit: bool,
     /// "Enter one" is picked for the proxy and not yet saved (the address line shows).
     proxy_manual: bool,
     /// The proxy address line was filled once from the machine settings.
     proxy_seeded: bool,
-    open_cadence: bool,
+    /// The saved intervals the notify page's cells were last filled from.
+    cadence_seed: Option<(u64, u64)>,
     /// Background tasks the user started (one per kind, may repeat). Only these toast when they land.
     asked: Vec<crate::task::Kind>,
     /// How each kind of task last landed: whether it went well, and when (long keys read it).
@@ -1209,8 +1270,8 @@ struct Ux {
     basis_chain: String,
     basis_registry: String,
     basis_from: String,
-    /// Which preset filled the network editor's cells (0: by hand; see `settings::preset_menu`).
-    basis_preset: usize,
+    /// "Custom" is chosen on the network sheet (its cells may still equal mainnet's).
+    basis_custom: bool,
     /// The read-only networks being edited on the settings' network page.
     readnet: settings::ReadNetUx,
     /// State of the author pages.
@@ -1290,6 +1351,14 @@ struct Ux {
     sizes: std::collections::BTreeMap<String, Option<u64>>,
     /// The file names each record was signed from (the local records index), read once per entry.
     files_of: std::collections::BTreeMap<String, Vec<String>>,
+    /// The "save snapshot" sheet on the others' ledgers page is up.
+    snapshot_sheet: bool,
+    /// The "take out originals" sheet over record verification is up.
+    extract_sheet: bool,
+    /// The folder sheet open over a grant's page (grant file, credential, upstream folder).
+    out_sheet: Option<grants::OutSheet>,
+    /// That sheet's long action is running; the sheet closes when it lands.
+    out_waiting: bool,
 }
 
 /// Where a passcode task started. When it lands, the answer returns to that place.
@@ -1356,12 +1425,19 @@ impl Ux {
         self.gate_file_ready = false;
     }
 
-    /// "Back" on the recovery panel: return to the unlock card and clear the twelve cells, the key file
+    /// Whether a recovery passcode row's own turn goes on: it waits for its second entry, or its entry was just
+    /// refused (the row shakes) and the retry is its.
+    fn row_turn(&self, now: f64) -> bool {
+        (!self.pin_again.is_empty() && self.pin.is_empty()) || self.pin_shake.is_some_and(|at| now - at < 0.5)
+    }
+
+    /// "Back" on the recovery panel: return to the unlock card and clear the twelve cells, the key file and its
     /// password and both new passcode cells (wiped inside the secret type).
     fn gate_back(&mut self) {
         for w in self.pin_words.iter_mut() {
             w.clear();
         }
+        self.pin_ks_path.clear();
         self.pin_ks_pw.clear();
         self.pin.clear();
         self.pin_again.clear();
@@ -1463,6 +1539,8 @@ struct U3 {
     /// Grant drafting: validity preset (days; zero means custom).
     grant_days: u32,
     grant_days_set: bool,
+    /// The chain's time was asked for this grant form (once each time it opens fresh).
+    chain_time_asked: bool,
     /// The new-record sheet: open, and on which step (0 the form, 1 the confirmation).
     new_anchor: Option<u8>,
     others_tab: usize,
@@ -1489,10 +1567,16 @@ struct U3 {
     kit_orig_off: std::collections::BTreeSet<String>,
     /// Export the kit as a folder (to publish it at an address) rather than one file.
     kit_folder: bool,
+    /// Encrypt the package to one recipient (one file only: the folder switch is off while this is on).
+    kit_addressed: bool,
+    /// The keys page's details are open (held here, as a click leaves them).
+    keys_details: bool,
     /// This pick's originals gate (same key as the list).
     kit_admit: Option<(String, Option<crate::kitx::Originals>)>,
     /// The pick list's working state while open (written back only on "done").
     kit_pick: Option<KitPick>,
+    /// A new grant's "choose a record" sheet is up.
+    work_pick: bool,
     /// Adoption: which text the per-row check ran against.
     adopt_checked: Option<String>,
     /// Key rotation or handover: the address already scanned automatically.

@@ -93,6 +93,13 @@ pub fn key_slot(address: &crate::key::Address) -> String {
     zikaron_seal::places::key_slot_for(key_account(), &address.hex())
 }
 
+/// The address a key slot is named by ([`key_slot`] read back); `None` for the other two forms (the original slot, a
+/// seed slot) and for a name not of this machine's base.
+pub fn slot_address(name: &str) -> Option<crate::key::Address> {
+    let rest = name.strip_prefix(key_account())?.strip_prefix('-')?;
+    crate::key::Address::parse(rest).filter(|a| a.hex() == rest)
+}
+
 /// An identity's seed slot name.
 pub fn seed_slot(identity: &str) -> String {
     format!("{}-seed-{}", key_account(), identity)
