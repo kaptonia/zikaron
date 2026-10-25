@@ -574,17 +574,27 @@ pub struct Exported {
 
 /// Writes a backup into `folder` (vault open). The name is `zikaron-backup-YYYY-MM-DD.zikaron`, numbered if
 /// taken; an existing file is never replaced (0600). The file is then read back and opened with the same
-/// password, and only then counts: its time, place and count are recorded in the machine settings.
+/// password, and only then counts: its time, place and count are recorded in the machine settings. The four
+/// stages are reported to the backup task as they start.
 pub fn export(folder: &Path, password: &str, now: u64) -> Result<Exported, Fault> {
+    export_staged(folder, password, now, |at| crate::task::stage_at(crate::task::Kind::Backup, at))
+}
+
+/// [`export`], with `stage` told each stage before it starts: collect, seal, write, read back (0 to 3).
+pub fn export_staged(folder: &Path, password: &str, now: u64, mut stage: impl FnMut(u8)) -> Result<Exported, Fault> {
     crate::trace::mark(crate::feature::Feature::H4);
+    stage(0);
     let p = collect()?;
     let summary = summary_of(&p, now);
     let package = Wiped(package_bytes(&p));
+    stage(1);
     let sealed = seal(&package, password, now)?;
+    stage(2);
     // Named and written in one step that never replaces an existing file (`home::land_numbered`), then read
     // back: the file on disk must open with the password to the same package. A failure anywhere here is
     // recorded where the backup task ends (`action::identity::export_backup`, the task's one exit).
     let at = crate::home::land_numbered(folder, &file_stem(now), EXT, &sealed)?;
+    stage(3);
     let back = read_file(&at)?;
     let (_, again) = open(&back, password)?;
     if again.0 != package.0 {

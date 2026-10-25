@@ -43,6 +43,7 @@ pub mod handoff;
 pub mod kitout;
 pub mod ledger;
 pub mod mcp;
+pub mod mcptools;
 pub mod out;
 pub mod sealed;
 pub mod sealedsend;

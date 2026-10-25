@@ -203,16 +203,18 @@ pub fn joined<R>(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look:
     let id = crate::input::field_id(ui, "zikaron-joined", hint);
     let resp = ui
         .scope_builder(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.add(
-                egui::TextEdit::singleline(text)
-                    .id(id)
-                    .frame(egui::Frame::NONE)
-                    .font(font.clone())
-                    .text_color(c(C::Ink))
-                    .hint_text(egui::RichText::new(hint).font(font.clone()).color(c(C::Ink3)))
-                    .desired_width(edit_rect.width())
-                    .interactive(!look.read_only),
-            )
+            crate::compose::around(ui, id, text, |ui, text| {
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .font(font.clone())
+                        .text_color(c(C::Ink))
+                        .hint_text(egui::RichText::new(hint).font(font.clone()).color(c(C::Ink3)))
+                        .desired_width(edit_rect.width())
+                        .interactive(!look.read_only),
+                )
+            })
         })
         .inner;
     let hot = resp.hovered();
@@ -289,16 +291,18 @@ pub fn small(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, bad: bool
     let id = crate::input::field_id(ui, "zikaron-small", hint);
     let resp = ui
         .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-            ui.add(
-                egui::TextEdit::singleline(text)
-                    .id(id)
-                    .frame(egui::Frame::NONE)
-                    .font(font.clone())
-                    .text_color(c(C::Ink))
-                    .horizontal_align(egui::Align::Max)
-                    .hint_text(egui::RichText::new(hint).font(Type::Small.font()).color(c(C::Ink3)))
-                    .desired_width(inner.width()),
-            )
+            crate::compose::around(ui, id, text, |ui, text| {
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .font(font.clone())
+                        .text_color(c(C::Ink))
+                        .horizontal_align(egui::Align::Max)
+                        .hint_text(egui::RichText::new(hint).font(Type::Small.font()).color(c(C::Ink3)))
+                        .desired_width(inner.width()),
+                )
+            })
         })
         .inner;
     let shape: egui::Shape = if resp.has_focus() && !bad {

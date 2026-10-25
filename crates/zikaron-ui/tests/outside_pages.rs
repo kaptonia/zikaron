@@ -35,6 +35,8 @@ const RAIL: [Group<Place, Word>; 1] = [Group { title: Some(Word::Reading), items
 struct Outside {
     frame: Frame<Place, Route, Only>,
     open: bool,
+    /// How many times the product's part of a landing ran.
+    landings: usize,
 }
 
 impl Pages for Outside {
@@ -96,6 +98,9 @@ impl Pages for Outside {
         }
     }
     fn toolbar(&mut self, _ui: &mut egui::Ui, _route: &Route, _now: f64) {}
+    fn entered(&mut self, _now: f64) {
+        self.landings += 1;
+    }
     fn body(&mut self, ui: &mut egui::Ui, route: &Route, _now: f64) {
         match route {
             Route::Shelf => self.open = ui.button("Open the book").clicked(),
@@ -221,4 +226,22 @@ fn the_shell_names_no_page() {
     for name in ["Shelf", "Book", "Route::", "Place::", "View::", "Stack::", "Page::", "Works", "Grants", "Settings", "Home"] {
         assert!(!src.contains(name), "the shell names {name}");
     }
+}
+
+/// A segment picked on its page stands the history on that page's own place, history behind and ahead dropped and the
+/// product's part of the landing run, while the page keeps its entrance and its scroll; a tab set the other way enters
+/// anew from the top. Victim: whoever switches between a page's segments and sees the whole page play in again, the
+/// list jumping to its top, unlike every other segment.
+#[test]
+fn a_segment_picked_on_its_page_keeps_the_page() {
+    let mut o = Outside::default();
+    nav::push(&mut o, Route::Book, 0.0);
+    o.frame.scroll_y = 40.0;
+    let (key, landings) = (o.frame.entry_key, o.landings);
+    nav::seg_tab(&mut o, Place::Shelf, 1.0);
+    let h = nav::hist(&mut o).clone();
+    assert_eq!((h.cur, h.back.is_empty(), h.fwd.is_empty()), (Route::Shelf, true, true));
+    assert_eq!((o.frame.entry_key, o.frame.scroll_y, o.frame.place, o.landings), (key, 40.0, Some(Place::Shelf), landings + 1));
+    nav::set_tab(&mut o, Place::Shelf, 2.0);
+    assert_eq!((o.frame.entry_key, o.frame.scroll_y, o.landings), (key + 1, 0.0, landings + 2));
 }

@@ -48,6 +48,13 @@ pub const MARK_FILE: &str = writer::MARK_FILE;
 /// The file name of this machine's mark (in the machine directory, outside every data folder).
 pub const MACHINE_FILE: &str = writer::MACHINE_FILE;
 
+/// The writer lock files of every home under `dir` (under [`LOCK_FILE`]).
+pub fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    crate::local::walk(dir, "", &mut found);
+    found.into_iter().filter(|(at, _)| at.file_name().is_some_and(|n| n == LOCK_FILE)).map(|(at, _)| at).collect()
+}
+
 /// This instance's access mode for a home.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {

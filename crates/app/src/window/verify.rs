@@ -36,13 +36,13 @@ impl Win {
         // A segment above a block stands 16 from it, closer than two blocks.
         ui.add_space(tk::S4 - ui.spacing().item_spacing.y);
         if let Some(i) = picked {
-            self.set_tab(Place::View(crate::nav::View::Verify, list[i]), now);
+            self.seg_tab(Place::View(crate::nav::View::Verify, list[i]), now);
         }
-        match tab {
+        tab_body(ui, "verify", u64::from(tab), |ui| match tab {
             T::VERIFY_WORK => self.kit_verify(ui, now),
             T::VERIFY_OTHERS => self.others_page(ui, now),
             _ => self.check_page(ui, now),
-        }
+        })
     }
 
     /// Verify records: drop a record kit or record file (the content place and record hash are under advanced

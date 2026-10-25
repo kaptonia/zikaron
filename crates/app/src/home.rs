@@ -512,6 +512,63 @@ pub fn settle_machine() -> Result<Settled, Fault> {
     Ok(Settled { machine, layer, pointer_written, index_written })
 }
 
+// ───────────────────────── The machine directory set aside whole ─────────────────────────
+
+/// What setting the machine directory aside moves, and the chosen data folder it leaves when that lies outside
+/// (from the plain record of the choice; the others are only in the sealed settings).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsidePlan {
+    pub machine: PathBuf,
+    pub kept: Option<PathBuf>,
+}
+
+/// The machine directory set aside: from where, to which name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Aside {
+    pub from: PathBuf,
+    pub to: PathBuf,
+}
+
+pub fn aside_plan() -> Result<AsidePlan, Fault> {
+    let machine = machine_dir()?;
+    let inside = |p: &Path| {
+        let (a, m) = (std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()), std::fs::canonicalize(&machine).unwrap_or_else(|_| machine.clone()));
+        a.starts_with(&m)
+    };
+    let kept = where_is().ok().filter(|h| !named_by_env(h) && !inside(h));
+    Ok(AsidePlan { machine, kept })
+}
+
+/// The one name the machine directory is set aside under on `day`: `<name>.aside-<day>` beside it, numbered while
+/// taken.
+pub fn aside_name(machine: &Path, day: &str) -> PathBuf {
+    let name = machine.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let dir = machine.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut n = 1u32;
+    loop {
+        let p = dir.join(numbered_name(&format!("{name}.aside-{day}"), None, n));
+        if std::fs::symlink_metadata(&p).is_err() {
+            return p;
+        }
+        n += 1;
+    }
+}
+
+/// Set the whole machine directory aside under [`aside_name`], not a byte deleted; the pointer stays, so the next
+/// settling makes a new one in its place. Nothing moves when another process holds a lock in it (`MACHINE_HELD`)
+/// or the system refuses the rename.
+pub fn set_machine_aside(day: &str) -> Result<Aside, Fault> {
+    let machine = machine_dir()?;
+    let to = aside_name(&machine, day);
+    let mut locks = crate::lock::files_under(&machine);
+    locks.push(machine.join(crate::places::keybox_lock_file()));
+    zikaron_os::set_aside(&machine, &to, &locks).map_err(|n| match n {
+        zikaron_os::NotAside::Held(p) => Fault::known(Known::MachineHeld, p.display().to_string()),
+        zikaron_os::NotAside::Io(p, e) => classify(&e, &p.display().to_string()),
+    })?;
+    Ok(Aside { from: machine, to })
+}
+
 /// Whether this home was named by the environment. Such a home was not chosen in the product: the pointer
 /// follows only the user's choices, and a home the environment named once must not replace this machine's
 /// default home.

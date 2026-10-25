@@ -405,6 +405,8 @@ pub enum Known {
     CredentialShape,
     /// The desktop holds this home's writer lock: the command line does not write beside it.
     HomeHeld,
+    /// Another program holds a lock inside the machine directory: not set aside.
+    MachineHeld,
     /// Writing alone is on: the switch for writing through the desktop does not flip until it is off.
     CliAloneOn,
     /// A new master key took effect: the command line's credential no longer opens anything, so it was removed
@@ -488,7 +490,7 @@ impl Known {
         }
     }
 
-    pub const ALL: [Known; 197] = [
+    pub const ALL: [Known; 198] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
@@ -680,6 +682,7 @@ impl Known {
         Known::CredentialMissing,
         Known::CredentialShape,
         Known::HomeHeld,
+        Known::MachineHeld,
         Known::CliAloneOn,
         Known::CliAloneDropped,
         Known::HomeOtherMachine,
@@ -882,6 +885,7 @@ impl Known {
             Known::CredentialMissing => "CREDENTIAL_MISSING",
             Known::CredentialShape => "CREDENTIAL_SHAPE",
             Known::HomeHeld => "HOME_HELD",
+            Known::MachineHeld => "MACHINE_HELD",
             Known::CliAloneOn => "CLI_ALONE_ON",
             Known::CliAloneDropped => "CLI_ALONE_DROPPED",
             Known::HomeOtherMachine => "HOME_OTHER_MACHINE",
@@ -1091,6 +1095,7 @@ impl Known {
             Known::CredentialMissing => L::FaultWhatCredentialMissing,
             Known::CredentialShape => L::FaultWhatCredentialShape,
             Known::HomeHeld => L::FaultWhatHomeHeld,
+            Known::MachineHeld => L::FaultWhatMachineHeld,
             Known::CliAloneOn => L::SetCliDesktopGrey,
             Known::CliAloneDropped => L::FaultWhatCliAloneDropped,
             Known::HomeOtherMachine => L::FaultWhatHomeOtherMachine,
@@ -1279,6 +1284,7 @@ impl Known {
             Known::CredentialMissing => Some(L::FaultNextCredentialMissing),
             Known::CredentialShape => Some(L::FaultNextCredentialShape),
             Known::HomeHeld => Some(L::FaultNextHomeHeld),
+            Known::MachineHeld => Some(L::FaultNextMachineHeld),
             Known::CliAloneOn => Some(L::FaultNextCliAloneOn),
             Known::CliAloneDropped => None,
             Known::HomeOtherMachine => Some(L::FaultNextHomeOtherMachine),
@@ -1483,6 +1489,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::CredentialMissing => "这台机器上没有命令行凭据",
         Known::CredentialShape => "命令行凭据读不出,或开不了",
         Known::HomeHeld => "桌面正持着这一处数据的写者锁",
+        Known::MachineHeld => "别的程序正握着本机数据目录里的一把锁",
         Known::CliAloneOn => "纯命令行写入开着,经桌面写入不可拨",
         Known::CliAloneDropped => "主钥换了,命令行凭据失效,纯命令行写入已关",
         Known::HomeOtherMachine => "另一台机器是这一处数据的写者",

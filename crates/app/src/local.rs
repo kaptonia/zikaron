@@ -573,7 +573,7 @@ pub fn home_doc(rel: &str) -> Option<Doc> {
     }
 }
 
-fn walk(root: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) {
+pub(crate) fn walk(root: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) {
     let at = if rel.is_empty() { root.to_path_buf() } else { root.join(rel) };
     let Ok(listing) = std::fs::read_dir(&at) else { return };
     for e in listing.filter_map(|e| e.ok()) {

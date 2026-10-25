@@ -170,19 +170,23 @@ pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Loo
     let hint = crate::width::elide_to(ui, hint, hint_type.font(), (inner.width() - HINT_SLACK).max(0.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
     // A centred field's hint is drawn here, on the field's middle: the text edit lays a hint out from its start.
-    let edit = egui::TextEdit::singleline(text)
-        .id(id)
-        .font(t.font())
-        .text_color(c(C::Ink))
-        .frame(unframed())
-        .desired_width(inner.width())
-        .horizontal_align(if look.centred { egui::Align::Center } else { egui::Align::Min })
-        .vertical_align(egui::Align::Center);
-    let edit = if look.centred { edit } else { edit.hint_text(egui::RichText::new(hint.clone()).font(hint_type.font()).color(c(C::Ink3))) };
-    let resp = child.add(edit);
-    if look.centred && text.is_empty() {
-        ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, hint, t.font(), c(C::Ink3));
-    }
+    let painter = ui.painter().clone();
+    let resp = crate::compose::around(&mut child, id, text, |child, text| {
+        let edit = egui::TextEdit::singleline(text)
+            .id(id)
+            .font(t.font())
+            .text_color(c(C::Ink))
+            .frame(unframed())
+            .desired_width(inner.width())
+            .horizontal_align(if look.centred { egui::Align::Center } else { egui::Align::Min })
+            .vertical_align(egui::Align::Center);
+        let edit = if look.centred { edit } else { edit.hint_text(egui::RichText::new(hint.clone()).font(hint_type.font()).color(c(C::Ink3))) };
+        let resp = child.add(edit);
+        if look.centred && text.is_empty() {
+            painter.text(resp.rect.center(), egui::Align2::CENTER_CENTER, hint, t.font(), c(C::Ink3));
+        }
+        resp
+    });
     let edge = if look.bad {
         Edge::Bad
     } else if resp.has_focus() {
@@ -215,16 +219,18 @@ fn area_ex(ui: &mut egui::Ui, text: &mut String, rows: usize, hint: &str, t: Typ
     let id = field_id(ui, "zikaron-area", hint);
     let slot = ui.painter().add(egui::Shape::Noop);
     let shown = egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
-        ui.add(
-            egui::TextEdit::multiline(text)
-                .id(id)
-                .font(t.font())
-                .text_color(c(C::Ink))
-                .hint_text(egui::RichText::new(hint).font(t.font()).color(c(C::Ink3)))
-                .desired_rows(rows)
-                .desired_width(f32::INFINITY)
-                .frame(unframed()),
-        )
+        crate::compose::around(ui, id, text, |ui, text| {
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .id(id)
+                    .font(t.font())
+                    .text_color(c(C::Ink))
+                    .hint_text(egui::RichText::new(hint).font(t.font()).color(c(C::Ink3)))
+                    .desired_rows(rows)
+                    .desired_width(f32::INFINITY)
+                    .frame(unframed()),
+            )
+        })
     });
     let edge = if shown.inner.has_focus() {
         Edge::Focus

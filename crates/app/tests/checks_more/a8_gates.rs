@@ -163,6 +163,7 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::Unlock { pin: Secret::default() },
         Action::Reseal { pin: Secret::default() },
         Action::ResetEmptyKeybox,
+        Action::SetMachineAside,
         Action::Lock,
         Action::ChangePin { old: Secret::default(), pin: Secret::default(), again: Secret::default() },
         Action::RecoverWords { words: Secret::default(), pin: Secret::default(), again: Secret::default() },

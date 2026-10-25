@@ -400,7 +400,7 @@ impl Win {
         };
         let (tag, summary, struck) = row_face(&v.timeline, &reading, &row);
         stagger(ui, 0, |ui| {
-            card::hero(ui, &summary, &format!("#{} \u{b7} {}", row.seq, tag), struck, |ui| lamp_pill_ui(ui, row.lamp, row.anchored_at));
+            card::hero(ui, &summary, &format!("#{} \u{b7} {}", row.seq, tag), struck, &[lamp_hero(row.lamp, row.anchored_at)]);
         });
         stagger(ui, 1, |ui| {
             card::section(ui, t(Key::BasicInfo), "", |ui| {

@@ -622,6 +622,7 @@ impl Win {
             // The reset closes the gate and the wizard returns to step 1; a sentence is still shown because a file
             // was deleted, and that must leave a visible trace.
             Applied::KeyboxReset => (t(Key::SaidKeyboxReset).to_string(), Tone::Note),
+            Applied::MachineAside { to, .. } => (fill1(Key::SaidMachineAside, &to), Tone::Note),
             Applied::Recovered => (t(Key::SaidRecovered).to_string(), Tone::Note),
             Applied::FreshDropped => {
                 self.ux.id_confirming = false;
@@ -655,6 +656,7 @@ impl Win {
                 }
             }
             Applied::IdentitySwitched { id } => (fill1(Key::SaidIdentitySwitched, &self.id_name(&id)), Tone::Note),
+            Applied::IdentityKept { .. } => (String::new(), Tone::Note),
             Applied::IdentityDeleted { .. } => (fill1(Key::SaidIdentityDeleted, &self.ux.id_deleting.take().unwrap_or_else(|| t(Key::Unnamed).to_string())), Tone::Note),
             Applied::KeyBackedUp { path, .. } => (fill1(Key::SaidKeyBackedUp, &folder_of(&path)), Tone::Note),
             Applied::FactsForgotten { .. } => (t(Key::SaidRecheckAll).to_string(), Tone::Note),
@@ -903,9 +905,7 @@ impl Win {
                 _ => {}
             },
             VaultSite::Gate => match r {
-                Applied::Unlocked | Applied::Recovered | Applied::KeyboxReset => {
-                    self.ux.gate_clear();
-                }
+                Applied::Unlocked | Applied::Recovered | Applied::KeyboxReset | Applied::MachineAside { .. } => self.ux.gate_clear(),
                 Applied::Trouble(f) => {
                     // One failure: shake the row and show the sentence under the cells.
                     self.ux.pin_shake = Some(now);
@@ -1210,6 +1210,8 @@ struct Ux {
     wizard: Option<crate::nav::Step>,
     /// Whether this start has asked "open the wizard by itself" yet.
     wizard_asked: bool,
+    /// Whether the store read as no store on the frame before (none before the first frame).
+    vault_absent: Option<bool>,
     /// A test driver asked to open the wizard.
     wizard_forced: bool,
     /// The confirmation sheet after the key that writes genesis.
@@ -1340,6 +1342,10 @@ struct Ux {
     gate_site: Option<VaultSite>,
     /// The gate is on the reseal path.
     gate_reseal: bool,
+    /// What setting the machine directory aside would move and keep (the confirming sheet is up while held).
+    gate_aside: Option<crate::home::AsidePlan>,
+    /// Why setting it aside was refused.
+    gate_aside_trouble: Option<crate::fault::Fault>,
     /// The last human input (interface clock, seconds; the idle lock reads it).
     last_input: f64,
     /// When the "enable command line" row was last drawn; when drawn again after a pause, its location is
@@ -1423,6 +1429,8 @@ impl Ux {
         self.gate_trouble = None;
         self.gate_words_ready = false;
         self.gate_file_ready = false;
+        self.gate_aside = None;
+        self.gate_aside_trouble = None;
     }
 
     /// Whether a recovery passcode row's own turn goes on: it waits for its second entry, or its entry was just
@@ -1684,7 +1692,7 @@ mod works;
 pub use self::faces::*;
 pub use self::probes::*;
 use self::pages::*;
-use self::chrome::stagger;
+use self::chrome::{stagger, tab_body};
 use self::common::*;
 use self::others::*;
 use self::shared::*;

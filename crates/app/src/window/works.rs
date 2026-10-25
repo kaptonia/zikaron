@@ -214,13 +214,7 @@ impl Win {
         let mut kit = false;
         stagger(ui, 0, |ui| {
             let (label, tone, live) = work_state(&w, at);
-            card::hero(ui, &w.name, &format!("#{} \u{b7} {}", w.seq, t(Key::TagAnchor)), w.deleted.is_some(), |ui| {
-                if live {
-                    mark::pill_live(ui, &label, tone);
-                } else {
-                    mark::pill(ui, &label, tone);
-                }
-            });
+            card::hero(ui, &w.name, &format!("#{} \u{b7} {}", w.seq, t(Key::TagAnchor)), w.deleted.is_some(), &[card::HeroPill { words: label.clone(), tone, live }]);
         });
         if let Some(n) = w.deleted {
             stagger(ui, 1, |ui| states::note_box(ui, &fill1(Key::V2DeletedNote, &n.to_string())));
@@ -318,7 +312,7 @@ impl Win {
         let mut confirm = None;
         stagger(ui, 0, |ui| {
             let sub = row.as_ref().map(|x| format!("#{} \u{b7} {tag}", x.seq)).unwrap_or_else(|| tag.clone());
-            card::hero(ui, &summary, &sub, false, |ui| lamp_pill_ui(ui, lamp, at));
+            card::hero(ui, &summary, &sub, false, &[lamp_hero(lamp, at)]);
         });
         // Basic information: where it stands on chain and its number, as on any entry's page; then when it was
         // queued, and "put on chain now" in the row that says which batch it goes with.

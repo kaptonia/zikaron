@@ -102,29 +102,47 @@ fn parts_of<const N: usize>(table: &[(Key, u64, u64); N]) -> [(u64, u64); N] {
     table.map(|(_, most, unit)| (most, unit))
 }
 
-/// The custom window: the start (its day, else `today`; its hour and minute, an empty part zero) to the start plus
-/// the length, when the length is more than zero and every part is within its most.
-fn custom_window(day: &str, at: &[String; 2], lasts: &[String; 3], today: datepick::Day) -> Option<(u64, u64)> {
+/// The custom start: its day (else `today`) at its hour and minute (an empty part zero); none while a part is past
+/// its most.
+fn custom_start(day: &str, at: &[String; 2], today: datepick::Day) -> Option<u64> {
     use zikaron_ui::lasts::Read;
     let of_day = match zikaron_ui::lasts::read(at, &parts_of(&GRANT_START)) {
         Read::Empty => 0,
         Read::Total(n) => n,
         Read::Over(_) => return None,
     };
-    let start = at_local(datepick::parse(day).unwrap_or(today), of_day);
+    Some(at_local(datepick::parse(day).unwrap_or(today), of_day))
+}
+
+/// The custom window: the start to the start plus the length, when the length is more than zero and every part is
+/// within its most. The end is always made here, from the start and the length; picking an end day writes the length
+/// ([`lasts_to`]).
+fn custom_window(day: &str, at: &[String; 2], lasts: &[String; 3], today: datepick::Day) -> Option<(u64, u64)> {
+    let start = custom_start(day, at, today)?;
     match zikaron_ui::lasts::read(lasts, &parts_of(&GRANT_LASTS)) {
-        Read::Total(n) if n > 0 => Some((start, start + n)),
+        zikaron_ui::lasts::Read::Total(n) if n > 0 => Some((start, start + n)),
         _ => None,
     }
 }
 
-/// The custom fields that give a window back: its start's day, hour and minute, and its length in days, hours and
-/// minutes (the days kept to their most; seconds dropped).
+/// A length of `n` seconds in the length box's parts: days, hours, minutes (seconds dropped). The days are as many
+/// as there are, so more than the part holds reads as past its most.
+fn lasts_of(n: u64) -> [String; 3] {
+    [(n / 86_400).to_string(), (n % 86_400 / 3_600).to_string(), (n % 3_600 / 60).to_string()]
+}
+
+/// The length that ends the custom window on day `end` at the start's own hour and minute; none when the start does
+/// not read or `end` is not after it.
+fn lasts_to(day: &str, at: &[String; 2], end: datepick::Day, today: datepick::Day) -> Option<[String; 3]> {
+    let start = custom_start(day, at, today)?;
+    let stop = at_local(end, local_of(start).rem_euclid(86_400) as u64);
+    (stop > start).then(|| lasts_of(stop - start))
+}
+
+/// The custom fields that give a window back: its start's day, hour and minute, and its length.
 fn custom_of((a, b): (u64, u64)) -> (String, [String; 2], [String; 3]) {
     let of_day = local_of(a).rem_euclid(86_400) as u64;
-    let n = b.saturating_sub(a);
-    let days = (n / 86_400).min(GRANT_LASTS[0].1);
-    (datepick::fmt(ymd(a)), [(of_day / 3_600).to_string(), (of_day % 3_600 / 60).to_string()], [days.to_string(), (n % 86_400 / 3_600).to_string(), (n % 3_600 / 60).to_string()])
+    (datepick::fmt(ymd(a)), [(of_day / 3_600).to_string(), (of_day % 3_600 / 60).to_string()], lasts_of(b.saturating_sub(a)))
 }
 
 /// The words of a date block: the month (with its year when the window crosses one) and the day.
@@ -255,13 +273,10 @@ impl Win {
         let inq = self.shell.queue.items.iter().filter(|q| !q.step.in_flight()).position(|q| q.id == row.id);
         let export_phase = self.phase_of(crate::task::Kind::Gate);
         let (mut copied, mut copy, mut export, mut story, mut send, mut revoke) = (None, false, false, false, false, false);
+        let mut pills = vec![lamp_hero(row.lamp, at)];
+        pills.extend(badge.map(|b| card::HeroPill { words: t(badge_key(b)).to_string(), tone: badge_tone(b), live: false }));
         stagger(ui, 0, |ui| {
-            card::hero(ui, &record, &format!("#{} \u{b7} {}", row.seq, t(Key::KindGrant)), false, |ui| {
-                lamp_pill_ui(ui, row.lamp, at);
-                if let Some(b) = badge {
-                    mark::pill(ui, t(badge_key(b)), badge_tone(b));
-                }
-            });
+            card::hero(ui, &record, &format!("#{} \u{b7} {}", row.seq, t(Key::KindGrant)), false, &pills);
         });
         stagger(ui, 1, |ui| {
             card::section(ui, t(Key::BasicInfo), "", |ui| {
@@ -713,7 +728,7 @@ impl Win {
                     }
                 });
                 // Validity: the presets or custom at the left and the window as two date blocks at the
-                // right (under the presets when the line has no room); custom: the start block opens the calendar.
+                // right (under the presets when the line has no room); custom: each block opens a calendar.
                 // The overlap check is the line under them.
                 let words = date_words();
                 let today = self.grant_today();
@@ -842,9 +857,9 @@ impl Win {
         }
     }
 
-    /// The window as two date blocks with its length between them; with custom validity the start block opens the
-    /// calendar that picks the start's day (the end only shows). Without a window, the sentence that says why,
-    /// quiet.
+    /// The window as two date blocks with its length between them; with custom validity each block opens a calendar:
+    /// the start's picks the start's day (the length kept), the end's an end day after the start's (the length made
+    /// from it). Without a window, the sentence that says why, quiet.
     #[allow(clippy::too_many_arguments)]
     fn span_blocks(&mut self, ui: &mut egui::Ui, from: &(String, String), between: &str, to: &(String, String), no_span: Option<&str>, custom: bool, today: datepick::Day, words: &datepick::Words) {
         if let Some(s) = no_span {
@@ -852,14 +867,20 @@ impl Win {
             paint::line(ui, s, Type::Body, c(C::Ink3), room);
             return;
         }
-        let [a, _] = datepick::span(ui, "grant-span", datepick::Block { month: &from.0, day: &from.1 }, between, datepick::Block { month: &to.0, day: &to.1 }, [custom, false]);
-        if !custom {
-            return;
-        }
-        // The start block's calendar picks the start's day; the end is the start plus the length.
-        let mut day = if self.typed.g_start_day.is_empty() { datepick::fmt(today) } else { self.typed.g_start_day.clone() };
-        if datepick::hang(ui, &datepick::block_salt("grant-span", 0), &a, &mut day, today, words) {
+        let start = custom.then(|| custom_start(&self.typed.g_start_day, &self.typed.g_start_at, today)).flatten();
+        let [a, b] = datepick::span(ui, "grant-span", datepick::Block { month: &from.0, day: &from.1 }, between, datepick::Block { month: &to.0, day: &to.1 }, [custom, start.is_some()]);
+        let Some(start) = start else { return };
+        // The start's day is written only when another is picked: one left to follow today keeps following it.
+        let shown = if self.typed.g_start_day.is_empty() { datepick::fmt(today) } else { self.typed.g_start_day.clone() };
+        let mut day = shown.clone();
+        if datepick::hang(ui, &datepick::block_salt("grant-span", 0), &a, &mut day, None, today, words) && day != shown {
             self.typed.g_start_day = day;
+        }
+        let mut end = self.typed.g_to.trim().parse::<u64>().map(|b| datepick::fmt(ymd(b))).unwrap_or_default();
+        if datepick::hang(ui, &datepick::block_salt("grant-span", 1), &b, &mut end, Some(ymd(start)), today, words) {
+            if let Some(lasts) = datepick::parse(&end).and_then(|e| lasts_to(&self.typed.g_start_day, &self.typed.g_start_at, e, today)) {
+                self.typed.g_lasts = lasts;
+            }
         }
     }
 
@@ -973,5 +994,50 @@ impl Win {
         if out.esc || close {
             self.ux.u3.work_pick = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{custom_of, custom_window, lasts_of, lasts_to};
+
+    fn s3(a: &str, b: &str, c: &str) -> [String; 3] {
+        [a.to_string(), b.to_string(), c.to_string()]
+    }
+
+    /// An end day picked writes the length that ends the window on that day at the start's hour and minute, the window
+    /// then read back from the start and that length; a day not after the start's gives none; a day further than the
+    /// days part holds writes that many days, and no window reads from them; the start not reading gives none.
+    /// Victim: whoever signs a grant up to a chosen day.
+    #[test]
+    fn an_end_day_writes_the_length_the_window_reads_back() {
+        let at = ["10".to_string(), "30".to_string()];
+        let day = 86_400;
+        let l = lasts_to("2026-10-03", &at, (2026, 11, 5), (2026, 1, 1)).expect("a later day");
+        assert_eq!(l, s3("33", "0", "0"));
+        let (a, b) = custom_window("2026-10-03", &at, &l, (2026, 1, 1)).expect("a window");
+        assert_eq!((b - a, crate::when::when(b)), (33 * day, "2026-11-05 10:30:00".to_string()));
+        assert_eq!(lasts_to("2026-10-03", &at, (2026, 10, 4), (2026, 1, 1)), Some(s3("1", "0", "0")), "the day after");
+        assert_eq!(lasts_to("2026-10-03", &at, (2026, 10, 3), (2026, 1, 1)), None, "the start's own day");
+        assert_eq!(lasts_to("2026-10-03", &at, (2026, 9, 30), (2026, 1, 1)), None, "a day before the start");
+        let far = lasts_to("2026-10-03", &at, (2029, 7, 1), (2026, 1, 1)).expect("a later day");
+        assert_eq!(far, s3("1002", "0", "0"));
+        assert_eq!(custom_window("2026-10-03", &at, &far, (2026, 1, 1)), None, "past the days the length holds");
+        assert_eq!(lasts_to("2026-10-03", &["24".to_string(), String::new()], (2026, 11, 5), (2026, 1, 1)), None, "the start does not read");
+        // No day given: the start is `today`'s.
+        assert_eq!(lasts_to("", &at, (2026, 1, 3), (2026, 1, 1)), Some(s3("2", "0", "0")));
+    }
+
+    /// The length's parts of a span (seconds dropped), and a preset's window turned to the custom fields gives the same
+    /// window back.
+    #[test]
+    fn a_length_is_its_days_hours_and_minutes() {
+        assert_eq!(lasts_of(0), s3("0", "0", "0"));
+        assert_eq!(lasts_of(86_400 + 3_600 + 61), s3("1", "1", "1"));
+        assert_eq!(lasts_of(1_000 * 86_400), s3("1000", "0", "0"));
+        let w = (1_790_000_000, 1_790_000_000 + 30 * 86_400);
+        let (day, at, lasts) = custom_of(w);
+        let back = custom_window(&day, &at, &lasts, (2026, 1, 1)).expect("a window");
+        assert_eq!(back.1 - back.0, w.1 - w.0);
     }
 }

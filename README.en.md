@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-Version 0.1.4
+Version 0.1.5
 
 Decentralized Infrastructure of Right: <https://kaptonia.github.io/>
 
@@ -22,16 +22,16 @@ Settings > Command line and AI control.
 
 ## Download
 
-The 0.1.4 packages ([release page](https://github.com/kaptonia/zikaron/releases/tag/v0.1.4)):
+The 0.1.5 packages ([release page](https://github.com/kaptonia/zikaron/releases/tag/v0.1.5)):
 
 | Platform | Download |
 |---|---|
-| macOS (Apple silicon, macOS 11 or later) | [`ZIKARON-0.1.4-macos-arm64.dmg`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/ZIKARON-0.1.4-macos-arm64.dmg) · [`.pkg` installer](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/ZIKARON-0.1.4-macos-arm64.pkg) |
-| Windows 10 / 11 (x86_64) | [`ZIKARON-0.1.4-windows-x86_64.zip`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/ZIKARON-0.1.4-windows-x86_64.zip) |
-| Linux (x86_64, glibc 2.31 or later) | [`zikaron-desk_0.1.4_amd64.deb`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/zikaron-desk_0.1.4_amd64.deb) · [`AppImage`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/ZIKARON-0.1.4-x86_64.AppImage) |
-| Source | [`zikaron-0.1.4-src.tar.gz`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/zikaron-0.1.4-src.tar.gz) |
+| macOS (Apple silicon, macOS 11 or later) | [`ZIKARON-0.1.5-macos-arm64.dmg`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/ZIKARON-0.1.5-macos-arm64.dmg) · [`.pkg` installer](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/ZIKARON-0.1.5-macos-arm64.pkg) |
+| Windows 10 / 11 (x86_64) | [`ZIKARON-0.1.5-windows-x86_64.zip`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/ZIKARON-0.1.5-windows-x86_64.zip) |
+| Linux (x86_64, glibc 2.31 or later) | [`zikaron-desk_0.1.5_amd64.deb`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/zikaron-desk_0.1.5_amd64.deb) · [`AppImage`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/ZIKARON-0.1.5-x86_64.AppImage) |
+| Source | [`zikaron-0.1.5-src.tar.gz`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/zikaron-0.1.5-src.tar.gz) |
 
-Check the SHA-256 against [`SHA256SUMS.txt`](https://github.com/kaptonia/zikaron/releases/download/v0.1.4/SHA256SUMS.txt) first, then install as described under "Install" below.
+Check the SHA-256 against [`SHA256SUMS.txt`](https://github.com/kaptonia/zikaron/releases/download/v0.1.5/SHA256SUMS.txt) first, then install as described under "Install" below.
 
 ## Platforms
 
@@ -61,7 +61,7 @@ networks, used only to check others' material and never to send transactions.
 
 ## Install
 
-The 0.1.4 release provides macOS and Linux packages and a Windows zip; each carries the third-party licences.
+The 0.1.5 release provides macOS and Linux packages and a Windows zip; each carries the third-party licences.
 
 **macOS.** Install `ZIKARON.app` from the `.dmg` (drag it into Applications) or with the `.pkg`
 installer. The app is signed with a self-signed certificate (Kaptonia) and is not notarized. Files downloaded in a browser carry macOS's quarantine flag, and macOS refuses to open them; on recent macOS, "Open Anyway" in System Settings > Privacy & Security does not always work either. Check the SHA-256 with `shasum -a 256 <file>` first, then remove the quarantine flag in Terminal:
@@ -69,7 +69,7 @@ installer. The app is signed with a self-signed certificate (Kaptonia) and is no
 - With the dmg: before opening the dmg, run the command below, then open the dmg and drag `ZIKARON.app` to Applications:
 
   ```
-  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.4-macos-arm64.dmg
+  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.5-macos-arm64.dmg
   ```
 
   If you have already dragged the app in, run this instead:
@@ -81,7 +81,7 @@ installer. The app is signed with a self-signed certificate (Kaptonia) and is no
 - With the pkg: run the command below, then double-click the pkg to install:
 
   ```
-  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.4-macos-arm64.pkg
+  xattr -d com.apple.quarantine ~/Downloads/ZIKARON-0.1.5-macos-arm64.pkg
   ```
 
 Change the paths to wherever you downloaded the files.
@@ -90,7 +90,7 @@ macOS 11 or later is required. The command line is `ZIKARON.app/Contents/MacOS/z
 copy at `/usr/local/bin/zikaron`. After installing from the dmg, drag the app into Applications first, then turn on "Enable the zikaron command" in the app's Settings > Command line and AI control (it places a link in `/usr/local/bin`, with the system's administrator password dialog when needed) to type
 `zikaron` in a terminal.
 
-**Linux.** On x86_64, use the `.deb` (`sudo apt install ./zikaron-desk_0.1.4_amd64.deb`, which installs the window
+**Linux.** On x86_64, use the `.deb` (`sudo apt install ./zikaron-desk_0.1.5_amd64.deb`, which installs the window
 program `zikaron-desk` and the command line `zikaron` in `/usr/bin`) or the AppImage (make it executable with `chmod +x` and run it;
 it launches the window program only, the command line being inside but not exposed, and neither "Enable the zikaron command" nor "Connect an AI app" is available in it; without FUSE, run it with
 `--appimage-extract-and-run`). Both need glibc 2.31 or later; the packages are not signed, so check them with
@@ -99,7 +99,7 @@ build from source only, as described below.
 The system file dialog goes through the desktop portal, so `xdg-desktop-portal` and a backend such as `xdg-desktop-portal-gtk`
 should be installed.
 
-**Windows.** On Windows 10 or 11 (x86_64) use `ZIKARON-0.1.4-windows-x86_64.zip`: check the SHA-256 first in PowerShell with `Get-FileHash <file> -Algorithm SHA256`, unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder (run it in a terminal; double-clicked, it flashes and closes). Nothing is installed and no runtime is needed. The programs are not signed: on first start Windows says "Windows protected your PC"; click "More info", then "Run anyway". On Windows 11 with Smart App Control on, unsigned programs are blocked outright and cannot be allowed one by one; turn it off first in Windows Security › App & browser control › Smart App Control settings. Machine data lives in `%LOCALAPPDATA%\ZIKARON\` by default; deleting the unpacked folder does not delete it. To type `zikaron` in any terminal, turn on "Enable the zikaron command" in the app's Settings > Command line and AI control, which adds the command line's folder to this user's `PATH`.
+**Windows.** On Windows 10 or 11 (x86_64) use `ZIKARON-0.1.5-windows-x86_64.zip`: check the SHA-256 first in PowerShell with `Get-FileHash <file> -Algorithm SHA256`, unpack it into any folder and double-click `zikaron-desk.exe`; the command line is `zikaron.exe` in the same folder (run it in a terminal; double-clicked, it flashes and closes). Nothing is installed and no runtime is needed. The programs are not signed: on first start Windows says "Windows protected your PC"; click "More info", then "Run anyway". On Windows 11 with Smart App Control on, unsigned programs are blocked outright and cannot be allowed one by one; turn it off first in Windows Security › App & browser control › Smart App Control settings. Machine data lives in `%LOCALAPPDATA%\ZIKARON\` by default; deleting the unpacked folder does not delete it. To type `zikaron` in any terminal, turn on "Enable the zikaron command" in the app's Settings > Command line and AI control, which adds the command line's folder to this user's `PATH`.
 
 The user manual is in [`docs/manual/`](docs/manual/) ([English](docs/manual/MANUAL-en.md),
 [中文](docs/manual/MANUAL-zh.md)).

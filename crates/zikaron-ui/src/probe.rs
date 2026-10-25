@@ -15,6 +15,7 @@ const QR: &str = "zikaron-probe-qr";
 const PARTS: &str = "zikaron-probe-parts";
 const BOXES: &str = "zikaron-probe-boxes";
 const LITS: &str = "zikaron-probe-lits";
+const SPOTS: &str = "zikaron-probe-spots";
 
 /// A lit block as drawn ([`crate::band`]): the block and its corners, the slot whose sides bound it (the card's
 /// edges, the lines, or the next rows), the card it lies in and that card's corner.
@@ -42,6 +43,7 @@ pub fn begin(ctx: &egui::Context) {
         d.insert_temp(egui::Id::new(PARTS), Vec::<(egui::LayerId, egui::Rect)>::new());
         d.insert_temp(egui::Id::new(BOXES), Vec::<(egui::LayerId, egui::Rect)>::new());
         d.insert_temp(egui::Id::new(LITS), Vec::<Lit>::new());
+        d.insert_temp(egui::Id::new(SPOTS), Vec::<(String, egui::Rect)>::new());
     });
 }
 
@@ -164,4 +166,15 @@ pub fn lit(ctx: &egui::Context, l: Lit) {
 /// The lit blocks drawn this frame.
 pub fn lits(ctx: &egui::Context) -> Vec<Lit> {
     ctx.data(|d| d.get_temp::<Vec<Lit>>(egui::Id::new(LITS))).unwrap_or_default()
+}
+
+/// A control by its name: a live date block (its calendar's salt) and each day of an open calendar (`YYYY-MM-DD`,
+/// followed by ` off` when it takes no press).
+pub fn spot(ctx: &egui::Context, name: &str, rect: egui::Rect) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(String, egui::Rect)>>(egui::Id::new(SPOTS)).push((name.to_string(), rect)));
+}
+
+/// The named controls recorded this frame.
+pub fn spots(ctx: &egui::Context) -> Vec<(String, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(String, egui::Rect)>>(egui::Id::new(SPOTS))).unwrap_or_default()
 }

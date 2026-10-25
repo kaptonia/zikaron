@@ -99,6 +99,9 @@ unsafe extern "system" {
     fn ReadFile(h: Handle, buf: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
     fn WriteFile(h: Handle, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+    fn GetCurrentThread() -> Handle;
+    fn DuplicateHandle(from_process: Handle, from: Handle, to_process: Handle, to: *mut Handle, access: u32, inherit: i32, options: u32) -> i32;
+    fn CancelSynchronousIo(thread: Handle) -> i32;
 }
 
 #[repr(C)]
@@ -464,7 +467,9 @@ const BUSY_WAIT_MS: u32 = 250;
 pub struct DoorStream {
     h: Handle,
     server: bool,
-    deadline: std::cell::Cell<Option<std::time::Duration>>,
+    /// When all its reads, and all its writes, must be done by (`set_read_deadline`, `set_write_deadline`).
+    read_deadline: std::cell::Cell<Option<std::time::Instant>>,
+    write_deadline: std::cell::Cell<Option<std::time::Instant>>,
 }
 
 unsafe impl Send for DoorStream {}
@@ -473,12 +478,50 @@ impl Drop for DoorStream {
     fn drop(&mut self) {
         unsafe {
             if self.server {
-                FlushFileBuffers(self.h);
+                let left = self.write_left();
+                if left.is_none_or(|l| !l.is_zero()) {
+                    within(left, || FlushFileBuffers(self.h));
+                }
                 DisconnectNamedPipe(self.h);
             }
             CloseHandle(self.h);
         }
     }
+}
+
+const DUPLICATE_SAME_ACCESS: u32 = 0x2;
+const ERROR_OPERATION_ABORTED: i32 = 995;
+
+struct ThreadHandle(Handle);
+unsafe impl Send for ThreadHandle {}
+
+/// Run the blocking pipe call `op` on this thread; past `deadline`, the system cancels it (`CancelSynchronousIo`)
+/// and it returns failing with `ERROR_OPERATION_ABORTED`. Without a deadline it runs as it is; when the cancel
+/// cannot be armed, it does not run (`None`).
+fn within<T>(deadline: Option<std::time::Duration>, op: impl FnOnce() -> T) -> Option<T> {
+    let Some(d) = deadline else { return Some(op()) };
+    let mut me: Handle = std::ptr::null_mut();
+    let here = unsafe { GetCurrentProcess() };
+    if unsafe { DuplicateHandle(here, GetCurrentThread(), here, &mut me, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
+        return None;
+    }
+    let watched = ThreadHandle(me);
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    // Past the deadline the cancel is repeated until the call has returned: one sent before the call began
+    // would find nothing to cancel.
+    let watch = std::thread::spawn(move || {
+        let t = watched;
+        let mut wait_for = d;
+        while wait.recv_timeout(wait_for) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            unsafe { CancelSynchronousIo(t.0) };
+            wait_for = std::time::Duration::from_millis(10);
+        }
+    });
+    let out = op();
+    drop(done);
+    let _ = watch.join();
+    unsafe { CloseHandle(me) };
+    Some(out)
 }
 
 /// The listening side: the pipe instance the next client connects to.
@@ -563,7 +606,7 @@ impl DoorListener {
         }
         // The next client connects to a fresh instance; this one now belongs to the stream.
         *next = instance(&self.name, false)?;
-        Ok(DoorStream { h, server: true, deadline: std::cell::Cell::new(None) })
+        Ok(DoorStream { h, server: true, read_deadline: std::cell::Cell::new(None), write_deadline: std::cell::Cell::new(None) })
     }
 }
 
@@ -624,7 +667,7 @@ pub fn door_close(_place: &Path, listener: Option<&DoorListener>) {
 /// Connect to the endpoint at `place` without checking its user ([`DoorStream::same_user`]).
 pub fn door_connect(place: &Path) -> std::io::Result<DoorStream> {
     let h = open_pipe(&pipe_name(place))?;
-    Ok(DoorStream { h, server: false, deadline: std::cell::Cell::new(None) })
+    Ok(DoorStream { h, server: false, read_deadline: std::cell::Cell::new(None), write_deadline: std::cell::Cell::new(None) })
 }
 
 impl DoorStream {
@@ -636,17 +679,28 @@ impl DoorStream {
         same_user(if asked == 0 { Err(std::io::Error::last_os_error()) } else { Ok(pid) })
     }
 
+    /// How long all reads from now on may take together.
     pub fn set_read_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.deadline.set(d);
+        self.read_deadline.set(d.map(|d| std::time::Instant::now() + d));
         Ok(())
+    }
+
+    /// How long all writes from now on may take together.
+    pub fn set_write_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.write_deadline.set(d.map(|d| std::time::Instant::now() + d));
+        Ok(())
+    }
+
+    /// What is left of the write deadline (zero once it has passed), or none.
+    fn write_left(&self) -> Option<std::time::Duration> {
+        self.write_deadline.get().map(|u| u.saturating_duration_since(std::time::Instant::now()))
     }
 }
 
 impl std::io::Read for DoorStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // A synchronous pipe read blocks forever; with a deadline, wait until bytes are available first.
-        if let Some(d) = self.deadline.get() {
-            let until = std::time::Instant::now() + d;
+        if let Some(until) = self.read_deadline.get() {
             loop {
                 let mut avail = 0u32;
                 if unsafe { PeekNamedPipe(self.h, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut avail, std::ptr::null_mut()) } == 0 {
@@ -682,10 +736,19 @@ impl std::io::Write for DoorStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut put = 0u32;
         let len = buf.len().min(u32::MAX as usize) as u32;
-        if unsafe { WriteFile(self.h, buf.as_ptr(), len, &mut put, std::ptr::null_mut()) } == 0 {
-            return Err(std::io::Error::last_os_error());
+        let late = || std::io::Error::new(std::io::ErrorKind::TimedOut, "the other end took nothing within the deadline");
+        let left = self.write_left();
+        if left.is_some_and(|l| l.is_zero()) {
+            return Err(late());
         }
-        Ok(put as usize)
+        // The error is read right after the call, before the watch's own calls can overwrite it.
+        let wrote = within(left, || if unsafe { WriteFile(self.h, buf.as_ptr(), len, &mut put, std::ptr::null_mut()) } == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        match wrote {
+            None => Err(std::io::Error::other("the write could not be bounded")),
+            Some(Err(e)) if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED) => Err(late()),
+            Some(Err(e)) => Err(e),
+            Some(Ok(())) => Ok(put as usize),
+        }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())

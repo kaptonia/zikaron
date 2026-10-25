@@ -520,6 +520,36 @@ fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
     }
 }
 
+/// A detail page's head draws its pills whole on the title's middle at the right: the room they take is what
+/// they measure (`card::hero`), so the state pill (anchored, in dispute, an old version) is never cut to nothing.
+/// Victim: whoever reads a detail page's state from that one pill. Two pills, one spinning, side by side.
+#[test]
+fn a_detail_heads_pills_are_drawn_whole() {
+    use zikaron_ui::card;
+    use zikaron_ui::palette::Tone;
+    let mut f = Frames::new();
+    let pills = [
+        card::HeroPill { words: "等待节点确认收据中".into(), tone: Tone::Blue, live: true },
+        card::HeroPill { words: "争议中".into(), tone: Tone::Warn, live: false },
+    ];
+    let mut head = Rect::NOTHING;
+    let mut out = f.run(0.1, vec![], |_| {});
+    for _ in 0..3 {
+        out = f.run(0.1, vec![], |ctx| {
+            central(ctx, egui::CentralPanel::default(), |ui| head = card::hero(ui, "授权一", "#3 · 授权", false, &pills));
+        });
+    }
+    let shown = texts(&out);
+    let at = |w: &str| shown.iter().find(|(s, _)| s == w).map(|(_, r)| *r);
+    let title = at("授权一").expect("the title drawn");
+    let first = at("等待节点确认收据中").unwrap_or_else(|| panic!("the first pill's words whole: {shown:?}"));
+    let second = at("争议中").unwrap_or_else(|| panic!("the second pill's words whole: {shown:?}"));
+    assert!(first.left() > second.right(), "the first pill rightmost: {first:?} {second:?}");
+    assert!(second.left() > title.right(), "both right of the title: {second:?} {title:?}");
+    assert!(first.right() <= head.right() + 0.5, "inside the head: {first:?} {head:?}");
+    assert!((first.center().y - title.center().y).abs() < 2.0, "on the title's middle: {first:?} {title:?}");
+}
+
 /// The file name of a path, with either separator: name only, with a path, a trailing separator, the two
 /// mixed, a drive root, separators only, empty, spaces around.
 #[test]

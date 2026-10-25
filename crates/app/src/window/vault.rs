@@ -239,9 +239,7 @@ impl Win {
         let issuer = self.issuer_name(&h.author);
         let (verdict, tone, _) = self.held_face(id);
         stagger(ui, 0, |ui| {
-            card::hero(ui, &name, &issuer, false, |ui| {
-                mark::pill(ui, &verdict, tone);
-            });
+            card::hero(ui, &name, &issuer, false, &[card::HeroPill { words: verdict.clone(), tone, live: false }]);
         });
         if let Some(k) = card.as_ref() {
             let (key, _, m) = card_verdict(k);

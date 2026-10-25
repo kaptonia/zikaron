@@ -765,6 +765,44 @@ pub fn lock_wait(file: &std::fs::File) -> bool {
     imp::lock_wait(file)
 }
 
+// ───────────────────────── A directory set aside whole ─────────────────────────
+
+/// Why a directory was not set aside.
+#[derive(Debug)]
+pub enum NotAside {
+    /// Another process holds this lock file.
+    Held(std::path::PathBuf),
+    /// The system refused, with the path it names.
+    Io(std::path::PathBuf, std::io::Error),
+}
+
+/// Rename the directory `from` to the new name `to` beside it, not a byte inside touched. Each of `locks` (missing
+/// ones are nobody's) is taken first without waiting; one held elsewhere refuses with nothing done. They are held
+/// across the rename, except on Windows, where a file open in the directory makes the rename itself refuse.
+pub fn set_aside(from: &Path, to: &Path, locks: &[std::path::PathBuf]) -> Result<(), NotAside> {
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(NotAside::Io(to.to_path_buf(), std::io::Error::from(std::io::ErrorKind::AlreadyExists)));
+    }
+    let mut held = Vec::new();
+    for l in locks {
+        let f = match std::fs::File::open(l) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(NotAside::Io(l.clone(), e)),
+        };
+        if !lock_now(&f) {
+            return Err(NotAside::Held(l.clone()));
+        }
+        held.push(f);
+    }
+    if cfg!(windows) {
+        held.clear();
+    }
+    let moved = std::fs::rename(from, to).map_err(|e| NotAside::Io(from.to_path_buf(), e));
+    drop(held);
+    moved
+}
+
 // ───────────────────────── Replacing a file whole ─────────────────────────
 
 /// A write that did not land: the system's error, and the path it is said with (the file being written; its

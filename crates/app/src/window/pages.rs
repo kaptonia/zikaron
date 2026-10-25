@@ -255,13 +255,13 @@ impl Win {
     fn page_body(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
         match route {
             Route::Root(Place::Home) => self.page_home(ui, now),
-            Route::Root(Place::View(View::Works, tab)) => {
+            Route::Root(Place::View(View::Works, tab)) => tab_body(ui, "works", u64::from(*tab), |ui| {
                 if *tab == T::WORKS_PENDING {
                     self.works_pending(ui, now)
                 } else {
                     self.works(ui, now)
                 }
-            }
+            }),
             Route::Root(Place::View(View::Grants, _)) => self.grants_list(ui, now),
             Route::Root(Place::View(View::Verify, tab)) => self.verify_page(ui, *tab, now),
             Route::Root(Place::View(View::Log, _)) => self.ledger_page(ui, now),
@@ -320,7 +320,7 @@ impl Win {
                 self.ensure_rows(now);
                 let cells = [seg::Cell::from(t(Key::U3FilterAll)), seg::Cell { text: t(Key::ItemUnanchored), count: Some(self.shell.queue.len()) }];
                 if let Some(i) = seg::seg(ui, "works-tabs", &cells, usize::from(*tab == T::WORKS_PENDING)) {
-                    self.set_tab(Place::View(View::Works, if i == 1 { T::WORKS_PENDING } else { T::WORKS_ALL }), now);
+                    self.seg_tab(Place::View(View::Works, if i == 1 { T::WORKS_PENDING } else { T::WORKS_ALL }), now);
                 }
             }
             Place::View(View::Grants, _) => {

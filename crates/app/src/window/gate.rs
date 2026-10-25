@@ -23,15 +23,33 @@ impl Win {
             return;
         }
         // The store file exists but cannot be read: show the store's refusal and offer nothing that would build a
-        // new store over the keys it holds (no wizard, no passcode cells).
+        // new store over the keys it holds (no wizard, no passcode cells). The one way on sets the machine directory aside.
         if let crate::shell::Vault::Damaged(f) = &state {
+            let mut ask = false;
+            let unplanned = self.ux.gate_aside.is_none().then(|| self.ux.gate_aside_trouble.as_ref().map(said)).flatten();
             let _ = covers::cover(ctx, "gate", covers::Ground::Lit, |ui| {
                 let rect = ui.max_rect();
                 full::centered(ui, "gate", rect, tk::SHEET_W, 0.0, |ui| {
-                    gate_head(ui, t(Key::VaultDamagedTitle));
+                    let around = gate_head(ui, t(Key::VaultDamagedTitle));
                     states::err_box(ui, "gate-damaged", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
+                    ui.add_space(around);
+                    ask = ui.vertical_centered(|ui| key::key(ui, t(Key::GateAside), Role::Secondary, true).clicked()).inner;
+                    if let Some(s) = unplanned.as_deref() {
+                        ui.add_space(tk::S3);
+                        states::note_box(ui, s);
+                    }
                 });
             });
+            if ask {
+                match crate::home::aside_plan() {
+                    Ok(plan) => {
+                        self.ux.gate_aside = Some(plan);
+                        self.ux.gate_aside_trouble = None;
+                    }
+                    Err(f) => self.ux.gate_aside_trouble = Some(f),
+                }
+            }
+            self.gate_aside_sheet(ctx, now);
             return;
         }
         let locked_out = state.is(crate::keybox::State::LockedOut);
@@ -165,6 +183,60 @@ impl Win {
             self.vault_or(VaultSite::Gate, r, now);
         }
     }
+}
+
+impl Win {
+    /// The sheet confirming the machine directory set aside: what moves, what stays, and the way back; a refusal is
+    /// said on it.
+    fn gate_aside_sheet(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(plan) = self.ux.gate_aside.clone() else { return };
+        let (mut go, mut cancel) = (false, false);
+        let out = sheet::show(
+            ctx,
+            sheet::Spec::new("gate-aside", tk::SHEET_W),
+            self,
+            |ui, me| {
+                sheet::title(ui, t(Key::GateAside), "");
+                ui.spacing_mut().item_spacing.y = tk::S4;
+                field(ui, t(Key::GateAsideMoves), None, |ui| path_words(ui, &plan.machine.display().to_string()));
+                field(ui, t(Key::GateAsideKeeps), None, |ui| match &plan.kept {
+                    Some(k) => path_words(ui, &k.display().to_string()),
+                    None => {
+                        paint::text(ui, t(Key::GateAsideKeepsNone), Type::Body, c(C::Ink3));
+                    }
+                });
+                field(ui, t(Key::GateAsideBack), None, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(t(Key::GateAsideBackSay)).font(Type::Body.font()).color(c(C::Ink))).wrap());
+                });
+                if let Some(f) = me.ux.gate_aside_trouble.as_ref() {
+                    states::note_box(ui, &said(f));
+                }
+            },
+            |ui, _me| {
+                go = key::key(ui, t(Key::GateAsideGo), Role::Danger, true).clicked();
+                cancel = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
+            },
+        );
+        if cancel || out.esc {
+            self.ux.gate_aside = None;
+            self.ux.gate_aside_trouble = None;
+        } else if go {
+            let r = self.act(Action::SetMachineAside, now);
+            if let Applied::Trouble(f) = &r {
+                self.ux.gate_aside_trouble = Some(f.clone());
+            }
+            self.vault_or(VaultSite::Gate, r, now);
+        }
+    }
+}
+
+/// A refusal of setting the machine directory aside, as the gate says it.
+fn said(f: &crate::fault::Fault) -> String {
+    format!("{} {}", f.human(), f.next())
+}
+
+fn path_words(ui: &mut egui::Ui, path: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(path).font(Type::Mono.font()).color(c(C::Ink))).wrap());
 }
 
 /// The gate's head, centred: the app's name small, the title under it, then the column's room. Returns the gap

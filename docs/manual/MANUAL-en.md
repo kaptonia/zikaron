@@ -381,7 +381,7 @@ Three other cases:
 
 - If the key store's encryption settings are below this machine's standard (for example, someone lowered them), the gate says "Encryption settings are below this machine's standard." and "Enter your passcode to re-encrypt at this machine's standard." That try is not counted as wrong; the correct passcode re-encrypts the store at this machine's standard.
 - If the key store file turns out to be damaged when unlocking or setting a passcode, the app says "The key store file is damaged." and does not touch the file.
-- If the key store file cannot be read at start, the passcode side shows "The key store cannot be read" with the reason and the file's path; the first-run wizard does not open and no new key store is made (the keys are still in that file). Repair or move the file, then reopen the app.
+- If the key store file cannot be read at start, the passcode side shows "The key store cannot be read" with the reason and the file's path; the first-run wizard does not open and no new key store is made (the keys are still in that file). "Move this machine's data aside and start over" below it sets the whole machine folder aside and opens the first-run wizard, to restore from a whole-machine backup or the recovery words.
 
 #### 5.2 Locking and auto-lock
 
@@ -700,7 +700,7 @@ Below them are this check's "Check result", "Ledger head", "Root entry", "Checke
 "Add note" in the "More" menu, or "Add note" on an entry's detail page, opens "Add note to entry":
 
 1. Write the "Note text" (required).
-2. Press "Select" beside "Target entry", search the floating card (by number, type or summary, or by a range of first anchor dates) and pick the entry to annotate; or under "Advanced options" use "Or paste an entry id".
+2. Press "Select" beside "Target entry", search the floating card (by number, type or summary, or by a range of first anchor dates) and pick the entry to annotate; or under "Advanced options" use "Or paste an entry id". With none picked the note is on the whole ledger, and the field reads "No entry"; the card's first item, "No entry", takes a pick back. Opened from an entry's detail page, the target is that entry.
 3. Press "Add note" to write it.
 
 A note is saved as a new entry; the original entry is not changed.
@@ -781,7 +781,7 @@ The form's fields:
   - When the grant is signed, a copy of the terms file is kept in the data folder. It later goes to the grantee with the grant file and record kits, so they can recompute the fingerprint themselves.
 - **"Validity"**: "7 days", "30 days" (the default), "90 days" or "Custom".
   - The presets count from chain time: opening the page reads the latest block's time once from the current network and starts there. If the latest cannot be read but a chain time was heard before, that one is used, and the date blocks are noted "Going by chain time YYYY-MM-DD; the latest could not be read". With no chain time at all, it says "No chain time for presets: sync first or choose Custom"; sync first, or use Custom.
-  - "Custom": the start's date block opens the calendar to pick the day; below it, "Start time" takes the hour and minute (empty is 0:00; the start day defaults to the chain time's day), and "Length" takes days, hours and minutes (at most 999 days, 23 hours, 59 minutes; past that it turns red and says so). The end is the start plus the length, shown on the date block at the right; with no length there is no validity window. Switching from a preset to custom fills the fields with that preset's window.
+  - "Custom": the start's date block opens the calendar to pick the day; below it, "Start time" takes the hour and minute (empty is 0:00; the start day defaults to the chain time's day), and "Length" takes days, hours and minutes (at most 999 days, 23 hours, 59 minutes; past that it turns red and says so). The end is the start plus the length, shown on the date block at the right; that block also opens a calendar to pick the end day (days up to the start's cannot be picked), and the window then ends on that day at the start's hour and minute, the length filled in from it. With no length there is no validity window. Switching from a preset to custom fills the fields with that preset's window.
 - **The overlap light**: "Overlapping live grants: N". It counts grants on the same record that are marked exclusive on this machine, overlap in time and are not revoked. Until a record is chosen (or while a custom period cannot be read) it reads "Choose a record to check for overlaps".
 - **The "Exclusivity, sublicense and scope" fold**:
   - The "Exclusive grant" switch: "Recorded on this machine only. Cannot be changed after signing." The exclusive mark is kept only on this machine and is not written into the grant; put the exclusivity terms in the terms file.
@@ -1462,7 +1462,7 @@ The "Whole-machine backup" group has two rows, "Export backup" and "Restore from
   1. Choose a password in "Backup password" (at least 8 characters) and repeat it in "Enter the backup password again".
   2. Enter "This machine's passcode" and press "Export".
   - The file is named `zikaron-backup-YYYY-MM-DD.zikaron`. A second export on the same day gets a number; nothing is overwritten. The dialog's "Details" gives the file name, header, encryption and what is "Not included".
-  - The app reads the file back and opens it to check it; only then does it say "Backup exported: …".
+  - While it exports, the dialog stays open and shows "Collecting", "Encryption", "Writing" and "Reading back" in turn, taking no back key or Esc. The app reads the file back and opens it to check it; only then does it say "Backup exported: …" and close the dialog.
   - If you forget the backup password, the backup cannot be restored.
 - "Restore from backup":
   - Choose the backup file with "Choose a file" at the bottom left, enter the "Backup password" and "This machine's passcode", and press "Recover".

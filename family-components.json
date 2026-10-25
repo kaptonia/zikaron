@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "product": "ZIKARON",
- "release": "0.1.4",
+ "release": "0.1.5",
  "components": [
   {
    "id": "transport",
@@ -1288,10 +1288,10 @@
   },
   {
    "id": "tx-send",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/src/action/mod.rs",
@@ -2411,10 +2411,10 @@
   },
   {
    "id": "os-platform",
-   "familyVersion": 4,
+   "familyVersion": 5,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 4
    },
    "home": [
     "crates/app/tests/checks_more/gaps_b13.rs",
@@ -2725,10 +2725,10 @@
   },
   {
    "id": "durable-write",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/src/home.rs",
@@ -3337,10 +3337,10 @@
   },
   {
    "id": "single-writer",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/src/action/home.rs",
@@ -3721,10 +3721,10 @@
   },
   {
    "id": "local-seal",
-   "familyVersion": 4,
+   "familyVersion": 5,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 4
    },
    "home": [
     "crates/app/local-data-standard.md",
@@ -3919,10 +3919,10 @@
   },
   {
    "id": "passcode-gate",
-   "familyVersion": 4,
+   "familyVersion": 5,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 4
    },
    "home": [
     "crates/app/src/action/mod.rs",
@@ -4310,10 +4310,10 @@
   },
   {
    "id": "machine-backup",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/src/action/identity.rs",
@@ -4586,10 +4586,10 @@
   },
   {
    "id": "ui-kit",
-   "familyVersion": 6,
+   "familyVersion": 7,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 6
    },
    "home": [
     "crates/app/Cargo.toml",
@@ -4614,6 +4614,7 @@
     "crates/app/tests/checks_more/gaps.rs",
     "crates/app/tests/checks_more/gaps_r20b2.rs",
     "crates/app/tests/checks_more/motion_in_place.rs",
+    "crates/app/tests/checks_more/segments_in_place.rs",
     "crates/app/tests/checks_more/window_b10_layout.rs",
     "crates/app/tests/checks_more/window_habits.rs",
     "crates/app/tests/sync_clock.rs",
@@ -4632,6 +4633,7 @@
     "crates/zikaron-ui/src/callout.rs",
     "crates/zikaron-ui/src/card.rs",
     "crates/zikaron-ui/src/cells.rs",
+    "crates/zikaron-ui/src/compose.rs",
     "crates/zikaron-ui/src/covers.rs",
     "crates/zikaron-ui/src/datepick.rs",
     "crates/zikaron-ui/src/drop.rs",
@@ -4679,6 +4681,7 @@
     "crates/zikaron-ui/src/toolbar.rs",
     "crates/zikaron-ui/src/width.rs",
     "crates/zikaron-ui/tests/a8_ui.rs",
+    "crates/zikaron-ui/tests/compose.rs",
     "crates/zikaron-ui/tests/controls.rs",
     "crates/zikaron-ui/tests/covers_motion.rs",
     "crates/zikaron-ui/tests/gaps_b10.rs",
@@ -4690,6 +4693,7 @@
     "crates/zikaron-ui/tests/motion_edges.rs",
     "crates/zikaron-ui/tests/motion_frames.rs",
     "crates/zikaron-ui/tests/outside_pages.rs",
+    "crates/zikaron-ui/tests/pane_on_top.rs",
     "crates/zikaron-ui/tests/reveal.rs",
     "crates/zikaron-ui/tests/row_geometry.rs",
     "crates/zikaron-ui/tests/rows_structure.rs",
@@ -4863,6 +4867,14 @@
      "name": "switching_the_language_cross_fades_in_place"
     },
     {
+     "path": "crates/app/tests/checks_more/segments_in_place.rs",
+     "name": "the_records_pages_segment_keeps_the_page_and_shows_the_queue"
+    },
+    {
+     "path": "crates/app/tests/checks_more/segments_in_place.rs",
+     "name": "the_verify_pages_segment_keeps_the_page"
+    },
+    {
      "path": "crates/app/tests/checks_more/window_b10_layout.rs",
      "name": "a_double_click_on_the_handle_of_a_maximized_window_puts_it_back"
     },
@@ -4956,6 +4968,10 @@
     },
     {
      "path": "crates/zikaron-ui/src/datepick.rs",
+     "name": "a_bound_takes_the_days_up_to_it"
+    },
+    {
+     "path": "crates/zikaron-ui/src/datepick.rs",
      "name": "calendar_arithmetic"
     },
     {
@@ -5017,6 +5033,22 @@
     {
      "path": "crates/zikaron-ui/tests/a8_ui.rs",
      "name": "an_input_box_keeps_focus_when_a_row_comes_or_goes_above_it"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/compose.rs",
+     "name": "a_box_holds_only_what_was_committed"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/compose.rs",
+     "name": "a_box_without_the_focus_keeps_its_value_while_another_composes"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/compose.rs",
+     "name": "every_text_box_of_the_kit_draws_through_the_one_entrance"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/compose.rs",
+     "name": "submitting_or_leaving_mid_composition_keeps_the_letters_out"
     },
     {
      "path": "crates/zikaron-ui/tests/controls.rs",
@@ -5193,6 +5225,10 @@
     {
      "path": "crates/zikaron-ui/tests/layers.rs",
      "name": "a_card_with_room_on_neither_side_stays_inside_the_window"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/layers.rs",
+     "name": "a_detail_heads_pills_are_drawn_whole"
     },
     {
      "path": "crates/zikaron-ui/tests/layers.rs",
@@ -5440,11 +5476,35 @@
     },
     {
      "path": "crates/zikaron-ui/tests/outside_pages.rs",
+     "name": "a_segment_picked_on_its_page_keeps_the_page"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/outside_pages.rs",
      "name": "an_outside_page_table_is_drawn_moved_through_and_backed_out_of_by_the_same_shell"
     },
     {
      "path": "crates/zikaron-ui/tests/outside_pages.rs",
      "name": "the_shell_names_no_page"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/pane_on_top.rs",
+     "name": "a_row_lights_under_the_pointer_in_the_step_card"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/pane_on_top.rs",
+     "name": "the_covers_column_beside_the_card_stays_on_top"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/pane_on_top.rs",
+     "name": "the_kit_passcode_row_takes_keys_in_the_step_card"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/pane_on_top.rs",
+     "name": "the_light_follows_the_pointer_in_the_step_card"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/pane_on_top.rs",
+     "name": "the_wizards_sheet_passcode_cells_take_keys_in_the_step_card"
     },
     {
      "path": "crates/zikaron-ui/tests/reveal.rs",
@@ -5547,10 +5607,10 @@
   },
   {
    "id": "bilingual-table",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/src/lang.rs",
@@ -5645,10 +5705,10 @@
   },
   {
    "id": "app-skeleton",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     ".cargo/config.toml",
@@ -6059,10 +6119,10 @@
   },
   {
    "id": "cli-skeleton",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "CLI-SCHEMA.md",
@@ -6072,6 +6132,7 @@
     "crates/zikaron-cli/src/codes.rs",
     "crates/zikaron-cli/src/handoff.rs",
     "crates/zikaron-cli/src/lib.rs",
+    "crates/zikaron-cli/src/mcp.rs",
     "crates/zikaron-cli/src/out.rs",
     "crates/zikaron-cli/src/verbs.rs",
     "crates/zikaron-cli/tests/cli.rs",
@@ -6080,6 +6141,7 @@
     "crates/zikaron-cli/tests/endpoint_unechoed.rs",
     "crates/zikaron-cli/tests/gaps.rs",
     "crates/zikaron-cli/tests/key_file.rs",
+    "crates/zikaron-cli/tests/mcp_engine.rs",
     "crates/zikaron-cli/tests/misuse_words.rs",
     "crates/zikaron-cli/tests/proxy_flag.rs"
    ],
@@ -6381,6 +6443,14 @@
      "name": "every_verb_that_takes_the_key_takes_the_key_file"
     },
     {
+     "path": "crates/zikaron-cli/tests/mcp_engine.rs",
+     "name": "a_refused_token_is_named_where_it_stands"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/mcp_engine.rs",
+     "name": "the_tools_are_read_off_the_verb_table_and_the_table_handed_in"
+    },
+    {
      "path": "crates/zikaron-cli/tests/misuse_words.rs",
      "name": "a_number_past_the_ceiling_and_a_bad_port_are_said_as_that"
     },
@@ -6588,10 +6658,10 @@
   },
   {
    "id": "structure-pins",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "crates/app/tests/checks.rs",
@@ -7103,10 +7173,10 @@
   },
   {
    "id": "cli-desktop",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     "CLI-SCHEMA.md",
@@ -7545,6 +7615,14 @@
     {
      "path": "crates/zikaron-os/src/door.rs",
      "name": "a_read_waits_no_longer_than_its_deadline"
+    },
+    {
+     "path": "crates/zikaron-os/src/door.rs",
+     "name": "a_waiting_door_wakes_on_its_close_with_its_place_gone"
+    },
+    {
+     "path": "crates/zikaron-os/src/door.rs",
+     "name": "a_write_waits_no_longer_than_its_deadline"
     },
     {
      "path": "crates/zikaron-os/src/door.rs",
@@ -8156,9 +8234,9 @@
    ]
   },
   {
-   "why": "this product's own Model Context Protocol server for its command line, reached only through the verb table (`verbs::run` dispatches `mcp`); a product without it writes none.",
+   "why": "this product's own MCP tool table, handed to the engine (`mcp::serve`) by the verb table; each product writes its own.",
    "paths": [
-    "crates/zikaron-cli/src/mcp.rs"
+    "crates/zikaron-cli/src/mcptools.rs"
    ]
   }
  ],

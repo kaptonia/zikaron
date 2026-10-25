@@ -169,6 +169,12 @@ impl Win {
         self.ux.u3.form = Some(f);
     }
 
+    /// Open the note sheet naming `subject` (empty: no entry); nothing an earlier sheet chose carries over.
+    pub(super) fn annotate_open(&mut self, subject: String) {
+        self.typed.annotate_subject = subject;
+        self.u3_form_open(U3Form::Annotate);
+    }
+
     /// Open a confirmation. The send sheet opens at once with the gas cap still loading; the node is asked
     /// once the sheet is up (`estimate_due`).
     pub(super) fn u3_open_confirm(&mut self, cf: U3Confirm) {
@@ -1289,14 +1295,14 @@ impl Win {
                     st.field(ui, t(Key::AnnotateText), None, None, |ui, _| input::area_words(ui, &mut me.typed.annotate_note, 3, ""));
                     st.field(ui, t(Key::U3AnnotateWhich), None, None, |ui, w| {
                         // A picker over this ledger, newest first: number, type, summary and first anchor time; the
-                        // entry chosen stands in the field, "select" inside its right end.
-                        let faces: Vec<(String, String, String)> = rows
-                            .iter()
-                            .map(|row| {
+                        // entry chosen stands in the field, "select" inside its right end. The first item is "no
+                        // entry": choosing it clears the entry.
+                        let faces: Vec<(String, String, String)> = std::iter::once((String::new(), t(Key::LedgerAnnotateNone).to_string(), String::new()))
+                            .chain(rows.iter().map(|row| {
                                 let (tag, summary, _) = row_face(&rows, &reading, row);
                                 let at = row.anchored_at.map(crate::when::when).unwrap_or_else(|| t(Key::V2StateLanded).to_string());
                                 (format!("#{}", row.seq), format!("{tag} \u{b7} {summary}"), at)
-                            })
+                            }))
                             .collect();
                         let items: Vec<menu::Item> = faces.iter().map(|(seq, label, at)| menu::Item::Row(menu::Row { lead: seq, label, trail: at, ..Default::default() })).collect();
                         let words = date_words();
@@ -1306,14 +1312,17 @@ impl Win {
                             w: PICK_WIDE_W,
                             dates: Some(pick::Dates { words: &words, today: today_of((me.shell.clock)()), from_hint: t(Key::DateFrom), to_hint: t(Key::DateTo) }),
                         };
-                        let keep = |i: usize, q: &str, from: &str, to: &str| matches(q, &[&faces[i].0, &faces[i].1, &rows[i].id]) && crate::when::within(rows[i].anchored_at, from, to);
-                        let current = rows.iter().position(|r| me.typed.annotate_subject.trim().eq_ignore_ascii_case(&r.id));
-                        let mut shown = current.map(|i| format!("{} {}", faces[i].0, faces[i].1)).unwrap_or_default();
+                        let keep = |i: usize, q: &str, from: &str, to: &str| match i.checked_sub(1) {
+                            None => matches(q, &[&faces[0].1]),
+                            Some(r) => matches(q, &[&faces[i].0, &faces[i].1, &rows[r].id]) && crate::when::within(rows[r].anchored_at, from, to),
+                        };
+                        let current = rows.iter().position(|r| me.typed.annotate_subject.trim().eq_ignore_ascii_case(&r.id)).map(|r| r + 1);
+                        let mut shown = current.map(|i| format!("{} {}", faces[i].0, faces[i].1)).unwrap_or_else(|| if read && me.typed.annotate_subject.trim().is_empty() { faces[0].1.clone() } else { String::new() });
                         let hint = if read { t(Key::U3AnnotatePickHint) } else { t(Key::U3AnnotateNoRows) };
                         let look = fields::Look { icon: Some(Glyph::File), read_only: true, ..Default::default() };
                         let (_, picked) = fields::joined(ui, &mut shown, hint, w, look, Some(|ui: &mut egui::Ui| zikaron_ui::formparts::inner_pick(ui, "annotate-pick", t(Key::KitPickOpen), false, true, read, &spec, &items, &keep)));
                         if let Some(i) = picked.flatten() {
-                            me.typed.annotate_subject = rows[i].id.clone();
+                            me.typed.annotate_subject = i.checked_sub(1).map(|r| rows[r].id.clone()).unwrap_or_default();
                         }
                     });
                     zikaron_ui::fields::rows(ui, |ui, f| {
@@ -1343,6 +1352,7 @@ impl Win {
                     self.ux.u3.form = None;
                     self.ux.sheet_shake = None;
                     self.typed.annotate_note.clear();
+                    self.typed.annotate_subject.clear();
                 }
                 // Refused: the sheet stays, shakes, and the refusal is reported.
                 _ => self.ux.sheet_shake = Some(now),

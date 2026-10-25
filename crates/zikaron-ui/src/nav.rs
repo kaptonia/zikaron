@@ -185,13 +185,17 @@ pub fn route<T: Pages + ?Sized>(t: &mut T) -> T::Route {
     hist(t).cur.clone()
 }
 
-/// The page changed: how it enters, a new entrance, the body at its top, the place from the history's own page,
-/// then the product's part.
+/// The page changed: how it enters, a new entrance, the body at its top, then where it landed ([`landed`]).
 pub fn entered<T: Pages + ?Sized>(t: &mut T, how: motion::Entry, now: f64) {
     let f = t.frame_mut();
     f.entry = how;
     f.entry_key = f.entry_key.wrapping_add(1);
     f.scroll_y = 0.0;
+    landed(t, now);
+}
+
+/// Where the page landed: the place from the history's own page, then the product's part.
+fn landed<T: Pages + ?Sized>(t: &mut T, now: f64) {
     let bottom = hist(t).bottom().clone();
     if let Some(p) = t.root_place(&bottom) {
         t.frame_mut().place = Some(p);
@@ -219,14 +223,26 @@ pub fn fwd<T: Pages + ?Sized>(t: &mut T, now: f64) {
     }
 }
 
-/// A tab of a place's own page: the page is replaced in place and fades.
-pub fn set_tab<T: Pages + ?Sized>(t: &mut T, place: T::Place, now: f64) {
+/// The history shown stands on `place`'s own page alone.
+fn stand<T: Pages + ?Sized>(t: &mut T, place: T::Place) {
     let r = t.root(place);
     let h = hist(t);
     h.cur = r;
     h.back.clear();
     h.fwd.clear();
+}
+
+/// A tab of a place's own page: the page is replaced in place and fades.
+pub fn set_tab<T: Pages + ?Sized>(t: &mut T, place: T::Place, now: f64) {
+    stand(t, place);
     entered(t, motion::Entry::Fade, now);
+}
+
+/// A segment of a place's own page, picked on that page: the page stays (no entrance, its scroll kept), as every
+/// segment that changes only what is under it; the segment's thumb slides and what is under it swaps.
+pub fn seg_tab<T: Pages + ?Sized>(t: &mut T, place: T::Place, now: f64) {
+    stand(t, place);
+    landed(t, now);
 }
 
 /// Land on a place with a fresh history: its history becomes the shown one, standing where the product says.
@@ -369,7 +385,8 @@ pub fn page_area<T: Pages + ?Sized>(ui: &mut egui::Ui, t: &mut T, tips: (&str, &
     let off = off * motion::travel(&ctx);
     let scale = 1.0 + (how.scale(p) - 1.0) * motion::travel(&ctx);
     let start = crate::flow::mark(&ctx, body.layer_id());
-    let route_salt = motion::key_of(&(stack, name, key));
+    // The scroll is the page entrance's: a segment picked on the page ([`seg_tab`]) keeps it.
+    let route_salt = motion::key_of(&(stack, key));
     let shown = crate::scroll::page(&mut body, egui::ScrollArea::vertical().scroll_source(egui::scroll_area::ScrollSource { drag: false, ..egui::scroll_area::ScrollSource::ALL }).id_salt(("page", route_salt)).auto_shrink([false, false]), |ui| {
         // A page whose title is in the toolbar keeps a breath between the toolbar and its first block.
         let top = tk::S3;

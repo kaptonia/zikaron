@@ -31,6 +31,9 @@ use zikaron_glue::door::{Reply, Request};
 /// cannot hold up the next one.
 pub const REQUEST_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long the listener waits for a client to take its answer, so one that does not read cannot hold the door.
+pub const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// One verb accepted through the door: the flags it takes besides `--home`, and how a request becomes an
 /// action. The verb name is not written here; it is the one `Action::verb` gives the row's action ([`verbs`],
 /// [`turn_of`]), so the two can never disagree.
@@ -151,28 +154,58 @@ pub struct Asked {
     answer: Sender<Reply>,
 }
 
-/// The open door the shell holds: the home it serves, its closer, and the requests waiting for the shell's
-/// turn.
+/// The open door the shell holds: the home it serves, its closer, the requests waiting for the shell's turn,
+/// and the listener thread that writes each reply back.
 pub struct Door {
     home: PathBuf,
     closer: zikaron_os::door::Closer,
     asked: Receiver<Asked>,
     /// How many requests were received and handed to the shell.
     came: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    listener: Option<std::thread::JoinHandle<()>>,
+    /// The answer the listener waits for now, whoever holds the request (the close answers it too).
+    in_hand: InHand,
 }
 
-/// Dropping a door (with its shell, in the window or a test) closes it: waiting clients are answered
-/// [`Reply::Closed`] and the path is free for the next door.
+type InHand = std::sync::Arc<std::sync::Mutex<Option<Sender<Reply>>>>;
+
+/// Dropping a door closes it as [`Door::close`] does.
 impl Drop for Door {
     fn drop(&mut self) {
-        self.closer.close();
-        while let Ok(a) = self.asked.try_recv() {
-            let _ = a.answer.send(Reply::Closed);
-        }
+        self.close(None);
     }
 }
 
 impl Door {
+    /// The one way a door closes: nobody new is taken; every request it took (`doing`: the one in progress) is
+    /// answered [`Reply::Closed`]; and the listener has written its last reply back and ended before this returns.
+    /// Each place it can wait is bounded: the close wakes its accept itself, a request is read within
+    /// [`REQUEST_WAIT`], an answer taken within [`ANSWER_WAIT`]. Returns how many were answered here.
+    fn close(&mut self, doing: Option<Doing>) -> usize {
+        self.closer.close();
+        let mut told = 0;
+        if let Some(d) = doing {
+            let _ = d.answer().send(Reply::Closed);
+            told += 1;
+        }
+        // A request handed over after this finds no taker; the listener answers it `Closed` itself.
+        let taken = std::mem::replace(&mut self.asked, std::sync::mpsc::channel().1);
+        for a in taken.try_iter() {
+            let _ = a.answer.send(Reply::Closed);
+            told += 1;
+        }
+        drop(taken);
+        // The listener's request in hand, held anywhere (in a turn under way, say): answered here too, so the join
+        // never waits on an answer this thread holds. The first answer is the one it writes.
+        if let Some(tx) = self.in_hand.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = tx.send(Reply::Closed);
+        }
+        if let Some(h) = self.listener.take() {
+            let _ = h.join();
+        }
+        told
+    }
+
     /// The home this door is for.
     pub fn home(&self) -> &std::path::Path {
         &self.home
@@ -258,9 +291,10 @@ pub fn refused(f: &Fault) -> Reply {
 }
 
 /// The listener thread: accept the next client, read its request (within [`REQUEST_WAIT`], at most
-/// `zikaron_glue::door::CAP` bytes), hand it to the shell, wake the frame and write the shell's reply back.
+/// `zikaron_glue::door::CAP` bytes), hand it to the shell, wake the frame and write the shell's reply back (taken
+/// within [`ANSWER_WAIT`]).
 /// An unreadable request gets a refusal and the door stays open.
-fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<Waker>, came: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<Waker>, came: std::sync::Arc<std::sync::atomic::AtomicUsize>, in_hand: InHand) {
     use zikaron_glue::door::{put, take, Unread};
     loop {
         let mut s = match door.accept() {
@@ -274,7 +308,8 @@ fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<
             Ok(bytes) => match Request::of_bytes(&bytes) {
                 Some(req) => {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    if asked.send(Asked { req, answer: tx }).is_err() {
+                    *in_hand.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
+                    let reply = if asked.send(Asked { req, answer: tx }).is_err() {
                         Reply::Closed
                     } else {
                         came.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -284,7 +319,9 @@ fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<
                         // The shell answers every request it took; one dropped unanswered (door closed) is
                         // answered `Closed`.
                         rx.recv().unwrap_or(Reply::Closed)
-                    }
+                    };
+                    *in_hand.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    reply
                 }
                 None => refused(&Fault::known(Known::DoorUnread, crate::lang::t(crate::lang::Key::TailDoorNotForm).to_string())),
             },
@@ -292,7 +329,19 @@ fn wait_at(door: zikaron_os::door::Listener, asked: Sender<Asked>, wake: Option<
             // The client left (or sent nothing in time): nobody to answer.
             Err(Unread::Short) | Err(Unread::Io(_)) => continue,
         };
+        // The answer's own time to be taken starts once it is ready, however long the work took.
+        let _ = s.set_write_deadline(Some(ANSWER_WAIT));
         let _ = put(&mut s, &reply.to_bytes());
+    }
+}
+
+/// A shell dropped with its door open (a test, a probe) closes it with the request in progress, so the listener
+/// is not left waiting for that request's answer.
+impl Drop for Shell {
+    fn drop(&mut self) {
+        if let Some(mut d) = self.door.take() {
+            d.close(self.door_doing.take());
+        }
     }
 }
 
@@ -322,15 +371,8 @@ impl Shell {
             }
             return;
         }
-        if let Some(d) = self.door.take() {
-            d.closer.close();
-            // Requests received but not taken are answered `Closed`.
-            while let Ok(a) = d.asked.try_recv() {
-                self.door_send(&a.answer, Reply::Closed);
-            }
-            if let Some(doing) = self.door_doing.take() {
-                self.door_send(doing.answer(), Reply::Closed);
-            }
+        if let Some(mut d) = self.door.take() {
+            self.door_answered += d.close(self.door_doing.take());
         }
         let Some(home) = want else {
             self.door_shut = None;
@@ -355,11 +397,16 @@ impl Shell {
         let wake = self.door_waker.clone();
         let came = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = came.clone();
-        if let Err(e) = crate::task::start_named("door", move || wait_at(listener, tx, wake, counted)) {
-            closer.close();
-            return Err(Fault::known(Known::DoorShut, e.to_string()));
-        }
-        Ok(Door { home: home.to_path_buf(), closer, asked: rx, came })
+        let in_hand: InHand = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let held = in_hand.clone();
+        let listener = match crate::task::start_named("door", move || wait_at(listener, tx, wake, counted, held)) {
+            Ok(h) => h,
+            Err(e) => {
+                closer.close();
+                return Err(Fault::known(Known::DoorShut, e.to_string()));
+            }
+        };
+        Ok(Door { home: home.to_path_buf(), closer, asked: rx, came, listener: Some(listener), in_hand })
     }
 
     /// The door's turn, at the end of every drain (`landed`: what this drain received): the request in

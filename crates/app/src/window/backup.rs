@@ -49,6 +49,7 @@ impl Win {
             self.ux.bk_dir = self.shell.documents.clone();
         }
         self.shell.backup_peek = None;
+        self.shell.backup_made = None;
         self.ux.bk = Some(b);
     }
 
@@ -81,6 +82,11 @@ impl Win {
             // own password twice; what forgetting it means, in a call box; the passcode last. The file's name,
             // header and cipher stay with the data page's details.
             Bk::Export => {
+                // Open until the export has landed well; a failure stays here with its reason.
+                if self.shell.backup_made.take().is_some() {
+                    self.ux.bk_close();
+                    return;
+                }
                 let pin_full = self.ux.bk_pin.chars() == len;
                 let content = self.data_content();
                 let mut picked = None;
@@ -123,8 +129,10 @@ impl Win {
                                 dir: me.ux.bk_dir.clone(),
                             });
                         }
-                        close = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
-                        if busy {
+                        close = key::key(ui, t(Key::CfBack), Role::Secondary, !busy).clicked();
+                        if me.shell.tasks.in_flight(crate::task::Kind::Backup) {
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| me.stage_row(ui, crate::task::Kind::Backup));
+                        } else if busy {
                             sheet::foot_note(ui, t(Key::VaultBusy));
                         } else {
                             picked = foot_pick(ui, "bk-export", crate::platform::Pick::Folder);
@@ -134,7 +142,7 @@ impl Win {
                 if let Some(p) = picked {
                     self.ux.bk_dir = p;
                 }
-                esc = out.esc;
+                esc = out.esc && !busy;
             }
             // The backup file in one row (chosen at the bottom left), its password; from settings the passcode
             // and, in a call box, what it replaces. The words while it works stand in the foot.
@@ -320,8 +328,6 @@ impl Win {
     /// A backup sheet's answer (immediate or landed in the background).
     pub(super) fn bk_back(&mut self, r: Applied, now: f64) {
         match r {
-            // Exporting: the passcode passed and the backup is being written; the toast says when it lands.
-            Applied::Started(crate::task::Kind::Backup) if self.ux.bk == Some(Bk::Export) => self.ux.bk_close(),
             Applied::Mirrored { .. } => self.ux.bk_close(),
             Applied::BackupRestored(_) => {
                 // Restored: the first-run wizard is done (its steps now read the restored state).

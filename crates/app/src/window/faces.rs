@@ -607,6 +607,47 @@ pub struct WorkPick {
     pub after_open: (String, bool),
 }
 
+/// What picking a segment of a view's own page did (`probe_seg_tab`).
+#[derive(Clone, Debug, Default)]
+pub struct SegTab {
+    /// Whether the segment's words were drawn and pressed.
+    pub pressed: bool,
+    /// The page entrance counter before and after the press.
+    pub entry_before: u64,
+    pub entry_after: u64,
+    /// The route drawn after the press, the shell's page then, and whether back and forward were both empty.
+    pub route: String,
+    pub page: String,
+    pub history_empty: bool,
+    /// The page's scroll offset before and after the press.
+    pub scroll_before: f32,
+    pub scroll_after: f32,
+}
+
+/// What a new grant's custom validity did when its end block was pressed and a day picked on its calendar
+/// (`probe_grant_end_day`), read off the form's own cells and the calendar's days as drawn.
+#[derive(Default)]
+pub struct GrantEnd {
+    /// The date blocks drawn as controls (their calendars' salts), before any press.
+    pub live: Vec<String>,
+    /// The days of the end's calendar as it opened: `YYYY-MM-DD`, followed by ` off` for a day that takes no press.
+    pub days: Vec<String>,
+    /// After the start's own day was pressed on that calendar: the length's three parts, and whether the calendar
+    /// still drew its days.
+    pub off_lasts: [String; 3],
+    pub off_open: bool,
+    /// After the end day was picked: the length's three parts, the window's two seconds as the signing reads them
+    /// (empty when there is none), and whether the calendar still drew its days.
+    pub lasts: [String; 3],
+    pub from: String,
+    pub to: String,
+    pub open_after: bool,
+    /// After the length's days part was then set to `days_then`: the window's end second.
+    pub to_then: String,
+    /// The frame with the end's calendar open, when asked for.
+    pub picture: Option<Picture>,
+}
+
 /// What the "write alone" sheet did when its validity cells were typed into and its switch clicked
 /// (`probe_cli_sheet`).
 #[derive(Clone, Debug, Default)]
@@ -637,6 +678,105 @@ pub struct TypedUnder {
     pub under: usize,
     /// Whether the vault stayed locked throughout.
     pub locked: bool,
+}
+
+/// What typing the first-run wizard's passcode step did, by real key events ([`probe_wizard_pin_typed`]).
+#[derive(Clone, Debug, Default)]
+pub struct WizPinTyped {
+    /// Characters the step's passcode row held after each key of the first entry.
+    pub first: Vec<usize>,
+    /// Whether the first entry was taken: the row asks for it again.
+    pub asked_again: bool,
+    /// Characters the row held after each key of the second entry.
+    pub second: Vec<usize>,
+    /// The key store as the shell holds it once the second entry's task landed.
+    pub vault: Option<crate::shell::Vault>,
+    /// Whether the step's "next" key was drawn, and the step the wizard stands on after it was pressed.
+    pub next_drawn: bool,
+    pub after: Option<crate::nav::Step>,
+    /// The language before and after a press on the other language's cell of the cover's column, the step card up.
+    pub cover_lang: Option<(crate::lang::Lang, crate::lang::Lang)>,
+}
+
+/// What a press on an identity in the identity menu did ([`probe_id_menu_press`]).
+#[derive(Clone, Debug, Default)]
+pub struct IdMenuPress {
+    /// Whether the identity's row was found in the open menu and pressed.
+    pub pressed: bool,
+    /// The identity wished for after the press (`Shell::identity_wish`).
+    pub wish: Option<String>,
+    /// The kinds of background work in flight after the press.
+    pub flying: Vec<String>,
+}
+
+/// What exporting a whole-machine backup from its sheet did ([`probe_backup_export`]).
+#[derive(Default)]
+pub struct BackupRun {
+    /// Whether the export key was found and pressed.
+    pub pressed: bool,
+    /// The frames from the press until nothing ran, equal ones counted together.
+    pub frames: Vec<BackupFrame>,
+    /// Whether the sheet was open after Esc, and after a press on its back key, while the export ran.
+    pub open_after_esc: Option<bool>,
+    pub open_after_back: Option<bool>,
+    /// Once it landed: whether the sheet is open, and the refusal it says.
+    pub open_after: bool,
+    pub trouble: Option<crate::fault::Fault>,
+    /// The frame asked for, when one was drawn at that stage.
+    pub picture: Option<Picture>,
+}
+
+/// One frame of [`BackupRun`]: the sheet open, the export in flight, the stage it reported, the stage words drawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BackupFrame {
+    pub open: bool,
+    pub running: bool,
+    pub stage: Option<u8>,
+    pub words: Vec<String>,
+    /// How many frames in a row read so.
+    pub n: usize,
+}
+
+/// The entry the "add a note" sheet named at each point of [`probe_annotate_target`].
+#[derive(Clone, Debug, Default)]
+pub struct AnnotateTarget {
+    pub from_detail: String,
+    pub cancelled: bool,
+    pub wrote_first: bool,
+    pub after_write: String,
+    pub closed: bool,
+    pub reopened: bool,
+    pub reopened_names: String,
+    pub none_shown: bool,
+    pub after_pick: String,
+    pub after_none: String,
+    pub wrote_second: bool,
+}
+
+/// What the gate over a key store that cannot be read drew and did ([`probe_gate_aside`]).
+#[derive(Clone, Debug, Default)]
+pub struct GateAside {
+    /// Whether the key that sets the machine directory aside was drawn on the gate.
+    pub key_drawn: bool,
+    /// Every text the confirming sheet drew, once its key was pressed (empty when not pressed).
+    pub sheet: Vec<String>,
+    /// Whether its confirming key was pressed.
+    pub confirmed: bool,
+    /// The key store as the shell holds it after, and the wizard step open then.
+    pub vault: Option<crate::shell::Vault>,
+    pub wizard: Option<crate::nav::Step>,
+    /// The refusal said on the sheet, when the move was refused.
+    pub trouble: Option<crate::fault::Fault>,
+}
+
+/// What the gate over an empty store locked out did when its reset key was pressed ([`probe_gate_reset_empty`]).
+#[derive(Clone, Debug, Default)]
+pub struct GateReset {
+    /// Whether the reset key was drawn and pressed.
+    pub pressed: bool,
+    /// The key store as the shell holds it after, and the wizard step open then.
+    pub vault: Option<crate::shell::Vault>,
+    pub wizard: Option<crate::nav::Step>,
 }
 
 /// The passcode gate's column read by [`probe_gate_column`] (rectangles in points; the title by its drawn strokes).

@@ -41,10 +41,10 @@ impl Win {
         shell_nav::fwd(self, now);
     }
 
-    /// A tab of the view's own page (the segmented control in the toolbar): the page is replaced in place and
-    /// fades.
-    pub(super) fn set_tab(&mut self, place: P, now: f64) {
-        shell_nav::set_tab(self, place, now);
+    /// A segment of the view's own page picked on it: the page stays, the segment's thumb slides and what is under
+    /// it swaps.
+    pub(super) fn seg_tab(&mut self, place: P, now: f64) {
+        shell_nav::seg_tab(self, place, now);
     }
 
     /// A rail item: the same view goes back to its own page; another view shows where that view was left.
@@ -89,6 +89,13 @@ impl Win {
             crate::when::set(self.shell.settings.zone.unwrap_or(crate::when::Zone::Utc));
         }
         self.follow_page(now);
+        // A store that turns into no store (reset, or the machine set aside) starts setup over: the wizard is asked
+        // again.
+        let absent = self.shell.vault.absent();
+        if self.ux.vault_absent == Some(false) && absent {
+            self.ux.wizard_asked = false;
+        }
+        self.ux.vault_absent = Some(absent);
         // Whether the wizard opens by itself is asked once, and only with the gate down: while the vault is
         // locked the key cannot be read, and a locked machine would read as one without a key.
         let gate = self.shell.vault.gate_up();
@@ -256,9 +263,9 @@ impl Win {
         if let Some(i) = menu::show(ctx, id, anchor, true, min_w, &items) {
             let n = rows.len();
             if i >= 1 && i <= n {
+                // Whether the press moves anything is the action's to say; only one that moved goes home.
                 let r = &rows[i - 1];
-                if current.as_deref() != Some(r.id.as_str()) {
-                    self.act(Action::SwitchIdentity { id: r.id.clone() }, now);
+                if !matches!(self.act(Action::SwitchIdentity { id: r.id.clone() }, now), Applied::IdentityKept { .. }) {
                     shell_nav::home(self, motion::Entry::Fade, now);
                 }
             } else if i == n + 2 {
@@ -507,6 +514,18 @@ impl Win {
 pub(super) fn stagger<Out>(ui: &mut egui::Ui, i: usize, add: impl FnOnce(&mut egui::Ui) -> Out) -> Out {
     let key = shell_nav::entry_key(ui.ctx());
     motion::stagger(ui, egui::Id::new(("zikaron-stagger", i)), key, i, add)
+}
+
+/// What is under a segment of a view's own page: swapped in when the segment changes on the page, and on the page's
+/// own entrance coming with the page rather than swapping in over it.
+pub(super) fn tab_body<Out>(ui: &mut egui::Ui, salt: &str, key: u64, add: impl FnOnce(&mut egui::Ui) -> Out) -> Out {
+    let id = egui::Id::new(("zikaron-tab-body", salt));
+    let entry = shell_nav::entry_key(ui.ctx());
+    if ui.ctx().data(|d| d.get_temp::<u64>(id.with("entry"))) != Some(entry) {
+        ui.ctx().data_mut(|d| d.insert_temp(id.with("entry"), entry));
+        motion::set_age(ui.ctx(), id, key, 3600.0);
+    }
+    motion::swap(ui, id, key, add)
 }
 
 /// Tasks that run long enough to show on a button and on the rail.

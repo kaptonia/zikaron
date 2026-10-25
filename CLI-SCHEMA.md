@@ -935,7 +935,7 @@ sentence; `mcp` adds none. `kit-verify` goes this way when given `home` (a seale
 identities, with the credential or by the desktop), and with no `home` runs as typed (a plain package needs none; a
 sealed one is then the verb's misuse).
 
-**The tools** are read off the verb table (`mcp.rs` reads `verbs::HOME` and `ACCEPTS`; the tests pin the list):
+**The tools** are read off the verb table and this product's tool table (`mcp.rs` reads `verbs::HOME` and `ACCEPTS` with the table in `mcptools.rs`; the tests pin the list):
 
 | Tool | Parameters | Writes |
 |---|---|---|

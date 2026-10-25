@@ -198,6 +198,12 @@ pub(super) fn hint(ui: &mut egui::Ui, s: &str) {
     states::hint(ui, s);
 }
 
+/// The pill for an anchoring state at the head of a detail page.
+pub(super) fn lamp_hero(l: crate::ledgerx::Lamp, at: Option<u64>) -> zikaron_ui::card::HeroPill {
+    let (tone, live) = lamp_pill(l);
+    zikaron_ui::card::HeroPill { words: lamp_label(l, false, at), tone, live }
+}
+
 /// A pill for an anchoring state.
 pub(super) fn lamp_pill_ui(ui: &mut egui::Ui, l: crate::ledgerx::Lamp, at: Option<u64>) {
     let (tone, live) = lamp_pill(l);
@@ -260,9 +266,13 @@ impl Win {
     /// counted stage shows its count. Nothing while the task is not running, and nothing where the rail's status
     /// line reports the task already (the line is for where no rail is drawn: the first-run wizard).
     pub(super) fn stage_line(&self, ui: &mut egui::Ui, k: crate::task::Kind) {
-        if self.status_reports(k) {
-            return;
+        if !self.status_reports(k) {
+            self.stage_row(ui, k);
         }
+    }
+
+    /// The stage line itself, wherever it is drawn: a sheet that stays open while its task runs draws it in its foot.
+    pub(super) fn stage_row(&self, ui: &mut egui::Ui, k: crate::task::Kind) {
         let words = stage_words(k);
         let running = self.shell.tasks.in_flight(k);
         let id = ui.id().with(("zikaron-stage", k as u8));
@@ -316,6 +326,7 @@ pub(super) fn stage_words(k: crate::task::Kind) -> &'static [Key] {
         Kind::Reconcile => &[Key::StageReconcile],
         Kind::Archive => &[Key::DoMeasure],
         Kind::Publish => &[Key::StageFetchFiles],
+        Kind::Backup => &[Key::BackupStageCollect, Key::BackupCipher, Key::SetPen, Key::BackupStageVerify],
         Kind::Chain => &[Key::StageReadChain],
         Kind::ChainTime => &[Key::StageReadChain],
         Kind::Depth => &[Key::StageReadChain],

@@ -118,8 +118,49 @@ fn not_open(why: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::NotFound, why.to_string())
 }
 
-pub struct DoorListener(UnixListener);
-pub struct DoorStream(UnixStream);
+/// The listening socket, and a pair whose one end the close writes to so a waiting accept wakes at once.
+pub struct DoorListener {
+    l: UnixListener,
+    wake: (UnixStream, UnixStream),
+}
+/// One connection, and when its reads and its writes must each be done by (`set_read_deadline`,
+/// `set_write_deadline`).
+pub struct DoorStream(UnixStream, Due, Due);
+
+type Due = std::cell::Cell<Option<std::time::Instant>>;
+
+fn due(d: Option<std::time::Duration>) -> Due {
+    std::cell::Cell::new(d.map(|d| std::time::Instant::now() + d))
+}
+
+/// What is left until `until`, or `TimedOut` once it has passed (`None`: no deadline).
+fn left(until: &Due, late: &str) -> std::io::Result<Option<std::time::Duration>> {
+    match until.get().map(|u| u.saturating_duration_since(std::time::Instant::now())) {
+        Some(l) if l.is_zero() => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, late.to_string())),
+        l => Ok(l),
+    }
+}
+
+const READ_LATE: &str = "nothing came within the deadline";
+const WRITE_LATE: &str = "the other end took nothing within the deadline";
+
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+const POLLIN: i16 = 0x1;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+type Nfds = std::ffi::c_ulong;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+type Nfds = std::ffi::c_uint;
+
+unsafe extern "C" {
+    fn poll(fds: *mut PollFd, nfds: Nfds, timeout: i32) -> i32;
+}
 
 unsafe extern "C" {
     fn getuid() -> u32;
@@ -201,27 +242,49 @@ pub fn door_listen(place: &Path) -> std::io::Result<DoorListener> {
         Err(e) => return Err(e),
     };
     std::fs::set_permissions(place, std::fs::Permissions::from_mode(0o600))?;
-    Ok(DoorListener(l))
+    l.set_nonblocking(true)?;
+    let wake = UnixStream::pair()?;
+    wake.1.set_nonblocking(true)?;
+    Ok(DoorListener { l, wake })
 }
 
 impl DoorListener {
-    /// The next client; its user is not yet checked ([`DoorStream::same_user`]).
+    /// The next client; its user is not yet checked ([`DoorStream::same_user`]). Waits for a client or the close,
+    /// whichever comes first; after the close, `NotFound`.
     pub fn accept(&self) -> std::io::Result<DoorStream> {
-        let (s, _) = self.0.accept()?;
-        Ok(DoorStream(s))
+        use std::os::fd::AsRawFd;
+        loop {
+            let mut fds = [PollFd { fd: self.l.as_raw_fd(), events: POLLIN, revents: 0 }, PollFd { fd: self.wake.0.as_raw_fd(), events: POLLIN, revents: 0 }];
+            // SAFETY: two live descriptors this listener owns, in an array that outlives the call.
+            if unsafe { poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if fds[1].revents != 0 {
+                return Err(not_open("the door is closed"));
+            }
+            match self.l.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false)?;
+                    return Ok(DoorStream(s, due(None), due(None)));
+                }
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
-/// Close the endpoint: wake a waiting [`DoorListener::accept`], then remove the socket file, after which a
-/// connect finds nothing (`NotFound`), whether or not the listening socket is still open.
-pub fn door_close(place: &Path, _listener: Option<&DoorListener>) {
-    door_knock(place);
+/// Close the endpoint: wake a waiting [`DoorListener::accept`] through the listener's own pair (whatever became
+/// of the path), then remove the socket file, after which a connect finds nothing (`NotFound`).
+pub fn door_close(place: &Path, listener: Option<&DoorListener>) {
+    if let Some(l) = listener {
+        let _ = std::io::Write::write(&mut &l.wake.1, &[1]);
+    }
     door_remove(place);
-}
-
-/// Connect and disconnect at once, to wake a [`DoorListener::accept`] that is waiting.
-fn door_knock(place: &Path) {
-    let _ = UnixStream::connect(place);
 }
 
 /// Remove the endpoint's socket file (only if it is a socket).
@@ -243,7 +306,7 @@ pub fn door_connect(place: &Path) -> std::io::Result<DoorStream> {
         Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(not_open(&e.to_string())),
         Err(e) => return Err(e),
     };
-    Ok(DoorStream(s))
+    Ok(DoorStream(s, due(None), due(None)))
 }
 
 impl DoorStream {
@@ -253,21 +316,43 @@ impl DoorStream {
         same_user(&self.0)
     }
 
+    /// How long all reads from now on may take together.
     pub fn set_read_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.0.set_read_timeout(d)
+        self.1.set(due(d).get());
+        if d.is_none() {
+            let _ = self.0.set_read_timeout(None);
+        }
+        Ok(())
+    }
+
+    /// How long all writes from now on may take together.
+    pub fn set_write_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.2.set(due(d).get());
+        if d.is_none() {
+            let _ = self.0.set_write_timeout(None);
+        }
+        Ok(())
     }
 }
 
 impl std::io::Read for DoorStream {
-    /// A read past its deadline returns `TimedOut` (some unix systems report `WouldBlock`).
+    /// A read past its deadline returns `TimedOut`.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf).map_err(|e| if e.kind() == std::io::ErrorKind::WouldBlock { std::io::Error::new(std::io::ErrorKind::TimedOut, e.to_string()) } else { e })
+        // A socket whose peer has gone may refuse the option (macOS: `EINVAL`); it does not block then.
+        if let Some(l) = left(&self.1, READ_LATE)? {
+            let _ = self.0.set_read_timeout(Some(l));
+        }
+        self.0.read(buf).map_err(|e| if e.kind() == std::io::ErrorKind::WouldBlock { std::io::Error::new(std::io::ErrorKind::TimedOut, READ_LATE) } else { e })
     }
 }
 
 impl std::io::Write for DoorStream {
+    /// A write past its deadline returns `TimedOut`.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        std::io::Write::write(&mut self.0, buf)
+        if let Some(l) = left(&self.2, WRITE_LATE)? {
+            let _ = self.0.set_write_timeout(Some(l));
+        }
+        std::io::Write::write(&mut self.0, buf).map_err(|e| if e.kind() == std::io::ErrorKind::WouldBlock { std::io::Error::new(std::io::ErrorKind::TimedOut, WRITE_LATE) } else { e })
     }
     fn flush(&mut self) -> std::io::Result<()> {
         std::io::Write::flush(&mut self.0)

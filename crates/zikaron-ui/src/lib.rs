@@ -18,6 +18,7 @@ pub mod button;
 pub mod callout;
 pub mod card;
 pub mod cells;
+pub mod compose;
 pub mod covers;
 pub mod datepick;
 pub mod drop;

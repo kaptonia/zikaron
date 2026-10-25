@@ -5358,6 +5358,8 @@ mod unsafe_confined;
 mod recovery_seals;
 #[path = "checks_more/window_habits.rs"]
 mod window_habits;
+#[path = "checks_more/segments_in_place.rs"]
+mod segments_in_place;
 #[path = "checks_more/cli_writes.rs"]
 mod cli_writes;
 #[path = "checks_more/handed_off.rs"]

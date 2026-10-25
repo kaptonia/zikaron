@@ -131,6 +131,11 @@ impl Stream {
     pub fn set_read_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
         self.0.set_read_deadline(d)
     }
+
+    /// How long a write waits for the other end to take it before returning `TimedOut` (`None`: forever).
+    pub fn set_write_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.0.set_write_deadline(d)
+    }
 }
 
 impl std::io::Read for Stream {
@@ -408,6 +413,40 @@ mod tests {
         });
         let _c = connect(&at).expect("in");
         assert_eq!(server.join().expect("server").err(), Some(std::io::ErrorKind::TimedOut));
+        closer.close();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The close wakes a waiting `accept` by itself, whatever became of the place: removed under it, the waiter
+    /// still wakes and says the door is closed.
+    #[test]
+    fn a_waiting_door_wakes_on_its_close_with_its_place_gone() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let d = scratch("gone");
+        let at = place(&d, "t12");
+        let (l, closer) = listen(&at).expect("open");
+        let server = std::thread::spawn(move || l.accept().map(|s| s.is_none()).map_err(|e| e.kind()));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(&d);
+        closer.close();
+        assert_eq!(server.join().expect("server"), Ok(true), "woken, and closed");
+    }
+
+    /// A write with a deadline to a client that takes nothing returns `TimedOut`.
+    #[test]
+    fn a_write_waits_no_longer_than_its_deadline() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let d = scratch("wdl");
+        let at = place(&d, "t13");
+        let (l, closer) = listen(&at).expect("open");
+        let server = std::thread::spawn(move || {
+            let mut s = l.accept().expect("accept").expect("open");
+            s.set_write_deadline(Some(std::time::Duration::from_millis(200))).expect("deadline");
+            s.write_all(&vec![0u8; 16 << 20]).map_err(|e| e.kind())
+        });
+        let c = connect(&at).expect("in");
+        assert_eq!(server.join().expect("server"), Err(std::io::ErrorKind::TimedOut));
+        drop(c);
         closer.close();
         let _ = std::fs::remove_dir_all(&d);
     }

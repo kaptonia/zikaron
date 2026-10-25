@@ -1339,18 +1339,36 @@ fn show_value(ui: &mut egui::Ui, show: Show, room: f32) -> Option<String> {
 }
 
 
-/// The head of a detail page: a large title (24/32 bold), a line under it, and a pill on the right on the
-/// title's middle; flush with the page's edges, 2 above and 6 below.
-pub fn hero(ui: &mut egui::Ui, title: &str, sub: &str, struck: bool, pill: impl FnOnce(&mut egui::Ui)) -> Rect {
-    egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 6 }).show(ui, |ui| hero_row(ui, title, sub, struck, pill)).response.rect
+/// A pill at the head of a detail page; `live` spins it.
+pub struct HeroPill {
+    pub words: String,
+    pub tone: crate::palette::Tone,
+    pub live: bool,
 }
 
-fn hero_row(ui: &mut egui::Ui, title: &str, sub: &str, struck: bool, pill: impl FnOnce(&mut egui::Ui)) -> Rect {
+/// The head of a detail page: a large title (24/32 bold), a line under it, and its pills on the right on the
+/// title's middle, the first rightmost; flush with the page's edges, 2 above and 6 below.
+pub fn hero(ui: &mut egui::Ui, title: &str, sub: &str, struck: bool, pills: &[HeroPill]) -> Rect {
+    egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 6 }).show(ui, |ui| hero_row(ui, title, sub, struck, pills)).response.rect
+}
+
+fn hero_row(ui: &mut egui::Ui, title: &str, sub: &str, struck: bool, pills: &[HeroPill]) -> Rect {
     let w = ui.available_width();
+    // The pills' room is what they measure: a pill narrows to the room it is given.
+    let gap = ui.spacing().item_spacing.x;
+    let slot = pills.iter().map(|p| mark::pill_w(ui, &p.words, p.live)).sum::<f32>() + gap * pills.len().saturating_sub(1) as f32;
     let r = ui
         .allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            // The pill on the title's middle, not the middle of title and sub together.
-            ui.allocate_ui_with_layout(vec2(0.0, 32.0), egui::Layout::right_to_left(egui::Align::Center), pill);
+            // The pills on the title's middle, not the middle of title and sub together.
+            ui.allocate_ui_with_layout(vec2(slot, 32.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for p in pills {
+                    if p.live {
+                        mark::pill_live(ui, &p.words, p.tone);
+                    } else {
+                        mark::pill(ui, &p.words, p.tone);
+                    }
+                }
+            });
             ui.add_space(tokens::S4);
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;

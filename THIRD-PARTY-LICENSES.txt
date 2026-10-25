@@ -1,4 +1,4 @@
-ZIKARON Desk 0.1.4 — third-party licenses
+ZIKARON Desk 0.1.5 — third-party licenses
 
 The ZIKARON Desk application and the zikaron command line include the Rust crates listed below (as
 linked on macOS) and the fonts whose licences follow them. Each is used under the license shown. Every

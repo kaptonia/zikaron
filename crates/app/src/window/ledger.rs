@@ -40,7 +40,10 @@ impl Win {
         self.ensure_rows(now);
         let items = [menu::row(t(Key::U3AdoptTitle)), menu::row(t(Key::TagHandover)), menu::row(t(Key::U3AnnotateGo)), menu::row(t(Key::U3AttestTitle))];
         if let Some(i) = menu::menu_key(ui, "ledger-more", t(Key::NavMore), false, 190.0, &items) {
-            self.u3_form_open([U3Form::Adopt, U3Form::Succeed, U3Form::Annotate, U3Form::Attest][i]);
+            match [U3Form::Adopt, U3Form::Succeed, U3Form::Annotate, U3Form::Attest][i] {
+                U3Form::Annotate => self.annotate_open(String::new()),
+                form => self.u3_form_open(form),
+            }
         }
         // "Unconfirmed": every entry the chain has not confirmed yet (`Lamp::confirmed`), a wider set than the
         // queue the Records page counts as "Pending".
@@ -332,13 +335,7 @@ impl Win {
         let mut annotate = false;
         let files = if row.kind == E::History { self.files_of(&row.id) } else { Vec::new() };
         stagger(ui, 0, |ui| {
-            card::hero(ui, &summary, &format!("#{} \u{b7} {tag}", row.seq), struck, |ui| {
-                if struck {
-                    mark::pill(ui, t(Key::V2Deleted), PillTone::Grey);
-                } else {
-                    lamp_pill_ui(ui, row.lamp, at);
-                }
-            });
+            card::hero(ui, &summary, &format!("#{} \u{b7} {tag}", row.seq), struck, &[if struck { card::HeroPill { words: t(Key::V2Deleted).to_string(), tone: PillTone::Grey, live: false } } else { lamp_hero(row.lamp, at) }]);
         });
         stagger(ui, 1, |ui| {
             card::section(ui, t(Key::BasicInfo), "", |ui| {
@@ -432,8 +429,7 @@ impl Win {
             self.act(Action::QueueEntry { id: row.id.clone() }, now);
         }
         if annotate {
-            self.typed.annotate_subject = row.id.clone();
-            self.u3_form_open(U3Form::Annotate);
+            self.annotate_open(row.id.clone());
         }
         if let Some(cf) = confirm {
             self.u3_open_confirm(cf);

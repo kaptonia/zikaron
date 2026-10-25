@@ -152,12 +152,17 @@ fn seat_start(shell: &mut Shell, want: crate::roles::Role) -> Applied {
 /// opened and read run in the background (`Kind::Seat`), and the shell moves into it where it lands
 /// ([`seat_landed`]), on the seat in use if the identity occupies it, else its first occupied seat
 /// (`Row::seat_here_or_first`). Asked while a switch runs, the identity is wished (`Shell::identity_wish`, the last
-/// one asked stands; a seat wished before it gives way) and the switch goes on to it when the one running lands.
+/// one asked stands, the one it started from too; a seat wished before it gives way) and the switch goes on to it
+/// when the one running lands. Asked for the identity in use with no switch running, nothing moves.
 pub(super) fn switch_identity(shell: &mut Shell, id: &str) -> Applied {
     if shell.tasks.in_flight(Kind::Seat) {
         shell.identity_wish = Some(id.to_string());
         shell.seat_wish = None;
         return Applied::Started(Kind::Seat);
+    }
+    let current = shell.identities.as_ref().and_then(crate::identity::now_row).map(|(x, _)| x.id);
+    if current.is_some_and(|c| c.eq_ignore_ascii_case(id)) {
+        return Applied::IdentityKept { id: id.to_string() };
     }
     identity_start(shell, id.to_string())
 }

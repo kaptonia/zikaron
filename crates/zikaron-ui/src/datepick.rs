@@ -19,6 +19,9 @@
 //! separator, one row of two menu rows, "today · clear" (the whole row filled with the accent on hover, like a
 //! menu row), on every level.
 //!
+//! A calendar may be given a bound: the days up to it (itself included) are faint and take no press, nor does
+//! "today" when it is one of them.
+//!
 //! **This control only picks a day**, written `YYYY-MM-DD`. What counts as today, which zone the days are in
 //! and how a list is filtered by them are the caller's.
 
@@ -85,6 +88,11 @@ pub fn fmt((y, m, d): Day) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Whether `day` can be picked under the bound `after` (the days up to it, itself included, cannot).
+pub fn pickable(day: Day, after: Option<Day>) -> bool {
+    after.is_none_or(|a| day > a)
+}
+
 /// The month `by` months away, across years.
 fn shift((y, m): (i32, u32), by: i32) -> (i32, u32) {
     let k = y * 12 + (m as i32 - 1) + by;
@@ -140,7 +148,7 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
         let (y, m, _) = parse(value).unwrap_or(today);
         ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
     }
-    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, rect, ui.clip_rect(), value, today, words);
+    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, rect, ui.clip_rect(), value, None, today, words);
     crate::menu::stay(ui, id, rect);
     match picked {
         Some(v) if v != *value => {
@@ -152,20 +160,22 @@ pub fn field(ui: &mut egui::Ui, id_salt: &str, value: &mut String, hint: &str, w
 }
 
 /// A calendar hung from a control the caller drew (a date block of [`span`], whose calendar goes by
-/// [`block_salt`], from the same `ui`): pressing `resp` opens or closes it on the month of `value` (today's month
-/// when there is none); a day picked lands in `value`. "Clear" leaves `value` as it was (a block always holds a
-/// day). Returns whether `value` changed this frame.
-pub fn hang(ui: &mut egui::Ui, id_salt: &str, resp: &egui::Response, value: &mut String, today: Day, words: &Words) -> bool {
+/// [`block_salt`], from the same `ui`): pressing `resp` opens or closes it on the month of `value` (when there is
+/// none, the bound's month, else today's); a day picked lands in `value`, the days up to `after` not pickable.
+/// "Clear" leaves `value` as it was (a block always holds a day). Returns whether a day was picked this frame, the
+/// day it held among them.
+#[allow(clippy::too_many_arguments)]
+pub fn hang(ui: &mut egui::Ui, id_salt: &str, resp: &egui::Response, value: &mut String, after: Option<Day>, today: Day, words: &Words) -> bool {
     let id = ui.id().with(("zikaron-date", id_salt));
     if resp.clicked() {
         crate::menu::toggle(ui.ctx(), id);
-        let (y, m, _) = parse(value).unwrap_or(today);
+        let (y, m, _) = parse(value).or(after).unwrap_or(today);
         ui.ctx().data_mut(|d| d.insert_temp(id.with("view"), (y, m)));
     }
-    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), value, today, words);
+    let picked = calendar(ui.ctx(), Some(ui.layer_id()), id, resp.rect, ui.clip_rect(), value, after, today, words);
     crate::menu::stay(ui, id, resp.rect);
     match picked {
-        Some(v) if !v.is_empty() && v != *value => {
+        Some(v) if !v.is_empty() => {
             *value = v;
             true
         }
@@ -227,6 +237,9 @@ pub fn span(ui: &mut egui::Ui, id_salt: &str, from: Block, between: &str, to: Bl
         };
         line(b.month, Type::Micro, r.top() + 3.0 + Type::Micro.line() / 2.0, c(C::Ink2), "month");
         line(b.day, Type::Strong, r.top() + 1.0 + Type::Micro.line() + Type::Strong.line() / 2.0, c(C::Ink), "day");
+        if live {
+            crate::probe::spot(ui.ctx(), &block_salt(id_salt, i), r);
+        }
         out.push(if live { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp });
     }
     let mid = Rect::from_min_max(pos2(rect.left() + fw + BLOCK_GAP, rect.top()), pos2(rect.right() - tw - BLOCK_GAP, rect.bottom()));
@@ -280,9 +293,19 @@ fn decade(y: i32) -> i32 {
 }
 
 /// One cell of a calendar level: lit under the pointer, a step darker pressed, solid when chosen, framed when it
-/// is today's; a month or a year (`wide`) lies on a grey tone even at rest. Returns whether it was picked.
+/// is today's; a month or a year (`wide`) lies on a grey tone even at rest; a day past the bound (`off`) is faint
+/// and takes no press. Returns whether it was picked.
 #[allow(clippy::too_many_arguments)]
-fn cell(ui: &mut egui::Ui, id: egui::Id, r: Rect, words: &str, chosen: bool, now_ring: bool, quiet: bool, wide: bool, alpha: f32) -> bool {
+fn cell(ui: &mut egui::Ui, id: egui::Id, r: Rect, words: &str, chosen: bool, now_ring: bool, quiet: bool, wide: bool, off: bool, alpha: f32) -> bool {
+    if off {
+        ui.interact(r, id, egui::Sense::hover());
+        let a = alpha * tokens::OFF;
+        if now_ring {
+            ui.painter().rect_stroke(r, Radius::Cell.egui(), egui::Stroke::new(1.5_f32, c(C::Accent).gamma_multiply(a)), egui::StrokeKind::Inside);
+        }
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, words, Type::Body.font(), c(C::Ink3).gamma_multiply(a));
+        return false;
+    }
     let resp = ui.interact(r, id, egui::Sense::click());
     let lit = crate::flow::pointer_on(ui, r);
     let p = ui.painter();
@@ -307,7 +330,7 @@ fn cell(ui: &mut egui::Ui, id: egui::Id, r: Rect, words: &str, chosen: bool, now
 
 /// The open calendar card; returns the day picked (`Some("")` is clear).
 #[allow(clippy::too_many_arguments)]
-fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, value: &str, today: Day, words: &Words) -> Option<String> {
+fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, value: &str, after: Option<Day>, today: Day, words: &Words) -> Option<String> {
     if !crate::menu::is_open(ctx, id) {
         return None;
     }
@@ -412,7 +435,9 @@ fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, an
                     let (col, row) = ((i % 7) as f32, (i / 7) as f32);
                     let r = at(Rect::from_min_size(pos2(left + CELL_W * col, rows_top + CELL_H * row), vec2(CELL_W, CELL_H)).shrink(1.0));
                     let here = (day.0, day.1) == (view.y, view.m);
-                    if cell(ui, id.with(("day", i)), r, &day.2.to_string(), chosen == Some(day), day == today, !here, false, a) {
+                    let open = pickable(day, after);
+                    crate::probe::spot(ui.ctx(), &if open { fmt(day) } else { format!("{} off", fmt(day)) }, r);
+                    if cell(ui, id.with(("day", i)), r, &day.2.to_string(), chosen == Some(day), day == today, !here, false, !open, a) {
                         picked = Some(fmt(day));
                     }
                 }
@@ -423,7 +448,7 @@ fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, an
                     let (col, row) = (((m - 1) % 3) as f32, ((m - 1) / 3) as f32);
                     let r = at(Rect::from_min_size(pos2(page.left() + cw * col, page.top() + ch * row), vec2(cw, ch)).shrink2(vec2(4.0, 6.0)));
                     let on = chosen.map(|d| (d.0, d.1) == (view.y, m)).unwrap_or(false);
-                    if cell(ui, id.with(("month", m)), r, &(words.month_alone)(m), on, (today.0, today.1) == (view.y, m), false, true, a) {
+                    if cell(ui, id.with(("month", m)), r, &(words.month_alone)(m), on, (today.0, today.1) == (view.y, m), false, true, false, a) {
                         next = View { level: Level::Days, m, at: now, ..view };
                     }
                 }
@@ -436,7 +461,7 @@ fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, an
                     let (col, row) = ((k % 3) as f32, (k / 3) as f32);
                     let r = at(Rect::from_min_size(pos2(page.left() + cw * col, page.top() + ch * row), vec2(cw, ch)).shrink2(vec2(4.0, 6.0)));
                     let on = chosen.map(|d| d.0 == y).unwrap_or(false);
-                    if cell(ui, id.with(("year", k)), r, &(words.year)(y), on, today.0 == y, k == 0 || k == 11, true, a) {
+                    if cell(ui, id.with(("year", k)), r, &(words.year)(y), on, today.0 == y, k == 0 || k == 11, true, false, a) {
                         next = View { level: Level::Months, y, at: now, ..view };
                     }
                 }
@@ -447,9 +472,16 @@ fn calendar(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, an
         let half = (rect.width() - PAD * 2.0) / 2.0;
         for (k, label) in [(0, words.today), (1, words.clear)] {
             let r = Rect::from_min_size(pos2(rect.left() + PAD + half * k as f32, foot_top), vec2(half, ROW_H));
+            let face = if k == 0 { Rect::from_min_max(r.min, pos2(r.right() - 3.0, r.bottom())) } else { Rect::from_min_max(pos2(r.left() + 3.0, r.top()), r.max) };
+            // "Today" past the bound is faint and takes no press, as the day is.
+            if k == 0 && !pickable(today, after) {
+                ui.interact(r, id.with(("foot", k)), egui::Sense::hover());
+                ui.painter().rect_filled(face, Radius::Cell.egui(), c(C::Tone).gamma_multiply(tokens::OFF));
+                ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, label, Type::Key.font(), c(C::Ink).gamma_multiply(tokens::OFF));
+                continue;
+            }
             let resp = ui.interact(r, id.with(("foot", k)), egui::Sense::click());
             let hot = crate::flow::pointer_on(ui, r);
-            let face = if k == 0 { Rect::from_min_max(r.min, pos2(r.right() - 3.0, r.bottom())) } else { Rect::from_min_max(pos2(r.left() + 3.0, r.top()), r.max) };
             let ground = if hot && resp.is_pointer_button_down_on() { C::TonePress } else if hot { C::ToneHover } else { C::Tone };
             ui.painter().rect_filled(face, Radius::Cell.egui(), c(ground));
             ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, label, Type::Key.font(), c(C::Ink));
@@ -537,5 +569,20 @@ mod tests {
         assert_eq!((august[5], august[35], august[36], august[41]), ((2026, 8, 1), (2026, 8, 31), (2026, 9, 1), (2026, 9, 6)));
         // January's page takes its leading days from the year before.
         assert_eq!(grid((2027, 1))[0], (2026, 12, 28));
+    }
+
+    /// A bound leaves the days up to it, itself included, unpickable, across a month and a year; no bound leaves every
+    /// day. Victim: whoever picks an end that is not after the start, signing a window of no length.
+    #[test]
+    fn a_bound_takes_the_days_up_to_it() {
+        let at = Some((2026, 10, 3));
+        assert!(!pickable((2026, 10, 3), at));
+        assert!(!pickable((2026, 10, 2), at));
+        assert!(!pickable((2026, 9, 30), at));
+        assert!(!pickable((2025, 12, 31), at));
+        assert!(pickable((2026, 10, 4), at));
+        assert!(pickable((2026, 11, 1), at));
+        assert!(pickable((2027, 1, 1), at));
+        assert!(pickable((1, 1, 1), None));
     }
 }

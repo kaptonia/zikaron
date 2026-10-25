@@ -56,6 +56,26 @@ pub fn boot_home(shell: &mut Shell) -> String {
     root
 }
 
+/// Set the machine directory aside, only over a key store that cannot be read; a new one is settled in its place,
+/// the shell lets go of what it read, and the first-run wizard opens.
+pub(super) fn set_machine_aside(shell: &mut Shell) -> Applied {
+    if !matches!(shell.vault, crate::shell::Vault::Damaged(_)) {
+        let at = crate::home::machine_dir().map(|p| p.display().to_string()).unwrap_or_default();
+        return shell.trouble(crate::fault::Fault::known(crate::fault::Known::KeyboxNotEmpty, at));
+    }
+    let day = crate::when::day((shell.clock)());
+    match crate::home::set_machine_aside(&day) {
+        Ok(a) => {
+            if let Err(f) = crate::home::settle_machine() {
+                shell.faults.push(f);
+            }
+            shell.after_lock();
+            Applied::MachineAside { from: a.from.display().to_string(), to: a.to.display().to_string() }
+        }
+        Err(f) => shell.trouble(f),
+    }
+}
+
 /// Opens set-aside old data for reading (one of `Shell::aside`). The current home is remembered for returning,
 /// and the machine pointer is not written. The old data keeps its read-only mark, so nothing is written there
 /// or exported from it.

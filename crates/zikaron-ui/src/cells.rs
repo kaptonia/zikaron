@@ -37,18 +37,22 @@ pub fn cells(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&
         let wrong = bad.get(i).copied().unwrap_or(false);
         let cell = Rect::from_min_size(pos2(x, rect.top() + 4.0), vec2(cell_w, rect.height() - 8.0));
         let mut cu = child.new_child(egui::UiBuilder::new().max_rect(cell).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let edit = egui::TextEdit::singleline(value)
-            .id(id.with(i))
-            .font(Type::Mono.font())
-            .text_color(if wrong { c(C::Bad) } else { c(C::Ink) })
-            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)))
-            .desired_width(cell_w - 8.0)
-            .horizontal_align(egui::Align::Center)
-            .vertical_align(egui::Align::Center);
-        let r = cu.add(edit);
-        if value.is_empty() {
-            child.painter().text(cell.center(), egui::Align2::CENTER_CENTER, hint, Type::Mono.font(), c(C::Ink3));
-        }
+        let painter = child.painter().clone();
+        let r = crate::compose::around(&mut cu, id.with(i), value, |cu, value| {
+            let edit = egui::TextEdit::singleline(value)
+                .id(id.with(i))
+                .font(Type::Mono.font())
+                .text_color(if wrong { c(C::Bad) } else { c(C::Ink) })
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)))
+                .desired_width(cell_w - 8.0)
+                .horizontal_align(egui::Align::Center)
+                .vertical_align(egui::Align::Center);
+            let r = cu.add(edit);
+            if value.is_empty() {
+                painter.text(cell.center(), egui::Align2::CENTER_CENTER, hint, Type::Mono.font(), c(C::Ink3));
+            }
+            r
+        });
         x = cell.right() + tokens::S2;
         let g = crate::paint::galley(ui, unit, Type::Body, c(C::Ink2));
         let gw = g.size().x;

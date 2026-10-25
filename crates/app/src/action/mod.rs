@@ -116,6 +116,9 @@ pub enum Action {
     /// Delete an empty vault entirely: only for a vault with a passcode set and no identity built yet. Any
     /// slot or recovery seal present is refused by name (`keybox::reset_empty`) and the file is unchanged.
     ResetEmptyKeybox,
+    /// Only over a key store that cannot be read: set the whole machine directory aside (`home::set_machine_aside`)
+    /// and start over in the first-run wizard. Over a store that reads, refused by name.
+    SetMachineAside,
     /// Lock: the master key is wiped at once and key-using actions are refused from then on.
     Lock,
     /// Change the passcode: the old one first, then the same master key is resealed under the new one.
@@ -615,6 +618,7 @@ impl Action {
             | Action::Unlock { .. }
             | Action::Reseal { .. }
             | Action::ResetEmptyKeybox
+            | Action::SetMachineAside
             | Action::Lock
             | Action::SetAutoLock { .. }
             // Restoring on the locked card is the way out of the lock: it brings its own new passcode.
@@ -729,6 +733,7 @@ impl Action {
             | Action::Unlock { .. }
             | Action::Reseal { .. }
             | Action::ResetEmptyKeybox
+            | Action::SetMachineAside
             | Action::Lock
             | Action::SetAutoLock { .. }
             | Action::ChangePin { .. }
@@ -826,6 +831,7 @@ impl Action {
             Action::Unlock { .. } => None,
             Action::Reseal { .. } => None,
             Action::ResetEmptyKeybox => None,
+            Action::SetMachineAside => None,
             Action::Lock => None,
             Action::ChangePin { .. } => None,
             Action::RecoverWords { .. } => None,
@@ -1069,6 +1075,8 @@ pub enum Applied {
     IdentityNamed { id: String, label: String },
     /// Switched to this identity.
     IdentitySwitched { id: String },
+    /// Asked for the identity in use with no switch running: nothing moved.
+    IdentityKept { id: String },
     /// This identity was deleted (key slots and registry row; homes kept).
     IdentityDeleted { id: String },
     /// The vault is open (set, unlock, change and the recoveries each succeed with this).
@@ -1077,6 +1085,8 @@ pub enum Applied {
     LockedUp,
     /// An empty vault was deleted; this machine is back to "no passcode set".
     KeyboxReset,
+    /// The machine directory was set aside (`from`, now at `to`); a new one stands in its place.
+    MachineAside { from: String, to: String },
     /// The passcode was changed.
     PinChanged,
     /// Idle locking was switched or its time changed (machine-wide): whether it is on, and after how long.
@@ -1686,6 +1696,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
+        Action::SetMachineAside => set_machine_aside(shell),
         Action::Lock => {
             // If a task that writes local data is still running, the lock takes effect on screen now (every
             // action is refused as locked) and completes (master key wiped, home closed) once those tasks land,

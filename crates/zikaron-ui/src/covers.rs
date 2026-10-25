@@ -308,7 +308,11 @@ pub fn pane<R>(ctx: &egui::Context, over: egui::LayerId, step: u64, dir: f32, re
     let off = if was.is_some() { PANE_FROM * dir * (1.0 - e) * motion::travel(ctx) } else { 0.0 };
     let alpha = if was.is_some() { e.clamp(0.0, 1.0) } else { 1.0 };
     ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: 1.0, translation: vec2(off, 0.0) });
-    let r = crate::layer::over(ctx, layer).show(ctx, |ui| {
+    // The card's room is the area's own, and only that room: placed at the card's corner and holding its rectangle,
+    // the area is what the pointer and the keys find there (`layer_id_at` reads an area's rectangle), while the
+    // cover's column beside it stays the cover's.
+    let r = crate::layer::area(layer.id, layer.order).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
+        ui.expand_to_include_rect(rect);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
         child.set_clip_rect(rect);
         child.multiply_opacity(alpha);

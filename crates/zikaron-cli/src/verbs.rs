@@ -205,7 +205,7 @@ pub fn run(a: &Args) -> Answer {
         "take-over" => crate::handoff::take_over(a),
         "show" => show(a),
         "contract" => contract(a),
-        "mcp" => crate::mcp::serve(a),
+        "mcp" => crate::mcp::serve(a, &crate::mcptools::TABLE),
         // A verb not in the table is named by its place and length, never echoed (it may be anything pasted).
         other => out::misuse(Reason::Args, out::Subject::Placed { at: 1, bytes: other.len() }, out::Said::NotAVerb),
     }
