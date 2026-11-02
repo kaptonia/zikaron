@@ -49,8 +49,23 @@ pub(super) fn ask_path(kind: super::Pick) -> Result<super::Wait, crate::fault::F
     }))
 }
 
+/// Environment variable choosing the window system: `x11` or `wayland` (any case). Unset, empty or anything
+/// else keeps the automatic choice.
+const WINDOW_SYSTEM_ENV: &str = "ZIKARON_WINDOW_SYSTEM";
+
 pub(super) fn window_backend() -> super::Backend {
-    match std::env::var_os("DISPLAY") {
+    pick_backend(std::env::var_os(WINDOW_SYSTEM_ENV).as_deref(), std::env::var_os("DISPLAY").as_deref())
+}
+
+/// The window system for a `ZIKARON_WINDOW_SYSTEM` value and a `DISPLAY` value: the named one when the value
+/// names one, else X11 when there is an X display, else the windowing layer's own pick.
+fn pick_backend(choice: Option<&std::ffi::OsStr>, display: Option<&std::ffi::OsStr>) -> super::Backend {
+    match choice.and_then(|c| c.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("x11") => return super::Backend::X11,
+        Some("wayland") => return super::Backend::Wayland,
+        _ => {}
+    }
+    match display {
         Some(d) if !d.is_empty() => super::Backend::X11,
         _ => super::Backend::Default,
     }
@@ -60,5 +75,24 @@ pub(super) fn user_temp_dir() -> Option<std::path::PathBuf> {
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         Some(v) => Some(std::path::PathBuf::from(v)),
         None => Some(std::path::PathBuf::from("/tmp")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_backend, super::Backend};
+    use std::ffi::OsStr;
+
+    #[test]
+    fn the_window_system_switch_wins_over_the_x_display() {
+        let x = Some(OsStr::new(":0"));
+        assert_eq!(pick_backend(None, x), Backend::X11);
+        assert_eq!(pick_backend(None, None), Backend::Default);
+        assert_eq!(pick_backend(None, Some(OsStr::new(""))), Backend::Default);
+        assert_eq!(pick_backend(Some(OsStr::new("wayland")), x), Backend::Wayland);
+        assert_eq!(pick_backend(Some(OsStr::new("Wayland")), None), Backend::Wayland);
+        assert_eq!(pick_backend(Some(OsStr::new("x11")), None), Backend::X11);
+        assert_eq!(pick_backend(Some(OsStr::new("")), x), Backend::X11);
+        assert_eq!(pick_backend(Some(OsStr::new("mir")), None), Backend::Default);
     }
 }

@@ -84,15 +84,24 @@ pub fn run_hooked(start: Start, hooks: Option<Hooks>) -> i32 {
         ..Default::default()
     };
     // The window system the platform interface chose (on Linux, X11 when there is an X display: files are
-    // dropped on the window there).
+    // dropped on the window there; `ZIKARON_WINDOW_SYSTEM` overrides it).
     #[cfg(target_os = "linux")]
     let opts = {
         let mut opts = opts;
-        if crate::platform::window_backend() == crate::platform::Backend::X11 {
-            opts.event_loop_builder = Some(Box::new(|b| {
-                use winit::platform::x11::EventLoopBuilderExtX11;
-                b.with_x11();
-            }));
+        match crate::platform::window_backend() {
+            crate::platform::Backend::X11 => {
+                opts.event_loop_builder = Some(Box::new(|b| {
+                    use winit::platform::x11::EventLoopBuilderExtX11;
+                    b.with_x11();
+                }));
+            }
+            crate::platform::Backend::Wayland => {
+                opts.event_loop_builder = Some(Box::new(|b| {
+                    use winit::platform::wayland::EventLoopBuilderExtWayland;
+                    b.with_wayland();
+                }));
+            }
+            crate::platform::Backend::Default => {}
         }
         opts
     };

@@ -72,13 +72,17 @@ pub fn ask_path(kind: Pick) -> Result<Wait, crate::fault::Fault> {
 
 /// Which window system to open on. On Linux the window uses X11 when an X display exists (XWayland on a
 /// Wayland desktop), because the windowing layer delivers dropped files on X11 but not on Wayland, and
-/// dropping is how folders are added; without an X display it uses Wayland.
+/// dropping is how folders are added; without an X display it uses Wayland. `ZIKARON_WINDOW_SYSTEM=x11` or
+/// `=wayland` overrides this (for an X server that does not pass drops on, such as xwayland-satellite, where
+/// native Wayland at least runs without the X layer).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backend {
     /// Whatever the windowing layer picks (macOS; Linux without an X display).
     Default,
     /// X11.
     X11,
+    /// Wayland (Linux, chosen with `ZIKARON_WINDOW_SYSTEM=wayland`).
+    Wayland,
 }
 
 pub fn window_backend() -> Backend {

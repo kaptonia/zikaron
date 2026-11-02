@@ -58,8 +58,8 @@ wgpu = { version = "29", default-features = false, features = ["std", "parking_l
 eframe = { version = "0.34", default-features = false, features = ["glow", "x11", "wayland"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 log = "0.4"
-# The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).
-winit = { version = "0.30", default-features = false, features = ["x11"] }
+# The windowing layer eframe already brings, named here only to ask it for X11 or Wayland (`window/probes.rs`).
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
 
 # H11 · Windows only: the file dialog is `rfd` over the system's own dialog. It enters through the `platform`
 # module; the macOS and Linux builds are unchanged.
