@@ -99,6 +99,7 @@ ZIKARON Desk 是一个本机桌面应用：把你的作品或文件记进一本�
 - 别的架构或发行版，按仓库 README 的「从源码构建」构建。从源码构建的应用打开「启用 zikaron 命令」时，在 `~/.local/bin` 放一个名为 `zikaron` 的链接，这个文件夹要在你的 `PATH` 里。在 x86_64 的 Linux 上运行 `packaging/linux/build.sh` 可以自己打出 `.deb` 与 AppImage；在 aarch64 上它只打出 `.deb`，AppImage 一步因为没有这个架构的固定运行时而报错停下。
 - 系统文件对话框要走桌面门户，需装 `xdg-desktop-portal` 和一个后端（如 `xdg-desktop-portal-gtk`）。没有门户时，点选文件会提示「系统的选档框在这台机器上开不了。」，这时可以把文件直接拖进窗口。
 - 把文件拖进窗口要经 X11：有 X 显示时（包括 Wayland 桌面上的 XWayland），窗口走 X11；没有 X 显示的纯 Wayland 会话里，窗口走 Wayland，收不到拖进来的文件。
+- 拖放要能到达，XWayland 须是完整的 X 服务（如 GNOME、KDE、Sway、Hyprland）。在 xwayland-satellite 下（如 niri），Wayland 程序拖出的文件到不了 X11 窗口，拖进窗口没有反应；这时用选档框选文件和文件夹，或在命令行 `zikaron` 里直接给路径。要自己选窗口系统，用 `ZIKARON_WINDOW_SYSTEM=wayland`（原生 Wayland，不需 XWayland，仍收不到拖入的文件）或 `ZIKARON_WINDOW_SYSTEM=x11` 启动窗口；不设时，只要有 `DISPLAY` 就走 X11。
 - 在 Linux 上，既收文件也收文件夹的拖放区（如新建存证）点开的选档框只能选文件；要给文件夹，请把文件夹拖进来。「选择目录」照常选文件夹。
 
 **Windows**
