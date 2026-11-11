@@ -11,3 +11,7 @@ base/zikaron-core/contracts/cache/
 
 # Packaging output
 dist/
+
+# Nix build output
+result
+result-*
