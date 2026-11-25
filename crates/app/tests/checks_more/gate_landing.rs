@@ -1,7 +1,3 @@
-//! The passcode gate in front of the five actions that ask for it again on an open vault only checks the
-//! passcode: it opens nothing, and an action whose vault locked while its passcode was checked is not done. A
-//! backup that fails anywhere inside its task is recorded on this machine.
-
 use app::action::{apply, Action, Applied};
 
 fn settled(shell: &mut app::shell::Shell, k: app::task::Kind) {
@@ -17,8 +13,6 @@ fn pin() -> app::secret::Secret {
     app::secret::Secret::from(String::from("27618394"))
 }
 
-/// A correct passcode checked on a locked vault answers yes and the vault stays locked; a wrong one counts one
-/// try, as an opening does, and a correct one clears the count.
 #[test]
 fn checking_the_passcode_opens_nothing() {
     if super::alone_in(module_path!(), "checking_the_passcode_opens_nothing") {
@@ -37,8 +31,6 @@ fn checking_the_passcode_opens_nothing() {
     assert!(matches!(app::keybox::state(), Ok(app::keybox::State::Locked { .. })), "and still locked");
 }
 
-/// The words asked for, then the vault locked while the passcode is checked: the landing reads where the vault
-/// stands, refuses as locked, shows nothing, and leaves the vault locked.
 #[test]
 fn a_passcode_action_whose_vault_locks_meanwhile_is_not_done() {
     if super::alone_in(module_path!(), "a_passcode_action_whose_vault_locks_meanwhile_is_not_done") {
@@ -60,7 +52,6 @@ fn a_passcode_action_whose_vault_locks_meanwhile_is_not_done() {
     assert!(!shell.unlocked(), "the vault stays locked");
     assert!(matches!(app::keybox::state(), Ok(app::keybox::State::Locked { .. })), "on disk too: {:?}", app::keybox::state());
     assert_eq!(shell.faults.get(faults..).and_then(|f| f.last()).and_then(|f| f.which()), Some(app::fault::Known::Locked), "refused as locked");
-    // Open again, ask again: shown, as before.
     apply(&mut shell, Action::Unlock { pin: pin() });
     settled(&mut shell, app::task::Kind::Vault);
     apply(&mut shell, Action::RevealWords { pin: pin() });
@@ -68,8 +59,6 @@ fn a_passcode_action_whose_vault_locks_meanwhile_is_not_done() {
     assert_eq!(shell.words.as_ref().map(|w| w.len()), Some(12), "shown on an open vault");
 }
 
-/// A backup whose folder cannot be made (a file stands where it would go): the task fails, and the failure is
-/// recorded on this machine, as a failure to write or read the file back always was.
 #[test]
 fn a_backup_that_fails_anywhere_in_its_task_is_recorded() {
     if super::alone_in(module_path!(), "a_backup_that_fails_anywhere_in_its_task_is_recorded") {

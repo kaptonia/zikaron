@@ -1,18 +1,8 @@
-//! Grant drafter, and the grant register with the double-sale gate.
-//!
-//! The drafter decides nothing: a grant's field format follows law §6.3 and is judged by the core's
-//! thirteen-step entry check. This module only lays a few cells out as an object; a mistake is refused by
-//! the core at once, and the error shown is the spec's token, not a message made up here.
-
 use crate::fault::{Fault, Known};
 use crate::home::Home;
 use zikaron::json::Value;
-use zikaron::tokens::EntryType;
+use zikaron_glue::book::Kind as EntryType;
 
-// ───────────────────────── Drafting (law §6.3) ─────────────────────────
-
-/// The form's cells. Empty optional cells are left out of the body (law §6.10: extra members belong to
-/// readings; giving fewer is not an error).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
     pub grantee: String,
@@ -22,13 +12,12 @@ pub struct Draft {
     pub from: String,
     pub to: String,
     pub scope_md: String,
-    /// The kit reading (treated as data by law §6.10); the page labels it "kit reading, not base grammar".
     pub upstream: String,
+    pub ledger: String,
+    pub revocation: Option<crate::sendx::Member>,
+    pub supersedes: String,
 }
 
-/// Lays out law §6.3's body. Key names are JSON keys, not spec tokens (as in `entryx`).
-///
-/// Format checks (hex20 / hex32 / from ≤ to) belong to the core's entry check and are not repeated here.
 pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
     let need = |s: &str, what: &str| -> Result<String, Fault> {
         let t = s.trim();
@@ -54,13 +43,22 @@ pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
     if !d.upstream.trim().is_empty() {
         body.push(("upstream".to_string(), Value::Str(d.upstream.trim().to_string())));
     }
+    if !d.ledger.trim().is_empty() {
+        body.push(("ledger".to_string(), Value::Str(d.ledger.trim().to_ascii_lowercase())));
+    }
+    if let Some(m) = d.revocation {
+        body.push((zikaron_kit::v2::tokens::Key::Revocation.as_str().to_string(), m.value()));
+    }
+    if !d.supersedes.trim().is_empty() {
+        body.push(("supersedes".to_string(), Value::Str(d.supersedes.trim().to_ascii_lowercase())));
+    }
     let (f, t) = (d.from.trim(), d.to.trim());
     match (f.is_empty(), t.is_empty()) {
         (true, true) => {}
         (false, false) => {
             let num = |s: &str, what: &str| -> Result<u64, Fault> {
                 s.parse::<u64>().map_err(|_| {
-                    Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::Tail155, &[&(what).to_string(), &format!("{:?}", s)]))
+                    Fault::known(Known::SettingsShape, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail155, &[&(what).to_string(), &format!("{:?}", s)])))
                 })
             };
             body.push((
@@ -71,12 +69,10 @@ pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
                 ]),
             ));
         }
-        // The window is one object whose two cells are both present or both absent (law §6.3). With only
-        // half given, say so at once instead of letting the core report a message about object members.
         _ => {
             return Err(Fault::known(
                 Known::FieldMissing,
-                crate::lang::t(crate::lang::Key::Tail158).to_string(),
+                crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail158).to_string()),
             ))
         }
     }
@@ -84,17 +80,14 @@ pub fn grant_body(d: &Draft) -> Result<Value, Fault> {
     Ok(Value::Obj(body))
 }
 
-/// Drafts a grant's bytes.
-///
-/// Recording and queueing are separate steps in the action, each with its own status colour.
 pub fn draft(
     secret: &crate::key::Secret,
     d: &Draft,
     head: (u64, String),
+    ledger: &str,
 ) -> Result<crate::entryx::Sealed, Fault> {
-    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W7);
-    let body = grant_body(d)?;
+    let body = grant_body(&Draft { ledger: ledger.to_string(), ..d.clone() })?;
     crate::entryx::seal(
         secret,
         EntryType::Grant.as_str(),
@@ -104,9 +97,6 @@ pub fn draft(
     )
 }
 
-// ───────────────────────── Register and double-sale gate ─────────────────────────
-
-/// One row of the register.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
@@ -115,39 +105,74 @@ pub struct Row {
     pub work: String,
     pub terms: String,
     pub window: Option<(u64, u64)>,
-    /// Whether this grant carries the local exclusive flag (this machine's bookkeeping, not in the entry
-    /// bytes). The double-sale gate reads it.
     pub exclusive: bool,
-    /// Where exclusivity comes from: the record made at signing, or the older list in the settings file (no
-    /// terms document).
     pub exclusive_from: crate::termsx::Exclusive,
-    /// The terms document kept at signing (relative path under `kits`); `None` when there is none.
     pub doc: Option<String>,
-    /// The display name of that document (`termsx::Record::shown_name`).
     pub doc_name: Option<String>,
-    /// Whether this ledger has a revocation referencing it.
     pub revoked: bool,
+    pub unnoticed: bool,
+    pub member: bool,
+    pub superseded: bool,
+    pub undecided: Option<Undecided>,
 }
 
-/// A row's state badge now. Closed set of five.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Undecided {
+    Unread(u64, String),
+    Uncounted(u64),
+    NotApplying(Option<u64>),
+}
+
+impl Undecided {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Undecided::Unread(..) => "unread",
+            Undecided::Uncounted(_) => "uncounted",
+            Undecided::NotApplying(_) => "not-applying",
+        }
+    }
+
+    pub fn chain(&self) -> Option<u64> {
+        match self {
+            Undecided::Unread(c, _) => Some(*c),
+            Undecided::Uncounted(c) => Some(*c),
+            Undecided::NotApplying(c) => *c,
+        }
+    }
+
+    pub fn words(&self) -> String {
+        let on = |key: crate::lang::Key, c: Option<u64>| match c {
+            Some(c) => format!("{} {c}", crate::lang::t(key)),
+            None => crate::lang::t(key).to_string(),
+        };
+        match self {
+            Undecided::Unread(_, w) => w.clone(),
+            Undecided::Uncounted(c) => on(crate::lang::Key::NoticesUncounted, Some(*c)),
+            Undecided::NotApplying(c) => on(crate::lang::Key::NoticesNotApplying, *c),
+        }
+    }
+}
+
+impl Row {
+    pub fn migratable(&self, now: Option<u64>) -> bool {
+        let ended = matches!((self.window, now), (Some((_, to)), Some(n)) if n > to);
+        !self.member && !self.superseded && !self.revoked && !self.unnoticed && !ended
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Badge {
-    /// Within the window.
     Live,
-    /// Expired.
     Expired,
-    /// The window has not opened yet. Kept apart from "expired": calling an exclusive license that starts
-    /// next month "expired" would tell the user the opposite of the truth.
     NotYet,
-    /// Revoked.
     Revoked,
-    /// No reading: no window, or no usable now yet (deadlines use only chain time and an injected now).
+    Unnoticed,
     Unknown,
 }
 
 impl Badge {
-    pub const ALL: [Badge; 5] =
-        [Badge::Live, Badge::Expired, Badge::NotYet, Badge::Revoked, Badge::Unknown];
+    pub const ALL: [Badge; 6] =
+        [Badge::Live, Badge::Expired, Badge::NotYet, Badge::Revoked, Badge::Unnoticed, Badge::Unknown];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -155,17 +180,22 @@ impl Badge {
             Badge::Expired => "expired",
             Badge::NotYet => "not_yet",
             Badge::Revoked => "revoked",
+            Badge::Unnoticed => "unnoticed",
             Badge::Unknown => "unknown",
         }
     }
 }
 
 impl Row {
-    /// This row's badge. `now` is passed in from outside (deadline and window decisions use only chain time
-    /// and an injected now); without `now` there is no reading, never a guessed "within the window".
     pub fn badge(&self, now: Option<u64>) -> Badge {
         if self.revoked {
             return Badge::Revoked;
+        }
+        if self.unnoticed {
+            return Badge::Unnoticed;
+        }
+        if self.undecided.is_some() {
+            return Badge::Unknown;
         }
         match (self.window, now) {
             (Some((a, b)), Some(n)) => {
@@ -192,39 +222,27 @@ fn text<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
     }
 }
 
-/// A grant's window (law §6.3); also used for grants in other people's ledgers.
 pub fn window_of(body: &Value) -> Option<(u64, u64)> {
-    let Value::Obj(m) = body else { return None };
-    let (_, w) = m.iter().find(|(k, _)| k == "window")?;
-    let Value::Obj(ws) = w else { return None };
-    let g = |k: &str| -> Option<u64> {
-        ws.iter().find(|(n, _)| n == k).and_then(|(_, x)| match x {
-            Value::Int(n) => Some(*n),
-            _ => None,
-        })
-    };
-    Some((g("from")?, g("to")?))
+    zikaron_seal::terms::window_of(body)
 }
 
-/// Reads the register once: one row per grant in the ledger. A grant counts as revoked when a revocation in
-/// this ledger references it (law §6.4: only the issuing ledger can revoke). Exclusivity and documents come
-/// from the issuance record (`termsx`, written once at signing).
 pub fn table(home: &Home) -> Result<Vec<Row>, Fault> {
     let records = crate::termsx::records(home)?;
     let survey = home
         .ledger()?
         .survey()?;
-    let mut entries: Vec<zikaron::entry::Entry> = Vec::new();
+    let standing = crate::sendx::standing(&survey.items, &crate::sendx::record::noticed());
+    let revocations_of = |items: &[Vec<u8>]| -> Vec<String> {
+        items.iter().filter_map(|b| zikaron_glue::book::check(b).ok()).filter(|e| e.kind == EntryType::Revocation).filter_map(|e| text(&e.body, "grant").map(|s| s.to_string())).collect()
+    };
+    let revoked = revocations_of(&standing);
+    let mut entries: Vec<zikaron_glue::book::Entry> = Vec::new();
     for b in &survey.items {
-        if let Ok(e) = zikaron::entry::check(b) {
+        if let Ok(e) = zikaron_glue::book::check(b) {
             entries.push(e);
         }
     }
-    let revoked: Vec<String> = entries
-        .iter()
-        .filter(|e| e.kind == EntryType::Revocation)
-        .filter_map(|e| text(&e.body, "grant").map(|s| s.to_string()))
-        .collect();
+    let superseded: Vec<String> = entries.iter().filter(|e| e.kind == EntryType::Grant && e.body.member(zikaron_kit::v2::tokens::Key::Revocation.as_str()).is_some()).filter_map(|e| text(&e.body, "supersedes").map(str::to_ascii_lowercase)).collect();
     let mut rows: Vec<Row> = entries
         .iter()
         .filter(|e| e.kind == EntryType::Grant)
@@ -241,6 +259,10 @@ pub fn table(home: &Home) -> Result<Vec<Row>, Fault> {
                 doc: records.iter().find(|r| r.grant.eq_ignore_ascii_case(&id)).and_then(|r| r.doc.clone()),
                 doc_name: records.iter().find(|r| r.grant.eq_ignore_ascii_case(&id)).and_then(|r| r.shown_name().map(str::to_string)),
                 revoked: revoked.iter().any(|r| *r == id),
+                unnoticed: !revoked.iter().any(|r| *r == id) && !crate::sendx::unsettled(&survey.items, std::slice::from_ref(&id)).is_empty(),
+                member: e.body.member(zikaron_kit::v2::tokens::Key::Revocation.as_str()).is_some(),
+                superseded: superseded.contains(&id),
+                undecided: None,
                 seq: e.seq,
                 id,
             }
@@ -250,7 +272,6 @@ pub fn table(home: &Home) -> Result<Vec<Row>, Fault> {
     Ok(rows)
 }
 
-/// Filter by grantee or record. Empty means no limit; prefix match, case ignored.
 pub fn filter(rows: &[Row], grantee: &str, work: &str) -> Vec<Row> {
     let g = grantee.trim().to_ascii_lowercase();
     let w = work.trim().to_ascii_lowercase();
@@ -261,41 +282,17 @@ pub fn filter(rows: &[Row], grantee: &str, work: &str) -> Vec<Row> {
         .collect()
 }
 
-/// Whether two windows overlap. A side without a window counts as "forever" (law §6.3: what a grant without
-/// a window means is up to the terms), so it overlaps anything.
 pub fn overlaps(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> bool {
-    match (a, b) {
-        (Some((a0, a1)), Some((b0, b1))) => a0 <= b1 && b0 <= a1,
-        _ => true,
-    }
+    zikaron_seal::terms::overlaps(a, b)
 }
 
-/// The double-sale gate: fires only when the record matches, the windows overlap, and the existing grant
-/// carries the local exclusive flag.
-///
-/// The third condition is the limit: terms are a hash, so exclusivity cannot be read from them by machine.
-/// The gate enforces the author's own note of exclusivity at issuance, not a spec rule that two grants
-/// exclude each other (law §6.3: two grants say nothing about each other). The page says so.
 pub fn conflicts(rows: &[Row], work: &str, window: Option<(u64, u64)>) -> Vec<Row> {
-    let w = work.trim().to_ascii_lowercase();
-    rows.iter()
-        .filter(|r| !r.revoked)
-        .filter(|r| r.exclusive)
-        .filter(|r| r.work.to_ascii_lowercase() == w)
-        .filter(|r| overlaps(r.window, window))
-        .cloned()
-        .collect()
+    let held: Vec<zikaron_seal::terms::Held> = rows.iter().map(|r| zikaron_seal::terms::Held { id: r.id.clone(), work: r.work.clone(), window: r.window, revoked: r.revoked, exclusive: r.exclusive }).collect();
+    let ids = zikaron_seal::terms::clashes(&held, work, window);
+    rows.iter().filter(|r| ids.contains(&r.id)).cloned().collect()
 }
 
-// ───────────────────────── Revocation flow ─────────────────────────
-
-/// The body of `revocation` (law §6.4: `grant` required hex32, `case` optional hex32).
-///
-/// Who issues the `case` is up to the terms (law §6.4: a court judgment, an arbitration award or a case file
-/// within the ecosystem all qualify); this module does not judge the issuer and only records the digest. A
-/// revocation without `case` says exactly that: revoked, citing no decision.
 pub fn revocation_body(grant: &str, case: &str) -> Result<Value, Fault> {
-    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W9);
     let g = grant.trim();
     if g.is_empty() {
@@ -310,17 +307,12 @@ pub fn revocation_body(grant: &str, case: &str) -> Result<Value, Fault> {
     Ok(Value::Obj(body))
 }
 
-/// A grant's story: the grant and the revocations referencing it.
 pub struct Story {
     pub grant: Option<Row>,
-    /// (revocation id, the decision digest it cites).
     pub revocations: Vec<(String, Option<String>)>,
 }
 
-/// Links a grant with its revocations. Only the issuing ledger can revoke (law §6.4), so only this ledger
-/// is searched.
 pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
-    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::W9);
     let want = grant_id.trim().to_string();
     let survey = home
@@ -328,7 +320,7 @@ pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
         .survey()?;
     let mut revocations: Vec<(String, Option<String>)> = Vec::new();
     for b in &survey.items {
-        let Ok(e) = zikaron::entry::check(b) else { continue };
+        let Ok(e) = zikaron_glue::book::check(b) else { continue };
         if e.kind != EntryType::Revocation {
             continue;
         }
@@ -345,14 +337,16 @@ pub fn story(home: &Home, grant_id: &str) -> Result<Story, Fault> {
     Ok(Story { grant: rows.into_iter().find(|r| r.id == want), revocations })
 }
 
-/// Whether the draft form may be signed: grantee, record and terms fingerprint are present, none of the
-/// three hex cells mixes cases (the core refuses checksum addresses by name), and a preset validity has chain
-/// time to count from. Without chain time a preset has no window, and signing would write a grant with no
-/// window at all, which is not what someone who chose "30 days" asked for.
 pub fn draft_ready(grantee: &str, work: &str, terms: &str, upstream: &str, preset_days: u32, chain_now: Option<u64>) -> bool {
     let mixed_case = [grantee, terms, upstream].iter().any(|x| x.trim().strip_prefix("0x").map(|h| h.bytes().any(|b| b.is_ascii_uppercase())).unwrap_or(false));
     let preset_unfilled = preset_days > 0 && chain_now.is_none();
-    !grantee.trim().is_empty() && !work.trim().is_empty() && !terms.trim().is_empty() && !mixed_case && !preset_unfilled
+    !grantee.trim().is_empty() && !grantee_shape_bad(grantee) && !work.trim().is_empty() && !terms.trim().is_empty() && !mixed_case && !preset_unfilled
+}
+
+pub fn grantee_shape_bad(grantee: &str) -> bool {
+    let g = grantee.trim();
+    let mixed = g.strip_prefix("0x").is_some_and(|h| h.bytes().any(|b| b.is_ascii_uppercase()));
+    !mixed && crate::addressedx::not_address(g, crate::addressedx::Takes::Address)
 }
 
 #[cfg(test)]
@@ -386,5 +380,16 @@ mod draft_ready_tests {
         assert!(!draft_ready(G, W, "", "", 0, Some(1)));
         assert!(!draft_ready("0x2dA333B436F845D65C9a9D7beA9A819062e3c2ff", W, T, "", 0, Some(1)));
         assert!(!draft_ready(G, W, T, "0xABC", 0, Some(1)));
+    }
+
+    #[test]
+    fn a_grantee_that_is_no_address_is_said_and_not_signed() {
+        for bad in ["0x12zz", "0x2da333b436f845d65c9a9d7bea9a819062e3c2fz", "0x2da333b436f845d65c9a9d7bea9a819062e3c2", "0x2da333b436f845d65c9a9d7bea9a819062e3c2ff00", "2da333b436f845d65c9a9d7bea9a819062e3c2ff"] {
+            assert!(super::grantee_shape_bad(bad), "{bad}");
+            assert!(!draft_ready(bad, W, T, "", 0, Some(1)), "{bad}");
+        }
+        assert!(!super::grantee_shape_bad(G));
+        assert!(!super::grantee_shape_bad(""));
+        assert!(!super::grantee_shape_bad("0x2dA333B436F845D65C9a9D7beA9A819062e3c2ff"));
     }
 }

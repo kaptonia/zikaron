@@ -1,44 +1,51 @@
 use super::*;
 
 impl Win {
-    /// Export a record kit: entries, the chosen records' originals, attachments, a note, file or folder and where
-    /// it lands (this home's kits folder until another is chosen, the last one chosen after); "verify and export"
-    /// runs in the background. Beside it: the depth reading and the kits exported on this machine.
+    fn kit_pick_key(&self) -> String {
+        let home = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
+        format!("{home}|{}|{}|{}", self.typed.pick_from.trim(), self.typed.pick_to.trim(), self.typed.pick_ids.trim())
+    }
+
     pub(super) fn kit_page(&mut self, ui: &mut egui::Ui, now: f64) {
-        // Its attachment zone takes dropped files.
         self.takes_drops();
         self.ensure_rows(now);
+        let pass = ui.ctx().cumulative_pass_nr();
+        if self.ux.u3.kit_drawn_at.is_some_and(|p| pass > p + 1) {
+            self.ux.u3.kit_made_for = None;
+        }
+        self.ux.u3.kit_drawn_at = Some(pass);
         if self.typed.kit_out.trim().is_empty() {
             if let Some(h) = self.shell.home.as_ref() {
                 self.typed.kit_out = h.dir(crate::home::Slot::Kits).display().to_string();
             }
         }
         let rows: Vec<crate::ledgerx::Row> = self.shell.rows.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        // The list and the export share one selection (`kitx::preview`), recomputed when the pick, the table or the
-        // home changes.
         let home_key = self.shell.home.as_ref().map(|h| h.root().display().to_string()).unwrap_or_default();
         let key = format!("{}|{}|{}|{}|{}|{}", home_key, self.shell.rows_gen, self.typed.pick_from.trim(), self.typed.pick_to.trim(), self.typed.pick_ids.trim(), rows.len());
         if self.ux.u3.kit_preview.as_ref().map(|(k, _)| k != &key).unwrap_or(true) {
             let parsed = crate::kitx::Pick::parse_ids(&self.typed.pick_from, &self.typed.pick_to, &self.typed.pick_ids);
-            let got = match (self.shell.home.as_ref(), &parsed) {
-                (Some(h), Ok(p)) => crate::kitx::preview(h, p).map_err(|f| f.human().to_string()),
-                (_, Err(f)) => Err(f.human().to_string()),
-                (None, _) => Err(t(Key::WbNotRead).to_string()),
+            let landed: Option<(Result<(Vec<String>, Vec<String>), String>, Result<Vec<crate::kitx::Listed>, String>, Option<crate::kitx::Originals>)> = match (self.shell.home.as_ref(), &parsed) {
+                (Some(h), Ok(_)) => {
+                    let ask = crate::peekx::Ask::Kit { home: h.root().to_path_buf(), pick: crate::peekx::pick_input(&self.typed.pick_from, &self.typed.pick_to, &self.typed.pick_ids), rows: self.shell.rows_gen };
+                    match self.peek(ask, now) {
+                        Some(crate::peekx::Got::Kit { preview, originals, admit, withdrawn }) => {
+                            self.ux.u3.kit_withdrawn = withdrawn.map(|w| w.into_iter().map(|o| o.name).collect()).unwrap_or_default();
+                            Some((preview.map_err(|f| f.human().to_string()), originals.map_err(|f| f.human().to_string()), admit))
+                        }
+                        _ => None,
+                    }
+                }
+                (_, Err(f)) => Some((Err(f.human().to_string()), Err(f.human().to_string()), None)),
+                (None, _) => Some((Err(t(Key::WbNotRead).to_string()), Err(t(Key::WbNotRead).to_string()), None)),
             };
-            let orig = match (self.shell.home.as_ref(), &parsed) {
-                (Some(h), Ok(p)) => crate::kitx::originals(h, p).map_err(|f| f.human().to_string()),
-                (_, Err(f)) => Err(f.human().to_string()),
-                (None, _) => Err(t(Key::WbNotRead).to_string()),
-            };
-            self.ux.u3.kit_orig = Some((key.clone(), orig));
-            let admit = match (self.shell.home.as_ref(), &parsed) {
-                (Some(h), Ok(p)) => crate::kitx::choose(h, p).ok().map(|x| crate::kitx::Originals::of(&x)),
-                _ => None,
-            };
-            self.ux.u3.kit_admit = Some((key.clone(), admit));
-            self.ux.u3.kit_preview = Some((key, got));
+            if let Some((got, orig, admit)) = landed {
+                self.ux.u3.kit_orig = Some((key.clone(), orig));
+                self.ux.u3.kit_admit = Some((key.clone(), admit));
+                self.ux.u3.kit_preview = Some((key.clone(), got));
+            }
         }
-        let (picked, pick_err) = match self.ux.u3.kit_preview.as_ref().map(|(_, r)| r) {
+        let reading = self.ux.u3.kit_preview.as_ref().map(|(k, _)| k != &key).unwrap_or(true);
+        let (picked, pick_err) = match self.ux.u3.kit_preview.as_ref().filter(|_| !reading).map(|(_, r)| r) {
             Some(Ok((ids, _))) => (ids.clone(), None),
             Some(Err(e)) => (Vec::new(), Some(e.clone())),
             None => (Vec::new(), None),
@@ -46,17 +53,12 @@ impl Win {
         let in_pick: Vec<crate::ledgerx::Row> = rows.iter().filter(|r| picked.iter().any(|i| i.eq_ignore_ascii_case(&r.id))).cloned().collect();
         let mut open_picker = false;
         let mut anchor_now: Vec<(String, bool)> = Vec::new();
-        let reading_work = in_pick.iter().find(|r| r.kind == zikaron::tokens::EntryType::History).and_then(|r| r.work.clone().map(|w| (w, r.seq, human_summary(r))));
-        let mut read_depth: Option<String> = None;
         let mut blocked = false;
-        // Files dropped on the page are attachments (the page takes drops itself; none while a sheet is up).
         let mut got: Vec<String> = if sheet::up(ui.ctx()) { Vec::new() } else { drop::take_dropped(ui.ctx()) };
         let mut clear = false;
         let mut gone: Option<String> = None;
         card::two_cols(ui, tk::SIDE_W, tk::MAIN_MIN_W, |ui, side| match side {
             card::Side::Main => {
-                // Which entries: the range with "select" (the whole ledger with a switch per entry); chosen entries
-                // not yet on chain, with "put on chain now".
                 let range = match (self.typed.pick_ids.trim(), self.typed.pick_from.trim(), self.typed.pick_to.trim()) {
                     ("", "", "") => fill1(Key::KitEntriesAll, &in_pick.len().to_string()),
                     ("", a, b) => fill3(Key::KitEntriesRange, a, b, &in_pick.len().to_string()),
@@ -73,7 +75,6 @@ impl Win {
                         open_picker = f.act_value(ui, t(Key::KitEntries), sub, value, key::Key::new(t(Key::KitPickOpen), Role::Secondary)).clicked();
                         if !unanchored.is_empty() {
                             let k = key::Key::new(t(Key::U3SendNow), Role::Guide).enabled(!sendable.is_empty());
-                            // The whole sentence (what the package will lack), then the key that sends them.
                             let said = fill1(Key::KitUnanchored, &unanchored.len().to_string());
                             f.panel(ui, |ui| zikaron_ui::callout::callout(ui, &said));
                             if f.keys(ui, |ui| key::show(ui, k).clicked()) {
@@ -82,8 +83,6 @@ impl Win {
                         }
                     });
                 });
-                // The chosen records' originals, from the local index: one row each (its file, its entry number,
-                // "remove"). A file no longer at its signing place, or changed since, says so and is left out.
                 stagger(ui, 1, |ui| {
                     let orig = self.ux.u3.kit_orig.as_ref().map(|(_, r)| r.clone());
                     let admit = self.ux.u3.kit_admit.as_ref().and_then(|(_, a)| a.clone());
@@ -126,15 +125,17 @@ impl Win {
                                 Some(Err(e)) => {
                                     let _ = f.line(ui, Some(card::Lead::Mark(Mark::Bad)), &e, "", false, false, c(C::BadInk), |_| ());
                                 }
+                                _ if !self.ux.u3.kit_withdrawn.is_empty() => {}
                                 _ => {
                                     let _ = f.line(ui, None, t(Key::Nothing), "", false, false, c(C::Ink3), |_| ());
                                 }
                             }
+                            for name in self.ux.u3.kit_withdrawn.clone() {
+                                let _ = f.line(ui, Some(card::Lead::Glyph(Glyph::File)), &name, t(Key::KitWithdrawnRow), false, false, c(C::Ink3), |_| ());
+                            }
                         })
                     });
                 });
-                // Attachments: any number, each read and digested in the background; "add" chooses one (files
-                // dropped on the page are added too).
                 stagger(ui, 2, |ui| {
                     let lines_in: Vec<String> = self.typed.kit_attach.lines().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
                     let listed: Vec<String> = match self.ux.u3.kit_orig.as_ref().map(|(_, r)| r) {
@@ -145,15 +146,23 @@ impl Win {
                     if !pending.is_empty() && !self.shell.tasks.in_flight(crate::task::Kind::Vet) {
                         self.auto(Action::VetAttachments { paths: pending }, now);
                     }
-                    if !lines_in.is_empty() && self.ux.u3.kit_names.as_ref().map(|(k, _)| k != &self.typed.kit_attach).unwrap_or(true) {
-                        let names: Vec<(String, Result<Option<(String, bool)>, String>)> = lines_in
-                            .iter()
-                            .map(|x| match crate::kitx::preview_names(std::path::Path::new(x)) {
+                    let landed = if !lines_in.is_empty() && self.ux.u3.kit_names.as_ref().map(|(k, _)| k != &self.typed.kit_attach).unwrap_or(true) {
+                        match self.peek(crate::peekx::Ask::Names { paths: lines_in.clone() }, now) {
+                            Some(crate::peekx::Got::Names(v)) => Some(v),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(read) = landed {
+                        let names: Vec<(String, Result<Option<(String, bool)>, String>)> = read
+                            .into_iter()
+                            .map(|(x, got)| match got {
                                 Ok(v) if v.iter().any(|(_, n)| n.is_none()) => (x.clone(), Ok(None)),
                                 Ok(v) => {
                                     let folder = v.is_empty() || v.iter().any(|(o, _)| o.contains('/'));
                                     let renamed = v.iter().any(|(o, n)| n.as_deref() != Some(o.as_str()));
-                                    let base = width::file_name(x);
+                                    let base = width::file_name(&x);
                                     let said = if folder { format!("{}/ \u{b7} {}", crate::kitx::kit_segment(&base).unwrap_or(base.clone()), v.len()) } else { v.first().and_then(|(_, n)| n.clone()).unwrap_or_default() };
                                     (x.clone(), Ok(Some((said, renamed))))
                                 }
@@ -202,7 +211,6 @@ impl Win {
                         }
                     }
                 });
-                // The note (several lines), and whether it is one file or a folder.
                 stagger(ui, 3, |ui| {
                     fields::card(ui, |ui, st| {
                         st.field(ui, t(Key::KitNoteLabel), None, None, |ui, _| input::area_words(ui, &mut self.typed.kit_note, 2, ""));
@@ -210,7 +218,6 @@ impl Win {
                 });
                 stagger(ui, 4, |ui| {
                     card::form(ui, |ui, f| {
-                        // Encrypted, the package is one file: the folder switch is off and greyed meanwhile.
                         let sealed = self.ux.u3.kit_addressed;
                         if f.switch(ui, t(Key::KitAsFolder), "", self.ux.u3.kit_folder && !sealed, !sealed) {
                             self.ux.u3.kit_folder = !self.ux.u3.kit_folder;
@@ -218,58 +225,36 @@ impl Win {
                         if f.switch(ui, t(Key::KitAddressed), "", sealed, true) {
                             self.ux.u3.kit_addressed = !sealed;
                         }
+                        let old = self.shell.rows.as_ref().is_some_and(|(r, _)| r.iter().any(|x| x.law == zikaron_glue::book::Law::One));
+                        if old && f.switch(ui, t(Key::KitCompanion), "", !self.ux.u3.kit_no_companion, true) {
+                            self.ux.u3.kit_no_companion = !self.ux.u3.kit_no_companion;
+                        }
                     });
                 });
             }
             card::Side::Side => {
-                // The reading against its baseline (kit law §9): shown only here; the export carries none of it.
-                if let Some((work, seq, name)) = reading_work.clone() {
-                    let depth = self.shell.depth.clone().filter(|(w, _)| w.eq_ignore_ascii_case(&work)).map(|(_, v)| crate::depthx::three(v));
-                    let phase = self.phase_of(crate::task::Kind::Depth);
-                    stagger(ui, 5, |ui| {
-                        card::section(ui, t(Key::KitReadingTitle), "", |ui| {
-                            card::form(ui, |ui, f| {
-                                let _ = f.info(ui, &fill1(Key::KitReadingOf, &format!("#{seq} \u{b7} {name}")), card::Show::Empty(""));
-                                match &depth {
-                                    Some(x) => {
-                                        let first = x.earliest.map(crate::when::day).unwrap_or_else(|| t(Key::None_).to_string());
-                                        let _ = f.info(ui, t(Key::U3FirstAnchored), card::Show::Mono(&first));
-                                        let _ = f.info(ui, t(Key::U3Deepest), card::Show::Text(&x.deepest.to_string()));
-                                        let _ = f.info(ui, t(Key::U3Continuity), card::Show::Text(&format!("{} / {}", x.anchored, x.span)));
-                                        let basis = if x.label.is_empty() { t(Key::None_).to_string() } else { label_human(&x.label) };
-                                        let _ = f.info(ui, &fill1(Key::KitReadingBasis, &basis), card::Show::Empty(""));
-                                    }
-                                    None => {
-                                        if f.act(ui, t(Key::U3Deepest), "", key::Key::new(t(Key::DoReadDepth), Role::Secondary).phase(phase)).clicked() {
-                                            read_depth = Some(work.clone());
-                                        }
-                                    }
-                                }
-                            });
-                            self.stage_line(ui, crate::task::Kind::Depth);
-                        });
-                    });
-                }
                 stagger(ui, 6, |ui| self.kits_index(ui));
             }
         });
-        // The page's foot: "cancel" goes back; "verify and export" opens the sheet that says where it lands.
         let phase = self.phase_of(crate::task::Kind::Kit);
-        let ready = !in_pick.is_empty() && !blocked;
+        let ready = !reading && !in_pick.is_empty() && !blocked;
         let (mut cancel, mut export_open) = (false, false);
         stagger(ui, 7, |ui| {
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tk::KEY_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = tk::S2;
-                // The page's only primary key.
-                let why = t(if in_pick.is_empty() { Key::U3KitNothingPicked } else { Key::KitNameRefused });
+                let why = t(if reading { Key::PeekReading } else if in_pick.is_empty() { Key::U3KitNothingPicked } else { Key::KitNameRefused });
                 export_open = key::show(ui, key::Key::new(t(Key::U3KitKey), Role::Primary).enabled(ready).phase(phase).why(why)).clicked();
                 cancel = key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked();
             });
             self.stage_line(ui, crate::task::Kind::Kit);
-            if let Some(Done::Kit { entries, files, left_out, unreadable, .. }) = self.shell.kit.clone() {
-                motion::swap(ui, egui::Id::new("kit-made"), 1, |ui| {
+            let made_here = self.ux.u3.kit_made_for.as_deref() == Some(self.kit_pick_key().as_str());
+            if let (Some(Done::Kit { entries, files, left_out, unreadable, withdrawn, .. }), true) = (self.shell.kit.clone(), made_here) {
+                motion::stagger(ui, egui::Id::new("kit-made"), 1, 0, |ui| {
                     states::banner(ui, states::Banner::Ok, &fill2(Key::KitMadeBanner, &entries.to_string(), &files.to_string()), |_| ());
                 });
+                for p in &withdrawn {
+                    hint(ui, &format!("{} \u{b7} {}", width::file_name(p), t(Key::KitWithdrawnRow)));
+                }
                 for p in &left_out {
                     hint(ui, &format!("{} \u{b7} {}", width::file_name(p), t(Key::KitNotAnOriginalRow)));
                 }
@@ -286,7 +271,6 @@ impl Win {
             self.typed.kit_attach.clear();
         }
         for p in got {
-            // Adding the same path again re-checks it (the file may have changed).
             self.shell.vetted.remove(p.trim());
             if !self.typed.kit_attach.is_empty() && !self.typed.kit_attach.ends_with('\n') {
                 self.typed.kit_attach.push('\n');
@@ -300,11 +284,7 @@ impl Win {
             self.back(now);
         }
         let export = self.kit_sheets(ui.ctx(), in_pick.len(), ready);
-        if let Some(work) = read_depth {
-            self.act(Action::ReadDepth { work }, now);
-        }
         if !anchor_now.is_empty() {
-            // Queue the entries not yet queued, then open the confirmation for the last of them.
             for (id, fresh) in &anchor_now {
                 if *fresh {
                     self.act(Action::QueueEntry { id: id.clone() }, now);
@@ -325,19 +305,13 @@ impl Win {
             }
         }
         if open_picker {
-            // The picker opens with the current choice (including one preselected from a record).
             self.ux.u3.kit_pick = Some(KitPick { ids: picked.iter().map(|x| x.to_ascii_lowercase()).collect() });
         }
         if export {
-            // Exporting into a folder creates a new kit folder under it, named after the first chosen record's
-            // digest.
             let pick = crate::kitx::Pick::parse_ids(&self.typed.pick_from, &self.typed.pick_to, &self.typed.pick_ids).unwrap_or_default();
-            // An encrypted package's name takes nothing from what it holds (`kit.zkit`); a plain one is named after the
-            // first chosen record's digest.
             let sealed = self.ux.u3.kit_addressed;
             let stem = if sealed { zikaron_glue::addressed::DEFAULT_STEM.to_string() } else { crate::kitx::landing_stem(&rows, &pick) };
             let folder = self.ux.u3.kit_folder && !sealed;
-            // One `.zkit` file unless a folder was asked for.
             let kind = if folder {
                 crate::home::Kind::Bundle { stem: stem.clone() }
             } else {
@@ -346,7 +320,6 @@ impl Win {
             let chosen = crate::home::choose(&kind, std::path::Path::new(self.typed.kit_out.trim()));
             self.remember_landing(Out::Kit, &chosen);
             let out = chosen.at.display().to_string();
-            // Originals still on disk and not removed come first, then dropped items, one per line.
             let mut attach: Vec<String> = match self.ux.u3.kit_orig.as_ref().map(|(_, r)| r) {
                 Some(Ok(list)) => list.iter().filter(|o| o.present && !self.ux.u3.kit_orig_off.contains(&o.path)).map(|o| o.path.clone()).collect(),
                 _ => Vec::new(),
@@ -366,20 +339,18 @@ impl Win {
                 form: if folder { zikaron_glue::pack::Form::Folder } else { zikaron_glue::pack::Form::File }.word().to_string(),
                 recipient: if sealed { self.typed.kit_to.trim().to_string() } else { String::new() },
                 recipient_key: if sealed { self.typed.kit_to_key.trim().to_string() } else { String::new() },
-                originals: "none".to_string(),
+                originals: crate::kitx::ORIGINALS_LISTED.to_string(),
+                companion: !self.ux.u3.kit_no_companion,
             };
-            // The sheet stays up, its key running, until the export lands (an encrypted one's key shows its check a
-            // moment first).
+            self.shell.kit = None;
+            self.ux.u3.kit_made_for = Some(self.kit_pick_key());
             let started = matches!(self.act(a, now), Applied::Started(crate::task::Kind::Kit));
             kit_sheet_set(ui.ctx(), started.then_some(KitSheet::Export { waiting: true, sealed }));
         }
     }
 
-    /// The kits exported on this machine from this ledger, newest first: one row each (its file, the day it was
-    /// made); the row opens the kit's sheet.
     fn kits_index(&mut self, ui: &mut egui::Ui) {
         let rows = self.shell.kits_index.clone();
-        // The index covers the whole machine; only this ledger's kits are listed.
         let mine: Vec<crate::kitsindex::Row> = match (rows.as_ref(), self.shell.kits_root.as_deref()) {
             (Some(rows), Some(root)) => rows.iter().filter(|r| r.root.eq_ignore_ascii_case(root)).cloned().collect(),
             _ => Vec::new(),
@@ -387,7 +358,6 @@ impl Win {
         let mut open: Option<String> = None;
         card::section(ui, t(Key::KitsLocal), "", |ui| {
             card::form(ui, |ui, f| {
-                // None listed: one row saying so (not read yet, or none).
                 if mine.is_empty() {
                     let none = if rows.is_none() || self.shell.kits_root.is_none() { t(Key::WbNotRead) } else { t(Key::KitsNone) };
                     let _ = f.line(ui, None, none, "", false, false, c(C::Ink3), |_| ());
@@ -405,11 +375,6 @@ impl Win {
         }
     }
 
-    /// The kit page's own sheets: where the export lands (the entries and the folder, "choose folder" at the
-    /// bottom left, "export"; up until the export lands), and a kit exported on this machine (its place and id,
-    /// its fetch address with "save", "delete local copy" with a second press to confirm, "close"). Any other
-    /// sheet opening closes them. Returns whether "export" was pressed. `ready` is the page's own judgement (entries
-    /// picked, no attachment refused), judged again every frame the sheet is up.
     fn kit_sheets(&mut self, ctx: &egui::Context, entries: usize, ready: bool) -> bool {
         let Some(open) = kit_sheet_get(ctx) else { return false };
         if self.any_sheet() {
@@ -420,17 +385,14 @@ impl Win {
             KitSheet::Export { waiting, sealed } => {
                 let running = self.shell.tasks.in_flight(crate::task::Kind::Kit);
                 let phase = self.phase_of(crate::task::Kind::Kit);
-                // Landed: the sheet goes; an encrypted export that landed well keeps it up while its key shows the
-                // check, then it goes by itself. A refusal closes it at once (the toast says why).
                 if waiting && !running && !(sealed && matches!(phase, Phase::Done { .. })) {
                     kit_sheet_set(ctx, None);
                     return false;
                 }
                 let at = self.typed.kit_out.clone();
-                // Encrypted: the recipient's address or public key, one of the two, in its form.
-                let addressed = self.ux.u3.kit_addressed;
+                let addressed = if waiting { sealed } else { self.ux.u3.kit_addressed };
                 let (to, to_key) = (self.typed.kit_to.trim().to_string(), self.typed.kit_to_key.trim().to_string());
-                let to_bad = !to.is_empty() && !crate::addressedx::address_ok(&to);
+                let to_bad = crate::addressedx::not_address(&to, crate::addressedx::Takes::Address);
                 let key_bad = !to_key.is_empty() && crate::addressedx::key_of(&to_key).is_none();
                 let recipient_ok = !addressed || (to.is_empty() != to_key.is_empty() && !to_bad && !key_bad);
                 let ready = ready && Self::landing_ok(&at) && recipient_ok;
@@ -447,7 +409,6 @@ impl Win {
                             f.folder(ui, t(Key::IdStore), &at, t(Key::PickNone));
                         });
                         if addressed {
-                            // The two ways to name the recipient: filling one greys the other.
                             fields::stack(ui, |ui, st| {
                                 st.field(ui, t(Key::KitToAddress), None, to_bad.then(|| (t(Key::KitToWhyAddress), true)), |ui, w| {
                                     fields::off(ui, !to_key.is_empty(), |ui| fields::line(ui, &mut me.typed.kit_to, "0x", w, fields::Look { mono: true, bad: to_bad, ..Default::default() }))
@@ -513,7 +474,6 @@ impl Win {
                     },
                     |ui, me| {
                         close = page::Page::new().primary(ui, t(Key::ToastClose)).1.clicked();
-                        // Deleting the local copy (the ledger is untouched) takes a second press.
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             if armed {
                                 if key::key(ui, t(Key::DropCopyConfirm), Role::Danger, true).clicked() {
@@ -531,7 +491,6 @@ impl Win {
                 }
                 let now = self.ux.now;
                 if let Some(link) = save_link {
-                    // The draft link is dropped only once saved; a refused save keeps it for the user to fix.
                     if let Applied::KitLinked { .. } = self.act(Action::SetKitLink { path: r.path.clone(), link }, now) {
                         self.ux.u3.link_typed.retain(|(k, _, _)| *k != r.path);
                     }
@@ -546,10 +505,8 @@ impl Win {
         }
     }
 
-    /// The entry picker sheet: the search, then the list in one group — its head counts the chosen and offers
-    /// "all" (every row the search keeps) and "clear"; a row per entry (its number and summary, its kind, a
-    /// switch; the whole row flips it); cancel and done at the foot. Only "done" writes back.
     pub(super) fn kit_pick_sheet(&mut self, ctx: &egui::Context) {
+        let chain_now = self.shell.chain_now();
         if self.ux.u3.kit_pick.is_none() {
             return;
         }
@@ -557,12 +514,10 @@ impl Win {
         let reading = crate::retractx::read(&rows);
         let mut done = false;
         let mut close = false;
-        // The search text and date range filter the list and drive "all" (two closures read them, one writes).
         let typed = std::cell::RefCell::new((self.ux.search.get("kit-pick").cloned().unwrap_or_default(), self.ux.range.get("kit-pick").cloned().unwrap_or_default()));
         let today = (self.shell.clock)();
-        // The rows the search and date range keep (within them, the switches pick a subset).
         let keep = |row: &crate::ledgerx::Row, query: &str, range: &(String, String)| {
-            let (tag, summary, _) = row_face(&rows, &reading, row);
+            let (tag, summary, _) = row_face(&rows, &reading, row, chain_now);
             matches(query, &[&format!("#{}", row.seq), tag, &summary, &row.id]) && crate::when::within(row.anchored_at, &range.0, &range.1)
         };
         let out = sheet::show(
@@ -583,14 +538,13 @@ impl Win {
                 zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("kit-pick-list").max_height(PICK_LIST_H), |ui| {
                     card::form(ui, |ui, f| {
                         let _ = f.line(ui, None, &fill1(Key::KitPickCount, &n.to_string()), "", false, false, c(C::Ink), |ui| {
-                            // The two keys share one width: the wider one's, an action row's key width at least.
                             let (k_none, k_all) = (key::Key::new(t(Key::KitPickNone), Role::Secondary).enabled(n > 0), key::Key::new(t(Key::U3FilterAll), Role::Secondary));
                             let w = key::size_of(ui, &k_none).x.max(key::size_of(ui, &k_all).x).max(ROW_KEY_W);
                             none = key::show_w(ui, k_none, w).clicked();
                             all = key::show_w(ui, k_all, w).clicked();
                         });
                         for row in rows.iter().filter(|r| keep(r, &query, &range)) {
-                            let (tag, summary, struck) = row_face(&rows, &reading, row);
+                            let (tag, summary, struck) = row_face(&rows, &reading, row, chain_now);
                             let on = picked.iter().any(|x| x.eq_ignore_ascii_case(&row.id));
                             let mut switched = false;
                             let (resp, _) = f.line(ui, None, "", "", false, false, c(C::Ink), |ui| {
@@ -643,7 +597,6 @@ impl Win {
             close = true;
         }
         if done {
-            // Write back the named entries and clear the range cells (the two ways do not stack).
             if let Some(st) = self.ux.u3.kit_pick.take() {
                 self.typed.pick_ids = st.ids.join(",");
                 self.typed.pick_from.clear();
@@ -655,20 +608,14 @@ impl Win {
     }
 }
 
-/// The least width of the "remove" key at a row's end (an action row's key width).
 const ROW_KEY_W: f32 = 92.0;
 
-/// The picker's list: at most this high before it scrolls; the gap after an entry's number.
 const PICK_LIST_H: f32 = 300.0;
 const PICK_SEQ_GAP: f32 = 8.0;
 
-/// Which of the kit page's own sheets is up (kept in the window's memory; the page draws them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum KitSheet {
-    /// Where the export lands; `waiting` once the export started (the sheet closes when it lands; `sealed`, an
-    /// encrypted export, once its key's check has shown).
     Export { waiting: bool, sealed: bool },
-    /// A kit exported on this machine, by its path.
     Local(String),
 }
 
@@ -676,8 +623,6 @@ fn kit_sheet_id() -> egui::Id {
     egui::Id::new("zikaron-kit-sheet")
 }
 
-/// The sheet up, as long as the page drew it in the last pass too (a sheet left by going elsewhere is gone when
-/// the page comes back); kept for this pass.
 fn kit_sheet_get(ctx: &egui::Context) -> Option<KitSheet> {
     let pass = zikaron_ui::motion::pass(ctx);
     let kept = ctx.data(|d| d.get_temp::<Option<(KitSheet, u64)>>(kit_sheet_id())).flatten();
@@ -691,7 +636,6 @@ fn kit_sheet_set(ctx: &egui::Context, s: Option<KitSheet>) {
     ctx.data_mut(|d| d.insert_temp(kit_sheet_id(), s.map(|s| (s, pass))));
 }
 
-/// Put the export sheet up or take any of the kit page's sheets down (the still-frame readings stage it).
 pub(super) fn kit_export_up(ctx: &egui::Context, up: bool) {
     kit_sheet_set(ctx, up.then_some(KitSheet::Export { waiting: false, sealed: false }));
 }

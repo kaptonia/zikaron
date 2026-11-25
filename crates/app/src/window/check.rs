@@ -1,15 +1,9 @@
-//! Verify a grant in one go: the grant, and optionally the file and the terms held against it. The form on
-//! top, the result under it.
-
 use super::*;
 use zikaron_ui::inform;
 
 impl Win {
     pub(super) fn check_page(&mut self, ui: &mut egui::Ui, now: f64) {
-        // Its file and terms rows take dropped files.
         self.takes_drops();
-        // An empty basis borrows the home's nodes and registry (shown, so the person sees what the verdict
-        // stands on).
         if self.typed.ck_endpoints.trim().is_empty() && !self.shell.endpoints.is_empty() {
             self.typed.ck_endpoints = self.shell.endpoints.iter().map(|e| e.spec()).collect::<Vec<_>>().join("\n");
         }
@@ -31,20 +25,16 @@ impl Win {
         }
     }
 
-    /// The form: the grant code (pasted, or a grant file chosen inside its field), the file and the terms as
-    /// rows (optional), the basis under advanced options (each hop's ledger folder a row, "add next hop", then
-    /// the nodes, the registry, the block and time to check from), and the key at its foot.
     fn check_form(&mut self, ui: &mut egui::Ui, now: f64, go: &mut bool) {
         let phase = self.phase_of(crate::task::Kind::Check);
-        let ready = !self.typed.ck_typed.trim().is_empty();
+        let reg_bad = crate::addressedx::not_address(&self.typed.ck_registry, crate::addressedx::Takes::Address);
+        let ready = !self.typed.ck_typed.trim().is_empty() && !reg_bad;
         let opt = t(Key::U3Optional);
         let mono = fields::Look { mono: true, ..Default::default() };
-        // Line i is hop i; a cleared hop keeps its empty line; empty lines at the end go.
         let mut hops: Vec<String> = self.typed.ck_ledgers.lines().map(|l| l.trim().to_string()).collect();
         if hops.is_empty() {
             hops.push(String::new());
         }
-        // The advanced options' summary: how many issuer ledgers the check stands on.
         let summary = fill1(Key::CheckHopsSay, &hops.len().to_string());
         fields::card(ui, |ui, st| {
             st.field(ui, t(Key::U3CheckPaste), None, None, |ui, w| {
@@ -58,7 +48,6 @@ impl Win {
                     self.check_side_row(ui, f, which, now);
                 }
                 let _ = f.fold(ui, "check-basis", t(Key::U3MoreOptions), &summary, |ui, f| {
-                    // Each hop's folder is a row; "add next hop" chooses the next one's folder at once.
                     let mut changed = false;
                     let room = (ui.available_width() * 0.5).max(80.0);
                     for (i, hop) in hops.iter_mut().enumerate() {
@@ -86,7 +75,7 @@ impl Win {
                     f.panel(ui, |ui| {
                         fields::stack(ui, |ui, st| {
                             st.field(ui, t(Key::CheckNodes), Some(opt), None, |ui, _| input::area_hint(ui, &mut self.typed.ck_endpoints, 2, t(Key::OnePerLine)));
-                            st.field(ui, t(Key::CheckRegistryFor), Some(opt), None, |ui, w| fields::line(ui, &mut self.typed.ck_registry, "0x\u{2026}", w, mono));
+                            st.field(ui, t(Key::CheckRegistryFor), Some(opt), reg_bad.then(|| (t(Key::KitToWhyAddress), true)), |ui, w| fields::line(ui, &mut self.typed.ck_registry, "0x\u{2026}", w, fields::Look { bad: reg_bad, ..mono }));
                             st.pair(
                                 ui,
                                 |ui, st| st.field(ui, t(Key::CheckFrom), None, None, |ui, w| fields::line(ui, &mut self.typed.ck_from, t(Key::BatchSizeHint), w, mono)),
@@ -98,7 +87,7 @@ impl Win {
             });
             st.foot(ui, |ui| {
                 let _page = page::Page::new();
-                if key::show(ui, key::Key::new(t(Key::NavVerifyView), Role::Primary).enabled(ready).why(t(Key::U3CheckNotYet)).phase(phase)).clicked() {
+                if key::show(ui, key::Key::new(t(Key::NavVerifyView), Role::Primary).enabled(ready).why(t(if reg_bad { Key::KitToWhyAddress } else { Key::U3CheckNotYet })).phase(phase)).clicked() {
                     *go = true;
                 }
             });
@@ -106,9 +95,6 @@ impl Win {
         self.stage_line(ui, crate::task::Kind::Check);
     }
 
-    /// The file or the terms file on the form, a row: its name with "optional" after it; "none selected"
-    /// and "choose file" until chosen, then the chosen file's name and size with "change" and "remove". While a
-    /// file is dragged over the window the row turns into a one-line drop zone that takes it.
     fn check_side_row(&mut self, ui: &mut egui::Ui, f: &mut card::Form, which: OneStop, now: f64) {
         let drop_key = match which {
             OneStop::File => Key::OsFileDrop,
@@ -126,7 +112,7 @@ impl Win {
         let title = t(which.title());
         let chosen = !path.trim().is_empty();
         let said = if chosen {
-            let size = self.size_of_path(&path).map(size_say).unwrap_or_default();
+            let size = self.size_of_path(&path, now).map(size_say).unwrap_or_default();
             if size.is_empty() { width::file_name(&path) } else { format!("{} \u{b7} {}", width::file_name(&path), size) }
         } else {
             String::new()
@@ -152,21 +138,15 @@ impl Win {
         }
     }
 
-    /// Start a check from whichever page asks (this page, or the home page's quick box): a refusal on the spot is
-    /// this press's own result and replaces the last one; a started task records its landing by kind.
     pub(super) fn start_check(&mut self, now: f64) {
         let a = self.check_action();
+        self.ux.u3.check_for = Some(format!("{a:?}"));
         self.ux.u3.check_refused = match self.act(a, now) {
             Applied::Trouble(f) => Some(f),
             _ => None,
         };
     }
 
-    /// The result: nothing before the first check, shimmering while one runs, the failure and its raw error on a
-    /// failure; else the overview (the verdict, the record, the grantor, the validity and the first anchor; the
-    /// grant, the file and the terms when they say more; what is missing), the six checks, each hop's ledger
-    /// source a row, and the raw values in the details list at the bottom. Returns whether a check was asked
-    /// again (fetch again, or an issuer ledger chosen or entered).
     fn check_result(&mut self, ui: &mut egui::Ui, now: f64) -> bool {
         let running = self.shell.tasks.in_flight(crate::task::Kind::Check);
         if running {
@@ -179,15 +159,21 @@ impl Win {
             });
             return false;
         }
-        // Only this kind's own failures (another task's failure is not borrowed onto this page).
+        if self.ux.u3.check_for.as_deref().is_some_and(|a| a != format!("{:?}", self.check_action())) {
+            return false;
+        }
         if let Some(f) = self.ux.u3.check_refused.clone().or_else(|| self.shell.failed.get(&crate::task::Kind::Check).cloned()) {
-            card::form(ui, |ui, form| form.summary(ui, Glyph::No, card::Tint::Bad, t(Key::U3CheckFailed), None, t(Key::U3CheckFailedNext), |_| ()));
-            details_card(ui, "check-err", &[(t(Key::U3RawError), Val::mono(f.raw()))]);
+            card::form(ui, |ui, form| form.summary(ui, Glyph::No, card::Tint::Bad, t(Key::U3CheckFailed), None, f.human(), |_| ()));
+            let shown = f.shown();
+            if !shown.is_empty() {
+                details_card(ui, "check-err", &[(t(Key::U3RawError), Val::mono(shown))]);
+            }
             return false;
         }
         let Some(x) = self.shell.checked.clone() else {
             return false;
         };
+        let x = crate::checkx::as_shown(&x, &self.shell.audits.state(&x.audit_key));
         let mut go = false;
         let mut go_settings = false;
         let grant_tone = crate::checkx::tone(&x.judged.verdict);
@@ -200,13 +186,12 @@ impl Win {
             crate::checkx::Summary::AllMatch => (t(Key::U4NoMismatch).to_string(), Glyph::Ok, card::Tint::Ok),
             crate::checkx::Summary::Mismatched(n) => (fill1(Key::OsMismatchN, &n.to_string()), Glyph::No, card::Tint::Bad),
             crate::checkx::Summary::Incomplete => (t(Key::OsIncomplete).to_string(), Glyph::Warn, card::Tint::Warn),
+            crate::checkx::Summary::Undecided => (t(Key::CheckUndecided).to_string(), Glyph::Warn, card::Tint::Warn),
         };
-        // A side's line under its name: the file compared, or why it could not be read.
         let side_line = |side: &crate::checkx::Side| match side {
             crate::checkx::Side::Refused(f) => f.human().to_string(),
             _ => side_face(side).0.unwrap_or_default(),
         };
-        // One sentence per kind of gap (missing ledger, no node, chain unread, waiting to be anchored).
         let mut gaps: Vec<crate::checkx::Gap> = Vec::new();
         for (i, h) in x.judged.hops.iter().enumerate() {
             for (tok, state) in &h.lights {
@@ -218,22 +203,27 @@ impl Win {
             }
         }
         let last = x.judged.hops.last();
-        let record = last.map(|h| self.record_name_of(&h.work)).unwrap_or_default();
+        let record = last.map(|h| self.record_name_of(&h.work, x.record.as_deref())).unwrap_or_default();
         let grantor = last.map(|h| card::short(&h.author)).unwrap_or_default();
         let window = last.map(|h| self.window_days(h.window)).unwrap_or_default();
-        let first = last.map(|h| first_anchor_say(h.anchored_at)).unwrap_or_default();
-        // The overview: the verdict, the record under it, three figures, alone in its card.
+        let undecided_last = x.undecided.iter().any(|(i, _)| *i + 1 == x.judged.hops.len());
+        let first = last.map(|h| if undecided_last { t(Key::FirstAnchorNotRead).to_string() } else { first_anchor_say(h.anchored_at) }).unwrap_or_default();
+        let take_why = x.takes.as_ref().map(|(_, plan)| super::verify::extract_why(plan));
+        let mut take = false;
         stagger(ui, 3, |ui| {
             card::form(ui, |ui, f| {
-                f.summary(ui, glyph, tint, &verdict, None, &record, |_| ());
+                take = f.summary(ui, glyph, tint, &verdict, None, &record, |ui| match take_why {
+                    Some(why) => key::show(ui, key::Key::new(t(Key::DoExtract), Role::Secondary).enabled(why.is_none()).why(why.unwrap_or(""))).clicked(),
+                    None => false,
+                });
                 if last.is_some() {
                     f.facts(ui, &[(t(Key::OsGrantor), card::Fact::Mono(&grantor)), (t(Key::U3Window), card::Fact::Text(&window)), (t(Key::U4RecordFirstAt), card::Fact::Mono(&first))]);
                 }
             });
         });
-        // The six checks in their own card under their group title: first the grant, the file and the terms only
-        // when they say more than the verdict, and what is missing; then each check a row with its mark (what is
-        // missing beside a grey one); several hops: each hop's six under its line, then one row per link.
+        if let (true, Some((path, plan))) = (take, x.takes.as_ref()) {
+            self.extract_open_from(ExtractFrom { path: path.clone(), takes: plan.clone(), names: Vec::new() });
+        }
         stagger(ui, 4, |ui| {
             card::section(ui, t(Key::OsSixChecks), "", |ui| {
                 card::form(ui, |ui, f| {
@@ -248,14 +238,13 @@ impl Win {
                     }
                     for g in &gaps {
                         if *g == crate::checkx::Gap::NoNode {
-                            go_settings |= f.act(ui, t(Key::NoEndpointYet), "", key::Key::new(t(Key::CheckGoSettings), Role::Secondary)).clicked();
+                            go_settings |= f.act(ui, t(gap_note(g)), "", key::Key::new(t(Key::CheckGoSettings), Role::Secondary)).clicked();
                         } else {
                             f.note(ui, t(gap_note(g)));
                         }
                     }
-                    // Read-only networks this pass could not read, each with why.
                     for m in &x.missed {
-                        let _ = f.info(ui, &m.name, card::Show::Mark(Mark::Warn, t(m.reading.key())));
+                        let _ = f.info(ui, &m.name, card::Show::Mark(Mark::Warn, t(m.key())));
                     }
                     for r in &x.refused {
                         let _ = f.info(ui, &width::file_name(&r.file), card::Show::Mark(Mark::Warn, &r.human()));
@@ -288,8 +277,16 @@ impl Win {
                 });
             });
         });
-        // Where each hop's ledger came from, one row each.
+        let mut audit = false;
         stagger(ui, 5, |ui| {
+            card::section(ui, t(Key::AuditSection), "", |ui| {
+                card::form(ui, |ui, f| audit = audit_rows(ui, f, &self.shell.audits.state(&x.audit_key)));
+            });
+        });
+        if audit {
+            self.act(Action::AuditCheck, now);
+        }
+        stagger(ui, 6, |ui| {
             card::section(ui, t(Key::LedgerSources), "", |ui| {
                 card::form(ui, |ui, f| {
                     for i in 0..x.judged.hops.len() {
@@ -298,7 +295,6 @@ impl Win {
                 });
             });
         });
-        // Details: the raw values, every label a name.
         let several = x.judged.hops.len() > 1;
         let mut rows: Vec<(String, Val)> = Vec::new();
         if let Some(h) = last {
@@ -306,14 +302,22 @@ impl Win {
             rows.push((t(Key::U3ToWhom).to_string(), Val::mono(h.grantee.clone())));
             rows.push((t(Key::OsWork).to_string(), Val::mono(h.work.clone())));
         }
-        rows.push((t(Key::U3Verdict).to_string(), Val::figure(x.judged.verdict.clone())));
-        // The evidence behind the summary: each refused file's reason, for each side.
+        rows.push((t(Key::U3Verdict).to_string(), Val::text(verdict_human(&x.judged.verdict).to_string())));
+        if let Ok(b) = &x.basis {
+            rows.push((t(Key::BasisRead).to_string(), Val::mono(format!("{} \u{b7} {} \u{b7} {}\u{2013}{}", b.chain, b.registry, b.from_block, b.to_block))));
+        }
+        for (i, n) in x.notes.per.iter().enumerate() {
+            if let Some(n) = n {
+                let label = if several { format!("{} \u{b7} {}", fill1(Key::CheckHop, &(i + 1).to_string()), t(Key::NoticesBasis)) } else { t(Key::NoticesBasis).to_string() };
+                rows.push((label, Val::mono(crate::noticex::basis_line(n))));
+            }
+        }
         if !x.refused.is_empty() {
-            rows.push((t(Key::RefusedFiles).to_string(), Val::mono(x.refused.iter().map(|r| format!("{} \u{b7} {}", width::file_name(&r.file), r.why)).collect::<Vec<_>>().join("\n"))));
+            rows.push((t(Key::RefusedFiles).to_string(), Val::text(x.refused.iter().map(|r| format!("{} \u{b7} {}", width::file_name(&r.file), r.human())).collect::<Vec<_>>().join("\n"))));
         }
         for (side, name) in [(&x.file, Key::U3File), (&x.terms, Key::OsTerms)] {
             if let crate::checkx::Side::Refused(f) = side {
-                rows.push((t(name).to_string(), Val::mono(f.raw())));
+                rows.push((t(name).to_string(), Val::mono(f.shown())));
             }
         }
         rows.push((t(Key::EquivalentVerb).to_string(), Val::mono(x.verb().to_string())));
@@ -321,11 +325,12 @@ impl Win {
             for (tok, state) in &h.lights {
                 let name = t(u3_check_name(tok));
                 let label = if several { format!("{} \u{b7} {name}", fill1(Key::CheckHop, &(i + 1).to_string())) } else { name.to_string() };
-                rows.push((label, Val::figure(state.clone())));
+                rows.push((label, Val::text(state_human(state).to_string())));
             }
         }
         if let Some(ch) = x.judged.chain.as_ref() {
-            rows.push((t(Key::U3Hops).to_string(), Val::figure(format!("{} {} {}", ch.verdict, ch.token, ch.failing_kind))));
+            let at = ch.failing_index.map(|i| fill1(Key::CheckHop, &(i + 1).to_string()));
+            rows.push((t(Key::U3Hops).to_string(), Val::text([Some(verdict_human(&ch.verdict).to_string()), at].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} "))));
         }
         for (which, side) in [(OneStop::File, &x.file), (OneStop::Terms, &x.terms)] {
             if let crate::checkx::Side::Compared(d) = side {
@@ -333,18 +338,75 @@ impl Win {
             }
         }
         let refs: Vec<(&str, Val)> = rows.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-        stagger(ui, 6, |ui| details_card(ui, "check-evidence", &refs));
+        stagger(ui, 7, |ui| details_card(ui, "check-evidence", &refs));
         if go_settings {
             self.go(Place::Settings(Section::Network), now);
         }
         go
     }
 
-    /// A hop's ledger source, a row: its mark and where it came from ("this Mac", or "none"), with "replace" or
-    /// "add" (none once supplied here and all six green); from a publish address a row with the address, the
-    /// file count and "fetch again"; each source that failed, a row with why. "Replace/add" opens the issuer
-    /// ledger field for that hop (line i of the advanced hop list): choosing a folder there, or entering a path,
-    /// checks again.
+}
+
+pub(super) fn audit_rows(ui: &mut egui::Ui, f: &mut card::Form, state: &crate::sendx::behind::State<crate::checkx::Audit, crate::fault::Fault>) -> bool {
+    use crate::sendx::behind::State;
+    let room = (ui.available_width() * 0.5).max(80.0);
+    match state {
+        State::Unaudited => {
+            let (_, go) = f.line(ui, None, t(Key::AuditWhole), "", false, false, c(C::Ink), |ui| {
+                let go = key::show_w(ui, key::Key::new(t(Key::AuditDo), Role::Secondary), 92.0).clicked();
+                paint::line(ui, t(Key::AuditNone), Type::Note, c(C::Ink2), room);
+                go
+            });
+            go
+        }
+        State::Auditing | State::Before(_) => {
+            let _ = f.info(ui, t(Key::AuditWhole), card::Show::Mark(Mark::Work, t(Key::AuditRunning)));
+            false
+        }
+        State::Failed(why) => {
+            let (_, go) = f.line(ui, None, t(Key::AuditWhole), "", false, false, c(C::Ink), |ui| {
+                let go = key::show_w(ui, key::Key::new(t(Key::AuditAgain), Role::Secondary), 92.0).clicked();
+                paint::line(ui, &format!("{} \u{b7} {}", t(Key::PsNotReadPill), why.human()), Type::Note, c(C::Ink2), room);
+                go
+            });
+            go
+        }
+        State::Done(a) => {
+            let (words, tone) = match crate::checkx::tone(&a.verdict) {
+                crate::checkx::Tone::Green => (Key::BadgeLive, PillTone::Ok),
+                crate::checkx::Tone::Red => (Key::OsInvalid, PillTone::Bad),
+                crate::checkx::Tone::Amber | crate::checkx::Tone::Grey => (Key::OsOpen, PillTone::Warn),
+            };
+            if !a.verdict.is_empty() {
+                let _ = f.info(ui, t(Key::U3Verdict), card::Show::Pill(t(words), tone));
+            }
+            if !a.label.is_empty() {
+                use zikaron::v2::tokens::Label;
+                let tone = if a.label == Label::Complete.as_str() {
+                    PillTone::Ok
+                } else if a.label == Label::BrokenChain.as_str() {
+                    PillTone::Bad
+                } else {
+                    PillTone::Warn
+                };
+                let _ = f.line(ui, None, t(Key::WbAudit), "", false, false, c(C::Ink), |ui| {
+                    paint::line(ui, &fill1(Key::U3EntriesCount, &a.entries.to_string()), Type::Note, c(C::Ink2), room);
+                    mark::pill(ui, &label_human(&a.label), tone)
+                });
+            }
+            let at = a.at.map(crate::when::when).unwrap_or_default();
+            let to = fill2(Key::AuditToAt, &at, &a.block.to_string());
+            let (_, go) = f.line(ui, None, t(Key::AuditTo), "", false, false, c(C::Ink), |ui| {
+                let go = key::show_w(ui, key::Key::new(t(Key::AuditAgain), Role::Secondary), 92.0).clicked();
+                paint::line(ui, &to, Type::Mono, c(C::Ink), room);
+                go
+            });
+            go
+        }
+    }
+}
+
+impl Win {
     fn check_source(&mut self, ui: &mut egui::Ui, f: &mut card::Form, x: &crate::checkx::Checked, hop: usize, go: &mut bool) {
         let src = x.found.get(hop).cloned().unwrap_or_default();
         let (said, open_key, m) = match &src.from {
@@ -352,14 +414,12 @@ impl Win {
             None => (t(Key::Nothing).to_string(), Key::ReadNetAdd, Mark::Warn),
         };
         let title = fill1(Key::CheckSourceLine, &said);
-        // Supplied here and all six green: nothing to fill, so no "replace".
         let settled = crate::checkx::source_settled(x, hop);
         let mut open = !settled && self.ux.u3.ck_source_open == Some(hop);
         let remote = match (&src.from, src.files) {
             (Some((crate::supplyx::Level::Remote, url)), Some(n)) => Some(fill2(Key::CheckFromAddress, url, &n.to_string())),
             _ => None,
         };
-        // The keys of this card are as wide as the widest of them.
         let open_k = key::Key::new(t(open_key), Role::Secondary);
         let again_k = key::Key::new(t(Key::CheckRefetch), Role::Secondary);
         let kw = key::size_of(ui, &open_k).x.max(if remote.is_some() { key::size_of(ui, &again_k).x } else { 0.0 });
@@ -393,9 +453,8 @@ impl Win {
                 fields::stack(ui, |ui, st| {
                     st.field(ui, t(Key::CheckIssuerLedger), None, None, |ui, w| {
                         let mono = fields::Look { mono: true, ..Default::default() };
-                        let (resp, pick_hit) = fields::joined(ui, &mut lines[hop], t(Key::CheckIssuerLedgerHint), w, mono, Some(|ui: &mut egui::Ui| fields::inner_key(ui, t(Key::PickFolder), None).clicked()));
+                        let (resp, pick_hit) = fields::joined(ui, &mut lines[hop], t(Key::CheckIssuerLedgerHint), w, mono, Some(|ui: &mut egui::Ui| fields::inner_key(ui, pick_label(crate::platform::Pick::FileOrFolder), None).clicked()));
                         changed |= resp.changed();
-                        // A path entered by hand checks on Enter; a folder chosen checks at once.
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !lines[hop].trim().is_empty() {
                             *go = true;
                         }
@@ -416,16 +475,14 @@ impl Win {
         }
     }
 
-    /// A record named by its content fingerprint: this ledger's name for it, else the issuer ledger's (read
-    /// with the held grants), else "unnamed record".
-    pub(super) fn record_name_of(&self, work: &str) -> String {
-        let mine = self.shell.rows.as_ref().and_then(|(rows, _)| {
+    pub(super) fn record_name_of(&self, work: &str, read: Option<&str>) -> String {
+        let read = read.map(str::to_string).filter(|n| !n.trim().is_empty());
+        let mine = read.or_else(|| self.shell.rows.as_ref().and_then(|(rows, _)| {
             rows.iter()
-                .filter(|r| r.kind == zikaron::tokens::EntryType::History)
+                .filter(|r| r.kind == zikaron_glue::book::Kind::History)
                 .find(|r| r.work.as_deref().map(|w| w.eq_ignore_ascii_case(work)).unwrap_or(false))
-                .and_then(|r| r.facts.note.clone())
-        });
-        // The person's own name for a held grant on this record, kept on this machine.
+                .and_then(|r| r.facts.record_name())
+        }));
         let noted = || {
             let held = self.shell.held.as_ref()?.iter().find(|h| h.work.eq_ignore_ascii_case(work))?;
             let g = crate::lastread::grant_form(&held.id);
@@ -439,27 +496,33 @@ impl Win {
         .unwrap_or_else(|| t(Key::UnnamedRecord).to_string())
     }
 
-    /// The file names a record was signed from, from this Mac's records index (read once per entry; an
-    /// entry signed elsewhere or from a folder has none).
-    pub(super) fn files_of(&mut self, id: &str) -> Vec<String> {
-        if let Some(v) = self.ux.files_of.get(id) {
-            return v.clone();
+    pub(super) fn files_of(&mut self, id: &str, now: f64) -> Vec<String> {
+        let table = self.shell.rows_gen;
+        let held = self.ux.files_of.get(id).cloned();
+        if let Some((at, v)) = &held {
+            if *at == table {
+                return v.clone();
+            }
         }
-        let names: Vec<String> = crate::home::machine_dir()
-            .and_then(|m| crate::recordsx::read(&m))
-            .map(|rows| rows.into_iter().filter(|r| r.id.eq_ignore_ascii_case(id)).map(|r| r.name).collect())
-            .unwrap_or_default();
-        self.ux.files_of.insert(id.to_string(), names.clone());
-        names
+        match self.peek(crate::peekx::Ask::Files { id: id.to_string(), table }, now) {
+            Some(crate::peekx::Got::Files(names)) => {
+                self.ux.files_of.insert(id.to_string(), (table, names.clone()));
+                names
+            }
+            _ => held.map(|(_, v)| v).unwrap_or_default(),
+        }
     }
 
-    /// A file's size, read once per path (a chosen file shows its name and size).
-    pub(super) fn size_of_path(&mut self, path: &str) -> Option<u64> {
+    pub(super) fn size_of_path(&mut self, path: &str, now: f64) -> Option<u64> {
         if let Some(n) = self.ux.sizes.get(path) {
             return *n;
         }
-        let n = crate::anchorx::file_size(std::path::Path::new(path));
-        self.ux.sizes.insert(path.to_string(), n);
-        n
+        match self.peek(crate::peekx::Ask::Size { path: path.to_string() }, now) {
+            Some(crate::peekx::Got::Size(n)) => {
+                self.ux.sizes.insert(path.to_string(), n);
+                n
+            }
+            _ => None,
+        }
     }
 }

@@ -1,9 +1,3 @@
-//! An unparsable `--endpoint` value is misuse (exit 2, nothing on stdout) and is never echoed, because a node
-//! address may carry an API key. The first stderr line names the argument position (the verb is #1) and length;
-//! when the part before the first `=` parses as a chain id, that id and the length after the `=`. All values are
-//! parsed before any node is contacted. One real-binary test per form; the planted key must appear on neither
-//! stream.
-
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -28,20 +22,16 @@ fn run(args: &[&str]) -> Ran {
     Ran { code: o.status.code().unwrap_or(-1), out: o.stdout, err: String::from_utf8_lossy(&o.stderr).to_string() }
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
 }
 
-/// `anchor` with this one `--endpoint` value (argument #3).
 fn anchor(value: &str) -> Ran {
     let hash = format!("0x{}", "11".repeat(32));
-    run(&["anchor", "--endpoint", value, "--key", KEY, "--form", "bare", "--hash", &hash, "--wait-secs", "0"])
+    run(&["anchor", "--endpoint", value, "--key", KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &hash, "--wait-secs", "0"])
 }
 
-/// Misuse with exactly these two stderr lines, nothing on stdout, and the key on neither stream.
 fn refused(r: &Ran, first: &str, second: &str) {
     let lines: Vec<&str> = r.err.lines().collect();
     assert_eq!((r.code, lines.as_slice()), (2, [first, second].as_slice()), "{}", r.err);
@@ -54,6 +44,8 @@ const NOT_INT: &str = "the chain id is not a decimal integer";
 const SCHEME: &str = "an endpoint is an http:// or https:// address";
 const PORT: &str = "an endpoint's port must be a whole number from 0 to 65535";
 const ADDRESS: &str = "not an endpoint address (no host, a bracket that is not an IPv6 address, or a user name or white space in it)";
+const REST_CHAIN: &str = "a REST row's chain after #rest= is not the <chain id>= it is given for";
+const REST_BASE: &str = "a REST row's Base URL is https:// with no query or fragment";
 
 #[test]
 fn a_url_without_a_chain_id_is_named_by_place_and_length() {
@@ -72,8 +64,6 @@ fn an_empty_chain_id_is_named_by_place_and_length() {
     refused(&anchor(&v), &format!("E_ARGS #3 ({} bytes)", v.len()), NOT_INT);
 }
 
-/// A URL whose query has `=` splits there; the part before it is not a chain id and may be the address, so it
-/// is not echoed either.
 #[test]
 fn a_url_with_an_equals_in_its_query_is_not_said_in_part() {
     let v = format!("https://node.example/?apikey={SECRET}");
@@ -128,15 +118,25 @@ fn a_user_and_password_in_the_address_are_never_echoed() {
     refused(&anchor(&format!("1={after}")), &format!("E_ARGS #3 (1= + {} bytes)", after.len()), ADDRESS);
 }
 
-/// Inner whitespace does not parse (`rpc::endpoint_spec`, `InnerSpace`); the value is reported by position and
-/// whole length only.
+#[test]
+fn a_rest_rows_chain_and_base_url_are_read_before_any_node_is_asked() {
+    for (after, said) in [
+        ("https://api.example/v2/api#rest=5".to_string(), REST_CHAIN),
+        ("https://api.example/v2/api#rest=one".to_string(), NOT_INT),
+        ("http://api.example/v2/api#rest=1".to_string(), REST_BASE),
+        (format!("https://api.example/v2/api?apikey={SECRET}#rest=1"), REST_BASE),
+        (format!("https://api.example:65536/{SECRET}#rest=1"), PORT),
+    ] {
+        refused(&anchor(&format!("1={after}")), &format!("E_ARGS #3 (1= + {} bytes)", after.len()), said);
+    }
+}
+
 #[test]
 fn white_space_inside_the_address_is_named_by_place_and_length() {
     let v = format!("1=https://node.example/a {SECRET}");
     refused(&anchor(&v), &format!("E_ARGS #3 ({} bytes)", v.len()), SHAPE);
 }
 
-/// A newline inside the value does not leak into the first stderr line; the key appears nowhere.
 #[test]
 fn a_line_end_inside_the_address_keeps_the_first_line_whole() {
     let v = format!("1=https://node.example/\n{SECRET}");
@@ -149,7 +149,6 @@ fn a_tab_inside_the_address_is_named_by_place_and_length() {
     refused(&anchor(&v), &format!("E_ARGS #3 ({} bytes)", v.len()), SHAPE);
 }
 
-/// Whitespace around the `=` is refused, as in the app's node field.
 #[test]
 fn white_space_after_the_equals_is_named_by_place_and_length() {
     let v = format!("1= https://node.example/{SECRET}");
@@ -162,15 +161,12 @@ fn white_space_before_the_equals_is_named_by_place_and_length() {
     refused(&anchor(&v), &format!("E_ARGS #3 ({} bytes)", v.len()), SHAPE);
 }
 
-/// The chain id is reported as parsed (outer whitespace trimmed, leading `+` and zeros ignored); the length
-/// after the `=` counts the bytes as given.
 #[test]
 fn the_chain_id_is_said_as_read() {
     refused(&anchor(" +01=wss://h"), "E_ARGS #3 (1= + 7 bytes)", SCHEME);
     refused(&anchor(" +01=wss://h\t"), "E_ARGS #3 (1= + 8 bytes)", SCHEME);
 }
 
-/// Whitespace only at the ends parses; the absent node leaves it unanswered (exit 4).
 #[test]
 fn white_space_at_either_end_reads() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
@@ -178,8 +174,6 @@ fn white_space_at_either_end_reads() {
     assert_eq!(r.code, 4, "{}", r.err);
 }
 
-/// `scan` reports the value's argument position and parses every value before contacting any node: a good
-/// value before a bad one is never asked.
 #[test]
 fn scan_names_the_place_and_asks_no_node_before_judging_every_value() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -198,15 +192,13 @@ fn scan_names_the_place_and_asks_no_node_before_judging_every_value() {
     assert_eq!(asked.load(Ordering::SeqCst), 0, "no node asked");
 }
 
-/// `anchor` with two valid values is the one-endpoint misuse naming the flag.
 #[test]
 fn two_good_values_for_anchor_name_the_flag() {
     let hash = format!("0x{}", "11".repeat(32));
-    let r = run(&["anchor", "--endpoint", "1=http://127.0.0.1:1", "--endpoint", "2=http://127.0.0.1:2", "--key", KEY, "--form", "bare", "--hash", &hash]);
-    refused(&r, "E_ARGS --endpoint", "anchor sends to one chain and takes one --endpoint");
+    let r = run(&["anchor", "--endpoint", "1=http://127.0.0.1:1", "--endpoint", "2=http://127.0.0.1:2", "--key", KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &hash]);
+    refused(&r, "E_ARGS --endpoint", "anchor sends to one chain: every --endpoint names the same chain");
 }
 
-/// A valid value is not misuse; the absent node leaves it unanswered (exit 4).
 #[test]
 fn a_value_that_reads_is_not_misuse() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
@@ -214,16 +206,12 @@ fn a_value_that_reads_is_not_misuse() {
     assert_eq!(r.code, 4, "{}", r.err);
 }
 
-/// A value with a valid chain id but an invalid address (`1==…`: the address `=…` has no scheme) is misuse, as
-/// in the app's node field: chain id, length after the `=`, and the address error.
 #[test]
 fn an_address_that_is_another_equals_is_refused_as_the_app_refuses_it() {
     let after = format!("=https://node.example/{SECRET}");
     refused(&anchor(&format!("1={after}")), &format!("E_ARGS #3 (1= + {} bytes)", after.len()), SCHEME);
 }
 
-/// An unreachable node whose address carries a key (in path or query): exit 4, and the key is on neither
-/// stream (the node is named by scheme, host and port only).
 #[test]
 fn a_key_in_a_node_address_is_never_said() {
     let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -237,7 +225,6 @@ fn a_key_in_a_node_address_is_never_said() {
         assert!(out.contains(&format!("127.0.0.1:{port}")), "the node is named: {out}");
         assert!(!out.contains(SECRET) && !r.err.contains(SECRET), "the key is said: {out} {}", r.err);
     }
-    // Userinfo in the address: refused or unreachable, the key is on neither stream.
     let value = format!("31337=http://door:{SECRET}@127.0.0.1:{port}/rpc");
     let r = anchor(&value);
     let out = String::from_utf8_lossy(&r.out).to_string();

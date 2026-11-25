@@ -1,11 +1,3 @@
-//! `zikaron mcp`: the real program spoken to as an AI app speaks to it, one message per line on its input, one
-//! answer per line on its output. The handshake and its versions; the tools, read off the verb table, and none
-//! that is withheld; each tool call answered by the verb's own answer, byte for byte as the same command typed in a
-//! terminal, with its exit code; a write going the way the command line goes at that moment (through a stand-in
-//! desktop, or with the credential), and both ways closed answered as the terminal answers; misuse, a relative
-//! path and a number outside the law's integers refused by name; a cancelled read stopped and unanswered, a
-//! cancelled write done and answered; the desktop's CLOSED said as it is. Unix only, as the stand-in desktop
-//! listens on a local socket (`tests/desk.rs`).
 #![cfg(unix)]
 
 use std::io::{BufRead, Write};
@@ -20,7 +12,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_zikaron");
 const EN: &str = "en_US.UTF-8";
 const ZH: &str = "zh_CN.UTF-8";
 
-/// A short private root: a user home with the pointer to a machine folder, and a data folder (as `tests/desk.rs`).
 struct Bench {
     root: PathBuf,
     user: PathBuf,
@@ -45,18 +36,38 @@ impl Bench {
 
     fn command(&self, args: &[&str], lang: &str) -> Command {
         let mut c = Command::new(BIN);
-        c.args(args).env(zikaron_os::HOME_VAR, &self.user).env_remove("LC_ALL").env_remove("LC_MESSAGES").env_remove("LANGUAGE").env("LANG", lang);
+        c.args(args)
+            .env(zikaron_os::HOME_VAR, &self.user)
+            .env_remove("LC_ALL")
+            .env_remove("LC_MESSAGES")
+            .env_remove("LANGUAGE")
+            .env("LANG", lang)
+            .env_remove(zikaron_seal::credential::PASS_ENV);
         c
     }
 
-    /// The same command typed in a terminal: exit code, stdout, stderr.
+    fn command_with_pass(&self, args: &[&str], lang: &str, pass: &str) -> Command {
+        let mut c = self.command(args, lang);
+        c.env(zikaron_seal::credential::PASS_ENV, pass);
+        c
+    }
+
     fn typed(&self, args: &[&str], lang: &str) -> (i32, Vec<u8>, String) {
         let out = self.command(args, lang).stdin(Stdio::null()).output().expect("runs");
         (out.status.code().unwrap_or(-1), out.stdout, String::from_utf8_lossy(&out.stderr).into_owned())
     }
 
     fn session(&self, lang: &str) -> Session {
-        let mut child = self.command(&["mcp"], lang).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("mcp starts");
+        self.session_with(&["mcp"], lang)
+    }
+
+    fn session_with(&self, args: &[&str], lang: &str) -> Session {
+        Session::of(self.command(args, lang).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("mcp starts"))
+    }
+}
+
+impl Session {
+    fn of(mut child: std::process::Child) -> Session {
         let out = child.stdout.take().expect("stdout");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -69,7 +80,9 @@ impl Bench {
         });
         Session { child, lines: rx }
     }
+}
 
+impl Bench {
     fn door(&self) -> PathBuf {
         zikaron_glue::door::place(&self.machine, &self.home)
     }
@@ -81,7 +94,6 @@ impl Drop for Bench {
     }
 }
 
-/// A running `zikaron mcp` and the lines it wrote.
 struct Session {
     child: std::process::Child,
     lines: mpsc::Receiver<String>,
@@ -95,7 +107,6 @@ impl Session {
         input.flush().expect("flush");
     }
 
-    /// The next line written, within `secs`, as the raw line and its value.
     fn next(&self, secs: u64) -> Option<(String, Value)> {
         let line = self.lines.recv_timeout(Duration::from_secs(secs)).ok()?;
         let v = zikaron::json::parse_tests_1_3(line.as_bytes()).ok().or_else(|| zikaron::json::parse_tests_1_3(line.replacen("\"code\":-", "\"code\":", 1).as_bytes()).ok())?;
@@ -133,7 +144,6 @@ fn is_error(r: &Value) -> bool {
     r.member("isError") == Some(&Value::Bool(true))
 }
 
-/// A stand-in desktop answering each request with `answer`, reporting what came (as `tests/desk.rs`).
 fn desktop(at: &Path, answer: impl Fn(&Request) -> Option<Vec<u8>> + Send + 'static) -> (zikaron_os::door::Closer, mpsc::Receiver<Request>) {
     let (l, closer) = zikaron_os::door::listen(at).expect("the door opens");
     let (tx, rx) = mpsc::channel();
@@ -152,8 +162,6 @@ fn desktop(at: &Path, answer: impl Fn(&Request) -> Option<Vec<u8>> + Send + 'sta
 
 const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
 
-/// The versions: either of the two asked is answered as asked, any other with the newer; the tools capability
-/// alone, and the program's name and version.
 #[test]
 fn the_handshake_answers_one_of_two_versions() {
     let b = Bench::new("hello");
@@ -164,7 +172,6 @@ fn the_handshake_answers_one_of_two_versions() {
         assert_eq!(r.member("protocolVersion").and_then(Value::as_str), Some(answered));
         assert_eq!(zikaron::json::canon_bytes(r.member("capabilities").unwrap()), br#"{"tools":{"listChanged":false}}"#.to_vec());
         assert_eq!(r.member("serverInfo").and_then(|x| x.member("name")).and_then(Value::as_str), Some("zikaron"));
-        // A notification is not answered; `ping` is.
         s.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
         let pong = s.ask(r#"{"jsonrpc":"2.0","id":"p","method":"ping"}"#);
         assert_eq!(pong.member("id").and_then(Value::as_str), Some("p"), "the next line answers the ping: {pong:?}");
@@ -172,15 +179,12 @@ fn the_handshake_answers_one_of_two_versions() {
     }
 }
 
-/// The tools are the verb table's: the eight writes with their `--home` row and `home`, the nine reads with their
-/// row less what is withheld; nothing else, and not a withheld verb.
 #[test]
 fn the_tools_are_the_verb_tables_and_no_withheld_one_appears() {
     let b = Bench::new("list");
     let mut s = b.session(EN);
     let v = s.ask(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let tools = result(&v).member("tools").and_then(Value::as_arr).expect("tools").clone();
-    // Members are in canonical order: the parameters are compared as sets.
     let got: Vec<(String, Vec<String>, bool)> = tools
         .iter()
         .map(|t| {
@@ -194,24 +198,30 @@ fn the_tools_are_the_verb_tables_and_no_withheld_one_appears() {
         .collect();
     let want: Vec<(&str, &[&str], bool)> = vec![
         ("history", &["home", "file", "note"], false),
-        ("grant", &["home", "grantee", "work", "terms", "history", "window-from", "window-to", "scope", "upstream"], false),
+        ("grant", &["home", "grantee", "work", "terms", "history", "window-from", "window-to", "scope", "upstream", "supersedes"], false),
         ("revoke", &["home", "grant", "case"], false),
-        ("adopt", &["home", "anchors", "attestor", "attestation"], false),
         ("annotate", &["home", "subject", "note"], false),
         ("retract", &["home", "subject", "note"], false),
         ("anchor", &["home"], false),
-        // A package sealed to one recipient: an address or a key.
         ("kit-export", &["home", "entry", "note", "out", "as", "to", "to-key", "originals"], false),
+        ("grant-package", &["home", "grant", "originals", "to", "out"], false),
+        ("clean", &["home", "yes"], false),
+        ("face-table", &["home"], true),
+        ("face-home", &["home", "chain"], false),
+        ("face-account", &["home", "platform", "handle", "note"], false),
+        ("face-key", &["home", "address", "role", "sig", "note"], false),
+        ("face-name", &["home", "name"], false),
+        ("face-release", &["home", "subject"], false),
+        ("face-reroot", &["home", "to"], false),
+        ("face-origin", &["home", "from"], false),
+        ("face-joined", &["home", "root", "to"], true),
         ("show", &["ledger", "entry", "path"], true),
-        ("audit", &["ledger", "root", "input", "fragment", "unavailable"], true),
+        ("audit", &["ledger", "root", "input", "fragment"], true),
         ("scan", &["home"], true),
-        ("check-grant", &["ledger", "root", "input", "fragment", "unavailable", "now", "grant"], true),
-        ("chain-check", &["ledger", "root", "hop", "now", "input", "fragment", "unavailable"], true),
-        ("depth", &["ledger", "root", "work", "input", "fragment", "unavailable"], true),
+        ("check-grant", &["ledger", "root", "input", "fragment", "now", "grant", "book", "notices", "endpoint"], true),
+        ("chain-check", &["ledger", "root", "hop", "now", "input", "fragment", "book", "notices", "endpoint"], true),
         ("badge", &["decode"], true),
-        // `kit-verify` takes the originals out when given a place: a write; a sealed package opens through the home,
-        // which may be left out.
-        ("kit-verify", &["kit", "fragment", "unavailable", "originals-to", "home"], false),
+        ("kit-verify", &["kit", "fragment", "originals-to", "home"], false),
         ("contract", &[], true),
     ];
     let want: Vec<(String, Vec<String>, bool)> = want
@@ -223,31 +233,35 @@ fn the_tools_are_the_verb_tables_and_no_withheld_one_appears() {
         })
         .collect();
     assert_eq!(got, want);
-    // Each one is a verb of the table; a verb not in the list is no tool.
     for (name, _, _) in &got {
         assert!(zikaron_cli::verbs::VERBS.contains(&name.as_str()), "{name} is a verb");
     }
-    for withheld in ["keygen", "init", "attest", "succeed", "fpm-sign", "ack-sign", "hand-over", "take-over", "mcp"] {
+    for withheld in ["keygen", "init", "migrate", "hand-over", "take-over", "mcp", "adopt", "depth"] {
         assert!(!got.iter().any(|(n, _, _)| n == withheld), "{withheld} is withheld");
         let e = s.call(9, withheld, "{}");
         assert!(e.member("error").is_some(), "{withheld}: {e:?}");
     }
-    // `anchor` spends gas when sending is automatic: destructive and reaching outside.
     let anchor = tools.iter().find(|t| t.member("name").and_then(Value::as_str) == Some("anchor")).expect("anchor");
     let notes = anchor.member("annotations").expect("annotations");
     assert_eq!((notes.member("destructiveHint"), notes.member("openWorldHint")), (Some(&Value::Bool(true)), Some(&Value::Bool(true))));
-    // The write tools need `home`, but `kit-verify`, which verifies a plain package with none.
-    let required = |name: &str| tools.iter().find(|t| t.member("name").and_then(Value::as_str) == Some(name)).and_then(|t| t.member("inputSchema")).and_then(|i| i.member("required")).cloned();
-    assert_eq!(required("kit-export"), Some(Value::Arr(vec![Value::Str("home".into())])));
-    assert_eq!(required("kit-verify"), None);
-    // A repeated flag is a list of texts.
+    let schema = |name: &str, k: &str| tools.iter().find(|t| t.member("name").and_then(Value::as_str) == Some(name)).and_then(|t| t.member("inputSchema")).and_then(|i| i.member(k)).cloned();
+    let names = |xs: &[&str]| Some(Value::Arr(xs.iter().map(|x| Value::Str(x.to_string())).collect()));
+    let branches = |xs: &[&str]| {
+        Some(Value::Arr(xs.iter().map(|x| Value::Obj(vec![("required".to_string(), Value::Arr(vec![Value::Str(x.to_string())]))])).collect()))
+    };
+    assert_eq!(schema("kit-export", "required"), names(&["home"]));
+    assert_eq!(schema("kit-verify", "required"), names(&["kit"]));
+    assert_eq!(schema("check-grant", "required"), names(&["grant"]));
+    assert_eq!(schema("scan", "required"), names(&["home"]));
+    assert_eq!(schema("badge", "required"), names(&["decode"]));
+    assert_eq!((schema("audit", "required"), schema("audit", "anyOf")), (None, branches(&["ledger", "input"])));
+    assert_eq!((schema("show", "required"), schema("show", "oneOf")), (None, branches(&["path", "entry"])));
+    assert_eq!((schema("chain-check", "required"), schema("contract", "required")), (None, None));
     let kit = tools.iter().find(|t| t.member("name").and_then(Value::as_str) == Some("kit-export")).expect("kit-export");
     let entry = kit.member("inputSchema").and_then(|i| i.member("properties")).and_then(|p| p.member("entry")).expect("entry");
     assert_eq!(entry.member("type").and_then(Value::as_str), Some("array"));
 }
 
-/// Through the desktop (no credential on this machine): the call is the verb with `--home`, its answer the one
-/// the terminal gets, byte for byte, with its exit code; the desktop is asked what the terminal would ask it.
 #[test]
 fn a_write_through_the_desktop_answers_as_the_terminal() {
     let b = Bench::new("door");
@@ -268,23 +282,17 @@ fn a_write_through_the_desktop_answers_as_the_terminal() {
     s.end();
 }
 
-/// With the credential on this machine the write goes `--ledger <home>/ledger`, judged at the call; a credential
-/// that expired is answered as the terminal answers that command (same code, same sentence). Both ways closed is
-/// answered as the terminal answers `--home` with no desktop.
 #[test]
 fn the_way_is_judged_at_each_call_and_answered_as_the_terminal() {
     let b = Bench::new("ways");
     let home = b.home.display().to_string();
     let mut s = b.session(ZH);
-    // Neither: no credential, no desktop.
     let (code, out, _) = b.typed(&["retract", "--home", &home, "--subject", "s"], ZH);
     let r = s.call(1, "retract", &format!(r#"{{"home":"{home}","subject":"s"}}"#));
     let r = result(&r);
     assert_eq!((text_of(r).into_bytes(), exit_of(r)), (out, Some(code as u64)), "both closed: as typed");
     assert_eq!(code, 4);
-    // The credential appears (expired), the same session now goes with it. An expired credential is removed by
-    // the command that finds it, so it is issued again before the same command is typed.
-    let issue = || zikaron_seal::credential::issue(&b.machine, "acct", &[7u8; 32], zikaron_seal::credential::Term { issued: 10, expires: Some(70) }).expect("issued");
+    let issue = || zikaron_seal::credential::issue(&b.machine, "acct", zikaron_seal::credential::Term { issued: 10, expires: Some(70) }).expect("issued");
     issue();
     std::fs::create_dir_all(zikaron_seal::envelope::label_path(&b.home).parent().unwrap()).expect("settings");
     std::fs::write(zikaron_seal::envelope::label_path(&b.home), b"{}").expect("a label: a home kept sealed");
@@ -299,9 +307,37 @@ fn the_way_is_judged_at_each_call_and_answered_as_the_terminal() {
     s.end();
 }
 
-/// Misuse is the verb's (exit 2, its two stderr lines as the text, marked an error); a relative path, a parameter
-/// not the tool's and a value of the wrong kind are refused before anything runs; a number outside the law's
-/// integers is refused by where it stands.
+#[test]
+fn a_program_key_reaches_each_call_through_the_environment() {
+    let b = Bench::new("pass");
+    zikaron_seal::credential::issue(&b.machine, "acct", zikaron_seal::credential::Term { issued: 10, expires: None }).expect("issued");
+    std::fs::create_dir_all(zikaron_seal::envelope::label_path(&b.home).parent().unwrap()).expect("settings");
+    std::fs::write(zikaron_seal::envelope::label_path(&b.home), b"{}").expect("a label: a home kept sealed");
+    let home = b.home.display().to_string();
+    let ledger = b.home.join("ledger").display().to_string();
+    let call = format!(r#"{{"home":"{home}","subject":"s"}}"#);
+    let typed = ["retract", "--ledger", ledger.as_str(), "--subject", "s"];
+    let pass = format!("zkp_{}", "ab".repeat(32));
+    let mut s = b.session(EN);
+    let r = s.call(1, "retract", &call);
+    let r = result(&r);
+    let out = b.command(&typed, EN).stdin(Stdio::null()).output().expect("runs");
+    assert_eq!((text_of(r).into_bytes(), exit_of(r)), (out.stdout.clone(), Some(1)), "as typed");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("E_CREDENTIAL_PASS_MISSING"));
+    s.end();
+    let child = b.command_with_pass(&["mcp"], EN, &pass).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("mcp starts");
+    let mut s = Session::of(child);
+    for id in [2, 3] {
+        let r = s.call(id, "retract", &call);
+        let r = result(&r);
+        let out = b.command_with_pass(&typed, EN, &pass).stdin(Stdio::null()).output().expect("runs");
+        assert_eq!((text_of(r).into_bytes(), exit_of(r)), (out.stdout.clone(), Some(1)), "as typed with the key");
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(said.contains("E_CREDENTIAL_PASS_UNKNOWN") && !said.contains(&pass[4..]), "{said}");
+    }
+    s.end();
+}
+
 #[test]
 fn misuse_and_what_is_refused_by_name() {
     let b = Bench::new("misuse");
@@ -324,18 +360,14 @@ fn misuse_and_what_is_refused_by_name() {
         assert!(is_error(r), "{args}");
         assert_eq!(text_of(r).lines().next(), Some(first), "{args}");
     }
-    // The place originals are taken out to is a path, taken whole only: nothing runs for a relative one.
     let r = s.call(5, "kit-verify", &format!(r#"{{"kit":"{home}","originals-to":"rel/out"}}"#));
     let r = result(&r);
     assert!(is_error(r));
     assert_eq!(text_of(r).lines().next(), Some("E_ARGS --originals-to"));
-    // Through the desktop (no credential here), `kit-verify` takes the flags of its `--home` row only: a chain reading
-    // given beside `home` is refused by name before anything runs.
     let r = s.call(6, "kit-verify", &format!(r#"{{"home":"{home}","kit":"{home}","fragment":"{home}"}}"#));
     let r = result(&r);
     assert!(is_error(r));
     assert_eq!(text_of(r).lines().next(), Some("E_ARGS --fragment"));
-    // Both ways to name a recipient: the verb's misuse, judged before the desktop is asked.
     let r = s.call(7, "kit-export", &format!(r#"{{"home":"{home}","out":"{home}/o.zkit","to":"0x{}","to-key":"0x02{}"}}"#, "11".repeat(20), "11".repeat(32)));
     let r = result(&r);
     assert!(is_error(r));
@@ -357,8 +389,6 @@ fn misuse_and_what_is_refused_by_name() {
     assert_eq!(asked.len(), 0, "misuse and mcp's own refusals ask no desktop");
 }
 
-/// The desktop's CLOSED is said as it is (nothing retried); a write cancelled while it runs is done and answered;
-/// a read cancelled while it runs is stopped and not answered, and the session goes on.
 #[test]
 fn closed_and_cancellations_are_said_as_they_are() {
     let b = Bench::new("cancel");
@@ -384,7 +414,6 @@ fn closed_and_cancellations_are_said_as_they_are() {
     let (_, v) = s.next(30).expect("the write is answered");
     assert_eq!(v.member("id"), Some(&Value::Int(2)));
     assert_eq!(exit_of(result(&v)), Some(0));
-    // A read that waits for ever (a named pipe no one writes): stopped, nothing answered, the next call goes on.
     let pipe = b.root.join("pipe");
     assert!(Command::new("mkfifo").arg(&pipe).status().expect("mkfifo").success());
     s.send(&format!(r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"show","arguments":{{"path":"{}"}}}}}}"#, pipe.display()));
@@ -397,7 +426,6 @@ fn closed_and_cancellations_are_said_as_they_are() {
     let _ = rx.try_iter().count();
 }
 
-/// Each read tool answers as the same command typed in a terminal, byte for byte, with its exit code.
 #[test]
 fn each_read_tool_answers_as_the_terminal() {
     let b = Bench::new("reads");
@@ -409,7 +437,6 @@ fn each_read_tool_answers_as_the_terminal() {
         ("audit", format!(r#"{{"ledger":"{ledger}"}}"#), vec!["--ledger".into(), ledger.clone()]),
         ("check-grant", format!(r#"{{"grant":"{none}"}}"#), vec!["--grant".into(), none.clone()]),
         ("chain-check", "{}".into(), vec![]),
-        ("depth", format!(r#"{{"ledger":"{ledger}"}}"#), vec!["--ledger".into(), ledger.clone()]),
         ("badge", format!(r#"{{"decode":"{none}"}}"#), vec!["--decode".into(), none.clone()]),
         ("kit-verify", format!(r#"{{"kit":"{none}"}}"#), vec!["--kit".into(), none.clone()]),
     ];
@@ -427,7 +454,6 @@ fn each_read_tool_answers_as_the_terminal() {
     s.end();
 }
 
-/// `mcp` takes no flag: given one it is misuse, zero bytes on stdout.
 #[test]
 fn mcp_given_a_flag_is_misuse() {
     let b = Bench::new("flag");
@@ -435,21 +461,16 @@ fn mcp_given_a_flag_is_misuse() {
     assert_eq!((code, out.len()), (2, 0), "{err}");
 }
 
-/// The `mcp` module listens on nothing, writes no file and opens no key: it reaches the sealed layer only through
-/// the one judgement of whether a credential is there.
 #[test]
 fn the_module_listens_on_nothing_writes_nothing_and_opens_no_key() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mcp.rs")).expect("source");
     let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-    for w in ["Listener", "bind(", "fs::write", "File::create", "OpenOptions", "keybox", "credential::open", "sealed::", "envelope::open", "read_label", "stdout()", "println!", "print!"] {
+    for w in ["Listener", "bind(", "fs::write", "File::create", "OpenOptions", "keybox", "credential::open", "sealed::", "envelope::open", "read_label", "stdout()", "println!", "print!", "PASS_ENV", "ZIKARON_CLI_PASS", "env_clear", "env_remove"] {
         assert!(!code.contains(w), "mcp.rs has {w}");
     }
     assert!(code.contains("crate::desk::writes_alone"), "the way is judged by the one judgement");
 }
 
-/// What a message is refused for, by where it stands: not JSON is `-32700`; a container past the law's depth, a
-/// member given twice and a number with a sign are `-32600` with their place; an unknown tool is `-32602`; a response
-/// sent to the server is not answered.
 #[test]
 fn messages_are_refused_by_what_and_where() {
     let b = Bench::new("refused");
@@ -470,15 +491,12 @@ fn messages_are_refused_by_what_and_where() {
     }
     let l = line(&mut s, r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"keygen"}}"#);
     assert!(l.contains("\"code\":-32602"), "{l}");
-    // A response is not answered: the next line answers the ping after it.
     s.send(r#"{"jsonrpc":"2.0","id":99,"result":{}}"#);
     let l = line(&mut s, r#"{"jsonrpc":"2.0","id":"p","method":"ping"}"#);
     assert!(l.contains("\"id\":\"p\""), "{l}");
     assert_eq!(s.end(), 0);
 }
 
-/// Parameters as the table says: a `hop`'s two sides each whole; a repeated flag given once per value in the
-/// order given; a value carrying NUL refused before anything runs.
 #[test]
 fn parameters_are_laid_out_as_the_table_says() {
     let b = Bench::new("params");
@@ -495,7 +513,6 @@ fn parameters_are_laid_out_as_the_table_says() {
     assert_eq!(entries, vec![format!("0x{one}").as_str(), format!("0x{two}").as_str()], "once per value, in order");
     let r = s.call(3, "annotate", &format!(r#"{{"home":"{home}","note":"a\u0000b"}}"#));
     assert_eq!(text_of(result(&r)).lines().next(), Some("E_ARGS --note"));
-    // A recipient's key goes to the desktop as given; `kit-verify` with `home` goes through it, its flags whole.
     let g = "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
     let r = s.call(4, "kit-export", &format!(r#"{{"home":"{home}","out":"/o2","to-key":"{g}"}}"#));
     assert_eq!(exit_of(result(&r)), Some(0), "{r:?}");
@@ -508,8 +525,6 @@ fn parameters_are_laid_out_as_the_table_says() {
     closer.close();
 }
 
-/// A call not started is not done when cancelled, nor when the input closes: the call being done finishes and is
-/// answered, the session ends 0, and the desktop is asked only for that one.
 #[test]
 fn a_call_not_started_is_not_done() {
     let b = Bench::new("notyet");
@@ -522,7 +537,6 @@ fn a_call_not_started_is_not_done() {
     let file = b.root.join("f.txt");
     std::fs::write(&file, b"x").expect("file");
     s.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"history","arguments":{{"home":"{home}","file":"{}"}}}}}}"#, file.display()));
-    // The first call is being done once the desktop has it (the desktop answers it 0.7 s later).
     let first = rx.recv_timeout(Duration::from_secs(30)).expect("the first call reached the desktop");
     assert_eq!(first.verb, "history");
     s.send(&format!(r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"annotate","arguments":{{"home":"{home}","note":"cancelled"}}}}}}"#));
@@ -543,3 +557,102 @@ fn a_call_not_started_is_not_done() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("\"id\":1"), "{lines:?}");
 }
+
+#[test]
+fn a_write_tool_goes_with_the_key_the_server_was_started_with() {
+    let b = Bench::new("keyroad");
+    let ledger = b.root.join("plain");
+    let key = b.root.join("key");
+    let (code, out, _) = b.typed(&["keygen"], EN);
+    assert_eq!(code, 0);
+    let made = zikaron::json::parse_tests_1_3(&out).expect("keygen answers");
+    let privkey = made.member("privkey").and_then(Value::as_str).expect("a key").to_string();
+    let mut o = zikaron_os::Options::new();
+    o.write(true).create_new(true);
+    zikaron_os::owner_only(&mut o).open(&key).expect("the key file").write_all(format!("{privkey}\n").as_bytes()).expect("its bytes");
+    let (ledger_s, key_s) = (ledger.display().to_string(), key.display().to_string());
+    assert_eq!(b.typed(&["init", "--ledger", &ledger_s, "--key-file", &key_s, "--statement", "a plain ledger"], EN).0, 0, "a plain ledger");
+    let mut s = b.session_with(&["mcp", "--key-file", &key_s, "--endpoint", "11155111=http://127.0.0.1:9"], EN);
+    let list = s.ask(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    let listed = String::from_utf8(zikaron::json::canon_bytes(&list)).expect("text");
+    assert!(!listed.contains("key-file") && !listed.contains(&key_s), "the key file is no tool's parameter");
+    let r = s.call(2, "annotate", &format!(r#"{{"home":"{ledger_s}","note":"by the key road"}}"#));
+    let r = result(&r);
+    assert_eq!(exit_of(r), Some(0), "written with the key: {}", text_of(r));
+    assert!(!text_of(r).contains(&key_s), "no answer carries the key file's path");
+    let (typed_code, typed_out, _) = b.typed(&["annotate", "--ledger", &ledger_s, "--key-file", &key_s, "--note", "typed"], EN);
+    assert_eq!(typed_code, 0);
+    let entries = std::fs::read_dir(&ledger).expect("the ledger").count();
+    assert!(entries >= 3, "genesis and two notes: {entries}");
+    assert!(String::from_utf8_lossy(&typed_out).contains("\"seq\":2"), "the tool's write came first (seq 1)");
+    assert_eq!(s.end(), 0);
+    let (code, out, err) = b.typed(&["mcp", "--endpoint", "11155111=http://127.0.0.1:9"], EN);
+    assert_eq!((code, out.is_empty()), (2, true));
+    assert!(err.lines().next().unwrap_or_default().contains("--key-file"), "{err}");
+}
+
+#[test]
+fn anchor_goes_with_the_key_the_server_was_started_with() {
+    let b = Bench::new("keyroad-anchor");
+    let ledger = b.root.join("plain");
+    let key = b.root.join("key");
+    let (code, out, _) = b.typed(&["keygen"], EN);
+    assert_eq!(code, 0);
+    let made = zikaron::json::parse_tests_1_3(&out).expect("keygen answers");
+    let privkey = made.member("privkey").and_then(Value::as_str).expect("a key").to_string();
+    let mut o = zikaron_os::Options::new();
+    o.write(true).create_new(true);
+    zikaron_os::owner_only(&mut o).open(&key).expect("the key file").write_all(format!("{privkey}\n").as_bytes()).expect("its bytes");
+    let (ledger_s, key_s) = (ledger.display().to_string(), key.display().to_string());
+    assert_eq!(b.typed(&["init", "--ledger", &ledger_s, "--key-file", &key_s, "--statement", "a plain ledger"], EN).0, 0, "a plain ledger");
+    let node = "11155111=http://127.0.0.1:9";
+    let mut s = b.session_with(&["mcp", "--key-file", &key_s, "--endpoint", node, "--proxy", "none"], EN);
+    let r = s.call(2, "anchor", &format!(r#"{{"home":"{ledger_s}"}}"#));
+    let r = result(&r);
+    let (typed_code, typed_out, _) = b.typed(&["anchor", "--ledger", &ledger_s, "--key-file", &key_s, "--endpoint", node, "--proxy", "none"], EN);
+    assert_eq!(typed_code, 4, "{}", String::from_utf8_lossy(&typed_out));
+    assert_eq!(exit_of(r), Some(4), "the key road's answer: {}", text_of(r));
+    assert_eq!(text_of(r).trim_end(), String::from_utf8_lossy(&typed_out).trim_end(), "answered as typed");
+    assert!(!text_of(r).contains("E_DESKTOP") && !text_of(r).contains(&key_s), "{}", text_of(r));
+    assert_eq!(s.end(), 0);
+}
+
+#[test]
+fn the_key_road_leaves_the_tools_that_write_no_entry_as_they_are() {
+    let b = Bench::new("keyroad-others");
+    let key = b.root.join("key");
+    let (code, out, _) = b.typed(&["keygen"], EN);
+    assert_eq!(code, 0);
+    let made = zikaron::json::parse_tests_1_3(&out).expect("keygen answers");
+    let privkey = made.member("privkey").and_then(Value::as_str).expect("a key").to_string();
+    let mut o = zikaron_os::Options::new();
+    o.write(true).create_new(true);
+    zikaron_os::owner_only(&mut o).open(&key).expect("the key file").write_all(format!("{privkey}\n").as_bytes()).expect("its bytes");
+    let home = b.root.join("desk-home");
+    std::fs::create_dir_all(&home).expect("a data folder");
+    let kit = b.root.join("a.zkit");
+    std::fs::write(&kit, b"zikaron-kit-file/1\n").expect("a package file");
+    let (home_s, key_s, kit_s, out_s) = (home.display().to_string(), key.display().to_string(), kit.display().to_string(), b.root.join("out.zkit").display().to_string());
+    let calls = [
+        ("kit-export", format!(r#"{{"home":"{home_s}","out":"{out_s}"}}"#)),
+        ("kit-verify", format!(r#"{{"home":"{home_s}","kit":"{kit_s}"}}"#)),
+        ("clean", format!(r#"{{"home":"{home_s}"}}"#)),
+    ];
+    let answers = |argv: &[&str]| -> Vec<(Option<u64>, String)> {
+        let mut s = b.session_with(argv, EN);
+        let got = calls.iter().enumerate().map(|(i, (tool, args))| {
+            let r = s.call(10 + i as u64, tool, args);
+            let r = result(&r);
+            (exit_of(r), text_of(r))
+        }).collect();
+        assert_eq!(s.end(), 0);
+        got
+    };
+    let keyed = answers(&["mcp", "--key-file", &key_s, "--endpoint", "11155111=http://127.0.0.1:9"]);
+    let plain = answers(&["mcp"]);
+    for ((tool, _), (k, p)) in calls.iter().zip(keyed.iter().zip(plain.iter())) {
+        assert_ne!(k.0, Some(2), "{tool}: not misuse on the key road: {}", k.1);
+        assert_eq!(k, p, "{tool}: answered as without the key road");
+    }
+}
+

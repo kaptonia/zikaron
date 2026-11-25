@@ -1,0 +1,1 @@
+input arrays reversed: sec 8.2: the gap opens at seq 2 and the root hands the seat on at seq 3, a position visited while the walk is already not certain; the seat moves all the same and k2's entry at seq 4 records nothing: one SEQ_GAP, no AUTHORITY_MISMATCH.

@@ -1,6 +1,3 @@
-//! Edge-case tests for kit law §3 to §10. Samples are built and signed inside the tests; nothing is copied
-//! from `base/`.
-
 use zikaron::cryptox;
 use zikaron::entry;
 use zikaron::hexfmt;
@@ -29,7 +26,6 @@ fn h32(x: u8) -> String {
     hexfmt::encode(&[x; 32])
 }
 
-/// Sign a document object without `sig`, add the `sig`, return canonical bytes.
 fn sign_doc(key: &[u8; 32], body: Value, domain: &str) -> Vec<u8> {
     let pre = json::canon_bytes(&body);
     let (_, digest) = entry::presig_and_digest(&pre, domain);
@@ -76,7 +72,6 @@ fn ack_of(key: &[u8; 32], fpm_id: &str, variant: &str) -> Vec<u8> {
     sign_doc(key, body, "zikaron.ack/1")
 }
 
-/// Build a signed zikaron/1 entry.
 fn entry_of(key: &[u8; 32], ty: &str, seq: u64, prev: Option<&str>, body: Value) -> Vec<u8> {
     let six = o(vec![
         ("spec", st("zikaron/1")),
@@ -111,8 +106,6 @@ fn id_of(b: &[u8]) -> String {
     hexfmt::encode(&entry::entry_id(b))
 }
 
-// §3 to §5: documents.
-
 #[test]
 fn a_self_signed_manifest_is_a_manifest() {
     let b = fpm_of(&KEY_A, vec![(addr(&KEY_B), h32(0xaa))]);
@@ -125,22 +118,17 @@ fn a_self_signed_manifest_is_a_manifest() {
 fn manifest_decision_order() {
     let b = fpm_of(&KEY_A, vec![(addr(&KEY_B), h32(0xaa))]);
     let s = String::from_utf8(b.clone()).unwrap();
-    // The root is not an object.
     assert_eq!(doc::check_fpm(b"[]").unwrap_err().token.as_str(), "E_DOC");
-    // An eighth key.
     let closed = s.replace("{\"author\"", "{\"aextra\":1,\"author\"");
     assert_eq!(doc::check_fpm(closed.as_bytes()).unwrap_err().token.as_str(), "E_DOC_CLOSED");
-    // Wrong spec.
     let spec = s.replace("\"zikaron.fpm/1\"", "\"zikaron.fpm/2\"");
     assert_eq!(doc::check_fpm(spec.as_bytes()).unwrap_err().token.as_str(), "E_SPEC");
-    // A missing key.
     let missing = json::canon_bytes(&o(vec![("spec", st("zikaron.fpm/1"))]));
     assert_eq!(doc::check_fpm(&missing).unwrap_err().token.as_str(), "E_DOC_MISSING");
 }
 
 #[test]
 fn manifest_row_rules_carry_the_index() {
-    // An extra member in a row: E_FPM_ROW with its index.
     let body = o(vec![
         ("spec", st("zikaron.fpm/1")),
         ("author", st(&addr(&KEY_A))),
@@ -170,16 +158,12 @@ fn manifest_rows_must_be_distinct_and_sorted() {
     let a = addr(&KEY_B);
     let c = addr(&KEY_C);
     let (lo, hi) = if a.as_bytes() < c.as_bytes() { (a.clone(), c.clone()) } else { (c.clone(), a.clone()) };
-    // Duplicate recipient.
     let b = fpm_of(&KEY_A, vec![(lo.clone(), h32(0xaa)), (lo.clone(), h32(0xbb))]);
     assert_eq!(doc::check_fpm(&b).unwrap_err().token.as_str(), "E_FPM_DUP_RECIPIENT");
-    // Duplicate variant.
     let b = fpm_of(&KEY_A, vec![(lo.clone(), h32(0xaa)), (hi.clone(), h32(0xaa))]);
     assert_eq!(doc::check_fpm(&b).unwrap_err().token.as_str(), "E_FPM_DUP_VARIANT");
-    // Rows out of order.
     let b = fpm_of(&KEY_A, vec![(hi.clone(), h32(0xaa)), (lo.clone(), h32(0xbb))]);
     assert_eq!(doc::check_fpm(&b).unwrap_err().token.as_str(), "E_FPM_ROW_ORDER");
-    // Two rows in order.
     let b = fpm_of(&KEY_A, vec![(lo, h32(0xaa)), (hi, h32(0xbb))]);
     assert!(doc::check_fpm(&b).is_ok());
 }
@@ -221,7 +205,6 @@ fn a_manifest_signed_under_the_ack_domain_is_refused() {
         ("note_md", st("")),
     ]);
     let b = sign_doc(&KEY_A, body, "zikaron.ack/1");
-    // The two domains give different messages: a signature does not hold under the other domain.
     assert!(doc::check_fpm(&b).unwrap_err().token.as_str().starts_with("E_SIG"));
 }
 
@@ -229,7 +212,6 @@ fn a_manifest_signed_under_the_ack_domain_is_refused() {
 fn pairing_walks_its_six_verdicts() {
     let m = fpm_of(&KEY_A, vec![(addr(&KEY_B), h32(0xaa))]);
     let mid = id_of(&m);
-    // PAIRED.
     let a = ack_of(&KEY_B, &mid, &h32(0xaa));
     match doc::pair(&m, &a) {
         Pairing::Paired { recipient, variant } => {
@@ -238,19 +220,14 @@ fn pairing_walks_its_six_verdicts() {
         }
         other => panic!("{:?}", other),
     }
-    // Variant mismatch.
     let a = ack_of(&KEY_B, &mid, &h32(0xbb));
     assert_eq!(doc::pair(&m, &a).verdict().as_str(), "ACK_VARIANT_MISMATCH");
-    // No row for this recipient.
     let a = ack_of(&KEY_C, &mid, &h32(0xaa));
     assert_eq!(doc::pair(&m, &a).verdict().as_str(), "ACK_NO_ROW");
-    // Points to another manifest.
     let a = ack_of(&KEY_B, &h32(0x99), &h32(0xaa));
     assert_eq!(doc::pair(&m, &a).verdict().as_str(), "ACK_FPM_MISMATCH");
-    // Broken manifest.
     let a = ack_of(&KEY_B, &mid, &h32(0xaa));
     assert_eq!(doc::pair(b"[]", &a).verdict().as_str(), "FPM_INVALID");
-    // Broken acknowledgement.
     assert_eq!(doc::pair(&m, b"[]").verdict().as_str(), "ACK_INVALID");
 }
 
@@ -264,8 +241,6 @@ fn attribution_is_a_statement_about_bytes() {
     assert_eq!(doc::attribute(&m, &a, b"other bytes").1, Some(false));
 }
 
-// §6 payloads.
-
 #[test]
 fn base64url_is_canonical_and_unpadded() {
     for n in 0..40usize {
@@ -274,12 +249,9 @@ fn base64url_is_canonical_and_unpadded() {
         assert!(!enc.contains('='));
         assert_eq!(b64::decode(enc.as_bytes()).as_deref(), if n == 0 { None } else { Some(&bytes[..]) });
     }
-    // Nonzero unused bits in the last character are refused.
     assert_eq!(b64::decode(b"AA"), Some(vec![0u8]));
     assert!(b64::decode(b"AB").is_none());
-    // Length ≡ 1 (mod 4) is refused.
     assert!(b64::decode(b"A").is_none());
-    // Bytes outside the alphabet are refused.
     assert!(b64::decode(b"A+B/").is_none());
 }
 
@@ -297,9 +269,6 @@ fn grant_entry(key: &[u8; 32], seq: u64, prev: Option<&str>, work: &str, upstrea
 
 #[test]
 fn an_empty_badge_is_refused_on_both_sides() {
-    // §6.1 is defined for one or more segments; with zero the encoder outputs the prefix alone (none of its
-    // three tokens covers it) and §6.2 refuses it at segment 0 with E_BADGE_B64. The harness always passes at
-    // least one path, so this case is covered here.
     let payload = badge::encode(&[]).unwrap();
     assert_eq!(payload, "zikaron-grant:");
     let e = badge::decode(payload.as_bytes()).unwrap_err();
@@ -309,14 +278,11 @@ fn an_empty_badge_is_refused_on_both_sides() {
 
 #[test]
 fn reachability_starts_at_an_entry_the_ledger_need_not_hold() {
-    // §8.1 only asks that each step along prev be a ledger entry; the start may be outside the ledger (for
-    // example an entry trimmed to EXCLUDED by the §8.1 lineage).
     let g = entry_of(&KEY_A, "genesis", 0, None, o(vec![("statement_md", st("l"))]));
     let head = id_of(&g);
     let a = entry_of(&KEY_A, "annotation", 1, Some(&head), o(vec![("note_md", st("in"))]));
     let ledger_input = audit_input(&addr(&KEY_A), vec![&g, &a], Value::Arr(vec![]), basis_of(vec![], false));
     let outcome = zikaron::audit::audit_full(&ledger_input).unwrap();
-    // An entry outside the ledger: signed by someone else, prev pointing at the ledger head.
     let outsider_bytes = entry_of(&KEY_B, "annotation", 2, Some(&id_of(&a)), o(vec![("note_md", st("out"))]));
     let outsider = zikaron::entry::check(&outsider_bytes).unwrap();
     assert!(reading::reachable(&outcome.ledger, &outsider, &head));
@@ -349,7 +315,6 @@ fn a_broken_byte_link_names_its_segment() {
     let g = entry_of(&KEY_A, "genesis", 0, None, o(vec![("statement_md", st("l"))]));
     let head = id_of(&g);
     let up = grant_entry(&KEY_A, 1, Some(&head), &h32(0x77), None, &addr(&KEY_B));
-    // The downstream declares a different upstream entry_id.
     let g2 = entry_of(&KEY_B, "genesis", 0, None, o(vec![("statement_md", st("l2"))]));
     let head2 = id_of(&g2);
     let down = grant_entry(&KEY_B, 1, Some(&head2), &h32(0x77), Some(&h32(0x55)), &addr(&KEY_C));
@@ -357,7 +322,6 @@ fn a_broken_byte_link_names_its_segment() {
     let e = badge::decode(payload.as_bytes()).unwrap_err();
     assert_eq!(e.token.as_str(), "E_BADGE_LINK");
     assert_eq!(e.index, Some(1));
-    // Right upstream, right work: the link holds.
     let down_ok = grant_entry(&KEY_B, 1, Some(&head2), &h32(0x77), Some(&id_of(&up)), &addr(&KEY_C));
     let payload = badge::encode(&[up, down_ok]).unwrap();
     assert_eq!(badge::decode(payload.as_bytes()).unwrap().len(), 2);
@@ -376,8 +340,6 @@ fn a_badge_segment_that_is_no_entry_carries_the_parent_token() {
     assert_eq!(e.index, Some(0));
     assert_eq!(e.inner.map(|t| t.as_str()), Some("E_ENVELOPE"));
 }
-
-// §7 disclosure kits.
 
 fn tmpdir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -491,8 +453,6 @@ fn a_kit_carrying_an_entry_reports_its_bytes_and_its_invalids() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// §9 and §10 readings.
-
 fn audit_input(root: &str, pile: Vec<&Vec<u8>>, anchors: Value, basis: Value) -> Value {
     o(vec![
         ("root", st(root)),
@@ -568,18 +528,14 @@ fn depth_reads_history_entries_of_one_digest() {
     let outcome = zikaron::audit::audit_full(&input).unwrap();
     let r = reading::depth(Some(&outcome), &h32(0x77));
     assert_eq!(r.member("found").unwrap(), &Value::Bool(true));
-    // The anchor on h2 bounds h1 too, walking back along prev: both are anchored.
     assert_eq!(r.member("deepest").unwrap().as_int().unwrap(), 2);
     assert_eq!(r.member("earliest").unwrap().as_int().unwrap(), 1700);
     let c = r.member("continuity").unwrap();
     assert_eq!(c.member("span").unwrap().as_int().unwrap(), 2);
-    // Only the anchor on h2 sits directly on H0's line.
     assert_eq!(c.member("anchored").unwrap().as_int().unwrap(), 1);
-    // Another work digest: not found.
     let r = reading::depth(Some(&outcome), &h32(0x66));
     assert_eq!(r.member("found").unwrap(), &Value::Bool(false));
     assert_eq!(r.member("deepest").unwrap().as_int().unwrap(), 0);
-    // An invalid input yields only valid false.
     let r = reading::depth(None, &h32(0x77));
     assert_eq!(r, o(vec![("valid", Value::Bool(false))]));
 }
@@ -637,7 +593,6 @@ fn a_green_grant_needs_an_anchor_a_covering_basis_and_a_complete_record() {
     );
     let r = check::grant_check(&grant, Some(&input), Some(1000));
     assert_eq!(r.verdict.as_str(), "GREEN");
-    // A window outside now is FAIL.
     let windowed = {
         let body = o(vec![
             ("grantee", st(&addr(&KEY_B))),
@@ -661,7 +616,6 @@ fn a_green_grant_needs_an_anchor_a_covering_basis_and_a_complete_record() {
     assert_eq!(r.verdict.as_str(), "FAIL");
     let failed = r.value.member("failed").unwrap().as_arr().unwrap();
     assert_eq!(failed[0].as_str().unwrap(), "EXPIRED");
-    // now absent: that check is unknown, the verdict PARTIAL.
     let r = check::grant_check(&windowed, Some(&input2), None);
     assert_eq!(r.verdict.as_str(), "PARTIAL");
 }
@@ -732,7 +686,6 @@ fn a_two_hop_chain_links_by_bytes_and_by_ledger() {
     let v = check::chain_check(&hops, None);
     let links = v.member("links").unwrap().as_arr().unwrap();
     assert_eq!(links.len(), 1);
-    // The downstream ledger's root is the upstream grantee: the link holds.
     assert_eq!(links[0], Value::Bool(true));
     assert_eq!(v.member("failing").unwrap(), &Value::Null);
     assert_eq!(v.member("verdict").unwrap().as_str().unwrap(), "PARTIAL");

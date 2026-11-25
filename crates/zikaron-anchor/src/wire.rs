@@ -1,36 +1,13 @@
-//! The transport-side JSON reader: what nodes say is outside the law's §3 universe.
-//!
-//! The core's reader reads the §3 value domain: integers in `[0, 2^53)`, no negatives, no fractions, no
-//! exponents. Nodes speak outside it (`{"code":-32000}` is how they decline), so reading them with the core's
-//! reader would call a valid recording unreadable JSON. The two readers read two languages: this one never
-//! produces canonical bytes (only the core does); it reads node answers, and fragments to be handed on are
-//! still written by the core's `canon_bytes`.
-//!
-//! Numbers keep their source text ([`W::Num`]). A caller that needs an integer asks for one (`as_u64`), and
-//! text that does not fit is absent. A fractional field nobody reads does not break a recording, and a
-//! fractional field that is read is never silently truncated.
-//!
-//! Each value records its source span. The basis goes to the core as written: rewriting it would cure shape
-//! faults (unsorted members, duplicate keys) that the core must see. So the basis is cut from the source by
-//! its span.
-
-/// A transport-side value.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Body {
     Null,
     Bool(bool),
-    /// Number source text (negatives, fractions and exponents kept as is).
     Num(String),
     Str(String),
     Arr(Vec<W>),
     Obj(Vec<(String, W)>),
 }
 
-/// A value with its span in the source.
-///
-/// The span is provenance, not identity: the same answer in two places of a recording is one answer. Equality
-/// compares `body` only and is written by hand; a derived one would compare offsets and read two identical
-/// answers as a contradiction on replay.
 #[derive(Clone, Eq, Debug)]
 pub struct W {
     pub body: Body,
@@ -69,20 +46,17 @@ impl W {
     pub fn is_null(&self) -> bool {
         matches!(self.body, Body::Null)
     }
-    /// Decimal text as u64; negatives, fractions and out-of-range values are absent.
     pub fn as_u64(&self) -> Option<u64> {
         match &self.body {
             Body::Num(t) => t.parse::<u64>().ok(),
             _ => None,
         }
     }
-    /// The source bytes of this value (for taking the basis as written).
     pub fn raw<'a>(&self, src: &'a [u8]) -> &'a [u8] {
         src.get(self.start..self.end).unwrap_or(&[])
     }
 }
 
-/// Read a whole transport JSON document.
 pub fn parse(b: &[u8]) -> Option<W> {
     let mut p = P { b, i: 0 };
     p.ws();
@@ -199,7 +173,6 @@ impl<'a> P<'a> {
             }
             p.i > s
         };
-        // The integer part is `0` or starts with 1 to 9 (RFC 8259 §6): `-032005` and `03` are not numbers.
         let int_at = self.i;
         if !digits(self) {
             return None;
@@ -264,7 +237,6 @@ impl<'a> P<'a> {
                 }
                 c if c < 0x20 => return None,
                 c => {
-                    // Multi-byte UTF-8 passes through as is.
                     let n = match c {
                         0x00..=0x7f => 0,
                         0xc0..=0xdf => 1,
@@ -287,10 +259,6 @@ impl<'a> P<'a> {
     }
 }
 
-/// One answer cut down, on the wire, to the facts a decision reads: an object keeps only the named members, in
-/// the order named; any other answer stands whole (as `endpoints::project` does over law values). Cut before
-/// [`to_core`]: a member no decision reads (a fee history's fractional `gasUsedRatio`, a number past the law's
-/// ceiling) never makes the facts it does read unreadable.
 pub fn project(w: &W, facts: &[&str]) -> W {
     match &w.body {
         Body::Obj(ms) => W { body: Body::Obj(facts.iter().filter_map(|f| ms.iter().find(|(k, _)| k == f).cloned()).collect()), start: w.start, end: w.end },
@@ -298,8 +266,6 @@ pub fn project(w: &W, facts: &[&str]) -> W {
     }
 }
 
-/// Transport value to a law §3 value; anything outside the §3 domain (negatives, fractions, out-of-range
-/// integers) gives `None`.
 pub fn to_core(w: &W) -> Option<zikaron::json::Value> {
     use zikaron::json::Value;
     Some(match &w.body {
@@ -318,7 +284,6 @@ pub fn to_core(w: &W) -> Option<zikaron::json::Value> {
     })
 }
 
-/// Law §3 value to a transport value (for asking).
 pub fn from_core(v: &zikaron::json::Value) -> W {
     use zikaron::json::Value;
     W::of(match v {
@@ -331,7 +296,6 @@ pub fn from_core(v: &zikaron::json::Value) -> W {
     })
 }
 
-/// Write transport bytes (for recordings): members in key byte order, numbers as their source text.
 pub fn write(w: &W) -> String {
     let mut s = String::new();
     put(w, &mut s);

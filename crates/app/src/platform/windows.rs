@@ -1,10 +1,3 @@
-//! Windows: the file dialog is `rfd` over the system dialog; everything else uses Win32 APIs declared here.
-//! The lock is `zikaron-os`'s byte-range lock (`LockFileEx`); the home and application data folders are known
-//! folders (read in `zikaron-os`, shared with the command line); the time zone is `TZ` or the current system
-//! zone, its rule for each year (`GetDynamicTimeZoneInformation`, `GetTimeZoneInformationForYear`) converted to
-//! a POSIX rule; the temporary directory is the per-user one (`GetTempPath2W`, or `GetTempPathW` on systems
-//! without it).
-
 use std::ffi::c_void;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
@@ -51,8 +44,6 @@ impl TimeZoneInformation {
     }
 }
 
-/// `DYNAMIC_TIME_ZONE_INFORMATION`: the zone as `TimeZoneInformation`, then its key name and whether automatic
-/// daylight time is turned off.
 #[repr(C)]
 struct DynamicTimeZoneInformation {
     zone: TimeZoneInformation,
@@ -77,27 +68,19 @@ unsafe extern "system" {
     fn MessageBoxW(owner: Handle, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
-/// `MB_OK | MB_ICONERROR | MB_SETFOREGROUND`.
 const DIALOG_KIND: u32 = 0x0000_0010 | 0x0001_0000;
 
-/// The dialog runs inside the wait, on the background task's thread (with no owner window), so the window
-/// keeps drawing while it is open.
 pub(super) fn ask_path(kind: super::Pick) -> Result<super::Wait, crate::fault::Fault> {
     Ok(Box::new(move || {
         let d = rfd::FileDialog::new();
         let got = match kind {
             super::Pick::Folder => d.pick_folder(),
-            // The system dialog picks one kind per dialog: offer files; a directory can still be dropped.
             super::Pick::File | super::Pick::FileOrFolder => d.pick_file(),
         };
         Ok(got.map(|p| p.display().to_string()))
     }))
 }
 
-/// A GUI program has no console: started from Explorer, standard error goes nowhere visible, so the sentence is
-/// shown in a system message box (which needs no app window). When standard error is attached (a console,
-/// pipe or file), the line goes there and no dialog is shown, since a dialog would wait for a click that may
-/// never come.
 pub(super) fn say_without_window(line: &str, sentence: &str) {
     eprintln!("{line}");
     if !std::io::stderr().as_raw_handle().is_null() {
@@ -108,20 +91,24 @@ pub(super) fn say_without_window(line: &str, sentence: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), DIALOG_KIND) };
 }
 
+pub(super) fn dialog_brings_folders() -> bool {
+    false
+}
+
+pub(super) fn asks_file_or_folder() -> bool {
+    false
+}
+
 pub(super) fn window_backend() -> super::Backend {
     super::Backend::Default
 }
 
-/// The years asked of the system for their rules. Windows keeps a zone's past and announced rules for a span
-/// of years and answers a year outside it by the nearest year in it, so asking these covers every rule the
-/// system holds for moments this app shows.
+pub(super) fn watch_drops(_window: super::drops::Window, _wake: super::drops::Wake) -> Option<super::drops::Watcher> {
+    None
+}
+
 const RULE_YEARS: std::ops::RangeInclusive<u16> = 1970..=2100;
 
-/// `TZ` when set (a POSIX rule; Windows has no zone files); otherwise the system's zone, its rule for each
-/// year written as a POSIX rule ([`posix_rule`]) and listed where it changes, so a moment reads by its own
-/// year's rule as a zone file's moments do. With automatic daylight time turned off, the system keeps one rule
-/// for every year, and so does this: the one in force ([`today_rule`]). A year the system will not answer, or
-/// whose rule has no POSIX form, leaves the one rule in force too.
 pub(super) fn zone_rules() -> Option<super::Zone> {
     if let Ok(tz) = std::env::var("TZ") {
         let tz = tz.trim().trim_start_matches(':');
@@ -150,7 +137,6 @@ pub(super) fn zone_rules() -> Option<super::Zone> {
     Some(super::Zone::ByYear(years))
 }
 
-/// The system zone's rule in force now, as one POSIX rule (`GetTimeZoneInformation`).
 fn today_rule() -> Option<super::Zone> {
     let mut info = TimeZoneInformation::zero();
     if unsafe { GetTimeZoneInformation(&mut info) } == TIME_ZONE_ID_INVALID {
@@ -159,10 +145,6 @@ fn today_rule() -> Option<super::Zone> {
     posix_rule(&info).map(super::Zone::Rule)
 }
 
-/// The system zone as a POSIX rule: the standard offset (minutes west of UTC, like the system's bias), and for
-/// zones with daylight time, its offset and both transitions as `Mm.w.d/time` (week 5 means the last week, in
-/// both forms). The start is in standard local time and the end in daylight local time, in both forms. A
-/// transition given as a specific year's date rather than a yearly rule has no POSIX form: `None`.
 fn posix_rule(z: &TimeZoneInformation) -> Option<String> {
     let offset = |west: i32| {
         let (sign, m) = if west < 0 { ("-", -west) } else { ("", west) };
@@ -222,19 +204,24 @@ mod tests {
         }
     }
 
-    /// System zones convert to POSIX rules (both hemispheres, half-hour offsets, no daylight time); a
-    /// single-year transition gives `None`.
     #[test]
     fn the_system_zone_becomes_a_posix_rule() {
-        // Central Europe: UTC+1, daylight from the last Sunday of March 02:00 to the last Sunday of October 03:00.
         assert_eq!(posix_rule(&zone(-60, (10, 5, 0, 3), Some(((3, 5, 0, 2), -60)))).as_deref(), Some("<STD>-1<DST>-2,M3.5.0/2:00:00,M10.5.0/3:00:00"));
-        // US Eastern: UTC-5, second Sunday of March to first Sunday of November.
         assert_eq!(posix_rule(&zone(300, (11, 1, 0, 2), Some(((3, 2, 0, 2), -60)))).as_deref(), Some("<STD>5<DST>4,M3.2.0/2:00:00,M11.1.0/2:00:00"));
-        // India and China: no daylight time; half an hour kept.
         assert_eq!(posix_rule(&zone(-330, (0, 0, 0, 0), None)).as_deref(), Some("<STD>-5:30"));
         assert_eq!(posix_rule(&zone(-480, (0, 0, 0, 0), None)).as_deref(), Some("<STD>-8"));
         let mut once = zone(-60, (10, 5, 0, 3), Some(((3, 5, 0, 2), -60)));
         once.daylight_date.year = 2026;
         assert_eq!(posix_rule(&once), None);
     }
+}
+
+pub(super) fn menu_bar(_words: &super::menubar::Words) {}
+
+pub(super) fn menu_takes_key(_chars: &str) -> bool {
+    false
+}
+
+pub(super) fn menu_bar_read() -> Vec<(String, Vec<(String, String, bool)>)> {
+    Vec::new()
 }

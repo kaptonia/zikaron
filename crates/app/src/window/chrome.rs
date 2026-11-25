@@ -1,65 +1,51 @@
-//! The shell of the window: the side rail, the toolbar with each view's history, the page body with its
-//! entrance, the full-window layers (the first-run wizard and the passcode gate), the sheets above them, the
-//! whole-window drop, and the keyboard.
-//!
-//! No page is named here: histories, the rail's list and the page area are the shell's own
-//! (`zikaron_ui::nav`), and every page, place and route comes from this product's table (`Pages`, given in
-//! `pages`). Every button goes through `action::apply`; nothing here decides anything about the ledger.
-
 use super::*;
 use zikaron_ui::nav::{self as shell_nav, Pages};
 
-/// This product's place and route, as the shell knows them (through its table).
 type P = <Win as Pages>::Place;
 type R = <Win as Pages>::Route;
 
 impl Win {
-    // ─── History ───
-
-    /// The current view's history (a view seen for the first time stands on its own page).
     pub(super) fn hist(&mut self) -> &zikaron_ui::nav::History<R> {
         shell_nav::hist(self)
     }
 
-    /// The page on screen.
     pub(super) fn route(&mut self) -> R {
         shell_nav::route(self)
     }
 
-    /// Go into a page of the current view.
     pub(super) fn push(&mut self, r: R, now: f64) {
         shell_nav::push(self, r, now);
     }
 
-    /// Back one page in the current view.
     pub(super) fn back(&mut self, now: f64) {
         shell_nav::back(self, now);
     }
 
-    /// Forward one page in the current view.
     pub(super) fn fwd(&mut self, now: f64) {
         shell_nav::fwd(self, now);
     }
 
-    /// A segment of the view's own page picked on it: the page stays, the segment's thumb slides and what is under
-    /// it swaps.
     pub(super) fn seg_tab(&mut self, place: P, now: f64) {
         shell_nav::seg_tab(self, place, now);
     }
 
-    /// A rail item: the same view goes back to its own page; another view shows where that view was left.
-    fn rail_to(&mut self, place: P, now: f64) {
+    pub(super) fn rail_to(&mut self, place: P, now: f64) {
+        let stack = self.stack_of(place);
+        if stack != self.ux.nav.stack {
+            if let Some(left) = self.ux.nav.hist.remove(&stack) {
+                let root = self.root(self.root_of(stack));
+                if left.cur != root {
+                    self.ux.nav.hist.insert(stack, zikaron_ui::nav::History { back: Vec::new(), cur: root, fwd: vec![left.cur] });
+                }
+            }
+        }
         shell_nav::rail_to(self, place, now);
     }
 
-    /// Whether the rail is on screen (not under the gate or the first-run wizard).
     pub(super) fn rail_shown(&self) -> bool {
         !self.shell.vault.gate_up() && self.ux.wizard.is_none()
     }
 
-    // ─── The frame ───
-
-    /// One frame of the shell: rail, toolbar and page; the wizard and the gate over them; sheets over all.
     pub(super) fn chrome(&mut self, ui: &mut egui::Ui, now: f64) {
         let ctx = &ui.ctx().clone();
         self.ux.now = now;
@@ -78,7 +64,6 @@ impl Win {
             }
         }
         self.settle_seat();
-        // Apply the language chosen in settings once at startup.
         if !self.ux.lang_applied {
             self.ux.lang_applied = true;
             if let Some(l) = self.shell.speaks() {
@@ -86,18 +71,14 @@ impl Win {
                     crate::lang::set(l);
                 }
             }
-            crate::when::set(self.shell.settings.zone.unwrap_or(crate::when::Zone::Utc));
+            crate::when::set(crate::when::chosen(self.shell.settings.zone));
         }
         self.follow_page(now);
-        // A store that turns into no store (reset, or the machine set aside) starts setup over: the wizard is asked
-        // again.
         let absent = self.shell.vault.absent();
         if self.ux.vault_absent == Some(false) && absent {
             self.ux.wizard_asked = false;
         }
         self.ux.vault_absent = Some(absent);
-        // Whether the wizard opens by itself is asked once, and only with the gate down: while the vault is
-        // locked the key cannot be read, and a locked machine would read as one without a key.
         let gate = self.shell.vault.gate_up();
         if !self.ux.wizard_asked && !gate {
             self.ux.wizard_asked = true;
@@ -106,24 +87,18 @@ impl Win {
         if self.rail_shown() {
             self.chrome_rail(ui, now);
         }
-        // A page that takes drops in its own zones says so as it draws (`takes_drops`).
         self.ux.page_drops = false;
         self.chrome_page(ui, now);
-        // The full-window layers: the first-run wizard, and the passcode gate above it.
         if self.ux.wizard.is_some() && !gate {
             self.wizard_layer(ctx, now);
         } else {
-            // However the wizard is left (its way out, its last step), it goes at once and the window comes in as
-            // a page does.
             zikaron_ui::covers::gone(ctx, "wizard");
         }
         self.gate(ctx, now);
-        // Sheets lie above everything, the gate and the wizard included.
         self.sheets(ctx, now);
         self.whole_drop(ctx, now);
     }
 
-    /// The side rail.
     fn chrome_rail(&mut self, ui: &mut egui::Ui, now: f64) {
         let ctx = &ui.ctx().clone();
         let role = self.shell.settings.role;
@@ -144,8 +119,6 @@ impl Win {
             .frame(rail::panel_frame())
             .show_inside(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                // On macOS the top of the rail is the window's handle (there is no title bar): dragging here
-                // drags the window. Elsewhere the system's title bar does that.
                 #[cfg(target_os = "macos")]
                 {
                     let full = ui.max_rect();
@@ -157,7 +130,6 @@ impl Win {
                     menu::toggle(ctx, egui::Id::new("zikaron-id-menu"));
                 }
                 chip = Some(r.rect);
-                // The seat a switch goes to shows at once, while the switch runs in the background (`Shell::seat_wish`).
                 let cur = usize::from(self.shell.seat_wish.unwrap_or(role) == crate::roles::Role::Grantee);
                 if rail::seat(ui, [t(Key::IdSeatAuthor), t(Key::IdSeatGrantee)], cur).is_some() {
                     switch = true;
@@ -204,25 +176,21 @@ impl Win {
         }
     }
 
-    /// Lock: back to the passcode gate; the master key is wiped at once, and nothing typed survives.
     pub(super) fn lock_now(&mut self, now: f64) {
         self.act(Action::Lock, now);
         self.ux.gate_clear();
         self.sheets_clear();
+        self.ux.reroot = Default::default();
     }
 
-    /// The identity chip's two lines: the name (or "unnamed") and the kind.
     fn id_chip_words(&self) -> (String, String) {
         let row = self.shell.identities.as_ref().and_then(|r| r.now().map(|(x, _)| x.clone()));
         match row {
-            Some(r) => (if r.label.trim().is_empty() { t(Key::Unnamed).to_string() } else { r.label.clone() }, t(id_kind_key(r.kind())).to_string()),
+            Some(r) => (super::identity::id_name(&r), t(id_kind_key(r.kind())).to_string()),
             None => (t(Key::Unnamed).to_string(), t(Key::IdNone).to_string()),
         }
     }
 
-    /// The identity menu under the chip: switch identity (each identity's name over its kind, the one in use
-    /// saying so), new identity, import key, identity keys. No lock here (the rail has its own).
-    /// It stays inside the rail: as far from the rail's right edge as the chip is from its left, a long name cut.
     fn id_menu(&mut self, ctx: &egui::Context, anchor: egui::Rect, rail: egui::Rect, now: f64) {
         let id = egui::Id::new("zikaron-id-menu");
         if !menu::is_open(ctx, id) {
@@ -231,11 +199,8 @@ impl Win {
         let rows: Vec<crate::identity::Row> = self.shell.identities.as_ref().map(|r| r.rows.clone()).unwrap_or_default();
         let current = self.shell.identities.as_ref().and_then(|r| r.now().map(|(x, _)| x.id.clone()));
         let primary = self.shell.primary.as_ref().map(|(p, _)| p.clone());
-        // The menu's width less its own 10 of padding; a row takes its label and 24 more.
         let min_w = (rail.width() - 2.0 * (anchor.left() - rail.left()).max(0.0) - 10.0).max(120.0);
-        // The identity list: each identity is two lines, its name and its
-        // kind, with "primary" and "in use" at the end of the second line.
-        let names: Vec<String> = rows.iter().map(|r| elide_in(ctx, if r.label.trim().is_empty() { t(Key::Unnamed) } else { r.label.as_str() }, Type::Key.font(), min_w - 24.0)).collect();
+        let names: Vec<String> = rows.iter().map(|r| elide_in(ctx, &super::identity::id_name(r), Type::Key.font(), min_w - 24.0)).collect();
         let tags: Vec<Vec<&str>> = rows
             .iter()
             .map(|r| {
@@ -246,11 +211,10 @@ impl Win {
                 if current.as_deref() == Some(r.id.as_str()) {
                     v.push(t(Key::IdIsCurrent));
                 }
+                v.extend(self.own_tag(r));
                 v
             })
             .collect();
-        // A title, the identities (arrows and return move among them and pick one), then the actions in two
-        // groups.
         let mut items: Vec<menu::Item> = vec![menu::Item::Head(t(Key::IdSwitchTitle))];
         for (i, r) in rows.iter().enumerate() {
             items.push(menu::Item::Who(menu::Who { name: &names[i], kind: t(id_kind_key(r.kind())), tags: &tags[i], current: current.as_deref() == Some(r.id.as_str()) }));
@@ -263,7 +227,6 @@ impl Win {
         if let Some(i) = menu::show(ctx, id, anchor, true, min_w, &items) {
             let n = rows.len();
             if i >= 1 && i <= n {
-                // Whether the press moves anything is the action's to say; only one that moved goes home.
                 let r = &rows[i - 1];
                 if !matches!(self.act(Action::SwitchIdentity { id: r.id.clone() }, now), Applied::IdentityKept { .. }) {
                     shell_nav::home(self, motion::Entry::Fade, now);
@@ -279,8 +242,6 @@ impl Win {
         }
     }
 
-    /// The status line's text, voice, progress and the sync button's state. A long task in progress comes first
-    /// ("in progress: …" with its bar), then syncing, a failed sync, the last sync time, or never.
     fn status_say(&mut self) -> (String, rail::Voice, Option<Option<f32>>, rail::Sync) {
         let sync = if !self.ux.syncing.is_empty() {
             rail::Sync::Busy
@@ -304,27 +265,22 @@ impl Win {
         let words = match self.shell.chain_read_at {
             Some(at) => {
                 let ago = (self.ux.now - at).max(0.0) as u64;
-                let zone = if self.shell.settings.zone.unwrap_or(crate::when::Zone::Utc) == crate::when::Zone::Utc { " UTC" } else { "" };
                 let wall = wall_secs();
-                fill1(Key::NavReadAt, &format!("{}{zone}", crate::when::clock_or_day(wall.saturating_sub(ago), wall)))
+                fill1(Key::NavReadAt, &crate::when::clock_or_day(wall.saturating_sub(ago), wall))
             }
             None => t(Key::NavReadNever).to_string(),
         };
         (words, rail::Voice::Quiet, None, sync)
     }
 
-    /// Whether the status line at the rail's foot reports a task of kind `k` while it runs (every long task the
-    /// person starts, wherever the rail is drawn): what it reports is not drawn again in the page.
     pub(super) fn status_reports(&self, k: crate::task::Kind) -> bool {
         task_long(k) && self.rail_shown()
     }
 
-    /// The long task the person started that is still running (the latest one).
     pub(super) fn running_task(&self) -> Option<crate::task::Kind> {
         self.ux.asked.iter().rev().find(|k| self.shell.tasks.in_flight(**k) && task_long(**k)).copied()
     }
 
-    /// Whether the person left the page a task was started on.
     pub(super) fn task_away(&self, k: crate::task::Kind) -> bool {
         match self.ux.origin.iter().find(|(x, _, _)| *x == k) {
             Some((_, stack, h)) => self.ux.nav.stack != *stack || self.ux.nav.hist.get(stack).map(|now| now.cur != h.cur).unwrap_or(true),
@@ -332,15 +288,12 @@ impl Win {
         }
     }
 
-    /// Go back to where a task was started ("view" on its toast, the rail's task line).
     pub(super) fn view_task(&mut self, tag: u64, now: f64) {
         let Some((_, stack, h)) = self.ux.origin.iter().find(|(x, _, _)| *x as u64 == tag).cloned() else { return };
         self.ux.nav.land((stack, h));
         shell_nav::entered(self, motion::Entry::Root, now);
     }
 
-    /// Refresh chain state (the sync button): the chain query, and the self-audit or the vault re-check for the
-    /// seat. The interface does not wait. With no node configured it says where to add one.
     pub(super) fn refresh_chain(&mut self, now: f64) {
         if self.shell.endpoints.is_empty() {
             self.toasts.say_full(t(Key::NavNoNodes), "", "", Tone::Bad, now);
@@ -359,7 +312,6 @@ impl Win {
         self.ux.synced_at = None;
         for a in wants {
             match apply(&mut self.shell, a) {
-                // The round reports once, when all of it has landed (`sync_landed`).
                 Applied::Started(k) => self.ux.syncing.push(k),
                 Applied::Refused(k) => self.toasts.say(fill1(Key::SaidInFlight, t(self.task_word(k))), Tone::Bad, now),
                 Applied::Trouble(f) if crate::watchx::is_network(&f) => self.say_fault(&f, now),
@@ -368,8 +320,6 @@ impl Win {
         }
     }
 
-    /// A sync round's landings: when the last of its tasks lands, one toast reports both readings ("key balance
-    /// · ledger check"), and the button shows its check mark.
     pub(super) fn sync_landed(&mut self, landed: &[crate::task::Outcome], now: f64) {
         if self.ux.syncing.is_empty() {
             return;
@@ -395,8 +345,9 @@ impl Win {
                     parts.push(t(Key::SaidChainNone).to_string());
                 }
                 Ok(Done::Audited { label, complete, entries, .. }) => {
-                    failed |= !complete;
-                    parts.push(fill2(Key::SaidAudited, &label_human(&label), &entries.to_string()));
+                    let (said, fine) = self.own_audit_said(&label);
+                    failed |= !complete && !fine;
+                    parts.push(fill2(Key::SaidAudited, &said, &entries.to_string()));
                 }
                 Ok(Done::Reviewed { cards, .. }) => parts.push(fill1(Key::SaidReviewed, &cards.len().to_string())),
                 Ok(_) => {}
@@ -417,12 +368,9 @@ impl Win {
         }
     }
 
-    /// The page area: toolbar and body (the shell's, over this product's pages).
     fn chrome_page(&mut self, ui: &mut egui::Ui, now: f64) {
         let ctx = &ui.ctx().clone();
         let covered = !self.rail_shown();
-        // Under a cover (the wizard, the gate) the page paints no ground: the cover paints its own, and the
-        // wizard's column lets the system's material through.
         let frame = if covered { egui::Frame::NONE } else { rail::page_frame() };
         egui::CentralPanel::default().frame(frame).show_inside(ui, |ui| {
             if covered {
@@ -435,12 +383,8 @@ impl Win {
         });
     }
 
-    // ─── Keyboard, drops ───
-
-    /// ⌘1–⌘6 the rail's items, ⌘[ ⌘] back and forward, ⌘, settings, ⌘L lock (with a passcode set). Not under
-    /// the gate, the wizard, or a sheet (Esc there closes the sheet or menu).
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context, now: f64) {
-        if !self.rail_shown() || sheet::up(ctx) || self.any_sheet() {
+        if !self.rail_keys_live(ctx) {
             return;
         }
         let pressed = |k: egui::Key| chord(ctx, k);
@@ -467,30 +411,31 @@ impl Win {
         }
     }
 
-    /// Whether the page on screen takes dropped files in its own zones (the whole-window drop stands aside): what
-    /// the page declared as it drew this frame ([`Win::takes_drops`]), never a list of pages kept here.
     fn page_takes_drops(&mut self) -> bool {
         self.ux.page_drops
     }
 
-    /// Declared by a page while it draws: it takes dropped files in its own zones this frame, so the
-    /// whole-window drop stands aside.
     pub(super) fn takes_drops(&mut self) {
         self.ux.page_drops = true;
     }
 
-    /// The whole-window drop: while a file is dragged over a page that takes drops as a whole, the veil covers
-    /// the window; when dropped, the author seat opens the new-record sheet with the file and the grantee seat
-    /// goes to record verification. Several files at once are refused with the usual message.
     fn whole_drop(&mut self, ctx: &egui::Context, now: f64) {
         let open = self.rail_shown() && !self.any_sheet() && !self.page_takes_drops();
         let author = self.shell.settings.role == crate::roles::Role::Author;
         let (title, note) = if author { (t(Key::V2NewAnchor), t(Key::U3DropTitle)) } else { (t(Key::V2TabVerifyWork), t(Key::KitvDrop)) };
         drop::veil(ctx, open && drop::dragging(ctx), title, note);
+        let got = drop::take_dropped(ctx);
         if !open {
+            if !got.is_empty() && self.rail_shown() {
+                if self.any_sheet() {
+                    self.toasts.say(t(Key::DropCloseSheet), Tone::Bad, now);
+                } else {
+                    let to = t(if author { Key::NavWorksView } else { Key::V2TabVerifyWork });
+                    self.toasts.say(fill1(Key::DropElsewhere, to), Tone::Bad, now);
+                }
+            }
             return;
         }
-        let got = drop::take_dropped(ctx);
         match got.as_slice() {
             [] => {}
             [one] => {
@@ -509,15 +454,11 @@ impl Win {
 
 }
 
-/// A block of a page that enters one after another (the stagger of lists and detail pages), keyed on the
-/// page's entrance.
 pub(super) fn stagger<Out>(ui: &mut egui::Ui, i: usize, add: impl FnOnce(&mut egui::Ui) -> Out) -> Out {
     let key = shell_nav::entry_key(ui.ctx());
     motion::stagger(ui, egui::Id::new(("zikaron-stagger", i)), key, i, add)
 }
 
-/// What is under a segment of a view's own page: swapped in when the segment changes on the page, and on the page's
-/// own entrance coming with the page rather than swapping in over it.
 pub(super) fn tab_body<Out>(ui: &mut egui::Ui, salt: &str, key: u64, add: impl FnOnce(&mut egui::Ui) -> Out) -> Out {
     let id = egui::Id::new(("zikaron-tab-body", salt));
     let entry = shell_nav::entry_key(ui.ctx());
@@ -528,25 +469,10 @@ pub(super) fn tab_body<Out>(ui: &mut egui::Ui, salt: &str, key: u64, add: impl F
     motion::swap(ui, id, key, add)
 }
 
-/// Tasks that run long enough to show on a button and on the rail.
-fn task_long(k: crate::task::Kind) -> bool {
-    use crate::task::Kind;
-    !matches!(k, Kind::Ledger | Kind::Grants | Kind::Held | Kind::Vet | Kind::Vault)
-}
-
-/// The one way the window reads a shortcut: ⌘ (Ctrl off macOS) with `k`, taken so nothing else reads it too.
-///
-/// The key read is the one egui reports for the press; the windowing layer reports the layout's own key when
-/// egui knows it and the physical key otherwise. So on a layout without Latin letters (Cyrillic, Greek, kana)
-/// ⌘ with the key where L sits arrives as L and locks. There is no further fallback to the physical key: on a
-/// Latin layout that moves letters (Dvorak) the key where L sits types another letter, and ⌘ with it is that
-/// letter's shortcut, not ⌘L.
 pub(super) fn chord(ctx: &egui::Context, k: egui::Key) -> bool {
     ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k))
 }
 
-/// What the window's handles do (the top of the rail on macOS, the band over the page): dragging moves the
-/// window; a double click maximizes it, or puts a maximized one back, as a title bar does.
 fn grip_acts(ctx: &egui::Context, r: &egui::Response) {
     if r.drag_started() {
         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -557,7 +483,6 @@ fn grip_acts(ctx: &egui::Context, r: &egui::Response) {
     }
 }
 
-/// `s` cut with an ellipsis to fit `max_w` in `font` (for words laid out without a ui of their own).
 fn elide_in(ctx: &egui::Context, s: &str, font: egui::FontId, max_w: f32) -> String {
     let width = |w: &str| ctx.fonts_mut(|f| f.layout_no_wrap(w.to_string(), font.clone(), egui::Color32::BLACK).size().x);
     if width(s) <= max_w {

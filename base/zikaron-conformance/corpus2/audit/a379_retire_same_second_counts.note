@@ -1,0 +1,1 @@
+sec 7.4: a key has retired at a record later than its retirement and, in the retirement's own second, at a record anchoring what it signed above its retiring seq; the root's record in that second anchors a hash whose bytes are not held, so the root has not retired at it, it counts, and its hash is MISSING.

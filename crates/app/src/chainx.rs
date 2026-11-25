@@ -1,25 +1,52 @@
-//! Chain reads, wired: every reading, every node opened and every refusal comes from the sender
-//! (`zikaron_send::node`, one with the command line); here only this desktop's words for its codes and evidence
-//! ([`said_of`], [`said_fault`], [`trouble_said`], [`address_said`]), the connection layers' words ([`speak`]),
-//! the fee card's source line and this crate's trace mark on a balance read.
-//!
-//! Load-bearing reads count only when several endpoints agree, and a single source is flagged: every reading
-//! carries `sources` and `single_source`, so a balance from one endpoint looks different from one that two
-//! endpoints agree on.
-
 use crate::fault::Fault;
 use crate::key::Address;
 use zikaron::json::Value;
 use zikaron_anchor::rpc;
-use zikaron_send::Why;
+pub use zikaron_send::Why;
 
-pub use zikaron_send::node::{forget_serving, refusal_of, route_of, said, wei, Endpoint, Got, Https, Layer, NodeAddr, Refusal, Said, Wire, FEE_FACTS, MAX_HEAD_LAG, SEND_BACKOFF, TIP_FACTS, TX_FACTS};
+pub use zikaron_send::batch::{before_of, fence, fence_open, Batch, Fenced, OnChain, FENCE_PAUSES};
+pub use zikaron_send::book;
+pub use zikaron_send::one;
+pub use zikaron_send::sent::{machine as sent_machine, DIR as SENT_DIR};
+pub use zikaron_send::checked::PLAIN_DIR;
+pub use zikaron_send::batch::Lane;
+pub use zikaron_send::node::{forget_serving, refusal_of, route_of, said, wei, Endpoint, Got, Https, Kind, Layer, NodeAddr, Refusal, Said, Wire, FEE_FACTS, MAX_HEAD_LAG, SEND_BACKOFF, TIP_FACTS, TX_FACTS};
 
-/// This desktop's words for a connection layer's failure (the node in its safe form, the system's detail),
-/// handed to the sender once ([`zikaron_send::node::say_layers`]). Every way into the sender's nodes from this
-/// crate says them first (this module's readings, the gate and the queue's wiring, `exitgate::Desk`).
 pub fn speak() {
     zikaron_send::node::say_layers(|l, node, detail| crate::lang::filln(layer_key(l), &[node, detail]));
+    zikaron_anchor::rest::keys_from(crate::machine::rest_keys_now);
+}
+
+pub const REST_KEYS_ENV: &str = "ZIKARON_REST_KEYS";
+
+static KEYS_FILE: std::sync::OnceLock<Option<zikaron_anchor::rest::KeysFileBad>> = std::sync::OnceLock::new();
+
+pub fn keys_file() -> Option<zikaron_anchor::rest::KeysFileBad> {
+    *KEYS_FILE.get_or_init(|| {
+        let path = std::env::var_os(REST_KEYS_ENV).filter(|p| !p.is_empty())?;
+        match zikaron_anchor::rest::keys_file(std::path::Path::new(&path)) {
+            Ok(keys) => {
+                zikaron_anchor::rest::hold_file_keys(keys);
+                None
+            }
+            Err(why) => Some(why),
+        }
+    })
+}
+
+pub fn keys_file_said() -> Option<String> {
+    use crate::lang::{fill1, Key};
+    use zikaron_anchor::rest::KeysFileBad;
+    let key = match keys_file()? {
+        KeysFileBad::Unreadable => Key::NetRestFileUnreadable,
+        KeysFileBad::NotUtf8 => Key::NetRestFileNotUtf8,
+        KeysFileBad::Shape => Key::NetRestFileShape,
+    };
+    Some(fill1(key, REST_KEYS_ENV))
+}
+
+pub fn nodes_of(s: &crate::settings::Settings) -> Vec<Endpoint> {
+    zikaron_send::node::settings_nodes(&s.ground())
 }
 
 fn layer_key(l: Layer) -> crate::lang::Key {
@@ -31,28 +58,131 @@ fn layer_key(l: Layer) -> crate::lang::Key {
     }
 }
 
-/// A node entry a person typed, read as the sender reads it (`Endpoint::typed`), its refusal in words.
 pub fn typed(spec: &str) -> Result<Endpoint, String> {
     Endpoint::typed(spec).map_err(|w| said_of(&w))
 }
 
-/// One reading, with how many endpoints it came from.
 #[derive(Clone, Debug)]
 pub struct Reading {
     pub value: Value,
     pub sources: usize,
-    /// Single source: only one endpoint answered, which must be flagged.
     pub single_source: bool,
-    /// The endpoints that contributed nothing to the reading, each described (which, and why), in table order.
-    pub unanswered: Vec<String>,
+    pub unanswered: Vec<Why>,
+    pub differed: Vec<Why>,
 }
 
 fn reading_of(r: zikaron_send::node::Reading) -> Reading {
-    Reading { value: r.value, sources: r.sources, single_source: r.single_source, unanswered: r.unanswered.iter().map(said_of).collect() }
+    Reading { value: r.value, sources: r.sources, single_source: r.single_source, unanswered: r.unanswered, differed: r.differed }
 }
 
-/// The sender's evidence in this desktop's words, one place for every member: nodes in their safe form with what
-/// they said, and the sentences of this crate's table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    Unreachable,
+    Tls,
+    Timeout,
+    Unserved,
+    NoKey,
+    Limited,
+    Credentials,
+    OtherChain,
+    Unreadable,
+    Refused,
+    Differed,
+    Behind,
+    BadAddress,
+    Unproven,
+    NoAnswer,
+}
+
+impl NodeKind {
+    pub fn of_trouble(node: &str, t: &rpc::Trouble) -> NodeKind {
+        use zikaron_send::Code as C;
+        if matches!(t, rpc::Trouble::Transport(rpc::Broke::Proof(_))) {
+            return NodeKind::Unproven;
+        }
+        use zikaron_send::node::{Layer, Said, Wire};
+        if let Said::Wire(Wire::Tls(Layer::Name | Layer::Connect)) = zikaron_send::node::said(t) {
+            return NodeKind::Unreachable;
+        }
+        match zikaron_send::node::said_trouble(node, t).code {
+            C::Unreachable | C::ProxyUnreachable => NodeKind::Unreachable,
+            C::NodeTls => NodeKind::Tls,
+            C::NodeTimeout => NodeKind::Timeout,
+            C::ServiceUnserved | C::MethodMissing => NodeKind::Unserved,
+            C::ServiceKeyMissing => NodeKind::NoKey,
+            C::RateLimited => NodeKind::Limited,
+            C::NodeAuth | C::ProxyCredentialsMissing | C::ProxyCredentialsRefused => NodeKind::Credentials,
+            C::WrongChain => NodeKind::OtherChain,
+            C::AnswerTooLong | C::AnswerNotJson | C::ChainShape => NodeKind::Unreadable,
+            C::NodeRefused | C::ContractRefused => NodeKind::Refused,
+            _ => NodeKind::NoAnswer,
+        }
+    }
+
+    pub fn said(self) -> &'static str {
+        use crate::lang::{t, Key};
+        t(match self {
+            NodeKind::Unreachable => Key::NetSaidUnreachable,
+            NodeKind::Tls => Key::NetSaidTls,
+            NodeKind::Timeout => Key::NetSaidTimeout,
+            NodeKind::Unserved => Key::NetSaidUnserved,
+            NodeKind::NoKey => Key::NetSaidNoKey,
+            NodeKind::Limited => Key::NetSaidLimited,
+            NodeKind::Credentials => Key::NetSaidCredentials,
+            NodeKind::OtherChain => Key::NetSaidOtherChain,
+            NodeKind::Unreadable => Key::NetSaidUnreadable,
+            NodeKind::Refused => Key::NetSaidRefused,
+            NodeKind::Differed => Key::NetSaidDiffered,
+            NodeKind::Behind => Key::NetSaidBehind,
+            NodeKind::BadAddress => Key::NetSaidBadAddress,
+            NodeKind::Unproven => Key::NetSaidUnproven,
+            NodeKind::NoAnswer => Key::NetSaidNoAnswer,
+        })
+    }
+}
+
+pub fn kinds_of(w: &Why) -> Vec<(String, NodeKind)> {
+    match w {
+        Why::Node { node, trouble } => vec![(node.clone(), NodeKind::of_trouble(node, trouble))],
+        Why::Unreadable { node } | Why::NotHeight { node, .. } | Why::NoTime { node } | Why::NonceUnread { node } => vec![(node.clone(), NodeKind::Unreadable)],
+        Why::Differs { node } => vec![(node.clone(), NodeKind::Differed)],
+        Why::Scheme { node } | Why::Port { node } | Why::NotAddress { node } | Why::NotSpec { node } => vec![(node.clone(), NodeKind::BadAddress)],
+        Why::Behind { node, .. } => vec![(node.clone(), NodeKind::Behind)],
+        Why::WrongChainNode { node, .. } => vec![(node.clone(), NodeKind::OtherChain)],
+        Why::AtChain { why, .. } => kinds_of(why),
+        Why::Each(all) => all.iter().flat_map(kinds_of).collect(),
+        Why::Scan { unanswered, .. } => unanswered.iter().flat_map(kinds_of).collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn plain_of(ws: &[Why]) -> Vec<String> {
+    ws.iter().flat_map(plain_lines).collect()
+}
+
+fn plain_lines(w: &Why) -> Vec<String> {
+    match w {
+        Why::Node { node, trouble } => {
+            let kind = NodeKind::of_trouble(node, trouble);
+            vec![match (kind, zikaron_send::node_said(trouble)) {
+                (NodeKind::Refused, Some(said)) => format!("{node}: {} \u{b7} {said}", kind.said()),
+                _ => format!("{node}: {}", kind.said()),
+            }]
+        }
+        Why::AtChain { why, .. } => plain_lines(why),
+        Why::Each(all) => all.iter().flat_map(plain_lines).collect(),
+        Why::Scan { unanswered, refused } => {
+            let lines: Vec<String> = unanswered.iter().flat_map(|w| if let Why::Text(said) = w { vec![said.clone()] } else { plain_lines(w) }).collect();
+            if lines.is_empty() {
+                refused.iter().map(|r| r.detail()).collect()
+            } else {
+                lines
+            }
+        }
+        other => kinds_of(other).into_iter().map(|(node, kind)| format!("{node}: {}", kind.said())).collect(),
+    }
+}
+
 pub fn said_of(w: &Why) -> String {
     use crate::lang::{filln, t, Key};
     match w {
@@ -60,6 +190,7 @@ pub fn said_of(w: &Why) -> String {
         Why::Each(all) => all.iter().map(said_of).collect::<Vec<_>>().join(" · "),
         Why::Node { node, trouble } => node_words(node, trouble),
         Why::Unreadable { node } => filln(Key::Tail094, &[node]),
+        Why::Differs { node } => filln(Key::TailDiffers, &[node]),
         Why::Scheme { node } => filln(Key::Tail093, &[node]),
         Why::Port { node } => filln(Key::TailNodePort, &[node]),
         Why::NotAddress { node } => filln(Key::TailNodeAddress, &[node]),
@@ -81,37 +212,33 @@ pub fn said_of(w: &Why) -> String {
         Why::NoAddress => t(Key::Tail013).to_string(),
         Why::Funds { need, have } => crate::action::funds_tail(*need, *have),
         Why::OnChain { names, tx, block } => format!("{} · {tx} · {block}", names.join(" ")),
+        Why::TooEarly { chain, head_time, after } => format!("chainId={chain} headTime={head_time} after={after}"),
         Why::NoNodes => t(Key::Tail084).to_string(),
         Why::NonceUnread { node } => filln(Key::TailNonceUnread, &[node]),
         Why::Scan { unanswered, .. } => unanswered.iter().map(said_of).collect::<Vec<_>>().join(" · "),
     }
 }
 
-/// The plain wording of an RPC failure: the kind and the original message, without Debug quotes or variant
-/// names. The fault table and the status line read the same `Fault`, so both say the same thing.
 pub fn trouble_said(url: &str, t: &rpc::Trouble) -> String {
-    // Name the node in its safe-to-display form (`zikaron_net::sayable`: no path, query or user info).
     node_words(&zikaron_net::sayable(url), t)
 }
 
 fn node_words(url: &str, t: &rpc::Trouble) -> String {
-    // The kind in this end's words; what follows is the evidence as it came: the node's own words, or the
-    // transport's machine form (`rpc::Broke::evidence`).
     let (what, inner) = match t {
         rpc::Trouble::Node(e) => (crate::lang::t(crate::lang::Key::Tail089), e.clone()),
-        // An answer refused at its HTTP status is the node's (or its gateway's) refusal, not a broken wire.
         rpc::Trouble::Transport(b @ rpc::Broke::Status { .. }) => (crate::lang::t(crate::lang::Key::Tail089), b.evidence()),
+        rpc::Trouble::Transport(b @ rpc::Broke::NoKey { .. }) => (crate::lang::t(crate::lang::Key::TailRestNoKey), b.evidence()),
+        rpc::Trouble::Transport(b @ rpc::Broke::Unserved { .. }) => (crate::lang::t(crate::lang::Key::TailRestNotServed), b.evidence()),
+        rpc::Trouble::Transport(rpc::Broke::LogsBehind { node }) => (crate::lang::t(crate::lang::Key::TailRestLogsBehind), node.clone()),
+        rpc::Trouble::Transport(b @ rpc::Broke::HeadBehind { .. }) => (crate::lang::t(crate::lang::Key::TailHeadBehind), b.evidence()),
         rpc::Trouble::Transport(b) => (crate::lang::t(crate::lang::Key::Tail090), b.evidence()),
         rpc::Trouble::NotServed(k) => (crate::lang::t(crate::lang::Key::Tail091), k.clone()),
         rpc::Trouble::Contradiction(k) => (crate::lang::t(crate::lang::Key::Tail092), k.clone()),
     };
-    // A revert carries what the contract said, read from the error's data. Every place that reports a failure
-    // goes through here, so none reports a revert without its reason.
     let reason = match t {
         rpc::Trouble::Node(e) if refusal_of(e) == Refusal::Reverted => zikaron_anchor::said::reverted(e).map(|r| format!(" \u{b7} {}", r.evidence())).unwrap_or_default(),
         _ => String::new(),
     };
-    // The evidence often already names the node; do not name it twice.
     if inner.contains(url) {
         format!("{what}:{inner}{reason}")
     } else {
@@ -119,20 +246,14 @@ fn node_words(url: &str, t: &rpc::Trouble) -> String {
     }
 }
 
-/// Turns what the node said into a named refusal (the sender's one table, `node::said_trouble`), said here.
 pub fn said_fault(url: &str, t: &rpc::Trouble) -> Fault {
     zikaron_send::node::said_trouble(url, t).into()
 }
 
-/// Why a node address does not parse, in plain words: its scheme, its port, or the rest of its form. Empty when
-/// it parses.
 pub fn address_said(url: &str) -> String {
     said_of(&zikaron_send::node::address_said(url))
 }
 
-/// What the send card says about where its fee figures came from: the fallback line when the chain gave no
-/// base fee (or no fees were read), nothing when the cap was computed from the chain's own base fee. Reads
-/// `Fees::from_chain`, never the numbers (the computed pair can equal the fallback pair).
 pub fn fee_source_line(fees: Option<&zikaron_anchor::send::Fees>) -> Option<crate::lang::Key> {
     match fees {
         Some(f) if f.from_chain => None,
@@ -140,111 +261,129 @@ pub fn fee_source_line(fees: Option<&zikaron_anchor::send::Fees>) -> Option<crat
     }
 }
 
-/// The only place an endpoint is opened from a URL (the sender's, `node::endpoint_at`).
 pub fn endpoint_at(url: &str) -> Option<Box<dyn rpc::Endpoint + Send>> {
     speak();
     zikaron_send::node::endpoint_at(url)
 }
 
-/// An https address for a remote fetch, over the same TLS client nodes are asked through (`node::Https`).
 pub fn https(url: &str) -> Option<Https> {
     speak();
     Https::new(url)
 }
+
+pub use zikaron_send::node::OneRead;
 
 pub fn ask(eps: &[Endpoint], method: &str, params: &Value) -> Result<Reading, Fault> {
     speak();
     zikaron_send::node::ask(eps, method, params).map(reading_of).map_err(Fault::from)
 }
 
-/// [`ask`] for a request whose refusal may concern the call itself (gas estimation): the refusal comes with
-/// whether the shared table reads it that way (`zikaron_send::node::ask_call`).
 pub fn ask_call(eps: &[Endpoint], method: &str, params: &Value) -> Result<Reading, (Fault, bool)> {
     speak();
     zikaron_send::node::ask_call(eps, method, params).map(reading_of).map_err(|(t, call)| (Fault::from(t), call))
 }
 
-/// Whether any node knows this transaction, asked by hash (`node::tx_known`).
 pub fn tx_known(urls: &[NodeAddr], chain: u64, hash: &[u8; 32]) -> bool {
     speak();
     zikaron_send::node::tx_known(urls, chain, hash)
 }
 
-/// A transaction in full as one node of this chain holds it (`node::tx_as_held`).
-pub fn tx_as_held(urls: &[NodeAddr], chain: u64, tx: &str) -> Option<Value> {
+pub use zikaron_send::node::AsHeld;
+
+pub fn tx_as_held(urls: &[NodeAddr], chain: u64, tx: &str) -> AsHeld {
     speak();
     zikaron_send::node::tx_as_held(urls, chain, tx)
 }
 
-/// Which block this pass reads: the lowest head every endpoint has reached (`node::head_block`).
 pub fn head_block(eps: &[Endpoint], chain: u64) -> Result<(u64, usize), Fault> {
     speak();
     zikaron_send::node::head_block(eps, chain).map_err(Fault::from)
 }
 
-/// Chain time: the latest block's time and number (`node::head_time`).
+pub use zikaron_send::notices::NowFrom;
+
+pub fn now_of(injected: Option<u64>, eps: &[Endpoint], chain: Option<u64>) -> (Option<u64>, NowFrom) {
+    speak();
+    zikaron_send::notices::now_of(injected, eps, chain)
+}
+
 pub fn head_time(eps: &[Endpoint], chain: u64) -> Result<(u64, u64, usize), Fault> {
     speak();
     zikaron_send::node::head_time(eps, chain).map_err(Fault::from)
 }
 
-/// This chain's endpoints that actually serve it, and the nodes left out, each named (`node::serving`).
 pub fn serving(eps: &[Endpoint], chain: u64) -> Result<(Vec<Endpoint>, Vec<String>), Fault> {
     speak();
     zikaron_send::node::serving(eps, chain).map(|(kept, left)| (kept, left.iter().map(said_of).collect())).map_err(Fault::from)
 }
 
-/// The key behind an address on these networks (`zikaron_send::recipient::key_of`: found from a transaction the
-/// address signed, not anchored on any of them, or not read through), this desktop's words for the connection layers
-/// said first.
 pub fn recipient_key(nets: &[RecipientNet], author: &[u8; 20]) -> zikaron_send::recipient::Found {
     speak();
     zikaron_send::recipient::key_of(nets, author)
 }
 
-/// One network a recipient's key is looked for on.
-pub use zikaron_send::recipient::{Found as RecipientFound, Net as RecipientNet};
+pub use zikaron_send::recipient::{held as held_in, Found as RecipientFound, Net as RecipientNet};
 
-/// The key behind an address for sealing a package to it, the sender's one judgement for both ends
-/// (`zikaron_send::recipient::key_for`), this desktop's words for the connection layers said first.
-pub fn key_for_sealing(address: &[u8; 20], nets: Vec<RecipientNet>, readonly: &[RecipientNet], unread: Vec<String>, pinned: &str) -> zikaron_send::recipient::KeyFor {
+pub fn key_for_root(
+    root: &[u8; 20],
+    held: Option<[u8; 20]>,
+    nets: Vec<RecipientNet>,
+    readonly: &[RecipientNet],
+    unread: Vec<String>,
+    pinned: &str,
+) -> Result<([u8; 33], zikaron_send::recipient::From), (zikaron_seal::addressed::Why, String)> {
     speak();
-    zikaron_send::recipient::key_for(address, nets, readonly, unread, pinned)
+    let kept = zikaron_send::checked::Record(crate::sendx::record::Desk);
+    zikaron_send::recipient::key_for_root(root, held, nets, readonly, unread, pinned, Some(&kept))
 }
 
-/// A read-only network's fingerprint gate, the sender's one gate for both ends (`zikaron_send::fingerprint`), this
-/// desktop's words for the connection layers said first.
+pub fn book_current(root: &[u8; 20], offer: &[RecipientNet]) -> Option<[u8; 20]> {
+    speak();
+    zikaron_send::recipient::book_current(root, offer).0
+}
+
 pub fn fingerprint_gate(chain: u64, registry: &[u8; 20], nodes: &[String], pinned: &str) -> FingerprintGate {
     fingerprint_gate_counted(chain, registry, nodes, pinned).0
 }
 
-/// [`fingerprint_gate`], also returning the nodes that counted (`zikaron_send::fingerprint::gate_counted`): the network
-/// is read on those and no other.
 pub fn fingerprint_gate_counted(chain: u64, registry: &[u8; 20], nodes: &[String], pinned: &str) -> (FingerprintGate, Vec<String>) {
     speak();
     zikaron_send::fingerprint::gate_counted(chain, registry, nodes, pinned)
 }
 
-/// How a read-only network's gate went, and why a node did not count (the sender's).
+pub fn notices(eps: &[Endpoint], chain: u64) -> Result<NoticeRead, NoticeUnread> {
+    speak();
+    zikaron_send::notices::read(eps, chain)
+}
+
+pub use zikaron_send::notices::{Read as NoticeRead, Unread as NoticeUnread};
+
 pub use zikaron_send::fingerprint::{Gate as FingerprintGate, Why as FingerprintMiss};
 
-/// An address's balance (wei) on `chain`, several endpoints agreeing (`node::balance`).
+#[cfg(test)]
+pub fn disagree_trouble(words: &str) -> SendTrouble {
+    zikaron_send::Trouble::text(zikaron_send::Code::Disagree, words.to_string())
+}
+
+pub use zikaron_send::face::{Built as FaceBuilt, Lane as FaceLane, Left as FaceLeft, NotRead as FaceNotRead, NO_ROOT as FACE_NO_ROOT, omitted as face_omitted};
+pub use zikaron_send::Trouble as SendTrouble;
+
+pub fn face_input(eps: &[Endpoint], root: &[u8; 20], lanes: &[FaceLane], pile: &[Vec<u8>], facts: &dyn zikaron_send::Facts) -> Result<FaceBuilt, FaceNotRead> {
+    speak();
+    zikaron_send::face::input(eps, root, lanes, pile, facts)
+}
+
 pub fn balance(eps: &[Endpoint], chain: u64, who: &Address) -> Result<(u128, Reading), Fault> {
-    // Public functions of a component emit its trace mark, so direct calls that bypass `apply` (tests, CLI)
-    // are traced too.
     crate::trace::mark(crate::feature::Feature::H4);
     speak();
     zikaron_send::node::balance(eps, chain, &who.0).map(|(n, r)| (n, reading_of(r))).map_err(Fault::from)
 }
 
-/// This transaction's two fee fields, and the nodes left out because they serve another chain, each named
-/// (`node::fees`).
 pub fn fees(eps: &[Endpoint], chain: u64) -> (zikaron_anchor::send::Fees, Vec<String>) {
     let r = fee_reading(eps, chain);
     (r.fees, r.left)
 }
 
-/// One fee reading ([`fees`]) with the base fee it was computed from (`None` if none was read).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeeReading {
     pub base: Option<u64>,
@@ -252,9 +391,32 @@ pub struct FeeReading {
     pub left: Vec<String>,
 }
 
-/// [`fees`], also returning the base fee read (`node::fee_reading`).
 pub fn fee_reading(eps: &[Endpoint], chain: u64) -> FeeReading {
     speak();
     let r = zikaron_send::node::fee_reading(eps, chain);
     FeeReading { base: r.base, fees: r.fees, left: r.left.iter().map(said_of).collect() }
+}
+
+#[cfg(test)]
+mod plain_tests {
+    use super::*;
+
+    #[test]
+    fn a_node_is_said_by_its_kind_without_its_code() {
+        let node = |n: &str, b: rpc::Broke| Why::Node { node: n.to_string(), trouble: rpc::Trouble::Transport(b) };
+        let ws = vec![
+            node("https://a", rpc::Broke::Said("TLS_HANDSHAKE https://a: received fatal alert: HandshakeFailure".into())),
+            node("http://b", rpc::Broke::Said("http://b: Connection refused (os error 61)".into())),
+            node("https://f", rpc::Broke::Said("TLS_CONNECT https://f: Connection refused (os error 61)".into())),
+            node("http://c", rpc::Broke::Late { node: "http://c".into(), deadline: std::time::Duration::from_secs(1) }),
+            Why::AtChain { chain: 1, why: Box::new(node("http://d", rpc::Broke::Proof(rpc::ProofGap::NotInBlock))) },
+            Why::Differs { node: "http://e".into() },
+            Why::Text("eth_getLogs".into()),
+        ];
+        let w = crate::lang::both_of(|| plain_of(&ws).join(" · "));
+        assert_eq!(w.zh, "https://a: 建立安全连接失败 · http://b: 连不上 · https://f: 连不上 · http://c: 未在时限内应答 · http://d: 证不出 · http://e: 答得不同");
+        assert_eq!(w.en, "https://a: Secure connection failed · http://b: Could not connect · https://f: Could not connect · http://c: No answer in time · http://d: No proof · http://e: Answered differently");
+        let evidence = ws.iter().map(said_of).collect::<Vec<_>>().join(" · ");
+        assert!(evidence.contains("TLS_HANDSHAKE") && evidence.contains("os error 61"), "the evidence keeps them: {evidence}");
+    }
 }

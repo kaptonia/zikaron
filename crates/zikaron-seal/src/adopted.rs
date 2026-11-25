@@ -1,25 +1,10 @@
-//! The plain ledgers this machine's desktop adopted, kept blind: a random salt and a list of
-//! `sha256(salt ‖ root id)`, one line per adopted ledger (the root id is the ledger's genesis entry id). The list
-//! alone says nothing; only someone holding that ledger can find its line. The ledger's own folder is never
-//! touched, so moving or renaming it changes nothing (the root id does not follow the path).
-//!
-//! The desktop adds a line when it adopts a ledger; the command line checks the list before it writes a plain
-//! ledger and refuses one that is on it. Neither the passcode nor the credential is needed to check. Both
-//! files live in the machine directory ([`SALT_FILE`], [`LIST_FILE`]) and are read and written here only.
-//!
-//! Shapes, closed: the salt file is 64 lowercase hex digits and a newline; the list is zero or more lines, each
-//! 64 lowercase hex digits and a newline, no line twice. Anything else is refused by name, never read past.
-
 use crate::trouble::{Code, Trouble};
 use std::path::Path;
 
-/// The salt's file name, in the machine directory.
 pub const SALT_FILE: &str = "adopted-salt";
 
-/// The list's file name, in the machine directory.
 pub const LIST_FILE: &str = "adopted-list";
 
-/// One line's value: 64 lowercase hex digits.
 fn hex32(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return None;
@@ -31,7 +16,6 @@ fn line(v: &[u8; 32]) -> String {
     zikaron::hexfmt::encode(v).trim_start_matches("0x").to_string()
 }
 
-/// Read a file of hex lines in its closed shape (`None`: not there).
 fn lines(at: &Path) -> Result<Option<Vec<[u8; 32]>>, Trouble> {
     let text = match std::fs::read(at) {
         Ok(b) => b,
@@ -54,7 +38,6 @@ fn lines(at: &Path) -> Result<Option<Vec<[u8; 32]>>, Trouble> {
     Ok(Some(out))
 }
 
-/// This machine's salt (`None`: nothing adopted yet). A salt file not of one line is refused by name.
 pub fn salt(machine_dir: &Path) -> Result<Option<[u8; 32]>, Trouble> {
     let at = machine_dir.join(SALT_FILE);
     match lines(&at)? {
@@ -64,8 +47,6 @@ pub fn salt(machine_dir: &Path) -> Result<Option<[u8; 32]>, Trouble> {
     }
 }
 
-/// This machine's salt, made on first use (32 random bytes). The machine's other blind lists (the pens of handed
-/// ledgers, `pens`) are kept under it too.
 pub fn salt_made(machine_dir: &Path) -> Result<[u8; 32], Trouble> {
     match salt(machine_dir)? {
         Some(s) => Ok(s),
@@ -77,12 +58,10 @@ pub fn salt_made(machine_dir: &Path) -> Result<[u8; 32], Trouble> {
     }
 }
 
-/// The adopted list's lines (empty when there is none).
 pub fn list(machine_dir: &Path) -> Result<Vec<[u8; 32]>, Trouble> {
     Ok(lines(&machine_dir.join(LIST_FILE))?.unwrap_or_default())
 }
 
-/// The line a ledger with root id `root` has under `salt`: `sha256(salt ‖ root)`.
 pub fn blind(salt: &[u8; 32], root: &[u8; 32]) -> [u8; 32] {
     let mut m = Vec::with_capacity(64);
     m.extend_from_slice(salt);
@@ -90,15 +69,12 @@ pub fn blind(salt: &[u8; 32], root: &[u8; 32]) -> [u8; 32] {
     zikaron::cryptox::sha256(&m)
 }
 
-/// Whether the ledger with root id `root` was adopted on this machine.
 pub fn contains(machine_dir: &Path, root: &[u8; 32]) -> Result<bool, Trouble> {
     let Some(salt) = salt(machine_dir)? else { return Ok(false) };
     let want = blind(&salt, root);
     Ok(list(machine_dir)?.contains(&want))
 }
 
-/// Record that the ledger with root id `root` was adopted: the salt is made on first use (32 random bytes), and
-/// the ledger's line is added once. True when the line is new.
 pub fn mark(machine_dir: &Path, root: &[u8; 32]) -> Result<bool, Trouble> {
     let salt = salt_made(machine_dir)?;
     let mut all = list(machine_dir)?;

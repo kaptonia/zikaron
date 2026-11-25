@@ -1,109 +1,133 @@
-//! The anchor queue: entries recorded but not yet anchored.
-//!
-//! It lives in the home's `settings/` directory, sealed (`local::Doc::Queue`), so copying a home carries its
-//! queue along. Its model and bytes are the sealed layer's (`zikaron_seal::queue`), one with the command line's
-//! sealed write; its one read-modify-write lock, the receipt path ([`settle`], the only caller of the ways out that
-//! record "anchored") and the queue following the ledger ([`follow`]) are the sender's (`zikaron_send::keep`). What
-//! stays here is where the file lives, reading and writing it under the home's seal ([`Kept`]), and the words a
-//! refusal is said in.
-
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
-pub use zikaron_seal::queue::{member, state, Block, Pushed, Queue, Queued, Shape, Step, FILE, RESENDS_MAX};
+pub use zikaron_seal::queue::{member, state, Block, Place, Pushed, Queue, Queued, Shape, Step, FILE, RESENDS_MAX};
 
-/// The queue file on disk: read and written here, its bytes the sealed layer's.
+pub fn place_in<'a>(rows: Option<&'a [crate::ledgerx::Row]>, seats: &'a std::collections::BTreeMap<String, u64>) -> impl Fn(&str) -> Option<Place> + 'a {
+    move |id: &str| {
+        let r = rows?.iter().find(|r| r.id.eq_ignore_ascii_case(id))?;
+        let carried_on = (r.kind == zikaron_glue::book::Kind::Face).then(|| seats.get(&r.id.to_ascii_lowercase()).copied()).flatten();
+        Some(Place { law: r.law, seq: r.seq, alone: r.kind.goes_alone(), carried_on })
+    }
+}
+
 pub trait Kept: Sized {
-    /// Read the queue. No file means an empty queue ("never queued" is not an error). Bytes not in this version's
-    /// shape are refused by name (`QUEUE_SHAPE`), never read with a member guessed.
     fn read(home: &Home) -> Result<Self, Fault>;
-    /// Write the queue, replacing the previous one.
     fn write(&self, home: &Home) -> Result<(), Fault>;
 }
 
 impl Kept for Queue {
     fn read(home: &Home) -> Result<Queue, Fault> {
+        crate::reads::touch();
         let p = home.dir(Slot::Settings).join(FILE);
-        // Sealed (`local::Doc::Queue`). Locked or unreadable is an error, never treated as empty, or the next
-        // write would drop queued entries.
+        let chain = crate::settings::Settings::read(home)?.chain_id.unwrap_or(0);
         let Some(bytes) = crate::local::read(&p, crate::local::Doc::Queue)? else {
-            return Ok(Queue::default());
+            return Ok(Queue { chain, ..Queue::default() });
         };
-        Queue::parse(&bytes).map_err(|s| unparsed(&p, s))
+        Queue::parse(&bytes, chain).map_err(|s| unparsed(&p, s))
     }
 
     fn write(&self, home: &Home) -> Result<(), Fault> {
-        // `local::put` seals, writes aside, then renames, so a half-written queue never lands on disk.
-        crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Queue, &self.to_bytes())
+        crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Queue, &self.to_bytes())?;
+        crate::reads::wrote(crate::reads::Copies::Queue);
+        Ok(())
     }
 }
 
-/// A queue file not in its shape, said with its place.
 pub fn unparsed(p: &std::path::Path, s: Shape) -> Fault {
     let at = p.display().to_string();
     Fault::known(
         Known::QueueShape,
-        match s {
+        crate::lang::both_of(|| match &s {
             Shape::Json(t) => format!("{at}: {t}"),
             Shape::NoQueued => crate::lang::filln(crate::lang::Key::Tail200, &[&at]),
             Shape::BadRow => crate::lang::filln(crate::lang::Key::Tail201, &[&at]),
             Shape::Missing(k) => format!("{at}: {k}"),
-        },
+        }),
     )
 }
 
 pub use zikaron_send::keep::Inclusion;
 
-/// The only way the queue on disk is changed: read, modify and write under the sender's one lock
-/// (`zikaron_send::keep::amend`), returning the queue as written so the shell's copy always comes from there.
 pub fn amend<T>(home: &Home, f: impl FnOnce(&mut Queue) -> T) -> Result<(T, Queue), Fault> {
     zikaron_send::keep::amend(&crate::sendx::Desk::of(home), f)
 }
 
-/// The only removal decision (`zikaron_send::keep::settle`): entries are removed only when the receipt succeeded.
 pub fn settle(home: &Home, ids: &[String], anchored: bool, at: Option<&Inclusion>) -> Result<(usize, Queue), Fault> {
     zikaron_send::keep::settle(&crate::sendx::Desk::of(home), ids, anchored, at)
 }
 
-/// The queue follows the ledger and the chain (`zikaron_send::keep::follow`).
-pub fn follow(home: &Home, on_chain: &[String], owed: &[String], at: u64) -> Result<Queue, Fault> {
-    zikaron_send::keep::follow(&crate::sendx::Desk::of(home), on_chain, owed, at)
+pub fn follow(home: &Home, on_chain: &[(String, u64)], owed: &[(String, bool, Option<u64>)], others: &[u64], at: u64) -> Result<Queue, Fault> {
+    zikaron_send::keep::follow(&crate::sendx::Desk::of(home), on_chain, owed, others, at)
 }
 
-/// The numbers in the anchoring density note at the top of the page. Anchoring seq N transitively covers every
-/// entry at or below it (law §9.6), so anchoring cadence does not affect validity.
+pub use zikaron_send::keep::Owed;
+
+pub fn uncovered(q: &Queue, pile: &[Vec<u8>], published: &[String]) -> Vec<String> {
+    zikaron_send::keep::uncovered(q, pile, published)
+}
+
+pub fn caught_up(home: &Home, chain: u64, others: &[u64], at: u64, published: &[String], owed: Owed) -> Result<Queue, Fault> {
+    zikaron_send::keep::caught_up(&crate::sendx::Desk::of(home), chain, others, at, published, |_| Some(owed))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastBatch {
+    pub tx: String,
+    pub chain: u64,
+    pub stands: Stands,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stands {
+    Awaited(usize),
+    Included(usize),
+    Ended { confirmed: bool, sent: usize, dropped: usize },
+}
+
+pub fn last_batch(q: &Queue, sent: Option<&crate::task::Done>) -> Option<LastBatch> {
+    if let Some((txs, chain, ids)) = q.submitted().pop() {
+        return txs.last().map(|tx| LastBatch { tx: tx.clone(), chain, stands: Stands::Awaited(ids.len()) });
+    }
+    if let Some(crate::task::Done::Anchored { tx, chain, confirmed, sent, dropped, .. }) = sent {
+        return Some(LastBatch { tx: tx.clone(), chain: *chain, stands: Stands::Ended { confirmed: *confirmed, sent: *sent, dropped: *dropped } });
+    }
+    let top = q.blocks.iter().max_by_key(|b| b.block)?;
+    let n = q.blocks.iter().filter(|b| b.tx == top.tx && b.chain == top.chain).count();
+    Some(LastBatch { tx: top.tx.clone(), chain: top.chain, stands: Stands::Included(n) })
+}
+
 pub struct Density {
-    /// The largest seq among anchored entries.
     pub anchored_through: Option<u64>,
-    /// The largest seq in the ledger now.
     pub head_seq: Option<u64>,
-    /// How many are not yet anchored, counted transitively: entries with seq above `anchored_through`, not
-    /// entries whose lamp is not green. Counting individually could show "anchored through 9", "head is 9" and
-    /// "9 to go" at once.
     pub behind: usize,
+    through: [Option<u64>; 2],
 }
 
-/// Compute the density from the already loaded table, with no disk access (called on the UI thread).
-///
-/// Before the table is loaded the seq numbers are `None`, not zero, so "not read yet" and "zero" look
-/// different.
+impl Density {
+    pub fn covers(&self, r: &crate::ledgerx::Row) -> bool {
+        self.through[segment(r)].is_some_and(|n| r.seq <= n)
+    }
+}
+
+fn segment(r: &crate::ledgerx::Row) -> usize {
+    match r.law {
+        zikaron_glue::book::Law::One => 0,
+        zikaron_glue::book::Law::Two => 1,
+    }
+}
+
 pub fn density(rows: Option<&[crate::ledgerx::Row]>, queued: usize) -> Density {
     let Some(rows) = rows else {
-        return Density { anchored_through: None, head_seq: None, behind: queued };
+        return Density { anchored_through: None, head_seq: None, behind: queued, through: [None, None] };
     };
-    let anchored_through = rows
-        .iter()
-        .filter(|r| r.lamp == crate::ledgerx::Lamp::Anchored)
-        .map(|r| r.seq)
-        .max();
-    // Local deletion pairs are not owed an anchor: keeping them local is intended, and any later anchored entry
-    // covers them along `prev` (law §9.6). Counting them would show "not anchored" forever.
-    let owed = |r: &&crate::ledgerx::Row| !r.lamp.local();
-    Density {
-        anchored_through,
-        head_seq: rows.iter().map(|r| r.seq).max(),
-        behind: match anchored_through {
-            Some(n) => rows.iter().filter(|r| r.seq > n).filter(owed).count(),
-            None => rows.iter().filter(owed).count(),
-        },
+    let mut through = [None, None];
+    for r in rows.iter().filter(|r| r.lamp == crate::ledgerx::Lamp::Anchored) {
+        let at = &mut through[segment(r)];
+        *at = Some(at.map_or(r.seq, |n: u64| n.max(r.seq)));
     }
+    let newest = rows.iter().map(segment).max().unwrap_or(1);
+    let owed = |r: &&crate::ledgerx::Row| !r.lamp.stays_off();
+    let d = Density { anchored_through: through[newest], head_seq: rows.iter().filter(|r| segment(r) == newest).map(|r| r.seq).max(), behind: 0, through };
+    let behind = rows.iter().filter(|r| !d.covers(r)).filter(owed).count();
+    Density { behind, ..d }
 }

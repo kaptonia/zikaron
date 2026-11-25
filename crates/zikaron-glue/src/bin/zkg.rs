@@ -1,7 +1,3 @@
-//! `zkg`: a small driver binary for disclosure kit output. Two verbs: `pack` (write a kit) and `verify` (ask the
-//! kit core whether a kit is valid). Entry selection lives in `select`, layout and self-verification in `pack`.
-
-// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
@@ -20,7 +16,6 @@ fn unreadable(p: &str) -> ! {
     std::process::exit(2)
 }
 
-/// stdout carries one canonical JSON value with no trailing newline, as in the main CLI.
 fn say(v: &Value, code: u8) -> ExitCode {
     use std::io::Write;
     let mut out = std::io::stdout();
@@ -60,7 +55,6 @@ impl Flags {
         }
         Flags { pairs }
     }
-    /// A repeated flag is misuse; silently taking the first could pack something other than what was meant.
     fn one(&self, k: &str) -> Option<String> {
         let mut hit = self.pairs.iter().filter(|(n, _)| n == k);
         let first = hit.next()?;
@@ -72,7 +66,6 @@ impl Flags {
     fn need(&self, k: &str) -> String {
         self.one(k).unwrap_or_else(|| misuse(&format!("缺 --{k}")))
     }
-    /// Each verb's flag list is closed: any other flag is misuse, so a removed flag fails loudly in old scripts.
     fn close(&self, allowed: &[&str]) {
         for (k, _) in &self.pairs {
             if !allowed.contains(&k.as_str()) {
@@ -93,13 +86,10 @@ fn slurp(p: &str) -> Vec<u8> {
     std::fs::read(p).unwrap_or_else(|_| unreadable(p))
 }
 
-/// `<kit path>=<disk path>` (kit paths contain no `=`, so the split is at the first one).
 fn pair_at<'a>(spec: &'a str, shape: &str) -> (&'a str, &'a str) {
     spec.split_once('=').unwrap_or_else(|| misuse(shape))
 }
 
-/// Collect files and directories. An unreadable file fails like a malformed `--file` path (code 1), whether
-/// or not it came from walking a directory.
 fn gather_into(b: &mut Bundle, f: &Flags) -> Result<(), (String, String)> {
     for spec in f.many("file") {
         let (kit, src) = pair_at(&spec, "--file 的形是 <包内路径>=<盘上的路>");
@@ -116,13 +106,6 @@ fn gather_into(b: &mut Bundle, f: &Flags) -> Result<(), (String, String)> {
             b.contents.push(p.clone());
             b.files.push((p, bytes));
         }
-    }
-    for spec in f.many("proof") {
-        let mut parts = spec.splitn(3, '=');
-        let (Some(kit), Some(tx), Some(src)) = (parts.next(), parts.next(), parts.next()) else {
-            misuse("--proof 的形是 <包内路径>=<tx>=<盘上的路>")
-        };
-        b.proofs.push((kit.to_string(), tx.to_string(), slurp(src)));
     }
     Ok(())
 }
@@ -150,7 +133,7 @@ fn main() -> ExitCode {
     let f = Flags::parse(&argv.into_iter().skip(1).collect::<Vec<_>>());
     match verb.as_str() {
         "pack" => {
-            f.close(&["ledger", "entry", "out", "from", "to", "work", "file", "dir", "proof", "note", "root"]);
+            f.close(&["ledger", "entry", "out", "from", "to", "work", "file", "dir", "note", "root"]);
             let chosen = select::choose(&pile_of(&f), &selection(&f));
             let mut b = Bundle {
                 entries: chosen.items,
@@ -180,25 +163,24 @@ fn main() -> ExitCode {
                 }
             }
         }
-        // Recipient side: ask the kit core whether the kit is valid (each tampered part has its own refusal).
         "verify" => {
             f.close(&["kit"]);
             let dir = f.need("kit");
-            match zikaron_kit::kitdir::verify_kit(std::path::Path::new(&dir)) {
-                zikaron_kit::kitdir::KitVerdict::Ok { entries, files, proofs, invalid, kit_id } => say(
+            match zikaron_glue::book::kit_counts(std::path::Path::new(&dir)) {
+                Ok(v) => say(
                     &Value::Obj(vec![
-                        (Key::Entries.as_str().into(), Value::Int(entries as u64)),
-                        (Key::Files.as_str().into(), Value::Int(files as u64)),
-                        (Key::KitId.as_str().into(), Value::Str(zikaron::hexfmt::encode(&kit_id))),
-                        (String::from("invalid"), Value::Int(invalid.len() as u64)),
+                        (Key::Entries.as_str().into(), Value::Int(v.entries as u64)),
+                        (Key::Files.as_str().into(), Value::Int(v.files as u64)),
+                        (Key::KitId.as_str().into(), Value::Str(v.kit_id)),
+                        (String::from("invalid"), Value::Int(v.invalid as u64)),
                         (Key::Ok.as_str().into(), Value::Bool(true)),
                         (Key::Path.as_str().into(), Value::Str(dir.clone())),
-                        (Key::Proofs.as_str().into(), Value::Int(proofs as u64)),
+                        (Key::Proofs.as_str().into(), Value::Int(v.proofs as u64)),
                         (Key::State.as_str().into(), Value::Str(zikaron_kit::tokens::KIT_OK.into())),
                     ]),
                     0,
                 ),
-                zikaron_kit::kitdir::KitVerdict::Fail { verdict, subject } => say(
+                Err((verdict, subject)) => say(
                     &Value::Obj(vec![
                         (Key::Detail.as_str().into(), match subject {
                             Some(x) => Value::Str(x),
@@ -206,7 +188,7 @@ fn main() -> ExitCode {
                         }),
                         (Key::Ok.as_str().into(), Value::Bool(false)),
                         (Key::Reason.as_str().into(), Value::Str(String::from("E_KIT"))),
-                        (Key::State.as_str().into(), Value::Str(verdict.as_str().into())),
+                        (Key::State.as_str().into(), Value::Str(verdict)),
                     ]),
                     1,
                 ),

@@ -2,6 +2,108 @@
 
 [中文](CHANGELOG.md) | English
 
+## 0.2.0
+
+This version moves to the new law, `zikaron/2` and `zikaron.kit/2`: an identity can change its key, and losing the old key afterwards leaves the ledger untouched; a ledger can move chain and be read on several; a grant can go out with its original, encrypted for the grantee, in one package. 0.1.x ledgers upgrade with one confirmation, their anchors still good.
+
+### Upgrading from 0.1.5
+
+- **Install over it**: the machine folder and data folders of 0.1.5 and earlier (from 0.1.3) are used as they are, with no step by hand. One exception: on a machine with "With a credential" on, the old credential file is no longer read; the desktop removes it on unlock and turns the switch off. To use it, turn "With a credential" on again and add a program key.
+- **The upgrade opens on first start**: an identity with an old-law ledger opens "Upgrade to the new law", listing the transactions it sends and their estimated cost; one confirmation takes it through (old entries on chain, the old ledger closed, the new law's first entry). Interrupted, it goes on from there next time, signing and sending nothing twice. A ledger not upgraded is still read; new entries are written once it is upgraded.
+- Upgraded, one ledger shows its two segments in one table, the old segment's anchors still good. Record kits and grant files 0.1.x exported are still read.
+- **Once upgraded, don't open the same machine folder with 0.1.x again**: this version rewrites the identity list in a new form as it opens, and new-law ledgers are a new form too; the older version reads neither. For a ledger with an old segment, the export page's "Add a package for 0.1.x" lets someone still on 0.1.x read that segment.
+
+### The new law
+
+- **Root and key in office**: an identity's address to others is always its root; entries are signed and transactions sent with the key in office.
+- **Change key**: one entrance in settings, two ways: "Change key" in Settings > Identity key. With entries off chain, or a chain whose succession book doesn't read, no change starts, and the card says where to go. **Key made on this computer**: the next generation of the same recovery words, or new words (by identity: both roles change); its fees are sent by you, or with "Send from old key" at the "Old key's balance" step, which moves the old key's balance to the new key chain by chain. **Key at a given address**: the new key's private key is elsewhere; once written, only that address's private key can go on writing and this computer is read-only; the other side presses "Take up" once it has the ledger. Once the change is written and on chain, what is left on the old key on each chain can go to an address typed in (the new key's by default) with "Send the old key's balance", or stay with "Leave on old key". The change is written to the ledger, put on every chain and entered in the succession book (on Sepolia today). A replaced key is kept only to open what was sealed to it.
+- **Changing the key of a remote plain ledger**: the command line writes no key change. A plain ledger goes to the desktop by `hand-over` and `take-over`, and back after; the manual's command line chapter has this section. The ledger page's "More" keeps only "Add note".
+- **Moving chain, several chains**: "Move chain" in Settings > Network. Key changes and the move to the new law go on the new chain first, in order, then the rest; the chain before stays in the basis and is still read.
+- After someone else changes key: checking their grants, encrypting to their key in office and the revocation watch read their ledger's lineage and the succession book first.
+
+### An identity's faces
+
+- **The new law `zikaron.face/1`**: an identity writes platform accounts, addresses on chain and a display name into its ledger, each sent on its home chain in a transaction carrying its bytes; anyone holding only the chain reads from the root the faces that stand now, their spans, the display name, the home chain and the key lineage.
+- **The Persona page**: under "Home" on the Recorder's rail, three tabs, "Overview", "Name and faces" and "Home chain". Setting the display name, binding and releasing accounts and addresses, opening and moving the home chain, entering each chain's book and signing again what isn't seated are all there; every cell comes from the face table and each chain's book as read again.
+- **Signing into an identity**: Settings > Identity key gains "Sign this address into a Zikaron identity": this identity's key signs its consent for the identity and role typed in, to paste where that identity binds the address.
+- **Someone else's faces**: "Other ledgers" on the check page gains a block of their faces; on the command line `face-table`, five verbs that write face entries, and MCP tools of the same names.
+- **Move to a new root**: an identity whose root key is lost or leaked moves its faces to a brand-new root from the Persona page's Home chain tab: the old root writes a reroot, the new root writes its origin, and once the two tables name each other it reads Checked. Only faces move: the old root's ledger, grants and key changes carry on, and its Persona page shows only "Moved to root". On the command line `face-reroot`, `face-origin`, `face-joined` and MCP tools of the same names.
+- The "Enter in the book" row that showed in Settings > Identity key only after a refusal is gone: entering is on the Persona page's home chain tab. A key change takes up the home chain's book first, and doesn't start with a face entry not seated or a chain not entered.
+
+### Grant packages and record kits
+
+- **Grant package**: "Export grant package" on a grant's detail page, with its original or not, encrypted for the grantee or not; dropped on the verifier it shows the grant check, whether the files match, and "Take out originals". On the command line, `grant-package`.
+- **Record kit**: the manifest is written under `zikaron.kit/2`, naming the chain it is anchored on and where each entry is anchored; renamed originals come back under their names, and a folder original's top name travels in the manifest. A ledger with an old segment also gets a package 0.1.x can read.
+- The verification result's "Details" names the basis read.
+
+### Local data
+
+- **Clear plain exports**: a row in Settings > Local data listing the plain record kits, grant packages and ledger mirrors this machine wrote and that are unchanged, removed once confirmed; on the command line, `clean`.
+- The kit verification result file keeps only what its readers read: no longer this machine's address, and of transaction numbers only each record's earliest anchor; the command line's record of a direct send is kept encrypted.
+
+### Nodes
+
+- **REST API**: a "REST API mode" switch in Settings > Network; while it is on, Etherscan and Blockscout APIs can be added (a Base URL and your own API key). Each is a node just as an RPC node is, in the same agreement; one service counts once. The key stays on this machine, never in the ledger.
+- **RPC nodes**: one row each, added and removed one at a time; an address alone is on this ledger's chain.
+- **Reading logs in pieces**: each node is asked the whole range first; when every node refuses it, each halves its own range until a piece is answered, then goes on at the width answered, and the first node to finish ends the read for the rest. Each node has a limit on questions per read, "Most questions per node" in Settings > Network (1 to 1000, 256 by default), the one value the desktop, the command line and requests through the desktop read; a node that reaches it gives way without holding up the others, and a read that does not finish gives its last refusal in its own words and points to that row.
+- **Which nodes are asked**: a node that could not be reached or gave no usable answer in a read is asked nothing more in that read, nor waited for; a method a node said it does not offer is not asked of it for a day.
+- **One answers, one answers empty**: when several nodes are asked and one gives an answer while another answers empty, the read waits until two agree, never taking the empty answer as "none".
+- **Waiting on a receipt**: only nodes of the batch's chain are asked; a node of another chain is asked nothing past its chain id, so with one node of each in the table a landed receipt reads as landed. When every node serves another chain, the stuck batch says "Every node serves another chain: no price to offer".
+
+### Command line and AI apps
+
+- **Program keys**: "With a credential" now gives each program a key of its own. Add one in Settings > Command line and AI control (past the passcode, shown once); the program brings it in the environment variable `ZIKARON_CLI_PASS` when it starts the command line; deleting one voids that one. No key or a key that opens nothing is refused by name (`E_CREDENTIAL_PASS_MISSING`, `E_CREDENTIAL_PASS_UNKNOWN`).
+- `scan --ledger` reads REST API rows with the keys this machine keeps; `singleSourceChains` counts the nodes that answered, as `singleSource` does.
+- New verbs `migrate` (an old-law ledger continued under the new law), `grant-package` and `clean`; `audit`, `check-grant`, `chain-check` and `kit-verify` answer the new law's reports, and `UNPROVEN` joins the exit codes.
+- The MCP read tools' input schemas name the parameters a call must give.
+- Through the desktop (`--home`), an entry the ledger's rules refuse answers the same reason and `token` as writing directly or with the credential (`E_RETRACTION`, `E_GRANT_WITHHELD`, `E_REVOCATION`, `E_ANNOTATION`, `E_WOULD_BREAK`); every other refusal answers the reason the command line gives the same cause (`E_ALREADY_ROOTED`, `E_ENTRY`, `E_EXTRACT`, `E_ADDRESSED`, `E_READ_ONLY`, …), or, for a cause of the desktop's own, its code with `E_` before it (`E_DOOR_UNREAD`, `E_IN_FLIGHT`, …), no longer one name for all; a path through the desktop is made whole by the kind its verb's row declares; the desktop's `detail` no longer follows the desktop's language, and the output is the same in either system language.
+- `kit-verify` also answers each record's `deleted` (the entry of the kit's ledger that deleted it); `clean` lists the anchor proofs folder beside a record kit with it (kind `proofs`), kept when it holds other files (`foreign`).
+- Through the desktop (`--home`), the line given for `NOT_OPEN` names all three cases: the desktop is locked, not running, or has another data folder open (its window on another role or identity), and says where to go; someone whose window is open and unlocked on the other role is no longer told the desktop is locked or not open.
+- `scan --endpoint` judges as `scan --ledger` does: a node that does not answer marks the reading single-source and is named in `unanswered`; only when none answers is it `E_SCAN`.
+- `kit-export --file` answers a package path the package's naming rule does not take with `E_KIT_PATH`, naming the segment and the character.
+- `anchor` sending directly (`--key`) passes the balance gate before signing: a balance short of the most the transaction can cost answers `E_SEND_REFUSED` (`token` `INSUFFICIENT_FUNDS`), and nothing is sent.
+- A `--ledger` naming a desktop data folder itself names its `ledger` folder; a relative path is read from where the command runs. `init --ledger` naming a desktop data folder whose ledger holds no entry yet answers `E_ON_DESKTOP` (the ledger is created on the desktop).
+- Writing an entry with the credential, the gates are asked in order: the read-only mark, the ledger's last position, a broken chain, a handed-off ledger; a fork at the last position answers `E_TIP_FORKED`.
+- A check of grants (`check-grant`, `chain-check`, `grant-package --package`) given `--endpoint` and no `--now` takes the latest block's time on the chain it reads as now, as the desktop does; where a check is `UNKNOWN` for a missing piece, the answer adds `gaps`, naming each.
+- An MCP tool's parameter that takes a path says so: an absolute path on this machine.
+- `adopt`, `attest`, `depth`, `fpm-sign`, `ack-sign`, `anchor --form bare` and `scan --adoptions` are gone.
+
+### Removed
+
+- The three "Depth" figures, "Import anchor proofs", "Sign a claim for someone", and a record kit's proof attachments.
+
+### Fixes
+
+- With "Through the desktop app" on and the desktop unable to open its door (a data folder path too long, say), the switch says why.
+- The first start's sixth step, "Whole-machine backup", counts the ledger as it is after its first entry.
+- The "Clear plain exports" card no longer shows a check on "Delete" as it opens.
+- On the wizard's second passcode pass, "Enter it again" lines up with the cells; "Look up a ledger" no longer fades in twice.
+- Setting the machine folder aside reads the key store when pressed: a key store that reads again is not moved.
+- The status tag beside a detail page's title is drawn; the upstream ledger folder can be cleared; a grant check with no node names the gap.
+- The first start no longer shows the two "Recommended" tags.
+- After exporting a grant package, the toast names the folder it is in, not the file again.
+- Verifying a record kit: a record its author deleted says "Deleted" and by which entry, and a note the ledger wrote on a record is shown under its row; exporting all leaves a deleted record's original out, said apart in the toast.
+- A check's details, a send's failure and every error's details no longer show error codes or a node's own text: the verdict and each check's state read "Passed", "Failed" or "Undecided", and nodes are said by kind.
+- The upgrade card's count and cost follow the stage it stands at: coming back half way, no figure before the chain is read, and a step sent and waiting is not counted again.
+- With one node down and another bounding a log question's width, a send goes out; when the read before a send does not come through and a node was reached and refused, it says "Nodes were reached, but none could answer", no longer "Cannot reach any node"; the details give each node's reason.
+- Clearing plain exports clears the anchor proofs folder beside a record kit with the kit: when the kit was moved away, the folder left behind is cleared too, and one holding other files is kept.
+- Auditing a new-law grant shows the issuer ledger's state and entry count.
+- The app's name in the menu bar, dock, task bar and launchers is "ZIKARON Desk", as in its window.
+- With three nodes or more in the table and one that keeps rate limiting, that question rests from it by what it said, no longer asked of it at every read.
+- Every moment in the window is drawn in the zone the settings name, unmarked: "Last synced" in the side bar no longer adds "UTC".
+- The default time zone is "Follow the system": one never chosen follows the system's zone; UTC once chosen stays.
+- Exporting the whole ledger from the export page, a deleted record's original is marked "Record deleted; its original stays out" in the list before the export and after it.
+- Coming back to an upgrade half way, a step written and not sent reads "Not sent yet" and is counted, and "Upgrade" sends it on; the key says why while it is grey.
+- With "With a credential" on, "Copy config" under "Connect an AI app" adds a program key and writes it into the configuration's `env`, so the app writes as soon as it is connected; with it off the configuration carries no key, as before.
+- The Identity page reads no disk while it stands still: whether its write keys are grey goes by the answer judged when the page opened, the seat changed or a read or write landed, and a press still judges on the spot; before, the longer the ledger, the slower the page.
+- If the primary identity changed to new words and the machine lost power or the app was forced to quit as the new recovery seal was written, the next unlock writes that seal from what was recorded before the change; before, the vault was left with no recovery seal, and nothing said so.
+- When the chain holds records this machine lacks, the notices now say "N records on chain are not on this machine"; in Clear plain exports, the folder beside a record kit is listed as "On-chain proofs".
+- For an imported identity with no ledger yet, "no records of this key on chain" holds only for the chain it was checked on: if the chain or the registry changes before the ledger is created, the new chain is checked again, and the ledger can be created once that is done; while the ledger still needs fetching, the ledger page offers "Fetch ledger", not "Create ledger".
+- When "Look up a ledger" is given something that is not the whole ledger from its start, it says so and asks for the whole ledger or its publish address.
+- A grant's window said short carries the years unless both ends fall in this year; "Last on chain N days ago" rounds down, and under a day reads "Last on chain today".
+- A new app icon, its outline unchanged.
+- **Dropping files on Linux**: in a Wayland session the window runs on Wayland and takes the files and folders dragged onto it itself; before, it ran on X11 whenever an X display existed, and received none under xwayland-satellite (common with niri) or in a pure Wayland session. On GNOME with XWayland it runs on X11 as before; on GNOME with XWayland turned off drops do not reach the window, so use the file dialog. On Linux a drop zone that takes either a file or a folder first asks which to choose when clicked, so a folder no longer has dragging as its only way in. Reported by DNKYr (issue #3 and PR #4 on the public repository).
+
 ## 0.1.5
 
 This version fixes the passcode cells on first start that took no typing, and a set of problems in the window and on the command line; a new grant's end day can be picked on a calendar.
@@ -140,7 +242,7 @@ This version lets the command line write the data the desktop keeps sealed even 
 - **The writer lock while sending**: readying a batch and signing and sending it hold the data folder's writer lock; the receipt wait holds none, so the other side (the desktop or the command line) may write and send the rest of the queue meanwhile, leaving the batch in flight alone; settling takes the lock again, reads the queue anew and changes only the entries still awaiting that batch. When the command line cannot take the lock back within sixty seconds it answers `E_HOME_HELD` and the batch stays in flight.
 - **Three write gates, asked alike before a send and a write with the credential**: a data folder under its read-only mark (an imported identity whose ledger is not fetched yet, `LEDGER_NOT_FETCHED`; the chain holding anchors the ledger lacks, `NEWER_ELSEWHERE`), a ledger whose own entries break its chain (`BROKEN`), a ledger handed off (`HANDED_OFF`): a send answers `E_SEND_REFUSED` with that code, a write with the credential `E_READ_ONLY` with that code in `token` (a ledger handed off still answers `E_HANDED_OFF`); not one byte is written and nothing is sent.
 - **A handover passes the write gates too**: `hand-over` of a desktop data folder with the credential first passes the first two gates, as a send and a write do: under the read-only mark, or with a ledger that broke its chain, it answers `E_READ_ONLY` (that code in `token`, exit 1), writes no handoff file and does not record the ledger as handed off; a ledger already handed off is handed over again as before, the same handoff file.
-- **`anchor --home` refusals**: a refusal before anything went out is `E_SEND_REFUSED` (`token` and `detail` as before; exit 4 for the network family, 1 otherwise), in place of 0.1.2's `E_DESKTOP_REFUSED`; the chain already holding the anchors is `E_ON_CHAIN` (with `names`, `tx`, `blockNumber`). Other verbs the desktop refuses still answer `E_DESKTOP_REFUSED`.
+- **`anchor --home` refusals**: a refusal before anything went out is `E_SEND_REFUSED` (`token` and `detail` as before; exit 4 for the network family, 1 otherwise), in place of 0.1.2's one name for every desktop refusal; the chain already holding the anchors is `E_ON_CHAIN` (with `names`, `tx`, `blockNumber`). Other verbs the desktop refuses still answered that one name.
 - New refusal reasons: `E_SEND_REFUSED`, `E_READ_ONLY`.
 - **The Settings "Command line" page**: the settings home lists eight sections instead of seven, "Command line" (Terminal and AI agent automation) coming after "Local data" and before "About", in three groups: "Terminal" holds "Enable the zikaron command" (in 0.1.2 under Settings > Local data, named "Enable command line"); "Automation level" holds "Through the desktop app" and "With a credential"; "Anchoring" holds "Putting on chain from the command line" (in 0.1.2 under Settings > Network), its line saying both ways follow it, through the desktop app and with a credential. Each keeps its behaviour and where it is kept. The card that turns "With a credential" on says that while putting on chain from the command line sends automatically, the command line can spend this identity's gas. The messages for a credential in trouble, and for meeting the command line writing, point to Settings > Command line.
 

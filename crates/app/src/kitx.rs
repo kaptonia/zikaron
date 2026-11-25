@@ -1,22 +1,3 @@
-//! Assembling disclosure kits. The kit format itself lives in the glue and kit crates; nothing here defines
-//! it.
-//!
-//! This layer:
-//!
-//! 1. Expresses "which entries" as the glue crate's [`select::Selection`] (a seq range or named ids). The
-//! selection decides which entries go into the kit and which records' originals may be attached.
-//! 2. Reads attachments into the glue crate's `files` table (through `gather`, which does not follow symbolic
-//! links), after checking each against [`Originals`]: a digest that is not a selected record's `content` is
-//! refused.
-//! 3. Hands both to the glue crate's [`pack::export`].
-//!
-//! The glue crate builds the kit in a temporary directory beside the target and renames it into place only
-//! after the kit crate's `verify_kit` returns `KIT_OK`; on failure the temporary directory is removed and the
-//! target path is untouched. A kit that fails self-verification is never written.
-//!
-//! If the chosen entries include a grant, the glue crate also pulls in the revocations that reference it and
-//! reports each one; the UI shows them so the user sees everything that went into the kit.
-
 use crate::fault::{Fault, Known};
 use crate::home::Home;
 use std::collections::BTreeSet;
@@ -24,27 +5,18 @@ use std::path::Path;
 use zikaron_glue::pack::{self, Bundle};
 use zikaron_glue::select::{self, Selection};
 
-/// The entry selection: a seq range or named ids. There is no per-record filter here (ANDing two filters
-/// often gave empty results with no visible reason); `Selection.work` remains for the command line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pick {
-    /// Lower seq bound (inclusive).
     pub from: Option<u64>,
-    /// Upper seq bound (inclusive).
     pub to: Option<u64>,
-    /// Named entry ids (`0x` plus 64 hex digits). When non-empty only these are kept; when empty the range
-    /// applies. Named entries also get revocation closure (done by the glue crate's selector).
     pub ids: Vec<String>,
 }
 
 impl Pick {
-    /// As the glue crate's selection. Neither bound given means everything (as the glue crate defines it).
     pub fn selection(&self) -> Selection {
         Selection { from: self.from, to: self.to, work: None, ids: self.ids.clone() }
     }
 
-    /// Parse from the UI fields. Empty bounds mean no limit; an invalid number is an error, never read as no
-    /// limit. `ids` holds one id per line (or comma separated); anything that is not an id is an error.
     pub fn parse_ids(from: &str, to: &str, ids: &str) -> Result<Pick, Fault> {
         let mut pick = Pick::parse(from, to)?;
         for one in ids.split(|c: char| c.is_whitespace() || c == ',').filter(|x| !x.trim().is_empty()) {
@@ -59,7 +31,6 @@ impl Pick {
         Ok(pick)
     }
 
-    /// Parse only the two bounds (no named ids).
     pub fn parse(from: &str, to: &str) -> Result<Pick, Fault> {
         let num = |s: &str, what: &str| -> Result<Option<u64>, Fault> {
             let t = s.trim();
@@ -67,28 +38,23 @@ impl Pick {
                 return Ok(None);
             }
             t.parse::<u64>().map(Some).map_err(|_| {
-                Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::Tail155, &[&(what).to_string(), &format!("{:?}", t)]))
+                Fault::known(Known::SettingsShape, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail155, &[&(what).to_string(), &format!("{:?}", t)])))
             })
         };
         Ok(Pick { from: num(from, crate::lang::t(crate::lang::Key::Tail178))?, to: num(to, crate::lang::t(crate::lang::Key::Tail179))?, ids: Vec::new() })
     }
 }
 
-/// A selection's result: the chosen entries and the ids pulled in by revocation closure.
 pub struct Chosen {
     pub items: Vec<Vec<u8>>,
     pub pulled: Vec<String>,
+    pub withdrawn: Vec<String>,
 }
 
-/// All ledger entries, through the store's strict read (`local::Ledger`, since the home's entries are
-/// sealed). Choosing and exporting read the same source.
-fn whole(home: &Home) -> Result<Vec<Vec<u8>>, Fault> {
+pub fn whole(home: &Home) -> Result<Vec<Vec<u8>>, Fault> {
     Ok(home.ledger()?.pile()?.items)
 }
 
-/// Kit directory name: `kit-<first 8 hex digits of the original digest>` of the lowest-seq selected entry
-/// that has one (`work`), or `kit` when none does (only grants selected). Name collisions are numbered later
-/// (`home::choose`). Works on in-memory ledger rows, not the disk, since the UI frame calls it.
 pub fn landing_stem(rows: &[crate::ledgerx::Row], pick: &Pick) -> String {
     let mut chosen: Vec<&crate::ledgerx::Row> = rows
         .iter()
@@ -107,30 +73,21 @@ pub fn landing_stem(rows: &[crate::ledgerx::Row], pick: &Pick) -> String {
     }
 }
 
-/// What a pick selects from this home's ledger, exactly as [`export`] will (both use [`chosen_in`]).
 pub fn choose(home: &Home, pick: &Pick) -> Result<Chosen, Fault> {
     chosen_in(&whole(home)?, pick)
 }
 
-/// The single selection logic used by [`export`] and [`choose`]: the glue crate chooses, and every entry
-/// named by id must be among the chosen.
 fn chosen_in(pile: &[Vec<u8>], pick: &Pick) -> Result<Chosen, Fault> {
     let got = select::choose(pile, &pick.selection());
-    // A named id the selection did not find is an error, never silently left out of the kit.
     let chosen_ids: Vec<String> = got.items.iter().map(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(b))).collect();
     if let Some(missing) = pick.ids.iter().find(|x| !chosen_ids.iter().any(|c| c.eq_ignore_ascii_case(x))) {
         return Err(Fault::known(Known::SubjectMissing, missing.clone()));
     }
-    Ok(Chosen { items: got.items, pulled: got.pulled })
+    let gone = zikaron_seal::records::withdrawn(pile);
+    let withdrawn = chosen_ids.into_iter().filter(|c| gone.iter().any(|g| g.eq_ignore_ascii_case(c))).collect();
+    Ok(Chosen { items: got.items, pulled: got.pulled, withdrawn })
 }
 
-/// The originals the selected records accept: the `content` (hex32, lowercase) of every history entry in the
-/// selection.
-///
-/// An attachment is valid only if its digest is in this set: a file by the sha256 of its bytes
-/// (`anchorx::file_digest`), a directory by its manifest digest in any spelling its record may have
-/// (`anchorx::dir_digests`, the spelling signing computes `content` in, or the one a directory signed on Windows had
-/// before). File names, paths and extensions are irrelevant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Originals(BTreeSet<String>);
 
@@ -140,7 +97,8 @@ impl Originals {
             chosen
                 .items
                 .iter()
-                .filter_map(|b| zikaron::entry::check(b).ok())
+                .filter_map(|b| zikaron_glue::book::check(b).ok())
+                .filter(|e| !chosen.withdrawn.iter().any(|w| w.eq_ignore_ascii_case(&e.id_hex())))
                 .filter_map(|e| crate::ledgerx::work_of(e.kind, &e.body))
                 .map(|c| c.to_ascii_lowercase())
                 .collect(),
@@ -151,19 +109,14 @@ impl Originals {
         self.0.contains(&zikaron::hexfmt::encode(digest).to_ascii_lowercase())
     }
 
-    /// As [`Originals::admits`], with the digest as a hex32 string (as computed in the background). A
-    /// malformed string is not accepted.
     pub fn admits_hex(&self, digest: &str) -> bool {
         self.0.contains(&digest.trim().to_ascii_lowercase())
     }
 
-    /// Whether any of the digests an attachment may have been signed under is one of these originals
-    /// ([`digest_of`]).
     pub fn admits_any(&self, digests: &[[u8; 32]]) -> bool {
         digests.iter().any(|d| self.admits(d))
     }
 
-    /// As [`Originals::admits_any`], with the digests as hex32 strings (as computed in the background).
     pub fn admits_any_hex(&self, digests: &[String]) -> bool {
         digests.iter().any(|d| self.admits_hex(d))
     }
@@ -177,28 +130,48 @@ impl Originals {
     }
 }
 
-/// One original of a selected record from the local index (listed in the attachment area for ticking).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed {
     pub id: String,
     pub seq: u64,
     pub name: String,
-    /// The absolute path at signing time.
     pub path: String,
-    /// Whether a file is at that path now (presence only; the digest is checked at export).
     pub present: bool,
 }
 
-/// The originals of the selected records from the local index (`records/index.json`), for this ledger only,
-/// sorted by seq. Originals the index lacks (a signed directory or repository, or one signed on another
-/// machine) are not listed; the user can drag them in, still checked by [`Originals`].
+pub const ORIGINALS_LISTED: &str = "listed";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalsWord {
+    pub gather: bool,
+    pub say_withdrawn: bool,
+}
+
+pub fn originals_word(word: &str) -> Option<OriginalsWord> {
+    match word.trim() {
+        "" => Some(OriginalsWord { gather: true, say_withdrawn: true }),
+        "none" => Some(OriginalsWord { gather: false, say_withdrawn: false }),
+        w if w == ORIGINALS_LISTED => Some(OriginalsWord { gather: false, say_withdrawn: true }),
+        _ => None,
+    }
+}
+
 pub fn originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
+    originals_where(home, pick, false)
+}
+
+pub fn withdrawn_originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
+    originals_where(home, pick, true)
+}
+
+fn originals_where(home: &Home, pick: &Pick, gone: bool) -> Result<Vec<Listed>, Fault> {
     let chosen = choose(home, pick)?;
     let ids: BTreeSet<String> = chosen
         .items
         .iter()
-        .filter_map(|b| zikaron::entry::check(b).ok())
-        .filter(|e| e.kind == zikaron::tokens::EntryType::History)
+        .filter_map(|b| zikaron_glue::book::check(b).ok())
+        .filter(|e| e.kind == zikaron_glue::book::Kind::History)
+        .filter(|e| chosen.withdrawn.iter().any(|w| w.eq_ignore_ascii_case(&e.id_hex())) == gone)
         .map(|e| e.id_hex().to_ascii_lowercase())
         .collect();
     if ids.is_empty() {
@@ -213,28 +186,19 @@ pub fn originals(home: &Home, pick: &Pick) -> Result<Vec<Listed>, Fault> {
         .collect())
 }
 
-/// Preview: the ids of the chosen entries and of those pulled in by closure, from the same selection export
-/// uses. The UI list comes only from here.
 pub fn preview(home: &Home, pick: &Pick) -> Result<(Vec<String>, Vec<String>), Fault> {
     let got = choose(home, pick)?;
     let ids = got
         .items
         .iter()
-        .filter_map(|b| zikaron::entry::check(b).ok())
+        .filter_map(|b| zikaron_glue::book::check(b).ok())
         .map(|e| zikaron::hexfmt::encode(&e.id))
         .collect();
     Ok((ids, got.pulled))
 }
 
-// ───────────────────────── Names inside the kit ─────────────────────────
-
-/// How names go into a kit (the table of renamed items, a name segment, a path): the glue's
-/// (`zikaron_glue::kitnames`), the command line's record package takes the same.
 pub use zikaron_glue::kitnames::{kit_rel, kit_segment, DIGEST_HEX, NAMES_FILE};
 
-/// What an attachment will be called in the kit: for each item (each file of a directory) the original name
-/// and the kit name, `None` when it cannot be converted. Uses the same conversion as export, so the preview
-/// matches the kit.
 pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault> {
     let name = path
         .file_name()
@@ -242,8 +206,6 @@ pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault
         .ok_or_else(|| Fault::known(Known::FileMissing, path.display().to_string()))?;
     let md = std::fs::symlink_metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.is_dir() {
-        // Names only: `gather` would read every file into memory, and a directory of tens of GB would stall
-        // the UI. `walk_names` applies the same rules as `gather`; real export still uses `gather`.
         let mut got: Vec<String> = Vec::new();
         walk_names(path, &name, &mut got)?;
         Ok(got.into_iter().map(|p| (p.clone(), kit_rel(&p))).collect())
@@ -252,11 +214,8 @@ pub fn preview_names(path: &Path) -> Result<Vec<(String, Option<String>)>, Fault
     }
 }
 
-/// List names only, with the same rules as `pack::gather` (byte order, symbolic links and irregular files are
-/// `E_BAD_PATH`, directories are descended), without reading any content. Used by the attachment preview.
 fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fault> {
     let bad = |rel: &str| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(rel.to_string()));
-    // I/O errors take the same form as in `gather`, so preview and export report them identically.
     let io = |rel: &str, at: &Path, what: &str, e: std::io::Error| Fault::of_landing(zikaron_glue::pack::Trouble::Io(rel.to_string(), format!("{what} {}: {e}", at.display())));
     let listing = std::fs::read_dir(root).map_err(|e| io(prefix, root, "read directory", e))?;
     let mut names: Vec<std::ffi::OsString> = Vec::new();
@@ -284,11 +243,6 @@ fn walk_names(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Fa
     Ok(())
 }
 
-/// The digests an attachment path may have been signed under: a file's by its bytes
-/// ([`crate::anchorx::file_digest`]), a directory's by its manifest in each spelling its record may have
-/// ([`crate::anchorx::dir_digests`]), as [`attach`] checks it; symbolic links and device files are refused. The export
-/// page computes them in the background when something is dragged in (`Action::VetAttachments`) to flag
-/// non-originals early; [`attach`] still checks at export.
 pub fn digest_of(path: &Path) -> Result<Vec<[u8; 32]>, Fault> {
     let md = std::fs::symlink_metadata(path).map_err(|e| crate::fault::classify(&e, &path.display().to_string()))?;
     if md.is_file() {
@@ -297,20 +251,11 @@ pub fn digest_of(path: &Path) -> Result<Vec<[u8; 32]>, Fault> {
     } else if md.is_dir() {
         crate::anchorx::dir_digests(path)
     } else {
-        Err(Fault::known(Known::NotAdoptable, crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()])))
+        Err(Fault::known(Known::NotAdoptable, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()]))))
     }
 }
 
-/// Attach a file, or a whole directory tree (through the glue crate's `gather`).
-///
-/// The digest (a file's sha256 or a directory's manifest digest) must be in [`Originals`]; otherwise the
-/// attachment is refused (`NOT_AN_ORIGINAL`, with the path) and nothing is attached. The UI and the command
-/// line share this check.
-///
-/// Kit names come from [`kit_rel`]; renamed items are recorded in `names` (original name, kit name) and
-/// written as [`NAMES_FILE`] at export. An item that cannot be converted is refused (`LANDING` ·
-/// `E_BAD_PATH`) and nothing is attached.
-pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut Vec<(String, String)>) -> Result<usize, Fault> {
+pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle) -> Result<usize, Fault> {
     let name = path
         .file_name()
         .map(|x| x.to_string_lossy().to_string())
@@ -325,40 +270,24 @@ pub fn attach(path: &Path, originals: &Originals, into: &mut Bundle, names: &mut
         if !originals.admits(&crate::anchorx::file_digest(&bytes)) {
             return Err(stranger());
         }
-        zikaron_glue::kitnames::put_original(&name, bytes, into, names).map_err(|n| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(n)))?;
+        zikaron_glue::kitnames::put_original(&name, bytes, into).map_err(|n| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(n)))?;
     } else if md.is_dir() {
         if !originals.admits_any(&crate::anchorx::dir_digests(path)?) {
             return Err(stranger());
         }
         let mut got: Vec<(String, Vec<u8>)> = Vec::new();
-        pack::gather(path, &name, &mut got)
+        pack::gather(path, "", &mut got)
             .map_err(|t| Fault::of_landing(t))?;
-        let mut mapped: Vec<(String, String, Vec<u8>)> = Vec::new();
-        for (p, b) in got {
-            let inside = kit_rel(&p).ok_or_else(|| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(p.to_string())))?;
-            mapped.push((p, inside, b));
-        }
-        for (p, inside, b) in mapped {
-            if inside != p {
-                names.push((p, inside.clone()));
-            }
-            into.contents.push(inside.clone());
-            into.files.push((inside, b));
-        }
+        zikaron_glue::kitnames::put_directory(&name, got, into).map_err(|n| Fault::of_landing(zikaron_glue::pack::Trouble::BadPath(n)))?;
     } else {
-        // Symbolic links and device files are refused: they could pull content from outside into the kit.
         return Err(Fault::known(
             Known::NotAdoptable,
-            crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()]),
+            crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail027, &[&(path.display()).to_string()])),
         ));
     }
     Ok(into.files.len() - before)
 }
 
-pub use zikaron_glue::kitnames::{names_member, names_table};
-
-/// The most recent kit in the home's kits directory (the one whose manifest was modified last). "Check
-/// publication" uses it when no local kit was chosen.
 pub fn latest_kit(kits: &Path) -> Option<std::path::PathBuf> {
     let listing = std::fs::read_dir(kits).ok()?;
     listing
@@ -369,8 +298,6 @@ pub fn latest_kit(kits: &Path) -> Option<std::path::PathBuf> {
         .map(|(_, p)| p)
 }
 
-/// This home's anchoring point (chain id, registry, start block) from current settings; `None` when the chain
-/// or the registry is not configured.
 pub fn anchored_on(home: &Home) -> Result<Option<crate::kitsindex::AnchoredOn>, Fault> {
     let s = crate::settings::Settings::read(home)?;
     Ok(match (s.chain_id, s.registry) {
@@ -379,31 +306,24 @@ pub fn anchored_on(home: &Home) -> Result<Option<crate::kitsindex::AnchoredOn>, 
     })
 }
 
-/// The result of an export.
+pub fn kit_anchors(home: &Home) -> Result<Vec<zikaron_glue::pack::Anchor>, Fault> {
+    Ok(crate::lastread::load_anchored(home)?
+        .map(|a| a.rows.into_iter().map(|(entry_id, (chain_id, tx))| zikaron_glue::pack::Anchor { entry_id, chain_id, tx }).collect())
+        .unwrap_or_default())
+}
+
 pub struct Made {
     pub path: String,
     pub kit_id: String,
     pub entries: usize,
     pub files: usize,
     pub pulled: Vec<String>,
-    /// Platform junk dropped before export, each named.
     pub dropped: Vec<String>,
-    /// The package paths of the originals attached (each file of an attached folder).
     pub originals: Vec<String>,
-    /// What the kits index records of this package, read from the plain package before it was sealed (when it was):
-    /// the original digests, the author's note, where it says it is anchored (`kitsindex::RowFacts`).
     pub facts: crate::kitsindex::RowFacts,
+    pub companion: Option<String>,
 }
 
-/// Export: choose, attach, and hand to the glue crate to write.
-///
-/// An empty selection is refused and nothing is written. Otherwise the kit holds the chosen entries plus the
-/// revocations pulled in by closure. The selection also decides [`Originals`] and which terms documents
-/// travel with the kit.
-///
-/// Self-verification happens in the glue and kit crates (see the module header). Their errors are returned
-/// unchanged, so "path already exists", "duplicate path in the kit" and "self-verification failed" stay
-/// distinct. `_pass` ([`crate::exitgate::Pass`]) ensures this is only reachable through the exit gate.
 pub fn export(
     _pass: &crate::exitgate::Pass,
     home: &Home,
@@ -413,13 +333,9 @@ pub fn export(
     out: &Path,
     form: zikaron_glue::pack::Form,
 ) -> Result<Made, Fault> {
-    export_to(_pass, home, pick, attachments, note, out, form, None)
+    export_to(_pass, home, pick, attachments, note, out, form, None, false)
 }
 
-/// [`export`], the one-file package sealed to `to` when given (`addressedx::seal_out`): the plain package is laid
-/// out in a folder of its own in the system's temporary place (never beside `out`), its index facts read there, then
-/// sealed into `out` the one way files land; the plain copy is removed either way. A folder is never sealed
-/// (`ADDRESSED_FOLDER`). Nothing in what is returned names the recipient.
 #[allow(clippy::too_many_arguments)]
 pub fn export_to(
     _pass: &crate::exitgate::Pass,
@@ -430,25 +346,29 @@ pub fn export_to(
     out: &Path,
     form: zikaron_glue::pack::Form,
     to: Option<&[u8; 33]>,
+    companion: bool,
 ) -> Result<Made, Fault> {
     if to.is_some() && form == zikaron_glue::pack::Form::Folder {
         return Err(Fault::known(Known::AddressedFolder, out.display().to_string()));
     }
-    // Traced here so direct calls that bypass `apply` (tests, the CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::W5);
     let pile = whole(home)?;
     let chosen = chosen_in(&pile, pick)?;
     if chosen.items.is_empty() {
         return Err(Fault::known(
             Known::QueueEmpty,
-            crate::lang::t(crate::lang::Key::Tail180).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail180).to_string()),
         ));
     }
     let originals = Originals::of(&chosen);
-    // The home's current anchoring point travels with the kit as the note's last line.
-    let note = crate::kitsindex::note_with(note, anchored_on(home)?.as_ref());
-    let mut b = Bundle { entries: chosen.items.clone(), note, ..Default::default() };
-    let mut names: Vec<(String, String)> = Vec::new();
+    let mut b = Bundle {
+        entries: chosen.items.clone(),
+        note: note.to_string(),
+        root: crate::auditx::root_of(&pile).ok(),
+        anchored_on: anchored_on(home)?,
+        anchors: kit_anchors(home)?,
+        ..Default::default()
+    };
     let mut attached: Vec<String> = Vec::new();
     for one in attachments {
         let t = one.trim();
@@ -456,18 +376,12 @@ pub fn export_to(
             continue;
         }
         let before = b.files.len();
-        attach(Path::new(t), &originals, &mut b, &mut names)?;
+        attach(Path::new(t), &originals, &mut b)?;
         attached.extend(b.files[before..].iter().map(|(p, _)| p.clone()));
     }
-    // Renamed items get a name table (a file in the manifest, not record content).
-    if !names.is_empty() {
-        b.files.push((NAMES_FILE.to_string(), names_table(&names)));
-    }
-    // Terms documents kept when the selected grants were signed travel with the kit (path from
-    // `termsx::doc_rel`), so a verifier can recompute their digest and check exclusivity.
     for bytes in &chosen.items {
-        let Ok(e) = zikaron::entry::check(bytes) else { continue };
-        if e.kind != zikaron::tokens::EntryType::Grant {
+        let Ok(e) = zikaron_glue::book::check(bytes) else { continue };
+        if e.kind != zikaron_glue::book::Kind::Grant {
             continue;
         }
         let found = match crate::termsx::record(home, &e.id_hex())? {
@@ -480,11 +394,16 @@ pub fn export_to(
             }
         }
     }
+    let old = if companion { pack::companion_v1(&b) } else { None };
     let Some(to) = to else {
         let landed = pack::export_as(out, b, form).map_err(|t| {
             Fault::of_landing(t)
         })?;
         let facts = crate::kitsindex::RowFacts::of_kit(out)?;
+        let companion = match old {
+            Some(c) => Some(write_companion(out, &c, None)?),
+            None => None,
+        };
         return Ok(Made {
             path: out.display().to_string(),
             kit_id: landed.kit_id,
@@ -494,6 +413,7 @@ pub fn export_to(
             dropped: landed.dropped,
             originals: attached,
             facts,
+            companion,
         });
     };
     let pulled = chosen.pulled.clone();
@@ -504,6 +424,10 @@ pub fn export_to(
         Ok((landed, facts))
     })?;
     facts.one_time = Some(zikaron::hexfmt::encode(&one_time));
+    let companion = match old {
+        Some(c) => Some(write_companion(out, &c, Some(to))?),
+        None => None,
+    };
     Ok(Made {
         path: out.display().to_string(),
         kit_id: landed.kit_id,
@@ -513,9 +437,47 @@ pub fn export_to(
         dropped: landed.dropped,
         originals: attached,
         facts,
+        companion,
     })
 }
 
+pub fn companion_path(out: &Path) -> std::path::PathBuf {
+    let stem = out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    out.with_file_name(format!("{stem}-kit1.{}", zikaron_glue::container::EXT_KIT))
+}
+
+fn write_companion(out: &Path, c: &Bundle, to: Option<&[u8; 33]>) -> Result<String, Fault> {
+    let at = companion_path(out);
+    let bytes = pack::companion_bytes(c).map_err(Fault::of_landing)?;
+    match to {
+        None => {
+            zikaron_glue::landing::land_bytes(&at, &bytes).map_err(Fault::of_landing)?;
+            crate::exports::record_plain(&at, crate::exports::Kind::Kit)?;
+        }
+        Some(k) => {
+            crate::addressedx::seal_out(k, &at, |plain| zikaron_glue::landing::land_bytes(plain, &bytes).map_err(Fault::of_landing))?;
+        }
+    }
+    Ok(at.display().to_string())
+}
+
+
+#[cfg(test)]
+mod originals_word_tests {
+    use super::*;
+
+    #[test]
+    fn the_originals_word_says_what_is_gathered_and_what_is_said() {
+        assert_eq!(originals_word(""), Some(OriginalsWord { gather: true, say_withdrawn: true }));
+        assert_eq!(originals_word("  "), originals_word(""), "blank is none given");
+        assert_eq!(originals_word(ORIGINALS_LISTED), Some(OriginalsWord { gather: false, say_withdrawn: true }), "the export page's");
+        assert_eq!(originals_word("none"), Some(OriginalsWord { gather: false, say_withdrawn: false }), "the command line's and the door's: none looked for, none said");
+        assert_eq!(originals_word(" none "), originals_word("none"));
+        for w in ["None", "LISTED", "all", "none listed", "listed,none"] {
+            assert_eq!(originals_word(w), None, "{w}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod stem_tests {
@@ -523,8 +485,9 @@ mod stem_tests {
 
     fn row(seq: u64, id: &str, work: Option<&str>) -> crate::ledgerx::Row {
         crate::ledgerx::Row {
+            law: zikaron_glue::book::Law::Two,
             seq,
-            kind: zikaron::tokens::EntryType::History,
+            kind: zikaron_glue::book::Kind::History,
             id: id.to_string(),
             prev: None,
             author: String::new(),
@@ -538,7 +501,6 @@ mod stem_tests {
         }
     }
 
-    /// The folder name comes from the lowest-seq chosen entry that has an original digest.
     #[test]
     fn the_kit_folder_is_named_after_the_first_chosen_record() {
         let rows = vec![row(0, "0x00", None), row(1, "0x01", Some("0xAABBCCDD11223344")), row(2, "0x02", Some("0x5566778899aabbcc"))];
@@ -553,13 +515,9 @@ mod stem_tests {
 mod names_tests {
     use super::*;
 
-    /// Transliteration keeps valid names, adds a digest for uniqueness, keeps extensions and rejects overlong
-    /// results.
     #[test]
     fn names_are_transliterated_in_one_place() {
         assert_eq!(kit_segment("notes.txt").as_deref(), Some("notes.txt"), "已合法即原样");
-        // The digest's position is not pinned: only require the transliterated words, one digest, and the
-        // extension.
         let parts = |seg: &str, ext: &str| -> (String, usize) {
             let stem = seg.strip_suffix(ext).unwrap_or(seg);
             let is_digest = |p: &&str| p.len() == DIGEST_HEX && p.chars().all(|c| c.is_ascii_hexdigit());
@@ -584,9 +542,6 @@ mod names_tests {
     }
 }
 
-/// The selected entries not yet anchored, for the export page. Confirmed entries
-/// ([`crate::ledgerx::Lamp::confirmed`], as the status bar uses) and deletions do not count. Returns the ids
-/// and lamps of unanchored entries, and which of them "anchor now" can send (`true` when not yet queued).
 pub fn unanchored(picked: &[&crate::ledgerx::Row]) -> (Vec<(String, crate::ledgerx::Lamp)>, Vec<(String, bool)>) {
     use crate::ledgerx::Lamp;
     let red: Vec<(String, Lamp)> = picked

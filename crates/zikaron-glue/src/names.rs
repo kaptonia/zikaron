@@ -1,23 +1,12 @@
-//! Every name this crate spells (kit directories and file names, manifest members, entry body members, answer
-//! keys) is defined once, here.
-//!
-//! Spec bytes are not copied: `zikaron.kit/1` comes from [`zikaron_kit::tokens::SPEC_KIT`], `KIT_OK` and the
-//! three verdicts from the kit core's constants, entry types from [`zikaron::tokens::EntryType`].
-
-/// The three kit directories and the manifest file name (kit law §7.1 to §7.4).
 pub const ENTRIES_DIR: &str = "entries";
 pub const FILES_DIR: &str = "files";
 pub const PROOFS_DIR: &str = "proofs";
 pub const MANIFEST: &str = "manifest.json";
-/// Suffix of entry files in a kit (`entries/<64 hex>.zk1`, kit law §7.4).
 pub const ENTRY_SUFFIX: &str = ".zk1";
-/// A ledger handoff's note, under a handoff file's files room (the command line's `hand-over` writes it).
 pub const HANDOFF_NOTE: &str = "zikaron-handoff.txt";
 
-/// Member names of the manifest (kit law §7.3) and of entry bodies (law §6). Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Field {
-    // The seven manifest members.
     Spec,
     Root,
     Entries,
@@ -25,13 +14,18 @@ pub enum Field {
     Contents,
     Proofs,
     NoteMd,
-    // Manifest rows.
+    AnchoredOn,
+    Anchors,
     Path,
     Sha256,
     Size,
     Content,
     Tx,
-    // Entry body members the selector reads (law §6.2, §6.3, §6.4).
+    NameMd,
+    ChainId,
+    Registry,
+    FromBlock,
+    EntryId,
     Work,
     Grant,
 }
@@ -46,6 +40,13 @@ impl Field {
             Field::Contents => "contents",
             Field::Proofs => "proofs",
             Field::NoteMd => "note_md",
+            Field::AnchoredOn => "anchoredOn",
+            Field::Anchors => "anchors",
+            Field::NameMd => "name_md",
+            Field::ChainId => "chainId",
+            Field::Registry => "registry",
+            Field::FromBlock => "fromBlock",
+            Field::EntryId => "entry_id",
             Field::Path => "path",
             Field::Sha256 => "sha256",
             Field::Size => "size",
@@ -57,16 +58,12 @@ impl Field {
     }
 }
 
-/// Kit paths of items this crate adds itself (the verification note). Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
-    /// The verification note: how to check this kit (every kit carries it, so it is a fixed member of
-    /// `files/`).
     Verify,
 }
 
 impl Slot {
-    /// Kit path (the part under `files/`). Segments use only `a-z0-9._-` (kit law §7.2).
     pub fn path(self) -> &'static str {
         match self {
             Slot::Verify => "verify.md",
@@ -76,7 +73,6 @@ impl Slot {
     pub const ALL: [Slot; 1] = [Slot::Verify];
 }
 
-/// Answer keys. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     Ok,

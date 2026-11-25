@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s002_history.bin",
+ "note": "sec 5.1: B6 of a history entry",
+ "predicted": {
+  "digest": "0x32b9387f20c89b8a98dc82aa59677250bada73180a76b945e208716f3d0cf31a",
+  "presig": "0x1e8dc7a14b06baec1152741ec825ad06dded782570aab7c1a399e3f5bceb089d",
+  "sig": "0x1a5de7cd857206e7ed122af988283a576f23f56a0f6672031b1d4f9d485fd04c4768fbaaccdeaba5ab78932b75c14eea6561f846c811ad3611c349a743698dac1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

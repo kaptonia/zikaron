@@ -1,6 +1,3 @@
-//! The three states of a block (empty, loading, failed) and the small boxes that speak on a page: notes,
-//! banners, hints and one-line readings.
-
 use crate::icons::{self, Glyph};
 use crate::mark::{self, Mark};
 use crate::motion;
@@ -9,7 +6,6 @@ use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// Empty: a quiet line glyph and one sentence, centered, 40 above and below.
 pub fn empty(ui: &mut egui::Ui, g: Glyph, s: &str) {
     empty_pad(ui, g, s, 40.0)
 }
@@ -24,19 +20,16 @@ pub fn empty_pad(ui: &mut egui::Ui, g: Glyph, s: &str, pad_y: f32) {
     p.galley(pos2(rect.center().x - text.size().x / 2.0, rect.top() + pad_y + 28.0 + 10.0), text, c(C::Ink2));
 }
 
-/// One skeleton bar, shimmering once every 1.2 s (drawn only while something loads).
 pub fn skeleton(ui: &mut egui::Ui, w: f32, h: f32, radius: f32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), egui::Sense::hover());
     paint_skeleton(ui, rect, radius);
     rect
 }
 
-/// Paint a shimmering bar into `rect`.
 pub fn paint_skeleton(ui: &egui::Ui, rect: Rect, radius: f32) {
     let phase = motion::cycle(ui.ctx(), tokens::CYCLE);
     let lo = c(C::Skel);
     let hi = c(C::SkelHi);
-    // The highlight's center sweeps from past the right edge to past the left edge.
     let w = rect.width().max(1.0);
     let center = rect.right() + w * 0.5 - phase * w * 2.0;
     let colour_at = |x: f32| {
@@ -47,7 +40,6 @@ pub fn paint_skeleton(ui: &egui::Ui, rect: Rect, radius: f32) {
     let mut mesh = egui::Mesh::default();
     let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
     let edge = |x: f32| -> (f32, f32) {
-        // Top and bottom of the rounded bar at x.
         let dx = if x < rect.left() + r {
             rect.left() + r - x
         } else if x > rect.right() - r {
@@ -73,7 +65,6 @@ pub fn paint_skeleton(ui: &egui::Ui, rect: Rect, radius: f32) {
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
-/// A block of skeleton lines at the given widths (fractions of the block).
 pub fn skeleton_lines(ui: &mut egui::Ui, widths: &[f32]) {
     let w = ui.available_width();
     ui.vertical(|ui| {
@@ -84,8 +75,6 @@ pub fn skeleton_lines(ui: &mut egui::Ui, widths: &[f32]) {
     });
 }
 
-/// The failed state: a red-edged box with what happened in bold, what to do next, and the raw error folded
-/// under "error details".
 pub fn err_box(ui: &mut egui::Ui, id_salt: &str, what: &str, next: &str, raw_title: &str, raw: &str) {
     boxed(ui, c(C::BadBox), c(C::BadEdge), |ui| {
         ui.label(egui::RichText::new(what).font(egui::FontId::new(15.0, crate::fonts::strong())).color(c(C::BadInk)));
@@ -114,7 +103,6 @@ fn boxed(ui: &mut egui::Ui, fill: egui::Color32, line: egui::Color32, add: impl 
         });
 }
 
-/// A grey note in the rail's ground: 14/20 in the second ink.
 pub fn note_box(ui: &mut egui::Ui, s: &str) {
     egui::Frame::new()
         .fill(c(C::Rail))
@@ -126,21 +114,14 @@ pub fn note_box(ui: &mut egui::Ui, s: &str) {
         });
 }
 
-/// Banner kinds. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Banner {
-    /// A conclusion that holds: a green check and words, no box.
     Ok,
-    /// Something that is wrong: a red box.
     Bad,
-    /// Something to mind: an amber box (read-only, handed over).
     Warn,
-    /// A plain note in a lined box.
     Note,
 }
 
-/// A banner: its sentence in bold with its mark, wrapped to as many lines as it takes (never cut short); `key`
-/// draws a key at its right end.
 pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let (fill, line, ink) = match kind {
         Banner::Ok => (egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT, c(C::OkInk)),
@@ -174,8 +155,6 @@ pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut
                         Banner::Note => {}
                     }
                     let font = if kind == Banner::Note { Type::Body.font() } else { egui::FontId::new(15.0, crate::fonts::strong()) };
-                    // The whole sentence, wrapped to the room beside the key: a long one takes more lines and is
-                    // never cut short (a bar's sentence is what to do; half of it is not said).
                     let room = ui.available_width().max(1.0);
                     let laid = ui.painter().layout(s.to_string(), font, ink, room);
                     ui.add(egui::Label::new(laid));
@@ -187,7 +166,6 @@ pub fn banner<R>(ui: &mut egui::Ui, kind: Banner, s: &str, key: impl FnOnce(&mut
         .inner
 }
 
-/// A hint under a field: 13/18, second ink (red when it says the field is wrong), 8 above.
 pub fn hint(ui: &mut egui::Ui, s: &str) {
     hint_ex(ui, s, false)
 }
@@ -196,16 +174,18 @@ pub fn hint_ex(ui: &mut egui::Ui, s: &str, bad: bool) {
     if s.is_empty() {
         return;
     }
+    if bad {
+        banner(ui, Banner::Bad, s, |_| ());
+        return;
+    }
     ui.add_space((tokens::S2 - ui.spacing().item_spacing.y).max(0.0));
-    paint::text(ui, s, Type::Small, if bad { c(C::BadInk) } else { c(C::Ink2) });
+    paint::text(ui, s, Type::Small, c(C::Ink2));
 }
 
-/// One reading line: a mark and 13 words, 10 apart.
 pub fn okline(ui: &mut egui::Ui, m: Mark, s: &str) {
     mark::mark_words(ui, m, s, Type::Small, c(C::Ink), 10.0);
 }
 
-/// A stack of check rows: a mark, a name, and an optional quiet figure at the right.
 pub fn checks(ui: &mut egui::Ui, rows: &[(Mark, String, Option<String>)], two_across: bool) {
     let w = ui.available_width();
     let across = if two_across && w > 360.0 { 2 } else { 1 };
@@ -226,8 +206,6 @@ pub fn checks(ui: &mut egui::Ui, rows: &[(Mark, String, Option<String>)], two_ac
     }
 }
 
-/// The done state: a drawn check, the circle first (520 ms) and then the tick (300 ms, 420 ms in), over
-/// "done" and an optional line.
 pub fn done_state(ui: &mut egui::Ui, id_salt: &str, done: &str, sub: &str) {
     let id = ui.id().with(("zikaron-done", id_salt));
     let a = motion::age(ui.ctx(), id, 0);
@@ -278,7 +256,6 @@ pub fn done_state(ui: &mut egui::Ui, id_salt: &str, done: &str, sub: &str) {
     }
 }
 
-/// One answer of a result box: a bold title, an optional detail line, and a pill at the right.
 pub struct Answer<'a> {
     pub title: &'a str,
     pub detail: &'a str,
@@ -286,7 +263,6 @@ pub struct Answer<'a> {
     pub tone: palette::Tone,
 }
 
-/// A result box: answers one under another in a thin frame, their pills popping in one after another.
 pub fn answers(ui: &mut egui::Ui, rows: &[Answer]) {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0_f32, c(C::Line)))

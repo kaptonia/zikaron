@@ -1,25 +1,3 @@
-//! The single transport for nodes and remote files: address parsing, one HTTP/1.1 exchange over TCP (`http`)
-//! or TLS (`https`), and the TLS client configuration.
-//!
-//! Request semantics (JSON-RPC, a file fetch) belong to the caller: this crate carries bytes within one
-//! deadline and a response size cap, and names where it failed (address, name resolution, connection,
-//! handshake, certificate, deadline, cap, stream, shutdown). The certificate chain and host name are always
-//! verified; there is no way to skip them.
-//!
-//! Each exchange has one deadline, fixed when it starts: resolving, connecting, the handshake, writing and every
-//! read get only the time left, and running out anywhere is a deadline failure. No wait for the peer (to resolve,
-//! connect, answer or finish a handshake or tunnel) lasts longer than one [`SLICE`] before it looks whether the
-//! transport is shutting down, so shutting down cuts an exchange in flight within a slice on every system, without
-//! relying on the system waking a blocked read. Over TLS the same holds per socket operation, not per record: the
-//! handshake and every read take one socket step at a time (`Tls`), so a peer that trickles a record a byte at a
-//! time meets the deadline and the shutdown as a silent one does. A write the peer does not take is bounded by the
-//! time left only, not sliced (a sliced write would break a request the peer is slow to take); shutting down shuts
-//! its socket, and that is what ends it. Every resolved address is tried (`dial`). A connection whose response ended
-//! cleanly and whose peer left it open is kept for the next request to the same place (`keep`); an idempotent
-//! request ([`Ask::Read`]) is retried once on a new connection if the connection breaks before any response byte
-//! arrives.
-
-// `unsafe` lives in the platform piece (`zikaron-os`) alone: here it does not compile.
 #![forbid(unsafe_code)]
 
 use std::io::{Read, Write};
@@ -36,40 +14,20 @@ pub use keep::{close_down, cuts, open_up, IDLE_KEEP, PER_PLACE};
 pub use pac::{Auto, PacTrouble};
 pub use route::{excepted, follow_the_system, follow_the_terminal, script_trouble_for, script_trouble_last, is_local, is_loopback, proxy_of, proxy_text_shown, read_choice, read_system_with, set_choice, way_for, way_shown, way_shown_under, way_under, Auth, Choice, Kind, NotAProxy, Proxy, Reading, Script, Secret, SystemProxies, Way, SYSTEM_FRESH, SYSTEM_READ_CAP};
 
-// ───────────────────────── The request head ─────────────────────────
-
-/// The `User-Agent` every request carries: the product name only. No version, OS or machine, so a node learns
-/// nothing the request's shape does not already reveal, while gateways that reject requests without the header
-/// accept these.
 pub const USER_AGENT: &str = "ZIKARON";
 
-/// Builds every request head: the request line, `Host`, `User-Agent`, the caller's own lines (each ending in
-/// CRLF), then the blank line. Every request this crate sends (POST, GET, a proxy CONNECT) uses it, so none
-/// goes out without `User-Agent`.
 pub(crate) fn request_head(method: &str, target: &str, host: &str, lines: &str) -> String {
     format!("{method} {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {USER_AGENT}\r\n{lines}\r\n")
 }
 
-// ───────────────────────── Limits ─────────────────────────
-
-/// The longest any wait in an exchange (resolving, connecting, a socket read) goes before it looks again
-/// whether the transport is shutting down ([`close_down`]): the most a cut waits. The deadline is kept to the
-/// instant regardless; a slice only bounds how long each wait sleeps.
 pub const SLICE: Duration = Duration::from_millis(250);
 
-/// Environment variables that override the limits; node queries, remote fetches and tests use only these
-/// names.
 pub mod env {
     pub const TIMEOUT_SECS: &str = "ZKA_TIMEOUT_SECS";
     pub const TIMEOUT_MS: &str = "ZKA_TIMEOUT_MS";
     pub const MAX_ANSWER_BYTES: &str = "ZKA_MAX_ANSWER_BYTES";
 }
 
-/// The two bounds of one exchange: total wall time and response bytes.
-///
-/// A per-syscall timeout cannot stop a peer that trickles one byte every two seconds forever (each byte resets
-/// the read timeout), so the deadline counts from the start of the exchange and the response size is capped.
-/// Both have defaults overridable from the environment; zero means no limit.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub deadline: std::time::Duration,
@@ -77,13 +35,10 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Default: 30 seconds, 64 MiB. `ZKA_TIMEOUT_MS` (milliseconds) overrides `ZKA_TIMEOUT_SECS`, for
-    /// deadlines shorter than a second.
     pub fn from_env() -> Limits {
         Limits::from_vars(|k| std::env::var(k).ok())
     }
 
-    /// [`Limits::from_env`] over any variable source; a value that is not a whole number counts as absent.
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Limits {
         let secs: u64 = var(env::TIMEOUT_SECS).and_then(|x| x.parse().ok()).unwrap_or(30);
         let deadline = match var(env::TIMEOUT_MS).and_then(|x| x.parse::<u64>().ok()) {
@@ -95,7 +50,6 @@ impl Limits {
     }
 }
 
-/// One exchange's deadline, fixed when it starts.
 #[derive(Clone, Copy)]
 pub(crate) struct Clock {
     limit: Duration,
@@ -107,7 +61,6 @@ impl Clock {
         Clock { limit, deadline: (!limit.is_zero()).then(|| Instant::now() + limit) }
     }
 
-    /// The time left (`None`: no deadline); past the deadline, a deadline failure.
     pub(crate) fn left(&self) -> Result<Option<Duration>, Fail> {
         match self.deadline {
             None => Ok(None),
@@ -122,25 +75,15 @@ impl Clock {
         }
     }
 
-    /// This exchange's deadline failure.
     pub(crate) fn late(&self) -> Fail {
         Fail::Late(self.limit)
     }
 
-    /// How long this exchange may spend choosing its route: reading the system proxy settings
-    /// ([`route::SYSTEM_READ_CAP`]), then fetching and asking their script ([`pac::FETCH_LIMIT`],
-    /// [`pac::RUN_LIMIT`]); never past the deadline.
     fn system_wait(&self) -> Result<Duration, Fail> {
         let cap = route::SYSTEM_READ_CAP + pac::FETCH_LIMIT + pac::RUN_LIMIT;
         Ok(self.left()?.map(|l| l.min(cap)).unwrap_or(cap))
     }
 
-    /// Limit the socket's writes to the time left and each read to one [`SLICE`] within it, so every read loop
-    /// looks at shutdown after a slice at most (with no deadline, too) and still runs out exactly at the
-    /// deadline.
-    ///
-    /// On some systems a socket closed by shutdown refuses its timeouts: a refusal found with the flag
-    /// raised is the cut ([`keep::cut`]), never a stream failure.
     fn bound(&self, tcp: &std::net::TcpStream) -> Result<(), Fail> {
         let left = self.left()?;
         let read = Some(left.map_or(SLICE, |l| l.min(SLICE)));
@@ -148,9 +91,6 @@ impl Clock {
     }
 }
 
-// ───────────────────────── Addresses ─────────────────────────
-
-/// The two supported schemes. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Scheme {
     Http,
@@ -158,7 +98,6 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    /// The scheme as written in a normalized address.
     pub fn as_str(self) -> &'static str {
         match self {
             Scheme::Http => "http",
@@ -174,8 +113,6 @@ impl Scheme {
     }
 }
 
-/// A parsed address: scheme, host, port, path. An IPv6 literal host keeps its brackets (`[::1]`), as sent in
-/// `Host`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Target {
     pub scheme: Scheme,
@@ -184,24 +121,14 @@ pub struct Target {
     pub path: String,
 }
 
-/// Whether text contains a control character or whitespace (never allowed in a host or a request-line path).
 fn blank_or_control(s: &str) -> bool {
     s.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
-/// Parse an address `scheme://host[:port][/path]`. Scheme and host are case-insensitive (RFC 3986 §3.1,
-/// §3.2.2: `HTTPS://Node.Example` is `https://node.example`), so they are lowercased; the path is kept as
-/// written. A bracketed IPv6 literal (`[::1]`, `[::1]:8545`) is the whole host. Any other scheme, an empty
-/// host, userinfo, a non-numeric port, a bracket that is not an IPv6 address, or a control character or
-/// whitespace in the host or path gives `None`. This is the only address parser.
 pub fn parse(url: &str) -> Option<Target> {
     read_address(url).ok()
 }
 
-/// An address safe to display: scheme, host and port only ([`Target::sayable`]), never the path, query or
-/// userinfo, because a node's API key often lives there (`/v3/<key>`, `?apikey=…`) and every message can reach
-/// a log. Text that does not parse is reported by its length only. The transport, the anchoring crate and the
-/// app name nodes only through this.
 pub fn sayable(url: &str) -> String {
     match parse(url) {
         Some(t) => t.sayable(),
@@ -209,26 +136,18 @@ pub fn sayable(url: &str) -> String {
     }
 }
 
-/// [`Target::place_id`] of an address; unparsable text is its own key (trimmed), so two unparsable spellings
-/// are the same place only when the text is identical.
 pub fn place_key(url: &str) -> String {
     parse(url).map(|t| t.place_id()).unwrap_or_else(|| url.trim().to_string())
 }
 
-/// Why an address does not parse; tells the user what to fix. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NotAnAddress {
-    /// No `scheme://`, or a scheme other than `http` and `https`.
     Scheme,
-    /// The port is empty or not a number within 16 bits.
     Port,
-    /// The host is empty, or bracketed but not an IPv6 address (or not closed).
     Host,
-    /// Userinfo, or a control character or whitespace in the host or path.
     Shape,
 }
 
-/// [`parse`] with the reason for failure (checked in order: scheme, shape, host, port).
 pub fn read_address(url: &str) -> Result<Target, NotAnAddress> {
     let (scheme, rest) = url.trim().split_once("://").ok_or(NotAnAddress::Scheme)?;
     let scheme = match scheme.to_ascii_lowercase().as_str() {
@@ -266,7 +185,6 @@ pub fn read_address(url: &str) -> Result<Target, NotAnAddress> {
 }
 
 impl Target {
-    /// The authority as sent in `Host`: the port is left out when it is the scheme's default.
     pub fn authority(&self) -> String {
         if self.port == self.scheme.default_port() {
             self.host.clone()
@@ -275,20 +193,14 @@ impl Target {
         }
     }
 
-    /// The displayable address ([`sayable`]): scheme, host and port, the default port omitted.
     pub fn sayable(&self) -> String {
         format!("{}://{}", self.scheme.as_str(), self.authority())
     }
 
-    /// The normalized address (lowercase scheme and host, default port left out).
     pub fn url(&self) -> String {
         format!("{}://{}{}", self.scheme.as_str(), self.authority(), self.path)
     }
 
-    /// A canonical identity string for this address: scheme, host (an IPv6 literal in canonical form:
-    /// `[0:0:0:0:0:0:0:1]` is `[::1]`), port (always written, even the default) and path as written. Case,
-    /// an explicit default port and IPv6 spelling do not make a different place; a different path, port,
-    /// scheme or host name does.
     pub fn place_id(&self) -> String {
         let host = match self.dial_host().parse::<std::net::Ipv6Addr>() {
             Ok(v6) if self.host.starts_with('[') => format!("[{v6}]"),
@@ -297,7 +209,6 @@ impl Target {
         format!("{}://{}:{}{}", self.scheme.as_str(), host, self.port, self.path)
     }
 
-    /// The host for connecting and certificate verification: an IPv6 literal without brackets.
     pub fn dial_host(&self) -> &str {
         self.host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(&self.host)
     }
@@ -311,52 +222,26 @@ impl Target {
     }
 }
 
-// ───────────────────────── Failures ─────────────────────────
-
-/// Where an exchange failed. Closed set; certificate failures are kept separate from reachability failures.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Fail {
-    /// The host name did not resolve, or is not a verifiable server name.
     Name(String),
-    /// TCP could not connect (every address tried is named).
     Connect(String),
-    /// Other TLS handshake failures (protocol mismatch, the peer disconnected).
     Handshake(String),
-    /// The server certificate failed verification (no chain to a root, expired, wrong host name,
-    /// self-signed, none presented).
     Certificate(String),
-    /// The exchange's deadline passed, at any step.
     Late(std::time::Duration),
-    /// The response exceeded its size cap (bytes).
     Overlong(usize),
-    /// The stream broke, or the response is not valid HTTP.
     Stream(String),
-    /// The leg to a proxy failed (not reached, refused the tunnel, broke off), the proxy named: the node itself
-    /// was never reached.
     Proxy(String),
-    /// The proxy asked who is calling: no credentials were written with it (`given` false), or the ones written
-    /// were refused (`given` true). The proxy and how it asked or refused are in `said`; the node was never
-    /// reached.
     ProxyCredentials { given: bool, said: String },
-    /// The transport is shutting down (the app is quitting): the exchange was cut or never began.
     Closed,
 }
 
-// ───────────────────────── TLS ─────────────────────────
-
-/// Extra trust roots, for tests only: a test harness adds a test root certificate when it starts a local
-/// https stub in its own process; production never does. It can be added once, before the first handshake
-/// (the configuration is built once), and loosens no check: chain and host name are still verified.
 static DRIVE_ROOTS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 
-/// Add a test root certificate (DER), for test harnesses. Returns whether it was added (`false` if the
-/// configuration is already built or one was already added).
 pub fn drive_trust_root(der: &[u8]) -> bool {
     DRIVE_ROOTS.set(vec![der.to_vec()]).is_ok()
 }
 
-/// The TLS client configuration, built once: `ring` cryptography, safe default protocol versions, the
-/// `webpki-roots` root table, no client certificate.
 fn tls_config() -> Result<std::sync::Arc<rustls::ClientConfig>, Fail> {
     static CONFIG: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
     if let Some(c) = CONFIG.get() {
@@ -375,31 +260,28 @@ fn tls_config() -> Result<std::sync::Arc<rustls::ClientConfig>, Fail> {
     Ok(CONFIG.get_or_init(|| std::sync::Arc::new(config)).clone())
 }
 
-/// Classify the TLS error inside an I/O error: certificate errors go to `Certificate`, everything else to
-/// `Handshake`.
-///
-/// Certificate errors include more than `InvalidCertificate`: no certificate presented
-/// (`NoCertificatesPresented`) and an unverifiable revocation list (`InvalidCertRevocationList`) both mean the
-/// peer's identity did not verify. Reported as `Handshake`, users would mistake them for network trouble.
 fn tls_fail(e: &std::io::Error) -> Fail {
     match e.get_ref().and_then(|x| x.downcast_ref::<rustls::Error>()) {
-        Some(rustls::Error::InvalidCertificate(c)) => Fail::Certificate(format!("{c:?}")),
-        Some(rustls::Error::NoCertificatesPresented) => Fail::Certificate("NoCertificatesPresented".into()),
-        Some(rustls::Error::InvalidCertRevocationList(c)) => Fail::Certificate(format!("{c:?}")),
-        Some(other) => Fail::Handshake(other.to_string()),
+        Some(r) => certificate_fail(r).unwrap_or_else(|| Fail::Handshake(r.to_string())),
         None => Fail::Handshake(e.to_string()),
     }
 }
 
-/// The byte stream under a connection: TCP, or TLS to an HTTPS proxy over TCP (a node's own TLS then runs
-/// inside it, so each leg verifies its own certificate).
+fn certificate_fail(e: &rustls::Error) -> Option<Fail> {
+    match e {
+        rustls::Error::InvalidCertificate(c) => Some(Fail::Certificate(format!("{c:?}"))),
+        rustls::Error::NoCertificatesPresented => Some(Fail::Certificate("NoCertificatesPresented".into())),
+        rustls::Error::InvalidCertRevocationList(c) => Some(Fail::Certificate(format!("{c:?}"))),
+        _ => None,
+    }
+}
+
 pub(crate) enum Sock {
     Tcp(std::net::TcpStream),
     Tls(Box<Tls>),
 }
 
 impl Sock {
-    /// The TCP socket at the bottom.
     pub(crate) fn tcp(&self) -> &std::net::TcpStream {
         match self {
             Sock::Tcp(s) => s,
@@ -409,7 +291,6 @@ impl Sock {
 }
 
 impl Read for Sock {
-    /// Over TLS, one [`Tls::read`]: what it decrypted, or `WouldBlock` when a socket step completed no record.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Sock::Tcp(s) => s.read(buf),
@@ -419,7 +300,6 @@ impl Read for Sock {
 }
 
 impl Write for Sock {
-    /// Over TLS, the whole buffer encrypted and written ([`Tls::send`]).
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             Sock::Tcp(s) => s.write(buf),
@@ -435,20 +315,12 @@ impl Write for Sock {
     }
 }
 
-/// One TLS connection over its socket, driven one socket operation at a time. Each step writes once or reads
-/// once and returns, so whoever drives it looks at shutdown and the deadline between any two socket operations:
-/// a peer that trickles a record (or a handshake) a byte at a time is cut at the deadline like a silent one,
-/// never waited on until it stops.
 pub(crate) struct Tls {
     conn: rustls::ClientConnection,
     sock: Sock,
 }
 
 impl Tls {
-    /// One step: one write of what TLS has to send, when it has any; otherwise one read from the socket and the
-    /// records it completed processed. Returns the socket bytes moved (`0`: the peer closed, or took nothing).
-    /// A record the peer sent that does not verify is an `InvalidData` error carrying the TLS error, after the
-    /// alert describing it is offered to the peer once.
     fn step(&mut self) -> std::io::Result<usize> {
         if self.conn.wants_write() {
             return self.conn.write_tls(&mut self.sock);
@@ -461,9 +333,6 @@ impl Tls {
         Ok(n)
     }
 
-    /// Plaintext already decrypted first; otherwise one [`Tls::step`], then what it decrypted. A step that
-    /// completed no record says `WouldBlock`, so the reader's loop looks at shutdown and the deadline before
-    /// the next socket operation. The peer's clean close is `Ok(0)`; a close without it, `UnexpectedEof`.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self.conn.reader().read(buf) {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -473,8 +342,6 @@ impl Tls {
         self.conn.reader().read(buf)
     }
 
-    /// The whole request encrypted and written; each socket write is bounded by the socket's write timeout
-    /// (the time left), as a plain write is.
     fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         let mut rest = bytes;
         while !rest.is_empty() || self.conn.wants_write() {
@@ -494,21 +361,23 @@ impl Tls {
     }
 }
 
-/// Perform the TLS handshake over a connected TCP stream, completing it before the stream is used so a bad
-/// certificate is reported at once. One socket operation per turn ([`Tls::step`]); each turn looks at shutdown
-/// and gets only the time left, and running out is a deadline failure, not a handshake failure.
+fn in_the_handshake(f: Fail) -> Fail {
+    match f {
+        Fail::Stream(why) => Fail::Handshake(why),
+        other => other,
+    }
+}
+
 fn tls_connect(host: &str, sock: Sock, clock: &Clock) -> Result<Tls, Fail> {
     let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| Fail::Name(format!("{host}: {e}")))?;
     let conn = rustls::ClientConnection::new(tls_config()?, name).map_err(|e| Fail::Handshake(e.to_string()))?;
     let mut tls = Tls { conn, sock };
-    // Until the handshake is done and its last flight is written.
     while tls.conn.is_handshaking() || tls.conn.wants_write() {
         if keep::closing() {
             return Err(keep::cut());
         }
         clock.bound(tls.sock.tcp())?;
         let step = tls.step();
-        // Cut by shutdown during the handshake: reported as closed, not as a handshake failure.
         if keep::closing() {
             return Err(keep::cut());
         }
@@ -516,7 +385,6 @@ fn tls_connect(host: &str, sock: Sock, clock: &Clock) -> Result<Tls, Fail> {
             Ok(0) => return Err(Fail::Handshake("the peer closed the connection during the handshake".to_string())),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            // A slice passed: back to the loop head, where shutdown and the deadline are checked.
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
             Err(e) => return Err(tls_fail(&e)),
         }
@@ -524,9 +392,6 @@ fn tls_connect(host: &str, sock: Sock, clock: &Clock) -> Result<Tls, Fail> {
     Ok(tls)
 }
 
-// ───────────────────────── The exchange ─────────────────────────
-
-/// One stream: the plain byte stream, or TLS with the node over it.
 pub(crate) enum Stream {
     Plain(Sock),
     Tls(Box<Tls>),
@@ -547,7 +412,6 @@ impl Stream {
         }
     }
 
-    /// The TCP socket under the stream.
     pub(crate) fn tcp(&self) -> &std::net::TcpStream {
         match self {
             Stream::Plain(s) => s.tcp(),
@@ -555,29 +419,20 @@ impl Stream {
         }
     }
 
-    /// A stream failure: on TLS (with the node or an HTTPS proxy), the peer's certificate alert may arrive on
-    /// the first read after the handshake, and is reported as a certificate failure.
     fn fail(&self, e: std::io::Error) -> Fail {
         match e.get_ref().and_then(|x| x.downcast_ref::<rustls::Error>()) {
-            Some(_) => tls_fail(&e),
+            Some(r) => certificate_fail(r).unwrap_or_else(|| Fail::Stream(format!("TLS: {r}"))),
             None => Fail::Stream(e.to_string()),
         }
     }
 }
 
-/// How a request may be sent. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ask {
-    /// An idempotent request (a chain read, a file fetch): it may reuse a kept connection, and is retried once
-    /// on a new connection if the connection breaks before any response byte arrives.
     Read,
-    /// A request sent exactly once (a broadcast): always on a new connection, closed afterwards, never
-    /// retried.
     Once,
 }
 
-/// The leg to the target one way: direct (resolve, try every address) or through a proxy tunnel. Tracked
-/// before anything else is said on it, so shutdown cuts it in flight like any exchange.
 fn leg(t: &Target, way: &Way, clock: &Clock) -> Result<(Sock, keep::Ticket), Fail> {
     match way {
         Way::Direct => {
@@ -589,10 +444,6 @@ fn leg(t: &Target, way: &Way, clock: &Clock) -> Result<(Sock, keep::Ticket), Fai
     }
 }
 
-/// Open a new connection: the ways in order until one's leg opens (a failure on a leg passes to the next; the
-/// deadline and shutdown end it; when every leg fails, each one's failure is named); then, for `https`, the TLS
-/// handshake with the target (certificate and host name always verified end to end), all within the time
-/// left.
 fn open(t: &Target, ways: &[Way], clock: &Clock) -> Result<keep::Live, Fail> {
     if keep::closing() {
         return Err(Fail::Closed);
@@ -608,7 +459,6 @@ fn open(t: &Target, ways: &[Way], clock: &Clock) -> Result<keep::Live, Fail> {
             Err(f @ (Fail::Late(_) | Fail::Closed)) => return Err(f),
             Err(f) => {
                 failed.push(f);
-                // The deadline spent on this way (a proxy that never answered): no other way is tried.
                 if clock.left().is_err() {
                     break;
                 }
@@ -619,24 +469,21 @@ fn open(t: &Target, ways: &[Way], clock: &Clock) -> Result<keep::Live, Fail> {
         return Err(match failed.len() {
             0 => Fail::Connect("no way to the node".into()),
             1 => failed.remove(0),
-            // Every way tried was a proxy asking for credentials: that, named; given when any was given.
             _ if failed.iter().all(|f| matches!(f, Fail::ProxyCredentials { .. })) => Fail::ProxyCredentials {
                 given: failed.iter().any(|f| matches!(f, Fail::ProxyCredentials { given: true, .. })),
                 said: failed.iter().map(fail_said).collect::<Vec<_>>().join("; then "),
             },
-            // Every way tried was a proxy and each failed: the proxies' failure, not the node's.
             _ if failed.iter().all(|f| matches!(f, Fail::Proxy(_) | Fail::ProxyCredentials { .. })) => Fail::Proxy(failed.iter().map(fail_said).collect::<Vec<_>>().join("; then ")),
             _ => Fail::Connect(failed.iter().map(fail_said).collect::<Vec<_>>().join("; then ")),
         });
     };
     let stream = match t.scheme {
         Scheme::Http => Stream::Plain(sock),
-        Scheme::Https => Stream::Tls(Box::new(tls_connect(t.dial_host(), sock, clock)?)),
+        Scheme::Https => Stream::Tls(Box::new(tls_connect(t.dial_host(), sock, clock).map_err(in_the_handshake)?)),
     };
     Ok(keep::live(keep::Conn { stream, place: t.place(way) }, ticket))
 }
 
-/// A leg's failure as one clause, for the sentence naming every way tried.
 fn fail_said(f: &Fail) -> String {
     match f {
         Fail::Name(x) | Fail::Connect(x) | Fail::Handshake(x) | Fail::Certificate(x) | Fail::Stream(x) | Fail::Proxy(x) => x.clone(),
@@ -647,25 +494,18 @@ fn fail_said(f: &Fail) -> String {
     }
 }
 
-/// How one round on one connection ended without a response.
 enum Round {
-    /// The connection broke before any response byte arrived.
     Broke(String),
     Failed(Fail),
 }
 
-/// Whether an I/O error means the connection broke (as opposed to a TLS alert or a timeout).
 fn breaks(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::*;
     matches!(e.kind(), ConnectionReset | ConnectionAborted | BrokenPipe | NotConnected | UnexpectedEof)
 }
 
-/// One round: write the request and read one whole response within the time left and the size cap (which
-/// counts every byte read, head included).
 fn round(stream: &mut Stream, request: &[u8], limits: &Limits, clock: &Clock) -> Result<answer::Reader, Round> {
     let closed = || Round::Failed(keep::cut());
-    // A socket that rejects its timeout is no longer connected (macOS does this, under various error kinds,
-    // for a kept connection the peer has since reset): before any response byte, treat it as broken.
     let bound = |stream: &Stream, began: bool| match clock.bound(stream.tcp()) {
         Err(Fail::Stream(why)) if !began => Err(Round::Broke(why)),
         other => other.map_err(Round::Failed),
@@ -702,19 +542,15 @@ fn round(stream: &mut Stream, request: &[u8], limits: &Limits, clock: &Clock) ->
             }
             Ok(_) => return peer_closed(reader),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            // A peer that disconnects without a TLS close alert: judge what arrived as is.
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return peer_closed(reader),
-            // A slice passed with nothing read: shutdown was checked above, the deadline is below.
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
             Err(e) if breaks(&e) && reader.raw().is_empty() => return Err(Round::Broke(e.to_string())),
             Err(e) => return Err(Round::Failed(stream.fail(e))),
         }
-        // A peer trickling bytes is also cut at the deadline.
         clock.left().map_err(Round::Failed)?;
     }
 }
 
-/// The peer closed: before any byte, the connection broke; otherwise judge the response as it arrived.
 fn peer_closed(mut reader: answer::Reader) -> Result<answer::Reader, Round> {
     if reader.raw().is_empty() {
         return Err(Round::Broke("the connection closed before the answer began".into()));
@@ -723,20 +559,40 @@ fn peer_closed(mut reader: answer::Reader) -> Result<answer::Reader, Round> {
     Ok(reader)
 }
 
-/// Send one request to the target and read its whole response, per `how` (see [`Ask`]), within one deadline.
+pub const DIAL_AGAIN_AFTER: Duration = Duration::from_millis(300);
+
+static DIAL_AGAIN: std::sync::Mutex<Option<Duration>> = std::sync::Mutex::new(None);
+
+pub fn set_dial_again(d: Option<Duration>) {
+    *DIAL_AGAIN.lock().unwrap_or_else(|e| e.into_inner()) = d;
+}
+
+fn dial(t: &Target, ways: &[Way], clock: &Clock) -> Result<keep::Live, Fail> {
+    match open(t, ways, clock) {
+        Err(f @ (Fail::Connect(_) | Fail::Handshake(_))) => {
+            let beat = DIAL_AGAIN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or(DIAL_AGAIN_AFTER);
+            if clock.left()?.is_some_and(|left| left <= beat) {
+                return Err(f);
+            }
+            if !beat.is_zero() {
+                std::thread::sleep(beat);
+            }
+            open(t, ways, clock)
+        }
+        r => r,
+    }
+}
+
 fn carry(t: &Target, request: &[u8], limits: &Limits, how: Ask) -> Result<answer::Reader, Fail> {
     let clock = Clock::start(limits.deadline);
-    // The route is chosen once per exchange, from the current setting and the system settings read now
-    // (within the deadline).
     let ways = route::way_for(t, clock.system_wait()?).ways();
     let mut again = false;
     loop {
         let mut live = match how {
-            // A retry always uses a new connection, never another kept one.
-            Ask::Read if again => open(t, &ways, &clock)?,
+            Ask::Read if again => dial(t, &ways, &clock)?,
             Ask::Read => match ways.iter().find_map(|w| keep::take(&t.place(w))) {
                 Some(l) => l,
-                None => open(t, &ways, &clock)?,
+                None => dial(t, &ways, &clock)?,
             },
             Ask::Once => open(t, &ways, &clock)?,
         };
@@ -748,8 +604,6 @@ fn carry(t: &Target, request: &[u8], limits: &Limits, how: Ask) -> Result<answer
                 }
                 return Ok(reader);
             }
-            // Broken before the response began: an idempotent request is retried once on a new connection,
-            // within the same deadline.
             Err(Round::Broke(_)) if how == Ask::Read && !again && !keep::closing() => again = true,
             Err(Round::Broke(why)) => return Err(Fail::Stream(why)),
             Err(Round::Failed(f)) => return Err(f),
@@ -757,8 +611,6 @@ fn carry(t: &Target, request: &[u8], limits: &Limits, how: Ask) -> Result<answer
     }
 }
 
-/// A raw exchange: a new connection, `request` written as given, and the whole response returned as bytes,
-/// within `limits`; the connection is not kept and nothing is retried.
 pub fn exchange(t: &Target, request: &[u8], limits: &Limits) -> Result<Vec<u8>, Fail> {
     let clock = Clock::start(limits.deadline);
     let ways = route::way_for(t, clock.system_wait()?).ways();
@@ -771,7 +623,6 @@ pub fn exchange(t: &Target, request: &[u8], limits: &Limits) -> Result<Vec<u8>, 
     }
 }
 
-/// One HTTP response: status, `Location` (when present) and body.
 pub struct Answer {
     pub status: u16,
     pub location: Option<String>,
@@ -783,7 +634,6 @@ fn answer_of(reader: answer::Reader) -> Result<Answer, Fail> {
     Ok(Answer { status: head.status, location: head.location, body })
 }
 
-/// The header line asking to close the connection after the response (for [`Ask::Once`]).
 fn closing_line(how: Ask) -> &'static str {
     match how {
         Ask::Read => "",
@@ -791,28 +641,27 @@ fn closing_line(how: Ask) -> &'static str {
     }
 }
 
-/// POST `body` as JSON to the target, sent per `how`; returns the whole response.
 pub fn post_json(t: &Target, body: &[u8], limits: &Limits, how: Ask) -> Result<Answer, Fail> {
+    post(t, "application/json", body, limits, how)
+}
+
+pub fn post(t: &Target, content_type: &str, body: &[u8], limits: &Limits, how: Ask) -> Result<Answer, Fail> {
     let head = request_head(
         "POST",
         &t.path,
         &t.authority(),
-        &format!("Content-Type: application/json\r\nContent-Length: {}\r\n{}", body.len(), closing_line(how)),
+        &format!("Content-Type: {content_type}\r\nContent-Length: {}\r\n{}", body.len(), closing_line(how)),
     );
     let mut request = head.into_bytes();
     request.extend_from_slice(body);
     answer_of(carry(t, &request, limits, how)?)
 }
 
-/// GET the target (idempotent); returns the whole response. Following redirects is up to the caller.
 pub fn get(t: &Target, limits: &Limits) -> Result<Answer, Fail> {
     let head = request_head("GET", &t.path, &t.authority(), &format!("Accept: */*\r\n{}", closing_line(Ask::Read)));
     answer_of(carry(t, head.as_bytes(), limits, Ask::Read)?)
 }
 
-/// GET the target directly, whatever the proxy setting, on a new connection closed afterwards: the proxy
-/// configuration script is fetched this way (a script fetched through the proxy it chooses could never be
-/// fetched when that proxy is down).
 pub(crate) fn get_direct(t: &Target, limits: &Limits) -> Result<Answer, Fail> {
     let clock = Clock::start(limits.deadline);
     let head = request_head("GET", &t.path, &t.authority(), &format!("Accept: */*\r\n{}", closing_line(Ask::Once)));
@@ -830,8 +679,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// A local peer that takes every connection, reads once (the request, or a handshake's first flight), writes
-    /// `then` and stays silent; counts the connections whose first read arrived.
     fn silent_peer(then: &'static [u8]) -> (u16, Arc<AtomicUsize>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().expect("addr").port();
@@ -853,8 +700,6 @@ mod tests {
         (port, heard)
     }
 
-    /// Run `ask` on its own thread; once the peer has heard it, raise the shutdown flag alone (no socket shut,
-    /// so no system wakes the blocked read) and return what the exchange said and how long the cut took.
     fn cut_by_the_flag_alone(heard: &Arc<AtomicUsize>, ask: impl FnOnce() -> Option<Fail> + Send + 'static) -> (Option<Fail>, Duration) {
         let asking = std::thread::spawn(ask);
         while heard.load(Ordering::SeqCst) == 0 {
@@ -871,8 +716,6 @@ mod tests {
         (said, took)
     }
 
-    /// A socket closed by shutdown may refuse its timeouts (some systems do): with the flag raised that is
-    /// the cut, counted, never a stream failure.
     #[test]
     fn a_timeout_refused_while_shutting_down_is_the_cut() {
         let Some(_turn) = keep::turn() else { return };
@@ -894,9 +737,6 @@ mod tests {
         }
     }
 
-    /// The cut rests on the flag, not on the system waking a blocked read: with only the flag raised, an
-    /// exchange waiting after its request, one with half an answer in, one with no deadline at all, a handshake
-    /// and a proxy tunnel each end as closed within a few slices, far inside their 20 s deadline.
     #[test]
     fn a_cut_rests_on_the_flag_and_lands_within_a_slice() {
         let Some(_turn) = keep::turn() else { return };
@@ -926,8 +766,6 @@ mod tests {
         assert!(took < SLICE * 4, "a tunnel in flight: {took:?}");
     }
 
-    /// A deadline shorter than a slice runs out at the deadline, not at the slice: reads are sliced, the
-    /// deadline is not rounded up to them.
     #[test]
     fn the_deadline_is_kept_to_the_instant_not_to_a_slice() {
         let Some(_turn) = keep::turn() else { return };
@@ -941,7 +779,6 @@ mod tests {
         assert!(took >= Duration::from_millis(60) && took < SLICE, "late at the deadline: {took:?}");
     }
 
-    /// A cut and the deadline in the same slice: the exchange ends as one of the two, named, within that slice.
     #[test]
     fn a_cut_and_the_deadline_in_one_slice_end_as_either() {
         let Some(_turn) = keep::turn() else { return };
@@ -962,9 +799,6 @@ mod tests {
         assert!(took < Duration::from_millis(300) + SLICE, "{took:?}");
     }
 
-    /// A displayed address is scheme, host and port only: a key in the path, query or fragment never appears;
-    /// the default port is omitted as in `Host`; an IPv6 literal keeps its brackets; text that does not parse
-    /// (including userinfo) is reported by length only.
     #[test]
     fn a_sentence_names_a_node_by_scheme_host_and_port_only() {
         for (url, said) in [
@@ -997,8 +831,6 @@ mod tests {
         }
     }
 
-    /// A bracketed IPv6 literal is the whole host, with or without a port; it keeps its brackets in `Host` and
-    /// drops them for connecting. A bracket that is not an IPv6 address does not parse.
     #[test]
     fn an_ipv6_literal_is_a_host_whole() {
         let t = parse("http://[::1]:8545/rpc").expect("an address");
@@ -1011,9 +843,6 @@ mod tests {
         }
     }
 
-    /// Assorted forms: empty port refused, outer whitespace trimmed, a `+` on the port accepted, a comma-joined
-    /// list refused, an upper-case scheme accepted, a query without a path kept in the host; a control
-    /// character or whitespace in the host or path is refused.
     #[test]
     fn the_address_forms_read_before_are_read_the_same() {
         assert!(parse("https://a.example:/").is_none());
@@ -1031,7 +860,6 @@ mod tests {
         }
     }
 
-    /// Limit variables: milliseconds override seconds, zero means none, a non-integer counts as absent.
     #[test]
     fn the_limits_read_their_three_names() {
         let read = |pairs: &[(&str, &str)]| {
@@ -1051,8 +879,6 @@ mod tests {
         }
     }
 
-    /// An unparsable address reports why: an empty or out-of-range port is `Port`; scheme, host and shape each
-    /// have their own reason. Ports 0 and 65535 parse.
     #[test]
     fn an_address_that_does_not_read_says_why() {
         use super::{read_address, NotAnAddress};

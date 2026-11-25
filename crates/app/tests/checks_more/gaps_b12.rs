@@ -1,13 +1,3 @@
-//! The whole-machine backup's index is sealed, and an endpoint item holds no inner white space on either side.
-//!
-//! The index names entries and held grants by their ids, so it lives in the machine directory sealed under the
-//! machine's key (`local`, kind `backup-index`), never in the clear. Forms, one test each: a backup writes it
-//! sealed and the count behind reads it; no index; an index that does not read (not sealed, truncated, altered)
-//! falls back to the plain count and is never overwritten; another backup's index; while locked, the index is
-//! not guessed; the kind moves with the machine's files and is resealed under a new master key. Places are set
-//! before any vault or shell use (`vault_open`); each test runs alone in its own process
-//! ([`super::alone_in`]).
-
 use super::vault_open;
 use app::action::{apply, apply_settled, Action, Applied};
 use app::local::Doc;
@@ -15,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 const PW: &str = "zikaron-backup-probe";
 
-/// A shell on a fresh base (each home it lays is an identity's own: [`home`]).
 fn bench(name: &str) -> (app::shell::Shell, PathBuf) {
     vault_open();
     let base = std::env::temp_dir().join(format!("zk-b12-{name}-{}", std::process::id()));
@@ -25,7 +14,6 @@ fn bench(name: &str) -> (app::shell::Shell, PathBuf) {
     (shell, base)
 }
 
-/// A home under `base` with one entry of its own (the first entry is recorded on the spot).
 fn home(shell: &mut app::shell::Shell, base: &Path, name: &str) -> PathBuf {
     let dir = base.join(name);
     super::seated_anew(shell, &dir);
@@ -35,7 +23,6 @@ fn home(shell: &mut app::shell::Shell, base: &Path, name: &str) -> PathBuf {
     dir
 }
 
-/// What the count behind reads now, by the one reading every reader takes.
 fn behind() -> Option<u64> {
     let m = app::machine::read().expect("the machine settings");
     app::machine::backup_behind(m.backup.as_ref(), app::backup::measured(m.backup.as_ref()).ok())
@@ -45,8 +32,6 @@ fn last() -> app::machine::Backed {
     app::machine::read().expect("the machine settings").backup.expect("a backup recorded")
 }
 
-/// Two homes, one entry each; a backup; the second home's folder deleted and a third home made: by the index
-/// one is behind (3 against 2), by the older reading none (2 against 2), so the reading taken is visible.
 fn two_readings_apart(name: &str) -> (app::shell::Shell, PathBuf) {
     let (mut shell, base) = bench(name);
     home(&mut shell, &base, "a");
@@ -59,7 +44,6 @@ fn two_readings_apart(name: &str) -> (app::shell::Shell, PathBuf) {
     (shell, base)
 }
 
-/// The ids of every ledger entry on this machine (their logical names say them).
 fn entry_ids() -> Vec<String> {
     let key = app::keybox::local_key().expect("the local key");
     app::local::all_files()
@@ -94,7 +78,6 @@ fn a_backup_seals_its_index_and_says_no_id_in_the_clear() {
     }
     let plain = String::from_utf8(app::local::read(&at, Doc::BackupIndex).expect("opens").expect("there")).expect("text");
     assert!(ids.iter().all(|id| plain.contains(id.as_str())), "the index names what the backup holds: {plain}");
-    // The kind moves with the machine's files (what a key change reseals).
     let found: Vec<_> = app::local::all_files().expect("files").into_iter().filter(|f| f.doc == Doc::BackupIndex).collect();
     assert_eq!(found.len(), 1);
     assert!(matches!(found[0].whose, app::local::Whose::Machine) && found[0].rel == app::backup::index_rel());
@@ -117,8 +100,6 @@ fn no_index_is_the_older_reading() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Not sealed, truncated, a byte altered: each falls back to the older reading, and a backup over it is refused
-/// by name (`LOCAL_SEAL`, with the way out), the file untouched; once moved aside, the next backup rewrites it.
 #[test]
 fn an_index_that_does_not_read_is_the_older_reading_and_never_written_over() {
     if super::alone_in(module_path!(), "an_index_that_does_not_read_is_the_older_reading_and_never_written_over") {
@@ -171,8 +152,6 @@ fn another_backups_index_is_the_older_reading() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// While locked, the index cannot be opened: the count is refused as locked, never guessed from the older
-/// reading; unlocked again, it reads.
 #[test]
 fn locked_an_index_is_not_guessed() {
     if super::alone_in(module_path!(), "locked_an_index_is_not_guessed") {
@@ -189,8 +168,6 @@ fn locked_an_index_is_not_guessed() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A new master key (another identity made primary): the index is resealed with every local file under the new
-/// key, at the same place, and reads to the same count.
 #[test]
 fn a_new_master_key_seals_the_index_again() {
     if super::alone_in(module_path!(), "a_new_master_key_seals_the_index_again") {
@@ -208,7 +185,6 @@ fn a_new_master_key_seals_the_index_again() {
         let after: Vec<String> = app::register::read().ok().flatten().map(|r| r.rows.iter().map(|x| x.id.clone()).collect()).unwrap_or_default();
         ids.push(after.into_iter().find(|x| !before.contains(x)).expect("an identity made"));
     }
-    // The identity's own home (the one open now): its first entry, a backup, then one recorded after it.
     answers!(apply(&mut shell, Action::Genesis { statement: "b12 rekey".into() }), Applied::Genesised { .. });
     app::backup::export(&base.join("out"), PW, 1_800_000_000).expect("a backup");
     std::fs::create_dir_all(&base).expect("base");
@@ -230,12 +206,6 @@ fn a_new_master_key_seals_the_index_again() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-// ───────────────────── the app's cell and the command line read one item alike ─────────────────────
-
-/// The app's cell splits at white space and reads each piece with the shared reader; the command line reads a
-/// value whole with it. A spelling with inner white space is refused by the shared reader, so the app never
-/// takes it as the single item the command line would see: `1= https://…` is two pieces there, the first with
-/// no address, refused. White space at either end is accepted by both.
 #[test]
 fn the_app_cell_and_the_command_line_read_an_item_alike() {
     if super::alone_in(module_path!(), "the_app_cell_and_the_command_line_read_an_item_alike") {
@@ -254,12 +224,10 @@ fn the_app_cell_and_the_command_line_read_an_item_alike() {
         }
     };
     let one = |spec: &str| zikaron_anchor::rpc::endpoint_spec(spec).ok().map(|(c, u)| vec![format!("{c}={u}")]);
-    // Taken alike: white space at either end only.
     for spec in [format!("1={url}"), format!("  1={url}\t"), format!("\n1={url} ")] {
         assert_eq!(cell(&mut shell, &spec), Some(vec![app::chainx::Endpoint::at(1, url)]), "{spec:?}");
         assert_eq!(one(&spec), Some(vec![format!("1={url}")]), "{spec:?}");
     }
-    // Refused alike: white space around the `=`, inside the address, a tab, a line end.
     for spec in [format!("1= {url}"), format!("1 ={url}"), format!("1 = {url}"), format!("1={url} x"), format!("1=\t{url}"), format!("1=\n{url}")] {
         assert_eq!(zikaron_anchor::rpc::endpoint_spec(&spec), Err(zikaron_anchor::rpc::NotAnEndpoint::InnerSpace), "{spec:?}");
         assert_eq!(cell(&mut shell, &spec), None, "{spec:?}");
@@ -268,9 +236,6 @@ fn the_app_cell_and_the_command_line_read_an_item_alike() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A restore whose set-aside pass is interrupted (one move fails): the restored index is staged with the other
-/// machine files, so it replaces this machine's index in the same landing; no unreadable-index notice is shown,
-/// and after the next unlock finishes the pass the index reads as the restored backup's.
 #[test]
 fn a_restore_cut_in_its_set_aside_lands_the_index_with_the_rest() {
     if super::alone_in(module_path!(), "a_restore_cut_in_its_set_aside_lands_the_index_with_the_rest") {

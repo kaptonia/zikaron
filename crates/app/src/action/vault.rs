@@ -1,28 +1,15 @@
 use super::*;
 
-/// Imports a grant document: decode the payload (via the kit crate), admit each entry (the core's checks plus
-/// two shape checks), and store it in the vault. A payload with several grants imports them all; if any is
-/// refused, none are imported (half a vault is worse than none).
-///
-/// All entries are admitted before any is stored. Entries already in the vault with identical bytes are
-/// skipped (a chain's root is usually there already, and a relicense payload brings it along); entries present
-/// with different bytes are refused by name before anything is stored. Storing one by one would stop at
-/// `ALREADY_HELD` on the existing root and never store the new hop, or store the new one and then fail,
-/// changing the vault while reporting failure.
-pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String>, String), crate::fault::Fault> {
+pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<Imported, crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // A grant file is opened and verified before taking (`payloadx::take_full`); the chain comes from the grant
-    // code inside it.
     let taken = crate::payloadx::take_full(typed)?;
-    let all = taken.hops;
+    let all = &taken.hops;
     let mut fresh: Vec<&Vec<u8>> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    // The grant this import is for is the chain's last hop (codes and grant files carry the chain from the root
-    // down); the hops above it are its upstreams, taken along.
     let mut end = String::new();
-    for b in &all {
+    for b in all {
         let e = crate::vaultx::admit(b)?;
         let id = e.id_hex();
         end = id.clone();
@@ -33,39 +20,36 @@ pub(super) fn import_grant(shell: &mut Shell, typed: &str) -> Result<(Vec<String
                 skipped.push(id);
                 continue;
             }
-            return Err(crate::fault::Fault::known(crate::fault::Known::Occupied, crate::lang::filln(crate::lang::Key::Tail058, &[&(id).to_string()])));
+            return Err(crate::fault::Fault::known(crate::fault::Known::Occupied, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail058, &[&(id).to_string()]))));
         }
         fresh.push(b);
     }
-    // Keep a copy of the grant file in the vault (the issuer ledger and terms documents it carries are
-    // vault-level material for checks and re-checks). It is kept before storing: if it cannot be kept the
-    // whole import is refused, so the vault never holds a grant whose grant file material was lost.
-    if let Some((p, o)) = taken.file.as_ref() {
-        let bytes = std::fs::read(p).map_err(|x| crate::fault::classify(&x, &p.display().to_string()))?;
-        crate::grantfilex::keep(home, &bytes, &o.kit_id)?;
-    }
     if fresh.is_empty() {
-        return Err(crate::fault::Fault::known(
-            crate::fault::Known::AlreadyHeld,
-            skipped.first().cloned().unwrap_or_default(),
-        ));
+        let refused = || crate::fault::Fault::known(crate::fault::Known::AlreadyHeld, skipped.last().cloned().unwrap_or_default());
+        let (Some((_, o)), Some(bytes)) = (taken.file.as_ref(), taken.package_bytes()) else { return Err(refused()) };
+        let Some(last) = all.last() else { return Err(refused()) };
+        if !crate::vaultx::newer_than_held(home, last, &o.ledger) {
+            return Err(refused());
+        }
+        crate::grantfilex::keep(home, &bytes?, &o.kit_id)?;
+        relist_held(shell);
+        return Ok(Imported::Renewed { grant: end });
     }
-    // Stage everything aside and move entries into place only once all are staged, so a disk filling up at the
-    // second leaves no first behind.
+    if let (Some((_, o)), Some(bytes)) = (taken.file.as_ref(), taken.package_bytes()) {
+        crate::grantfilex::keep(home, &bytes?, &o.kit_id)?;
+    }
     let ids = crate::vaultx::store_all(home, &fresh)?;
-    // Relist the vault after storing (in a separate background task); a failed listing is only reported.
     relist_held(shell);
-    Ok((ids, end))
+    Ok(Imported::Stored { ids, grant: end })
 }
 
-/// Imports a directory of grants: every file goes through `import_grant`, the single definition of what a
-/// grant is (an entry file, a grant file or a grant code, admitted before storing; each failure named). Files
-/// already in the vault with identical bytes are skipped. A folder with no files is refused by name
-/// (`GRANT_DIR_EMPTY`).
-///
-/// System side files (`home::is_side_file`: `.DS_Store`, `._*` and the like) are ignored: not tried, not
-/// counted as refusals, and they never turn a full import into a partial one.
-pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<String>, Vec<crate::fault::Fault>), crate::fault::Fault> {
+#[derive(Debug)]
+pub(super) enum Imported {
+    Stored { ids: Vec<String>, grant: String },
+    Renewed { grant: String },
+}
+
+pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<String>, usize, Vec<crate::fault::Fault>), crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     let d = dir.trim();
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(d)
@@ -78,21 +62,20 @@ pub(super) fn import_grant_dir(shell: &mut Shell, dir: &str) -> Result<(Vec<Stri
     if files.is_empty() {
         return Err(Fault::known(Known::GrantDirEmpty, d.to_string()));
     }
-    // Every file gets an outcome: taken, already in the vault (skipped), or refused with a reason, so a partial
-    // import is never reported as the whole directory going in.
     let mut ids = Vec::new();
+    let mut renewed = 0;
     let mut refused = Vec::new();
     for p in files {
         match import_grant(shell, &p.display().to_string()) {
-            Ok((mut got, _)) => ids.append(&mut got),
+            Ok(Imported::Stored { ids: mut got, .. }) => ids.append(&mut got),
+            Ok(Imported::Renewed { .. }) => renewed += 1,
             Err(f) if f.which() == Some(Known::AlreadyHeld) => {}
             Err(f) => refused.push(f),
         }
     }
-    Ok((ids, refused))
+    Ok((ids, renewed, refused))
 }
 
-/// Lists the vault on a background thread.
 pub(super) fn list_held(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
     let root = shell
         .home
@@ -111,7 +94,6 @@ pub(super) fn set_upstream(shell: &mut Shell, grant: &str, dir: &str) -> Result<
     if !zikaron::hexfmt::is_hex32(&g) {
         return Err(crate::fault::Fault::known(crate::fault::Known::ContentShape, g));
     }
-    // Empty removes the entry; otherwise the path is made absolute before saving (`home::kept`).
     let d = if dir.trim().is_empty() { String::new() } else { crate::home::kept(dir)?.display().to_string() };
     shell.commit_settings(|s| {
         s.upstreams.retain(|(x, _)| *x != g);
@@ -122,8 +104,6 @@ pub(super) fn set_upstream(shell: &mut Shell, grant: &str, dir: &str) -> Result<
     Ok(g)
 }
 
-/// Names a held grant and its issuer, on this machine only. The grant's name is keyed by grant id and the
-/// issuer's by address, so every grant from that issuer shows it. An empty name changes nothing.
 pub(super) fn note_held(shell: &mut Shell, grant: &str, note: &str, issuer_note: &str) -> Result<String, crate::fault::Fault> {
     let g = crate::lastread::grant_form(grant);
     if !zikaron::hexfmt::is_hex32(&g) {
@@ -154,53 +134,74 @@ pub(super) fn note_held(shell: &mut Shell, grant: &str, note: &str, issuer_note:
     Ok(g)
 }
 
-/// Re-checks the whole vault on a background thread. For each item, upstream bytes are looked up from the
-/// recorded places; then the chain is read across networks as on the check page (`widex`: the main network if
-/// configured and every read-only network, each chain separately), with one scan per upstream lineage shared
-/// by every grant of that lineage (`vaultx::review_all`). The six checks come from the kit crate, the label
-/// from the core, and "now" from the chain. A network that could not be read is named on each card it affects.
 pub(super) fn review(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
+    let tried = review_start(shell);
+    if !matches!(tried, Ok(Spawned::InFlight)) {
+        shell.vault_changed = false;
+    }
+    tried
+}
+
+fn review_start(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    let picked = crate::vaultx::held(home)?;
+    let at = home.root().to_path_buf();
     let ground = ground_bare(shell);
     let eps = shell.endpoints.clone();
-    let nets = read_nets_now()?;
-    // Upstream bytes are looked up level by level as on the check page (`supplyx`: this machine, vault, record
-    // bundle, publish address); a level that cannot be read is named on the card.
     let shelf = shelf_of(shell, "");
     let chain = shell.settings.chain_id;
-    Ok(shell.tasks.spawn(Kind::Review, move || {
+    let root = home.root().to_path_buf();
+    let spawned = shell.tasks.spawn(Kind::Review, move || {
+        let picked = crate::vaultx::held(&crate::home::Home::open(&at)?)?;
+        let nets = read_nets_now()?;
         crate::task::stage_at(Kind::Review, 0);
         let now = chain.and_then(|c| crate::chainx::head_time(&eps, c).ok()).map(|(t, _, _)| t);
         crate::task::stage_at(Kind::Review, 1);
         let mut items = Vec::with_capacity(picked.len());
         let mut from = Vec::with_capacity(picked.len());
+        let mut kept = Vec::with_capacity(picked.len());
         for (i, h) in picked.iter().enumerate() {
             crate::task::count(Kind::Review, i as u64, picked.len() as u64);
             let found = crate::supplyx::find(&shelf, crate::supplyx::Want::Hop(&h.bytes), 0);
             let up: Vec<Vec<u8>> = found.supply.as_ref().map(|s| s.items.clone()).unwrap_or_default();
             from.push((found.supply.as_ref().map(|s| (s.level, s.place.clone())), found.misses.first().map(|(_, f)| f.evidence())));
+            kept.push(found.supply.as_ref().is_none_or(|s| s.kept));
             items.push((h.clone(), up));
         }
-        // A chain to read: the main network with its nodes, or any read-only network. Otherwise every card is
-        // checked against an empty fragment, so its chain checks read as unknown.
-        let main = ground.as_ref().ok().filter(|_| !eps.is_empty()).map(|g| (&eps[..], g));
-        let mut scan = |senders: &[String]| -> Result<crate::vaultx::LineageRead, String> {
-            let w = crate::widex::scan(main, &nets, senders, crate::widex::Ask::First).map_err(|f| f.evidence())?;
+        let main = ground.as_ref().ok().filter(|_| !eps.is_empty() || !nets.is_empty()).map(|g| (&eps[..], g));
+        let mut scan = |senders: &[String], pick: &zikaron_anchor::scan::Pick| -> Result<crate::vaultx::LineageRead, String> {
+            let w = crate::widex::scan_picked(main, &nets, senders, crate::widex::Ask::First, pick).map_err(|f| f.evidence())?;
             Ok(crate::vaultx::LineageRead { fragment: crate::widex::with_unread_windows(&w.fragment, &w.missed, senders), anchors: w.anchors, missed: w.missed })
         };
-        let read: Option<&mut dyn FnMut(&[String]) -> Result<crate::vaultx::LineageRead, String>> = if main.is_some() || !nets.is_empty() { Some(&mut scan) } else { None };
-        let mut cards = crate::vaultx::review_all(&items, now, read);
-        for (card, ((level, miss), (_, up))) in cards.iter_mut().zip(from.into_iter().zip(items.iter())) {
+        let read: Option<&mut dyn FnMut(&[String], &zikaron_anchor::scan::Pick) -> Result<crate::vaultx::LineageRead, String>> = if main.is_some() || !nets.is_empty() { Some(&mut scan) } else { None };
+        let offer = crate::readerx::book_offer(main, &nets);
+        let book = |root: &str| crate::readerx::book_key(root, &offer);
+        let all_eps = crate::readnets::all_endpoints(&eps, &nets);
+        let grants: Vec<&[u8]> = items.iter().map(|(h, _)| h.bytes.as_slice()).collect();
+        let notes = crate::noticex::for_grants(&grants, &all_eps);
+        let no_chain = read.is_none();
+        let mut cards = crate::vaultx::review_all(&items, now, read, Some(&book), &notes);
+        for c in cards.iter_mut() {
+            c.chain_unread = no_chain;
+        }
+        let home = crate::home::Home::open(&root).ok();
+        for (card, ((level, miss), ((h, up), kept))) in cards.iter_mut().zip(from.into_iter().zip(items.iter().zip(kept.into_iter()))) {
             card.from = level;
             if card.said.is_empty() && up.is_empty() {
                 if let Some(said) = miss {
                     card.said = said;
                 }
             }
+            if let (Some(home), false) = (home.as_ref(), kept) {
+                if let Err(f) = crate::vaultx::keep_newer(home, h, up) {
+                    if card.said.is_empty() {
+                        card.said = f.evidence();
+                    }
+                }
+            }
         }
         Ok(Done::Reviewed { cards, now })
-    }))
+    });
+    Ok(spawned)
 }

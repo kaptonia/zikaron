@@ -1,7 +1,3 @@
-//! What opens under a press near the window's foot is brought into view as it opens: a fold in a card, a fold of its
-//! own and a drop-down's card each end 32 above the bottom of what they scroll in once open, the head never taken
-//! past the top; on a page whose keys stand in a bar at the view's foot, they end 32 above the bar.
-
 use egui::{Pos2, Rect, Vec2};
 use zikaron_ui::{card, fold, menu};
 
@@ -35,8 +31,6 @@ fn press(at: Pos2) -> Vec<egui::Event> {
     vec![egui::Event::PointerMoved(at), b(true), b(false)]
 }
 
-/// The page: room above, then what is tested, then room under it (so the page can scroll). Answers its head, its
-/// whole, and the view the page scrolls in.
 fn page(ui: &mut egui::Ui, above: f32, mut what: impl FnMut(&mut egui::Ui) -> Rect, out: &mut (Rect, Rect, Rect)) {
     ui.add_space(above);
     let head = what(ui);
@@ -45,8 +39,6 @@ fn page(ui: &mut egui::Ui, above: f32, mut what: impl FnMut(&mut egui::Ui) -> Re
     *out = (head, Rect::from_min_max(head.min, egui::pos2(head.right(), end)), ui.clip_rect());
 }
 
-/// Opens what `what` draws by pressing `at_head` (its head's middle) and lets it settle; where its head and its whole
-/// lie in the window then.
 fn opened(above: f32, mut what: impl FnMut(&mut egui::Ui) -> Rect) -> (Rect, Rect, Rect) {
     let mut f = Frames::new();
     let mut got = (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING);
@@ -95,8 +87,6 @@ fn a_fold_of_its_own_is_brought_into_view_as_it_opens() {
     assert!((view.bottom() - whole.bottom() - 32.0).abs() < 2.0, "{whole:?} in {view:?}");
 }
 
-/// On a page whose keys stand in a bar held at the view's foot, what opens ends 32 above the bar, not behind it:
-/// the bar is not view.
 #[test]
 fn a_fold_opened_over_a_bottom_bar_ends_above_the_bar() {
     use zikaron_ui::formparts;
@@ -153,7 +143,6 @@ fn a_drop_down_near_the_foot_takes_the_page_along() {
     for _ in 0..40 {
         out = Some(f.run(Vec::new(), |ui| draw(ui, &mut key)));
     }
-    // The card: the largest filled rectangle on a layer of its own under the key.
     let out = out.expect("a frame");
     let card = out
         .shapes
@@ -168,8 +157,6 @@ fn a_drop_down_near_the_foot_takes_the_page_along() {
     assert!(card.bottom() <= SCREEN.y - 32.0 + 2.0 && card.bottom() >= SCREEN.y - 32.0 - 10.0, "the card ends about 32 above the window's foot: {card:?}");
 }
 
-/// While the window scrolls on its own to bring an opened fold into view, a list above keeps its rows' comings: a row
-/// that comes then still opens in (it is not simply there), as it would on a page standing still.
 #[test]
 fn a_row_that_comes_while_the_window_scrolls_on_its_own_still_opens_in() {
     use zikaron_ui::table;
@@ -201,7 +188,6 @@ fn a_row_that_comes_while_the_window_scrolls_on_its_own_still_opens_in() {
     for _ in 0..6 {
         let out = f.run(Vec::new(), |ui| draw(ui, with_c, &mut head));
         let a = out.shapes.iter().find_map(|c| match &c.shape {
-            // The words' drawn ink: a row opening in has it faded.
             egui::Shape::Text(t) if t.galley.job.text == "丙" => t.galley.rows.iter().flat_map(|r| r.visuals.mesh.vertices.iter()).map(|v| v.color.a()).max(),
             _ => None,
         });

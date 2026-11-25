@@ -1,19 +1,12 @@
-//! A callout: one sentence that matters before a step that cannot be undone (what a record, a send or a
-//! deletion does), in the warning wash with an info glyph, 13/19 in the warning ink, wrapped to as many lines as
-//! it takes; corner 12, 10 × 12 inside.
-
 use crate::icons::{self, Glyph};
 use crate::palette::{c, C};
 use crate::tokens::Type;
 use egui::{pos2, vec2};
 
-/// The callout's line (its words are the small role's).
 const LINE: f32 = 19.0;
-/// The glyph, and the gap after it.
 const GLYPH: f32 = 16.0;
 const GAP: f32 = 10.0;
 
-/// Draw a callout as wide as the room it is given; an empty sentence draws nothing.
 pub fn callout(ui: &mut egui::Ui, s: &str) {
     if s.is_empty() {
         return;

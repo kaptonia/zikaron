@@ -1,40 +1,23 @@
-//! Verifying a record package record by record: is each record there, is it anchored and when first, is its
-//! original the one it records. One check, called by both the desktop's verification and the command line's
-//! `kit-verify`; every fact it states comes from the core (the entry, the audit outcome), the kit crate (the bounds of
-//! first anchoring) or the package's own manifest and files.
-
 use std::path::Path;
 use zikaron::audit::Outcome;
 use zikaron::json::Value;
-use zikaron::tokens::EntryType;
 
-/// **Each entry's first-anchor block time**: the earliest block timestamp among the counted anchors that reach
-/// it (the kit format's rule, the same as the depth reading's "first anchored"). Entries no anchor reaches are left
-/// out.
 pub fn first_anchored(outcome: &Outcome) -> Vec<(String, u64)> {
     let lines = zikaron_kit::reading::Lines::of(&outcome.ledger);
     let bounds = zikaron_kit::reading::bounds(outcome, &lines);
     bounds.iter().enumerate().filter_map(|(i, t)| t.map(|t| (lines.id(i).to_string(), t))).collect()
 }
 
-/// The earliest counted anchor that reaches a ledger entry, in full: the same rule as [`first_anchored`]'s
-/// time, plus which anchor gave it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirstAnchor {
     pub chain_id: u64,
     pub block_number: u64,
     pub block_timestamp: u64,
-    /// The anchoring transaction (hex32).
     pub tx: String,
-    /// The hash it anchored (hex32): the entry it points to, at or after the one it reaches.
     pub hash: String,
-    /// The registry contract whose log carried it (hex20), when the scan noted one.
     pub registry: Option<String>,
 }
 
-/// **Each entry's first anchor, in full**: per entry, among the counted anchors whose time is that entry's
-/// bound and that reach it, the one with the smallest (chain id, block, transaction). Entries no anchor reaches are
-/// left out.
 pub fn first_anchors(outcome: &Outcome, fragment: &Value) -> Vec<(String, FirstAnchor)> {
     let lines = zikaron_kit::reading::Lines::of(&outcome.ledger);
     let bounds = zikaron_kit::reading::bounds(outcome, &lines);
@@ -46,7 +29,6 @@ pub fn first_anchors(outcome: &Outcome, fragment: &Value) -> Vec<(String, FirstA
         Some(Value::Str(s)) => Some(s.clone()),
         _ => None,
     };
-    // The fragment's counted rows from a sender of this lineage (the set `counted` was trimmed from).
     let rows: Vec<FirstAnchor> = match fragment.member("anchors") {
         Some(Value::Arr(a)) => a
             .iter()
@@ -82,21 +64,14 @@ pub fn first_anchors(outcome: &Outcome, fragment: &Value) -> Vec<(String, FirstA
     out
 }
 
-
-/// The original file of a record in the kit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Original {
-    /// The manifest's `contents` row matches, and the sha256 of the kit's file equals this record's
-    /// `content`.
     Match,
-    /// The row matches, but the file's bytes hash to another digest.
     Mismatch,
-    /// The manifest has no `contents` row for this record, or the kit lacks the file in that row.
     Missing,
 }
 
 impl Original {
-    /// Its word in an answer (the command line's `original`, the door's record facts): one spelling, here.
     pub fn word(self) -> &'static str {
         match self {
             Original::Match => "match",
@@ -105,28 +80,19 @@ impl Original {
         }
     }
 
-    /// The original a word names.
     pub fn of_word(w: &str) -> Option<Original> {
         [Original::Match, Original::Mismatch, Original::Missing].into_iter().find(|o| o.word() == w)
     }
 }
 
-/// Whether this record is anchored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnChain {
-    /// An anchor counted by this audit reaches it; `first_at` is the earliest block time among the anchors
-    /// that reach it (kit law §8.2, read the same way as the depth reading's "first anchored":
-    /// `zikaron_kit::reading::bounds`).
     Anchored { first_at: u64 },
-    /// The chain was read and no counted anchor reaches it.
     NotAnchored,
-    /// The chain was not read (no network configured, chain unreachable), or this pass left out a network that
-    /// could hold its anchor ([`unread_where_missed`]): never shown as "not anchored".
     Unread,
 }
 
 impl OnChain {
-    /// Its word in an answer (the command line's `anchored`, the door's record facts): one spelling, here.
     pub fn word(self) -> &'static str {
         match self {
             OnChain::Anchored { .. } => "anchored",
@@ -135,7 +101,6 @@ impl OnChain {
         }
     }
 
-    /// The reading a word and a first-anchor time name (the time only for `anchored`).
     pub fn of_word(w: &str, first_at: Option<u64>) -> Option<OnChain> {
         match (w, first_at) {
             ("anchored", Some(t)) => Some(OnChain::Anchored { first_at: t }),
@@ -145,7 +110,6 @@ impl OnChain {
         }
     }
 
-    /// The first-anchor time, when anchored.
     pub fn first_at(self) -> Option<u64> {
         match self {
             OnChain::Anchored { first_at } => Some(first_at),
@@ -154,25 +118,35 @@ impl OnChain {
     }
 }
 
-/// One row of record bundle verification: one record (`history`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordRow {
-    /// Entry id (record hash).
     pub id: String,
-    /// This record's `content` (hex32, lowercase).
     pub content: String,
     pub original: Original,
     pub chain: OnChain,
-    /// The first anchor reaching it, in full (the same reading as `chain`'s time); `None` when not anchored or
-    /// not read.
     pub first: Option<FirstAnchor>,
+    pub deleted: Option<Withdrawn>,
+    pub notes: Vec<NoteOn>,
 }
 
-/// Kit law §7.3's `contents` rows: (content, path), read from the manifest unchanged (empty when the
-/// manifest is unreadable).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Withdrawn {
+    pub by: String,
+    pub seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteOn {
+    pub id: String,
+    pub seq: u64,
+    pub note: String,
+}
+
 pub fn contents_of(manifest: &[u8]) -> Vec<(String, String)> {
-    // Manifest member names come from the kit writer's name table (`crate::names::Field`); no literal
-    // is written here.
+    contents_named(manifest).into_iter().map(|(c, p, _)| (c, p)).collect()
+}
+
+pub fn contents_named(manifest: &[u8]) -> Vec<(String, String, Option<String>)> {
     use crate::names::Field;
     let Ok(v) = zikaron::json::parse(manifest) else { return Vec::new() };
     let Some(Value::Arr(rows)) = v.member(Field::Contents.as_str()) else { return Vec::new() };
@@ -186,66 +160,78 @@ pub fn contents_of(manifest: &[u8]) -> Vec<(String, String)> {
                 Some(Value::Str(s)) => s.clone(),
                 _ => return None,
             };
-            Some((content, path))
+            let name = match r.member(Field::NameMd.as_str()) {
+                Some(Value::Str(s)) => Some(s.clone()),
+                _ => None,
+            };
+            Some((content, path, name))
         })
         .collect()
 }
 
-/// The originals a kit directory holds, as (content, fingerprint bytes): the file each `contents` row points to
-/// (the row's content, the file's bytes; `None` when the kit lacks it), and each signed directory kept in it file by
-/// file (its content recomputed from those files with the names they were signed with, its manifest's bytes):
-/// `crate::extract::originals`, the one reading taking originals out uses too.
 pub fn originals_in_dir(dir: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     crate::extract::originals_in_dir(dir).into_iter().map(|(o, b)| (o.content, b)).collect()
 }
 
-/// As [`originals_in_dir`], from a file list (a grant file, or a kit fetched from a publish address).
 pub fn originals_in_pairs(pairs: &[(String, Vec<u8>)]) -> Vec<(String, Option<Vec<u8>>)> {
     crate::extract::originals_in_pairs(pairs).into_iter().map(|(o, b)| (o.content, b)).collect()
 }
 
-/// Verify a record package record by record: one row per record (`history`) in it. Original: the `contents` row
-/// for this record's `content`, with the package's file hashed with sha256 and compared. Anchored and first-anchor
-/// block time: on the audit outcome of the package's entries with a fragment and that fragment (`None` when the
-/// chain was not read), each record's bounds as the kit crate computes them (`reading::bounds`, as for depth),
-/// once for all records. The desktop's verification and the command line's `kit-verify` both judge by this one
-/// function.
-pub fn records(bytes: &[Vec<u8>], originals: &[(String, Option<Vec<u8>>)], read: Option<(&Outcome, &Value)>) -> Vec<RecordRow> {
+pub fn records(
+    bytes: &[Vec<u8>],
+    originals: &[(String, Option<Vec<u8>>)],
+    read: Option<&std::collections::BTreeMap<String, FirstAnchor>>,
+) -> Vec<RecordRow> {
     crate::seam_v2();
-    let times = read.map(|(o, _)| first_anchored(o));
-    let firsts = read.map(|(o, f)| first_anchors(o, f)).unwrap_or_default();
+    let (entries, reading) = crate::retraction::read_items(bytes);
+    let deleted = |id: &str| -> Option<Withdrawn> {
+        let (_, (_, by)) = reading.deleted.iter().find(|(h, _)| h.eq_ignore_ascii_case(id))?;
+        let seq = entries.iter().find(|e| e.id_hex().eq_ignore_ascii_case(by))?.seq;
+        Some(Withdrawn { by: by.clone(), seq })
+    };
+    let text = |body: &Value, k: &str| match body {
+        Value::Obj(m) => m.iter().find(|(x, _)| x == k).and_then(|(_, v)| v.as_str()).map(str::to_string),
+        _ => None,
+    };
+    let notes = |id: &str| -> Vec<NoteOn> {
+        entries
+            .iter()
+            .filter(|e| e.kind == crate::book::Kind::Annotation && text(&e.body, "subject").is_some_and(|s| s.eq_ignore_ascii_case(id)))
+            .map(|e| NoteOn { id: e.id_hex(), seq: e.seq, note: text(&e.body, crate::retraction::NOTE_MD).unwrap_or_default() })
+            .collect()
+    };
     bytes
         .iter()
-        .filter_map(|b| zikaron::entry::check(b).ok())
+        .filter_map(|b| crate::book::check(b).ok())
         .filter_map(|e| work_of(e.kind, &e.body).map(|c| (e.id_hex(), c.to_ascii_lowercase())))
         .map(|(id, content)| {
-            let mine: Vec<&Option<Vec<u8>>> = originals.iter().filter(|(c, _)| *c == content).map(|(_, b)| b).collect();
-            let original = if mine.iter().any(|b| b.as_ref().map(|x| zikaron::hexfmt::encode(&crate::recording::content_of(x)).eq_ignore_ascii_case(&content)).unwrap_or(false)) {
-                Original::Match
-            } else if mine.iter().any(|b| b.is_some()) {
-                Original::Mismatch
-            } else {
-                Original::Missing
-            };
-            let chain = match &times {
+            let original = original_of(&content, originals);
+            let found = read.map(|m| m.iter().find(|(h, _)| h.eq_ignore_ascii_case(&id)).map(|(_, f)| f.clone()));
+            let chain = match &found {
                 None => OnChain::Unread,
-                Some(at) => match at.iter().find(|(h, _)| *h == id).map(|(_, t)| *t) {
-                    Some(t) => OnChain::Anchored { first_at: t },
-                    None => OnChain::NotAnchored,
-                },
+                Some(Some(f)) => OnChain::Anchored { first_at: f.block_timestamp },
+                Some(None) => OnChain::NotAnchored,
             };
-            let first = match chain {
-                OnChain::Anchored { .. } => firsts.iter().find(|(h, _)| *h == id).map(|(_, f)| f.clone()),
-                _ => None,
-            };
-            RecordRow { id, content, original, chain, first }
+            let first = found.flatten();
+            let (deleted, notes) = (deleted(&id), notes(&id));
+            RecordRow { id, content, original, chain, first, deleted, notes }
         })
         .collect()
 }
 
-/// A record's work: the `content` member of a `history` entry's body (law §6.2); no other entry type has one.
-pub fn work_of(kind: EntryType, body: &Value) -> Option<String> {
-    if kind != EntryType::History {
+pub fn original_of(content: &str, originals: &[(String, Option<Vec<u8>>)]) -> Original {
+    let mine: Vec<&Option<Vec<u8>>> = originals.iter().filter(|(c, _)| *c == content).map(|(_, b)| b).collect();
+    if mine.iter().any(|b| b.as_ref().map(|x| zikaron::hexfmt::encode(&crate::recording::content_of(x)).eq_ignore_ascii_case(content)).unwrap_or(false)) {
+        Original::Match
+    } else if mine.iter().any(|b| b.is_some()) {
+        Original::Mismatch
+    } else {
+        Original::Missing
+    }
+}
+
+pub fn work_of(kind: crate::book::Kind, body: &Value) -> Option<String> {
+    if kind != crate::book::Kind::History {
         return None;
     }
     match body.member("content") {

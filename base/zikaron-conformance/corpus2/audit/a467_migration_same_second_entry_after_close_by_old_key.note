@@ -1,0 +1,1 @@
+sec 7.4/6.6: the migration retires its signer at T+2; the root's entry at seq 3, above its retiring seq, anchored by the root in that second, is RETIRED and its record DISCARDED; the closed ledger reads as it closed.

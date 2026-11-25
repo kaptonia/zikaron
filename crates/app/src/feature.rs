@@ -1,77 +1,38 @@
-//! Closed set of component codes for the diagnostic trace; a trace mark contains exactly one of them.
-//!
-//! The trace API is `mark(component code)`. The parameter is a closed type rather than a string so free text
-//! cannot be put into a mark: such marks would become a second log that someone would eventually rely on.
-
-/// The registered component codes. Grows with the component list, not with call sites.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Feature {
-    /// Widget library and skin.
     H0,
-    /// Shell skeleton.
     H1,
-    /// Identity and keys.
     H2,
-    /// Archive and single writer.
     H3,
-    /// Mirror and restore.
     H4,
-    /// First run and adoption into the home.
     H5,
-    /// Bilingual base.
     H6,
-    /// A restored identity is read-only until the full ledger is fetched.
     H8,
-    /// Ledger view.
     W1,
-    /// Self-audit clock.
     W2,
-    /// Anchoring desk.
     W3,
-    /// Batch anchoring queue.
     W4,
-    /// Disclosure kit maker.
     W5,
-    /// Depth page.
-    W6,
-    /// Grant drafter.
     W7,
-    /// Grant register and double-sale gate.
     W8,
-    /// Setup wizard checklist.
     W13,
-    /// Revocation flow.
     W9,
-    /// Adoption desk.
-    W10,
-    /// Succession desk.
     W11,
-    /// Others' ledger reader.
     W14,
-    /// Diligence desk (grantee role).
     D1,
-    /// Record verifier (grantee role).
     D2,
-    /// Check received records (grantee role).
     D4,
-    /// Grant vault.
     D6,
-    /// Revocation sentinel.
     D7,
-    /// Multi-upstream register.
     D8,
-    /// Badge packer.
     D9,
-    /// Relicense drafter.
     D10,
-    /// Grant check page.
     P1,
-    /// Watch and notifications.
     P2,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 31] = [
+    pub const ALL: [Feature; 29] = [
         Feature::H0,
         Feature::H1,
         Feature::H2,
@@ -85,12 +46,10 @@ impl Feature {
         Feature::W3,
         Feature::W4,
         Feature::W5,
-        Feature::W6,
         Feature::W7,
         Feature::W8,
         Feature::W13,
         Feature::W9,
-        Feature::W10,
         Feature::W11,
         Feature::W14,
         Feature::D1,
@@ -105,7 +64,6 @@ impl Feature {
         Feature::P2,
     ];
 
-    /// The entire content of a trace mark: one component code.
     pub fn id(self) -> &'static str {
         match self {
             Feature::H0 => "H0",
@@ -121,12 +79,10 @@ impl Feature {
             Feature::W3 => "W3",
             Feature::W4 => "W4",
             Feature::W5 => "W5",
-            Feature::W6 => "W6",
             Feature::W7 => "W7",
             Feature::W8 => "W8",
             Feature::W13 => "W13",
             Feature::W9 => "W9",
-            Feature::W10 => "W10",
             Feature::W11 => "W11",
             Feature::W14 => "W14",
             Feature::D1 => "D1",

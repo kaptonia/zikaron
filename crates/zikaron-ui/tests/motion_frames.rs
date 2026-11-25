@@ -1,8 +1,3 @@
-//! The library's motion, read frame by frame in headless egui frames: the segmented thumb's stretch,
-//! the switch's drop, a long action's key, one lit row in a list, rows that stay sliding while others close, the
-//! rail's foot items being its items, the calendar's three levels, a fold and a floating card taking the page
-//! along, words changing language in place, a sheet's height following its content, and reduced motion.
-
 use std::cell::Cell;
 use zikaron_ui::egui::{self, pos2, vec2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::palette::{c, C};
@@ -48,7 +43,6 @@ fn wheel(at: Pos2, dy: f32) -> Vec<Event> {
     vec![Event::PointerMoved(at), Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, dy), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE }]
 }
 
-/// Every shape drawn, flattened, with its clip.
 fn flat(out: &egui::FullOutput) -> Vec<(Rect, egui::Shape)> {
     fn walk(s: &egui::Shape, clip: Rect, out: &mut Vec<(Rect, egui::Shape)>) {
         match s {
@@ -63,7 +57,6 @@ fn flat(out: &egui::FullOutput) -> Vec<(Rect, egui::Shape)> {
     v
 }
 
-/// Every text drawn: words, where, and how opaque.
 fn texts(out: &egui::FullOutput) -> Vec<(String, Rect, f32)> {
     flat(out)
         .into_iter()
@@ -74,7 +67,6 @@ fn texts(out: &egui::FullOutput) -> Vec<(String, Rect, f32)> {
         .collect()
 }
 
-/// Rectangles filled with exactly `fill`.
 fn fills(out: &egui::FullOutput, fill: egui::Color32) -> Vec<Rect> {
     flat(out)
         .into_iter()
@@ -85,11 +77,6 @@ fn fills(out: &egui::FullOutput, fill: egui::Color32) -> Vec<Rect> {
         .collect()
 }
 
-// ───────────────────────── Liquid ①: the segmented thumb ─────────────────────────
-
-/// The thumb's leading edge gets there first and its trailing edge follows: on the way it is longer (by six
-/// tenths of the distance, at most 56; most near half way), neither edge ever moves back, it lands at its own
-/// size within 0.32 s at the kit's pace, and it never passes where it is going. Read at 120 frames a second.
 #[test]
 fn the_thumb_stretches_on_its_way_and_lands_at_its_size() {
     let mut f = Frames::new();
@@ -120,7 +107,6 @@ fn the_thumb_stretches_on_its_way_and_lands_at_its_size() {
     assert!((end.0 - 200.0).abs() < 0.5 && (end.1 - 60.0).abs() < 0.5, "landed at its size by {by} s: {end:?}");
 }
 
-/// Under reduced motion the thumb is where it goes at once.
 #[test]
 fn under_reduced_motion_the_thumb_arrives_at_once() {
     let mut f = Frames::new();
@@ -134,10 +120,6 @@ fn under_reduced_motion_the_thumb_arrives_at_once() {
     assert_eq!(got, (200.0, 60.0));
 }
 
-// ───────────────────────── Liquid ④: the switch ─────────────────────────
-
-/// Flipped, the knob first stretches (16 to 22 by 0.22 s), crossing as it does, and settles round where it goes
-/// by 0.34 s, both at the kit's pace; it never passes the far end.
 #[test]
 fn the_knob_stretches_then_settles_round() {
     let mut f = Frames::new();
@@ -164,9 +146,6 @@ fn the_knob_stretches_then_settles_round() {
     assert!((end.0.width() - 16.0).abs() < 0.01 && (end.0.right() - (rect.left() + 10.0 + 14.0 + 8.0)).abs() < 0.5, "round and there: {end:?}");
 }
 
-// ───────────────────────── Liquid ③: a long action's key ─────────────────────────
-
-/// A key keeps its width through a long action: idle, busy, done and back.
 #[test]
 fn a_long_action_keeps_its_width() {
     let mut f = Frames::new();
@@ -182,16 +161,12 @@ fn a_long_action_keeps_its_width() {
     assert!(widths.iter().all(|w| (w.1 - widths[0].1).abs() < 0.01), "{widths:?}");
 }
 
-// ───────────────────────── One lit row ─────────────────────────
-
 fn five_rows() -> Vec<table::Row> {
     ["甲", "乙", "丙", "丁", "戊"].iter().enumerate().map(|(i, s)| table::Row { cells: vec![table::Cell::Seq(i as u64 + 1), table::Cell::Text(s.to_string())], click: true, ..Default::default() }).collect()
 }
 
 const COLS: [table::Column<'static>; 2] = [table::SEQ, table::Column { head: "", width: table::Col::Fr(1.0), right: false }];
 
-/// A list lights one row: the row under the pointer this frame, at once; moving to the next row lights it in
-/// the very next frame and leaves no other half lit.
 #[test]
 fn a_list_lights_the_one_row_under_the_pointer() {
     let mut f = Frames::new();
@@ -210,7 +185,6 @@ fn a_list_lights_the_one_row_under_the_pointer() {
     }
 }
 
-/// While the list scrolls no row is lit; once it stands still, the row under the pointer lights again.
 #[test]
 fn a_scrolling_list_lights_no_row() {
     let mut f = Frames::new();
@@ -237,10 +211,6 @@ fn a_scrolling_list_lights_no_row() {
     assert_eq!(lit, 1, "still again, the row under the pointer lights");
 }
 
-// ───────────────────────── Rows in place ─────────────────────────
-
-/// A row leaves: the rows below move up from where they were to where they belong in one direction, within
-/// 0.4 s; the row that left fades out where it was; the list's card follows.
 #[test]
 fn rows_below_a_row_that_leaves_move_up_in_one_run() {
     let mut f = Frames::new();
@@ -273,10 +243,6 @@ fn rows_below_a_row_that_leaves_move_up_in_one_run() {
     assert!(ghost[0] && !*ghost.last().unwrap(), "the row that left fades out where it was, then is gone");
 }
 
-// ───────────────────────── The rail ─────────────────────────
-
-/// The foot items are the rail's items: same height, width and left edge, the glyph and the words at the same
-/// places.
 #[test]
 fn the_rail_foot_items_are_its_items() {
     let mut f = Frames::new();
@@ -299,14 +265,10 @@ fn the_rail_foot_items_are_its_items() {
     assert!(items.iter().all(|r| (r.width() - items[0].width()).abs() < 0.01 && (r.left() - items[0].left()).abs() < 0.01), "{items:?}");
 }
 
-// ───────────────────────── The calendar ─────────────────────────
-
 fn words() -> datepick::Words<'static> {
     datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y} 年 {m} 月"), year: |y| format!("{y} 年"), month_alone: |m| format!("{m} 月"), today: "今天", clear: "清除" }
 }
 
-/// Days, months, years: the head's words go up a level; a year picked goes to its months, a month picked to
-/// its days; the card keeps one size (its foot row stays put).
 #[test]
 fn the_calendar_goes_up_and_down_its_three_levels() {
     let mut f = Frames::new();
@@ -341,10 +303,6 @@ fn the_calendar_goes_up_and_down_its_three_levels() {
     assert_eq!(at(&out, "今天"), Some(foot), "one card size");
 }
 
-// ───────────────────────── Folds and floating cards take the page along ─────────────────────────
-
-/// A fold opened near the window's foot takes the page along as it grows: once open, its body ends 32 above the
-/// foot, and its head has not gone past the top.
 #[test]
 fn a_fold_opened_low_takes_the_page_along() {
     let mut f = Frames::new();
@@ -375,8 +333,6 @@ fn a_fold_opened_low_takes_the_page_along() {
     assert!(head.top() >= 0.0, "the head stays in view: {head:?}");
 }
 
-/// A calendar open over a page: the wheel turned off the card scrolls the page, the card staying with its
-/// field; scrolled out of view, the field's card closes.
 #[test]
 fn a_floating_card_stays_with_its_anchor_while_the_page_scrolls() {
     let mut f = Frames::new();
@@ -412,10 +368,6 @@ fn a_floating_card_stays_with_its_anchor_while_the_page_scrolls() {
     assert!(card_gap(&out, field.get()).is_none(), "and its card closed");
 }
 
-// ───────────────────────── Words in place ─────────────────────────
-
-/// The words change language: from the very frame of the switch, the changed words come in by their colour
-/// while the old ones fade out where they were; words that did not change stay whole; by 0.3 s it is done.
 #[test]
 fn changed_words_cross_fade_in_place() {
     let mut f = Frames::new();
@@ -443,10 +395,6 @@ fn changed_words_cross_fade_in_place() {
     assert!(last.iter().all(|t| t.2 >= 0.999) && !last.iter().any(|t| t.0 == "账本"), "done by 0.3 s: {last:?}");
 }
 
-// ───────────────────────── A sheet's height ─────────────────────────
-
-/// A sheet whose content grows changes its height in place over 0.3 s, never in one jump: its keys, pinned to its
-/// foot, move down step by step.
 #[test]
 fn a_sheet_follows_its_content_in_height() {
     let mut f = Frames::new();
@@ -485,10 +433,6 @@ fn a_sheet_follows_its_content_in_height() {
     assert!(there as f32 / 60.0 <= 0.4, "there within 0.4 s: {there} frames");
 }
 
-// ───────────────────────── Steady light ─────────────────────────
-
-/// The pointer on the line between two rows of a form card lights one row, the lower: a row owns its top edge and
-/// not its bottom one, and one place a pass holds the light.
 #[test]
 fn the_pointer_on_the_line_between_two_rows_lights_one() {
     use zikaron_ui::card;
@@ -518,8 +462,6 @@ fn the_pointer_on_the_line_between_two_rows_lights_one() {
     }
 }
 
-/// A trackpad's scroll and its momentum, its events thinning out and frames with none between them: no row is lit
-/// at any frame while it goes on, and once it has stood still the row under the pointer lights and stays lit.
 #[test]
 fn momentum_scrolling_lights_no_row_until_it_stands_still() {
     let mut f = Frames::new();
@@ -551,4 +493,87 @@ fn momentum_scrolling_lights_no_row_until_it_stands_still() {
     }
     let first = seen.iter().position(|n| *n == 1).expect("the row under the pointer lights once it stands still");
     assert!(seen[first..].iter().all(|n| *n == 1), "and stays lit, never going dark again: {seen:?}");
+}
+
+#[test]
+fn a_page_grown_shorter_is_placed_by_its_new_height_in_that_frame() {
+    let mut f = Frames::new();
+    let tall = Cell::new(3000.0_f32);
+    let laid = Cell::new((0.0_f32, 0.0_f32, 0.0_f32));
+    let set = Cell::new(Some(2200.0_f32));
+    let mut draw = |ui: &mut egui::Ui| {
+        let area = egui::ScrollArea::vertical().id_salt("c13-page");
+        let area = match set.get() {
+            Some(y) => area.vertical_scroll_offset(y),
+            None => area,
+        };
+        let out = scroll::page(ui, area, |ui| {
+            let top = ui.min_rect().top();
+            ui.add_space(tall.get());
+            top
+        });
+        laid.set((out.inner, out.inner_rect.top(), (out.content_size.y - out.inner_rect.height()).max(0.0)));
+    };
+    f.run(0.0, vec![], &mut draw);
+    f.run(0.1, vec![], &mut draw);
+    for _ in 0..3 {
+        f.run(1.0 / 60.0, vec![], &mut draw);
+    }
+    set.set(None);
+    for _ in 0..3 {
+        f.run(1.0 / 60.0, vec![], &mut draw);
+    }
+    let (top, room_top, most) = laid.get();
+    let before = room_top - top;
+    assert!(before > 1500.0, "scrolled near the foot first: {before} of {most}");
+    tall.set(1500.0);
+    let mut places = Vec::new();
+    for _ in 0..4 {
+        f.run(1.0 / 60.0, vec![], &mut draw);
+        let (top, room_top, most) = laid.get();
+        let at = room_top - top;
+        places.push((at, most));
+        assert!(at <= most + 0.5, "a frame laid past the new foot: at {at}, the most {most}: {places:?}");
+    }
+    assert!((places[0].0 - places[1].0).abs() < 0.5, "the frame after jumped: {places:?}");
+}
+
+#[test]
+fn a_folds_height_falls_to_its_head_with_no_step_at_the_end() {
+    let mut f = Frames::new();
+    let head = Cell::new(Rect::NOTHING);
+    let taken = Cell::new(0.0_f32);
+    let mut draw = |ui: &mut egui::Ui| {
+        ui.add_space(40.0);
+        let top = ui.cursor().min.y;
+        let _ = fold::fold(ui, "c14-fold", "详细信息", |ui| {
+            for i in 0..6 {
+                ui.label(format!("第 {i} 行"));
+            }
+        });
+        head.set(Rect::from_min_size(pos2(ui.min_rect().left(), top), vec2(80.0, 26.0)));
+        taken.set(ui.cursor().min.y - top);
+    };
+    f.run(0.0, vec![], &mut draw);
+    f.run(0.1, vec![], &mut draw);
+    let shut = taken.get();
+    f.run(0.05, press_at(head.get().center()), &mut draw);
+    for _ in 0..60 {
+        f.run(1.0 / 60.0, vec![], &mut draw);
+    }
+    let open = taken.get();
+    assert!(open > shut + 60.0, "opened: {open} against {shut}");
+    f.run(0.05, press_at(head.get().center()), &mut draw);
+    let mut seen = vec![taken.get()];
+    for _ in 0..60 {
+        f.run(1.0 / 60.0, vec![], &mut draw);
+        seen.push(taken.get());
+    }
+    assert!((seen.last().copied().unwrap_or(0.0) - shut).abs() < 0.5, "closed to the head alone: {seen:?}");
+    let steps: Vec<f32> = seen.windows(2).map(|w| w[0] - w[1]).collect();
+    assert!(steps.iter().all(|d| *d >= -0.5), "it rose on its way down: {seen:?}");
+    let moving: Vec<f32> = steps.iter().copied().filter(|d| *d > 0.5).collect();
+    let n = moving.len();
+    assert!(n >= 3, "closed over several frames: {seen:?}");
+    assert!(moving[n - 1] <= moving[n - 2] + 1.0, "a step at the end: {moving:?} of {seen:?}");
 }

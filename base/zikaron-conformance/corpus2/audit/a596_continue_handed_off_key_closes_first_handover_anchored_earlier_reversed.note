@@ -1,0 +1,1 @@
+input arrays reversed: sec 12.6: the handover is anchored at T+1, earlier than the stolen key's closing succession at T+2, so that succession makes no candidate; k2's closing succession continues the ledger, the stolen key's succession is an old byte string at a held position (EQUIVOCATION under zikaron/1), and its genesis is EXCLUDED in the new segment.

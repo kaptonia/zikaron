@@ -1,50 +1,23 @@
-//! Transactions: recompute a node's transaction object into bytes, check its hash, recover its sender (law
-//! §9.1).
-//!
-//! §9.1 defines the sender as the address recovered from the transaction's own secp256k1 signature. The
-//! node's `from` is the node's claim, not a chain fact. So each transaction is re-encoded, its signer
-//! recovered, and the re-encoded bytes keccak-hashed and compared with `hash`; a mismatch means the endpoint
-//! gave something other than what it claims, and reading stops.
-//!
-//! Three kinds have no sender in this grammar: a type outside {0x0, 0x1, 0x2, 0x3, 0x4} (deposit type 0x7e,
-//! future types) has no rebuildable signing payload; `r` and `s` both zero means no signature; a legacy `v`
-//! of 27 or 28 (outside EIP-155) names no chain. §9.1 rules on each: such a transaction is no anchor in
-//! either form, its logs are no anchors whatever their topics, and it enters no evidence record (§9.2).
-
 use crate::rlp;
 use zikaron::cryptox;
 use crate::wire::W;
 
-/// A transaction as read.
 #[derive(Clone, Debug)]
 pub struct Tx {
     pub hash: [u8; 32],
-    /// The chain the signature names; `None` when it names none (legacy, outside EIP-155).
     pub chain_id: Option<u64>,
-    /// The §9.1 sender; `None` when this grammar gives it none.
     pub sender: Option<[u8; 20]>,
-    /// The sender's public key (uncompressed, 65 bytes), recovered from the signature with the sender: the sender
-    /// is its address. `None` exactly when `sender` is.
     pub pubkey: Option<[u8; 65]>,
-    /// Recipient; `None` for a contract creation.
     pub to: Option<[u8; 20]>,
-    /// Calldata in the §9.1 sense: the top-level `data` field, the bytes the sender signed.
     pub input: Vec<u8>,
-    /// Containing block; `None` when not yet included.
     pub block_number: Option<u64>,
     pub tx_type: u64,
-    /// The re-encoded full bytes (a §9.7 kit pins them to the block's transaction root). Empty for types
-    /// whose signing payload cannot be rebuilt.
     pub raw: Vec<u8>,
 }
 
-/// Where reading a transaction cannot go on. Each means the endpoint's data does not hold together; none is a
-/// chain verdict.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Bad {
-    /// A required member is missing or has the wrong shape.
     Shape(&'static str),
-    /// The re-encoded bytes do not hash to the claimed hash.
     HashMismatch,
 }
 
@@ -52,7 +25,6 @@ fn s<'a>(v: &'a W, k: &str) -> Option<&'a str> {
     v.member(k)?.as_str()
 }
 
-/// A hex quantity to u64.
 pub fn hex_qty(w: &W) -> Option<u64> {
     let x = w.as_str()?;
     let body = x.strip_prefix("0x").or_else(|| x.strip_prefix("0X"))?;
@@ -62,7 +34,6 @@ pub fn hex_qty(w: &W) -> Option<u64> {
     u64::from_str_radix(body, 16).ok()
 }
 
-/// A hex quantity to big-endian bytes without leading zeros.
 pub fn qty(v: &W, k: &str) -> Option<Vec<u8>> {
     let x = s(v, k)?;
     let body = x.strip_prefix("0x").or_else(|| x.strip_prefix("0X"))?;
@@ -84,7 +55,6 @@ pub fn qty(v: &W, k: &str) -> Option<Vec<u8>> {
     Some(out[i..].to_vec())
 }
 
-/// A hex quantity to u64 (within the §3.1 int bound).
 pub fn qty_u64(v: &W, k: &str) -> Option<u64> {
     let b = qty(v, k)?;
     if b.len() > 8 {
@@ -97,7 +67,6 @@ pub fn qty_u64(v: &W, k: &str) -> Option<u64> {
     Some(x)
 }
 
-/// A hex byte string to bytes.
 pub fn data(v: &W, k: &str) -> Option<Vec<u8>> {
     let x = s(v, k)?;
     zikaron::hexfmt::decode(x)
@@ -175,7 +144,6 @@ fn to_field(v: &W) -> Vec<u8> {
     }
 }
 
-/// Read a transaction: re-encode, check the hash, recover the sender.
 pub fn read(v: &W) -> Result<Tx, Bad> {
     let hash = {
         let b = data(v, "hash").ok_or(Bad::Shape("hash"))?;
@@ -195,11 +163,9 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
 
     let nothing = Tx { hash, chain_id: None, sender: None, pubkey: None, to, input: input.clone(), block_number, tx_type, raw: Vec::new() };
 
-    // No signature (system or deposit types): no sender in this grammar.
     if is_zero(&r) && is_zero(&sig_s) {
         return Ok(nothing);
     }
-    // A type whose signing payload cannot be rebuilt: no sender, and no hash to recompute.
     if !matches!(tx_type, 0 | 1 | 2 | 3 | 4) {
         return Ok(nothing);
     }
@@ -214,17 +180,12 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
     let (payload, raw, chain_id, recid) = if tx_type == 0 {
         let gas_price = rlp::scalar(&qty(v, "gasPrice").unwrap_or_default());
         let vq = qty_u64(v, "v").ok_or(Bad::Shape("v"))?;
-        // EIP-155: v = 2 × chainId + 35 + recid. 27 and 28 are the legacy form whose signature names no
-        // chain.
         let (chain, recid) = if vq == 27 || vq == 28 {
-            // The lawful case: the signature names no chain (legacy, outside EIP-155).
             (None, (vq - 27) as u8)
         } else if vq >= 37 {
             let chain = (vq - 35) / 2;
             let recid = (vq - 35 - 2 * chain) as u8;
             if recid > 1 {
-                // A v this formula cannot produce means the endpoint's answer does not hold, not that the law
-                // gives no sender.
                 return Err(Bad::Shape("v"));
             }
             (Some(chain), recid)
@@ -251,8 +212,6 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
         let chain = qty_u64(v, "chainId").ok_or(Bad::Shape("chainId"))?;
         let y = qty_u64(v, "yParity").or_else(|| qty_u64(v, "v")).unwrap_or(0);
         if y > 1 {
-            // Likewise: typed transactions have yParity 0 or 1; any other value means the endpoint's answer
-            // does not hold.
             return Err(Bad::Shape("yParity"));
         }
         let mut fields: Vec<Vec<u8>> = vec![rlp::quantity(chain), nonce];
@@ -311,11 +270,6 @@ pub fn read(v: &W) -> Result<Tx, Bad> {
     Ok(Tx { hash, chain_id, sender, pubkey, to, input, block_number, tx_type, raw })
 }
 
-
-/// Read a transaction from its full bytes (a §9.7 kit carries bytes, not objects).
-///
-/// The signing payload has one rule: drop the last three signature members and re-encode with the type
-/// prefix. Both entry points (node object, kit bytes) therefore compute the same payload.
 pub fn from_raw(raw: &[u8]) -> Option<Tx> {
     let hash = cryptox::keccak256(raw);
     let (tx_type, list) = if raw.first().copied()? >= 0xc0 {
@@ -331,8 +285,6 @@ pub fn from_raw(raw: &[u8]) -> Option<Tx> {
     let v_item = &items[items.len() - 3];
     let r = scalar_of(&items[items.len() - 2])?;
     let s = scalar_of(&items[items.len() - 1])?;
-    // Field positions: legacy is [nonce, gasPrice, gas, to, value, data]; typed transactions start with
-    // chainId.
     let (to_at, data_at) = match tx_type {
         0 => (3, 5),
         1 => (4, 6),
@@ -403,7 +355,6 @@ fn scalar_of(item: &crate::rlp::Item) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// Re-encode a decoded item as RLP, unchanged.
 pub fn reencode(item: &crate::rlp::Item) -> Option<Vec<u8>> {
     Some(match item {
         crate::rlp::Item::Bytes(b) => crate::rlp::bytes(b),

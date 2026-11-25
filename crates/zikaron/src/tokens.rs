@@ -1,14 +1,3 @@
-//! Closed tables of the law: refusal tokens (§10), finding names (§8.3), labels and item names (§8.7),
-//! verdicts (§9.3), domains (§5.6), entry types (§6).
-//!
-//! Each table is a closed type with one byte outlet (`as_str`). A new member means changing the enum and
-//! `as_str`, and the compiler holds every match to it; a list of `pub const` strings would let a new literal
-//! slip onto the wire.
-//!
-//! [`EntryType`] is open by law (§6.9: the type table may grow), so it carries `Other`.
-
-/// The 26 refusal tokens of law §10. Decision order follows §3.5 and §4.3; each token belongs to one decision
-/// point.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Token {
     Utf8,
@@ -71,7 +60,6 @@ impl Token {
         }
     }
 
-    /// The whole table.
     pub const ALL: [Token; 26] = [
         Token::Utf8,
         Token::Json,
@@ -102,8 +90,6 @@ impl Token {
     ];
 }
 
-/// The eight tokens of law §3.5 (the faults of tests 1 to 6); the only ones the `json` reader returns. A
-/// subtable of [`Token`]: `From` lifts each to the §10 token of the same bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CanonToken {
     Utf8,
@@ -148,8 +134,6 @@ impl From<CanonToken> for Token {
     }
 }
 
-/// The six signature tokens of laws §5.4 and §5.5 (shape, v, range, low s, recovery, signer); the only ones
-/// `verify_signature` returns, borrowed word for word by kit law §3.1. `From` lifts them to §10 tokens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SigToken {
     SigForm,
@@ -188,7 +172,6 @@ impl From<SigToken> for Token {
     }
 }
 
-/// The five finding names of law §8.3.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FindingName {
     SeqGap,
@@ -218,7 +201,6 @@ impl FindingName {
     ];
 }
 
-/// The four labels of law §8.7 item 15, plus `NoLabel`: the outcome when the input is not a §9.4 audit input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Label {
     BrokenChain,
@@ -248,7 +230,6 @@ impl Label {
     ];
 }
 
-/// The three anchor verdicts of law §9.3. [`Verdict::parse`] reads input bytes; other bytes are no verdict.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Verdict {
     Counted,
@@ -272,11 +253,8 @@ impl Verdict {
     pub const ALL: [Verdict; 3] = [Verdict::Counted, Verdict::Unproven, Verdict::Void];
 }
 
-/// Keys of the fifteen-item report of law §8.7, with the finding-row and item-row keys. The report's byte
-/// shape grows only from here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
-    // The sixteen members (law §8.7 items 1 to 15; item 1 takes two).
     Root,
     Basis,
     Entries,
@@ -293,10 +271,8 @@ pub enum Key {
     Void,
     Discarded,
     LabelKey,
-    // The two no-label members (§9.4).
     Ok,
     Reason,
-    // Finding rows (§8.3) and item-row keys.
     Name,
     Position,
     EntryId,
@@ -368,10 +344,6 @@ impl Key {
     }
 }
 
-/// The two signing domains of law §5.6.
-///
-/// On the harness surface a domain is a free string from the command line (HARNESS `sign`), so the signing
-/// API in [`crate::entry`] still takes `&str`; the law's own two call sites take their bytes from here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Domain {
     Entry,
@@ -387,11 +359,8 @@ impl Domain {
     }
 }
 
-/// The spec literal of law §4.1.
 pub const SPEC: &str = "zikaron/1";
 
-/// The seven types of law §6.1 to §6.8, plus the unlisted member of §6.9. Open by law: `Other` is the rule
-/// that an unlisted type only needs an object body.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryType {
     Genesis,
@@ -418,7 +387,6 @@ impl EntryType {
         }
     }
 
-    /// Known types map to themselves, anything else to `Other` (law §6.9).
     pub fn of(x: &str) -> EntryType {
         match x {
             "genesis" => EntryType::Genesis,

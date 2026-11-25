@@ -1,7 +1,3 @@
-//! Every request this crate sends carries exactly one `User-Agent` header with the product name only
-//! (`USER_AGENT`; no version, OS or machine), from the single head builder: a POST to a node, a GET of a remote
-//! file, and a proxy CONNECT (in-process stubs, no network).
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -12,7 +8,6 @@ fn limits() -> Limits {
     Limits { deadline: Duration::from_secs(5), max_answer: 0 }
 }
 
-/// Read one request head (to its blank line) from `s`.
 fn head_of(s: &mut TcpStream) -> String {
     let mut head = Vec::new();
     let mut one = [0u8; 1];
@@ -25,7 +20,6 @@ fn head_of(s: &mut TcpStream) -> String {
     String::from_utf8_lossy(&head).into_owned()
 }
 
-/// A server answering `{}` to every request, recording each request head.
 fn place() -> (u16, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -48,7 +42,6 @@ fn place() -> (u16, Arc<Mutex<Vec<String>>>) {
     (port, seen)
 }
 
-/// An HTTP CONNECT proxy that pipes every tunnel to `to`, recording each CONNECT head.
 fn connect_proxy(to: u16) -> (u16, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -75,7 +68,6 @@ fn connect_proxy(to: u16) -> (u16, Arc<Mutex<Vec<String>>>) {
     (port, seen)
 }
 
-/// The `User-Agent` lines of a head (header names compared case-insensitively).
 fn agents(head: &str) -> Vec<String> {
     head.lines()
         .filter_map(|l| l.split_once(':'))

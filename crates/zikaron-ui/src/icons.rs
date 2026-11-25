@@ -1,24 +1,11 @@
-//! Hand-drawn icons: no icon font is present everywhere, and a few simple shapes carry a native feel.
-//!
-//! No icon font dependency: each icon is a list of points in a unit square, scaled to the given rectangle
-//! when drawn. One color per icon, no gradients.
-
-/// The seven shapes. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
-    /// Ledger: stacked lines.
     Ledger,
-    /// Grant: a key outline.
     Grant,
-    /// Kit: a box.
     Kit,
-    /// Anchor: a shank and a curve.
     Anchor,
-    /// Done: a check.
     Check,
-    /// Warning: a triangle.
     Warn,
-    /// Settings: a square gear.
     Gear,
 }
 
@@ -46,8 +33,6 @@ impl Icon {
     }
 }
 
-/// An icon's strokes: each a list of points in the unit square (0..1 × 0..1). The only place icon shapes are
-/// made.
 pub fn path(i: Icon) -> Vec<Vec<(f32, f32)>> {
     match i {
         Icon::Ledger => vec![
@@ -115,26 +100,17 @@ pub fn path(i: Icon) -> Vec<Vec<(f32, f32)>> {
     }
 }
 
-/// Draw one icon, in one color.
 pub fn draw(p: &egui::Painter, i: Icon, rect: egui::Rect, colour: egui::Color32) {
     strokes(p, &path(i), rect, colour);
 }
 
-/// Navigation glyphs for the side rail and its two bottom keys. Closed; shapes drawn on a sixteen-cell grid.
-///
-/// Separate from [`Icon`]: `Icon` says what kind of thing, `Glyph` marks a page. Both are closed and drawn by
-/// the same painter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Glyph {
     Home,
-    /// Lock (the bottom of the side rail).
     Lock,
     Ledger,
-    /// A page with a folded corner: records.
     Doc,
-    /// A shield with a check: verifying.
     Shield,
-    /// Appearance.
     Sun,
     Anchor,
     Queue,
@@ -152,11 +128,8 @@ pub enum Glyph {
     Receipt,
     Refresh,
     Gear,
-    /// Settings sections and page marks.
     Globe,
-    /// Language: the Chinese sign for writing and an A side by side, no frame.
     Lang,
-    /// The command line: a prompt and a cursor.
     Terminal,
     Half,
     Key,
@@ -166,7 +139,6 @@ pub enum Glyph {
     Info,
     Person,
     Swap,
-    /// Small marks inside controls.
     Plus,
     Back,
     Fwd,
@@ -182,7 +154,6 @@ pub enum Glyph {
     Eye,
     Search,
     More,
-    /// The date field's mark.
     Calendar,
 }
 
@@ -240,24 +211,18 @@ impl Glyph {
     ];
 }
 
-/// The one chevron every arrow is made from (back and forward, open and shut, down), pointing right on the
-/// twenty-four-cell grid: the others are it mirrored or turned, so a pair is always one size and one stroke.
 fn chevron() -> Vec<Vec<(f32, f32)>> {
     svg("m9 6 6 6-6 6")
 }
 
-/// Strokes with each point moved by `f` in the unit square (a mirror or a quarter turn about its middle).
 fn turned(v: Vec<Vec<(f32, f32)>>, f: impl Fn((f32, f32)) -> (f32, f32)) -> Vec<Vec<(f32, f32)>> {
     v.into_iter().map(|s| s.into_iter().map(&f).collect()).collect()
 }
 
-/// A polyline on the sixteen-cell grid, mapped to the unit square.
 fn g(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     points.iter().map(|(x, y)| (x / 16.0, y / 16.0)).collect()
 }
 
-/// An arc on the sixteen-cell grid (degrees, zero pointing right, clockwise positive), mapped to the unit
-/// square.
 fn arc(cx: f32, cy: f32, r: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
     let n = 16;
     (0..=n)
@@ -268,9 +233,6 @@ fn arc(cx: f32, cy: f32, r: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Strokes from an SVG path on the twenty-four-cell grid the design draws its icons on, mapped to the unit
-/// square: `M L H V C S Q A Z` and their relative forms, curves and arcs sampled to polylines. Each subpath is
-/// one stroke.
 fn svg(d: &str) -> Vec<Vec<(f32, f32)>> {
     let mut nums: Vec<f32> = Vec::new();
     let mut out: Vec<Vec<(f32, f32)>> = Vec::new();
@@ -426,7 +388,6 @@ fn svg(d: &str) -> Vec<Vec<(f32, f32)>> {
     out.into_iter().map(|s| s.into_iter().map(|(x, y)| (x / 24.0, y / 24.0)).collect()).collect()
 }
 
-/// An SVG elliptical arc from `p0` to `p1`, sampled into `cur` (the endpoint form turned to center form).
 #[allow(clippy::too_many_arguments)]
 fn arc_to(cur: &mut Vec<(f32, f32)>, p0: (f32, f32), rx: f32, ry: f32, rot: f32, large: bool, sweep: bool, p1: (f32, f32)) {
     let (mut rx, mut ry) = (rx.abs(), ry.abs());
@@ -470,7 +431,6 @@ fn arc_to(cur: &mut Vec<(f32, f32)>, p0: (f32, f32), rx: f32, ry: f32, rot: f32,
     }
 }
 
-/// A circle on the twenty-four-cell grid, mapped to the unit square.
 fn ring(cx: f32, cy: f32, r: f32) -> Vec<(f32, f32)> {
     (0..=32).map(|k| {
         let a = std::f32::consts::TAU * k as f32 / 32.0;
@@ -478,7 +438,6 @@ fn ring(cx: f32, cy: f32, r: f32) -> Vec<(f32, f32)> {
     }).collect()
 }
 
-/// A rounded rectangle on the twenty-four-cell grid, mapped to the unit square.
 fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<(f32, f32)> {
     let d = format!(
         "M{} {}h{}a{r} {r} 0 0 1 {r} {r}v{}a{r} {r} 0 0 1 -{r} {r}h-{}a{r} {r} 0 0 1 -{r} -{r}v-{}a{r} {r} 0 0 1 {r} -{r}z",
@@ -487,7 +446,6 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<(f32, f32)> {
     svg(&d).into_iter().next().unwrap_or_default()
 }
 
-/// The strokes of a navigation glyph; the only place their shapes are made.
 pub fn glyph_path(k: Glyph) -> Vec<Vec<(f32, f32)>> {
     match k {
         Glyph::Lock => { let mut v = vec![rounded(5.0, 11.0, 14.0, 10.0, 2.0)]; v.extend(svg("M8 11V7a4 4 0 0 1 8 0v4")); v },
@@ -586,7 +544,6 @@ pub fn glyph_path(k: Glyph) -> Vec<Vec<(f32, f32)>> {
     }
 }
 
-/// Draw a glyph turned by `turn` radians about the rectangle's center (the fold caret turns a quarter).
 pub fn draw_glyph_turned(p: &egui::Painter, k: Glyph, rect: egui::Rect, colour: egui::Color32, turn: f32) {
     let (s, co) = turn.sin_cos();
     let c = rect.center();
@@ -606,18 +563,14 @@ pub fn draw_glyph_turned(p: &egui::Painter, k: Glyph, rect: egui::Rect, colour: 
     }
 }
 
-/// Draw a glyph of `size` centered in `rect`.
 pub fn glyph_at(p: &egui::Painter, k: Glyph, center: egui::Pos2, size: f32, colour: egui::Color32) {
     draw_glyph(p, k, egui::Rect::from_center_size(center, egui::vec2(size, size)), colour);
 }
 
-/// Draw a navigation glyph with the same painter and pen as [`draw`].
 pub fn draw_glyph(p: &egui::Painter, k: Glyph, rect: egui::Rect, colour: egui::Color32) {
     strokes(p, &glyph_path(k), rect, colour);
 }
 
-/// The pen for a glyph drawn `side` points wide: `ICON_STROKE` of every twenty-four cells, as the design draws
-/// its icons, never under one point.
 pub fn pen(side: f32, colour: egui::Color32) -> egui::Stroke {
     egui::Stroke::new((crate::tokens::ICON_STROKE * side / 24.0).max(1.0), colour)
 }
@@ -635,8 +588,6 @@ fn strokes(p: &egui::Painter, paths: &[Vec<(f32, f32)>], rect: egui::Rect, colou
     }
 }
 
-/// Draw a glyph part way: its strokes laid end to end and drawn up to `part` (0 to 1) of their length (a check
-/// drawn as a pen would).
 pub fn glyph_drawn(p: &egui::Painter, k: Glyph, center: egui::Pos2, size: f32, colour: egui::Color32, part: f32) {
     let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
     let paths: Vec<Vec<egui::Pos2>> = glyph_path(k).iter().map(|sp| sp.iter().map(|(x, y)| egui::pos2(rect.left() + x * rect.width(), rect.top() + y * rect.height())).collect()).collect();

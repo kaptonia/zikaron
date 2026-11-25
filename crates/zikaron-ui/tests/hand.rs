@@ -1,6 +1,3 @@
-//! The pointing hand (`zikaron_ui::hand`): over whatever takes a click, decided once after the frame; never over
-//! what takes a click only to swallow it, and never in place of a cursor the frame chose (a text field's beam).
-
 use egui::{CursorIcon, Pos2, Rect, Sense, Vec2};
 
 const SCREEN: Vec2 = Vec2::new(800.0, 600.0);
@@ -11,8 +8,6 @@ fn dressed() -> egui::Context {
     ctx
 }
 
-/// Two frames of `add` with the pointer at `at` (the first lays out, the second is hovered); the cursor the second
-/// one leaves, after the hand is decided.
 fn cursor(ctx: &egui::Context, at: Pos2, mut add: impl FnMut(&mut egui::Ui)) -> CursorIcon {
     let mut icon = CursorIcon::Default;
     for i in 0..3 {
@@ -56,7 +51,6 @@ fn the_details_copy_icon_shows_the_hand_and_its_label_does_not() {
             let _ = f.detail_rows(ui, "d", &rows, 80.0);
         });
     };
-    // The row's middle line, from a first frame (the copy key sits at its right end).
     let mut row = Rect::NOTHING;
     let _ = cursor(&ctx, Pos2::ZERO, |ui| {
         let top = ui.cursor().min;
@@ -83,8 +77,6 @@ fn a_cursor_the_frame_chose_is_kept() {
     assert_eq!(got, CursorIcon::Text, "a field's beam stands");
 }
 
-/// Only a machine value carries a copy key: an address, a digest, an id, a path (and several of them, one a line, one key);
-/// words, figures (a count, a date), and an empty value carry none (`card::Detail`'s kinds).
 #[test]
 fn only_machine_values_carry_a_copy_key() {
     use zikaron_ui::card::{self, Detail};
@@ -103,7 +95,6 @@ fn only_machine_values_carry_a_copy_key() {
             let _ = f.detail_rows(ui, "d", &rows, 80.0);
         });
     };
-    // Each row's middle line, from a first frame: the rows are 44 high, two-line ones 60.
     let ctx = dressed();
     let mut right = 0.0;
     let _ = cursor(&ctx, Pos2::ZERO, |ui| {
@@ -120,7 +111,6 @@ fn only_machine_values_carry_a_copy_key() {
             y += h;
         }
     });
-    // The helper draws three frames: the first one's rows.
     tops.truncate(rows.len());
     let copies: Vec<bool> = tops.iter().map(|y| (0..40).any(|k| cursor(&ctx, Pos2::new(right - 4.0 - k as f32, *y), draw) == CursorIcon::PointingHand)).collect();
     assert_eq!(copies, vec![true, true, false, false, false, false, false], "a copy key on the machine values only");

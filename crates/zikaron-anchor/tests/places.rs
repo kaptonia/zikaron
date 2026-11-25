@@ -1,9 +1,3 @@
-//! One node written twice is one source (`endpoints::distinct_places`, `thin_chains`, `agree`): addresses are
-//! compared by the place they name (`zikaron_net::place_key`), not by their text. Each form below is one line
-//! of the table: what makes no second place (the same text, case in the scheme and host, the default port
-//! written, the spelling of an IPv6 literal, a missing path against `/`), and what does (another scheme,
-//! port, path, a trailing slash, another host name for the same machine, an IPv6 literal against IPv4).
-
 use zikaron::json::Value;
 use zikaron_anchor::endpoints::{agree, distinct_places, thin_chains};
 
@@ -55,9 +49,6 @@ fn a_node_written_twice_is_a_single_source() {
     assert!(!two.single_source, "two nodes are two sources");
 }
 
-/// A node is named by scheme, host and port only, but kept apart by its place: two nodes on one host whose
-/// paths differ (a key per network in the path) share a name and are two places (what a scan learns of one is
-/// kept by place: see the `scan` test `two_nodes_said_alike_keep_their_ranges_apart`).
 #[test]
 fn two_nodes_on_one_host_share_a_name_and_are_two_places() {
     use zikaron_anchor::rpc::{Endpoint, Http};
@@ -66,4 +57,22 @@ fn two_nodes_on_one_host_share_a_name_and_are_two_places() {
     assert_eq!(eth.name(), polygon.name(), "said alike: scheme, host and port");
     assert!(!eth.name().contains("KEY"), "the key is not said");
     assert_ne!(eth.place(), polygon.place(), "kept apart");
+}
+
+#[test]
+fn the_answer_two_places_gave_is_counted_by_places_not_rows() {
+    use zikaron_anchor::judge::{alike_among, two_places_alike};
+    let (a, b) = (b"[1]".to_vec(), b"[2]".to_vec());
+    let rows = vec![("http://127.0.0.1:8545", a.clone()), ("http://127.0.0.1:8545/", a.clone()), ("http://127.0.0.2:8545", b.clone())];
+    assert_eq!(alike_among(&rows), None, "one place written twice is one place");
+    assert!(!two_places_alike(&rows));
+    let mut more = rows.clone();
+    more.push(("http://127.0.0.3:8545", b.clone()));
+    assert_eq!(alike_among(&more), Some(2), "two places gave the second answer");
+}
+
+#[test]
+fn a_rest_place_and_a_node_on_its_host_are_one_place() {
+    assert_eq!(distinct_places(["rest://api.example", "https://api.example/v2/KEY"]), 1, "the endpoint's place and the node on its host");
+    assert_eq!(distinct_places(["rest://api.example", "https://other.example/v2/KEY"]), 2, "another host is another place");
 }

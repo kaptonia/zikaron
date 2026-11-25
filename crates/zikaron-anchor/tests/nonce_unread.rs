@@ -1,13 +1,8 @@
-//! The direct send's nonce answered with something that is not a quantity: nothing is signed or broadcast, and the
-//! answer comes back as it was for the caller to say (`NotSent::Nonce`), never read as nonce zero. In-process node
-//! only; no network.
-
 use zikaron::json::Value;
 use zikaron_anchor::rpc::{Endpoint, Trouble};
 use zikaron_anchor::send;
 use zikaron_anchor::wire::{self, W};
 
-/// A node that answers everything a send asks before the nonce, and the nonce with words.
 struct WordyNonce {
     broadcast: bool,
     landed: bool,
@@ -44,7 +39,7 @@ fn a_nonce_that_is_not_a_quantity_sends_nothing_and_comes_back_as_it_was() {
     let got = send::anchor_landed(&mut ep, &[7u8; 32], 31337, send::Form::Registry, Some([0x11; 20]), &[[1u8; 32]], None, std::time::Duration::ZERO, None, &mut |_, _| {
         landed = true;
         Ok(())
-    });
+    }, &mut |_, _, _| Ok(()));
     ep.landed = landed;
     assert!(matches!(&got, Err(send::NotSent::Nonce(Some(Value::Str(w)))) if w == "not a number"), "the answer as it was: {:?}", got.as_ref().err().map(|e| format!("{e:?}")));
     assert!(!ep.landed && !ep.broadcast, "nothing landed, nothing broadcast");

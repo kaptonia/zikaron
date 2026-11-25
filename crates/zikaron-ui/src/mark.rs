@@ -1,29 +1,16 @@
-//! Status marks, pills, type tags and counts.
-//!
-//! A status is either a word in a pill (where the status is a word) or an 18-point mark: a check (passed,
-//! confirmed), an empty circle (not started, waiting to be anchored, not read), an exclamation (needs
-//! attention), a cross (failed) or a spinner (in progress). One size everywhere.
-
 use crate::motion::{self, Curve};
 use crate::paint;
 use crate::palette::{c, Tone, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Color32, Painter, Pos2};
 
-/// The status marks. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Mark {
-    /// Passed, confirmed.
     Ok,
-    /// Not started, waiting, not read.
     Todo,
-    /// Needs attention.
     Warn,
-    /// Failed.
     Bad,
-    /// In progress on the chain (confirming, waiting to be anchored): an amber spinner.
     Busy,
-    /// In progress here (syncing, reading): a blue spinner.
     Work,
 }
 
@@ -41,13 +28,11 @@ impl Mark {
         }
     }
 
-    /// Whether this mark turns (and so asks for frames while shown).
     pub fn spins(self) -> bool {
         matches!(self, Mark::Busy | Mark::Work)
     }
 }
 
-/// Paint a mark of `size` (18 on pages) centered at `at`.
 pub fn paint_mark(ctx: &egui::Context, p: &Painter, at: Pos2, m: Mark, size: f32) {
     let r = size / 2.0;
     let k = size / 18.0;
@@ -81,7 +66,6 @@ pub fn paint_mark(ctx: &egui::Context, p: &Painter, at: Pos2, m: Mark, size: f32
     }
 }
 
-/// A three-quarter ring turning once every `period` seconds.
 pub fn spinner(ctx: &egui::Context, p: &Painter, at: Pos2, radius: f32, width: f32, colour: Color32, period: f32) {
     let turn = motion::cycle(ctx, period) * std::f32::consts::TAU;
     let n = 24;
@@ -96,20 +80,16 @@ pub fn spinner(ctx: &egui::Context, p: &Painter, at: Pos2, radius: f32, width: f
     p.add(egui::Shape::line(pts, egui::Stroke::new(width, colour)));
 }
 
-/// A mark in its own 18 × 18 cell.
 pub fn mark(ui: &mut egui::Ui, m: Mark) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(tokens::MARK, tokens::MARK), egui::Sense::hover());
     paint_mark(ui.ctx(), ui.painter(), rect.center(), m, tokens::MARK);
     resp
 }
 
-/// A mark and a line of text, 8 apart, centered across.
 pub fn mark_line(ui: &mut egui::Ui, m: Mark, s: &str, t: Type, colour: Color32) -> egui::Response {
     mark_words(ui, m, s, t, colour, tokens::S2)
 }
 
-/// A mark and words `gap` beside it, centered across, in one cell of the caller's layout (`width::cell`); the
-/// words wrap at the room the caller has.
 pub fn mark_words(ui: &mut egui::Ui, m: Mark, s: &str, t: Type, colour: Color32, gap: f32) -> egui::Response {
     let words = paint::wrapped(ui, s, t.font(), colour, t.line(), ui.available_width() - tokens::MARK - gap);
     let size = vec2(tokens::MARK + gap + words.size().x, words.size().y.max(tokens::MARK));
@@ -127,8 +107,6 @@ struct Pop {
     t0: f64,
 }
 
-/// Pop progress of a pill whose words changed after it was first seen (0..1 then settled at 1). `delay`
-/// staggers pills that pop together.
 fn popped(ctx: &egui::Context, id: egui::Id, key: u64, force: bool, delay: f32) -> f32 {
     let now = crate::motion::now(ctx);
     let t0 = ctx.data_mut(|d| {
@@ -157,8 +135,6 @@ fn pill_size(ui: &egui::Ui, s: &str, live: bool) -> egui::Vec2 {
     vec2(g.size().x + 20.0 + spin, tokens::PILL_H)
 }
 
-/// What a pill showed before its state changed, and when it changed: its colours cross to the new ones and its
-/// old words fade out under the new (0.3 s), in place.
 #[derive(Clone)]
 struct Was {
     key: u64,
@@ -175,8 +151,6 @@ fn paint_pill(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, s: &str, state: &st
     let k = 1.0 + (k - 1.0) * motion::travel(ui.ctx());
     let alpha = if pop < 1.0 { pop } else { 1.0 };
     let r = paint::scaled(rect, k);
-    // A change of state (its whole words or its tone; not the room it is given): the colours cross from the old
-    // tone to the new, the words cross in place.
     let key = motion::key_of(&(state, tone as u8));
     let wid = id.with("was");
     let was = ui.ctx().data(|d| d.get_temp::<Was>(wid));
@@ -221,28 +195,20 @@ fn paint_pill(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, s: &str, state: &st
     }
 }
 
-/// A status word in a pill: 24 high, 13 text, fully round. When its state changes its colours cross to the new
-/// tone and its words cross in place (0.3 s). Never wider than the room it is given: words longer than that end
-/// in "…" (whole on hover).
 pub fn pill(ui: &mut egui::Ui, s: &str, tone: Tone) -> egui::Response {
     pill_ex(ui, s, tone, false, false, 0.0)
 }
 
-/// A pill with a small spinner before its words (a state that is still moving).
 pub fn pill_live(ui: &mut egui::Ui, s: &str, tone: Tone) -> egui::Response {
     pill_ex(ui, s, tone, true, false, 0.0)
 }
 
-/// A pill that pops in on first sight, `delay` seconds late (result rows pop one after another).
 pub fn pill_pop(ui: &mut egui::Ui, s: &str, tone: Tone, delay: f32) -> egui::Response {
     pill_ex(ui, s, tone, false, true, delay)
 }
 
 fn pill_ex(ui: &mut egui::Ui, s: &str, tone: Tone, live: bool, force: bool, delay: f32) -> egui::Response {
     let natural = pill_size(ui, s, live);
-    // Narrower room than its words (a table cell, a crowded row): the pill takes the room and its words end in
-    // "…", measured; the whole words show on hover. It never runs past the room it was given.
-    // A room within a point of the words' width is room enough (rows lay out on whole points, words do not).
     let room = ui.available_width();
     let (size, shown) = if room.is_finite() && room >= 0.0 && natural.x > room + 1.0 {
         let spin = if live { 10.0 + 5.0 } else { 0.0 };
@@ -251,23 +217,19 @@ fn pill_ex(ui: &mut egui::Ui, s: &str, tone: Tone, live: bool, force: bool, dela
         (natural, s.to_string())
     };
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
-    // Pops only where asked (results that come in one after another); a state that changes crosses in place.
     let pop = if force { popped(ui.ctx(), resp.id.with("pop"), motion::key_of(&(s, tone as u8)), force, delay) } else { 1.0 };
     paint_pill(ui, resp.id, rect, &shown, s, tone, live, pop);
     if shown != s { crate::layer::tip(resp, s) } else { resp }
 }
 
-/// The width a pill takes.
 pub fn pill_w(ui: &egui::Ui, s: &str, live: bool) -> f32 {
     pill_size(ui, s, live).x
 }
 
-/// A type tag: 24 high, at least 52 wide, a capsule of grey tone.
 pub fn tag(ui: &mut egui::Ui, s: &str) -> egui::Response {
     tag_in(ui, s, tokens::TAG_MIN_W)
 }
 
-/// A type tag filling a column at least `col` wide (pick lists line their tags up; longer words widen it).
 pub fn tag_in(ui: &mut egui::Ui, s: &str, col: f32) -> egui::Response {
     let g = paint::galley(ui, s, Type::Small, c(C::Ink2));
     let w = (g.size().x + tokens::TAG_PAD).max(tokens::TAG_MIN_W).max(col);
@@ -276,31 +238,22 @@ pub fn tag_in(ui: &mut egui::Ui, s: &str, col: f32) -> egui::Response {
     resp
 }
 
-/// Paint a tag in a given rectangle (table cells).
 pub fn paint_tag(p: &Painter, rect: egui::Rect, g: std::sync::Arc<egui::Galley>) {
     p.rect_filled(rect, Radius::Tag.egui(), c(C::Tone));
     p.galley(pos2(rect.center().x - g.size().x / 2.0, rect.center().y - g.size().y / 2.0), g, c(C::Ink2));
 }
 
-/// How a count is shown in the rail.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Count {
-    /// Things to handle: pale red ground, dark red figure.
     Alert,
-    /// On the selected item: blue ground, white figure.
     Selected,
-    /// Neutral.
     Soft,
 }
 
-/// A count that comes and goes: it pops in when there is something to count (a light spring) and shrinks away
-/// when there is nothing, and a new figure gives a small jump. `right` and `y` as [`paint_count`]; returns the
-/// width it takes now.
 pub fn count_live(ui: &egui::Ui, id: egui::Id, right: f32, y: f32, n: usize, how: Count) -> f32 {
     let ctx = ui.ctx();
     let now = crate::motion::now(ui.ctx());
     let shown = motion::flag(ctx, id.with("count-on"), n > 0, crate::tokens::MID);
-    // The figure last shown, kept to draw while it shrinks away, and when it last changed.
     let kid = id.with("count-n");
     let (last, mut changed) = ctx.data(|d| d.get_temp::<(usize, f64)>(kid)).unwrap_or((n, f64::NEG_INFINITY));
     if n > 0 && n != last {
@@ -334,7 +287,6 @@ pub fn count_live(ui: &egui::Ui, id: egui::Id, right: f32, y: f32, n: usize, how
     w * shown.min(1.0)
 }
 
-/// Paint a count ending at `right`, centered on `y`; returns its width.
 pub fn paint_count(ui: &egui::Ui, right: f32, y: f32, n: usize, how: Count) -> f32 {
     let (fill, ink) = match how {
         Count::Alert => (c(C::BadWash), c(C::BadInk)),

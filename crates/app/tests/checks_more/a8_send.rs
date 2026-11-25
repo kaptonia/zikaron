@@ -1,12 +1,3 @@
-//! Sending a batch end to end (`Action::SendBatch` over a home with work queued, after `Action::EstimateGas`):
-//! the balance gate before sending, one signing handed byte for byte to every node with the echo checked, and
-//! ambiguous broadcast answers resolved by hash without signing a new nonce.
-//!
-//! Nodes are fakes on 127.0.0.1 in this process that keep every request, so what was broadcast and what was
-//! asked are read where they arrived. Places are set before any vault or shell use (`vault_open`); each test
-//! runs alone in its own process ([`super::alone_in`]), and each case uses its own shell, home and nodes. No
-//! network.
-
 use super::vault_open;
 use app::action::{apply, apply_settled, Action, Applied};
 use app::fault::{Fault, Known};
@@ -15,19 +6,12 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// ───────────────────────── Nodes ─────────────────────────
-
-/// How a node answers one question.
 pub(super) enum Reply {
-    /// `result`, as JSON text.
     Result(String),
-    /// `error`, a JSON-RPC error object as JSON text.
     Error(String),
-    /// The connection closes with no answer (after the request was read whole).
     Close,
 }
 
-/// A JSON-RPC node on a local port answering with `answer(method, body)` and keeping every request body.
 #[derive(Clone)]
 pub(super) struct Node {
     pub(super) url: String,
@@ -59,13 +43,29 @@ pub(super) fn node(answer: impl Fn(&str, &str) -> Reply + Send + Sync + 'static)
                         }
                     }
                 };
-                log.lock().expect("log").push(body.clone());
-                let method = method_of(&body);
-                let id = body.split("\"id\":").nth(1).and_then(|r| r.split([',', '}']).next()).unwrap_or("1").trim().to_string();
-                let reply = match answer(&method, &body) {
-                    Reply::Result(v) => format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{v}}}"),
-                    Reply::Error(e) => format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{e}}}"),
-                    Reply::Close => return,
+                let one = |body: &str| -> Option<String> {
+                    log.lock().expect("log").push(body.to_string());
+                    let method = method_of(body);
+                    let id = body.split("\"id\":").nth(1).and_then(|r| r.split([',', '}']).next()).unwrap_or("1").trim().to_string();
+                    match answer(&method, body) {
+                        Reply::Result(v) => Some(format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{v}}}")),
+                        Reply::Error(e) => Some(format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{e}}}")),
+                        Reply::Close => None,
+                    }
+                };
+                let reply = match zikaron::json::parse(body.as_bytes()) {
+                    Ok(zikaron::json::Value::Arr(asks)) => {
+                        let mut parts = Vec::new();
+                        for a in &asks {
+                            let Some(r) = one(&String::from_utf8_lossy(&zikaron::json::canon_bytes(a))) else { return };
+                            parts.push(r);
+                        }
+                        format!("[{}]", parts.join(","))
+                    }
+                    _ => match one(&body) {
+                        Some(r) => r,
+                        None => return,
+                    },
                 };
                 let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes());
             });
@@ -78,34 +78,30 @@ pub(super) fn method_of(body: &str) -> String {
     body.split("\"method\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string()
 }
 
-/// The first string parameter of a request (the raw transaction, the hash asked about).
 pub(super) fn first_param(body: &str) -> String {
     body.split("\"params\":[\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string()
 }
 
-/// The hash of a raw transaction (`0x` hex), as a node computes it.
 pub(super) fn hash_of(raw_hex: &str) -> String {
     zikaron::hexfmt::encode(&zikaron::cryptox::keccak256(&zikaron::hexfmt::decode(raw_hex).expect("raw hex")))
 }
 
 impl Node {
-    /// The bodies of the requests asking `method`.
     pub(super) fn asked(&self, method: &str) -> Vec<String> {
         self.log.lock().expect("log").iter().filter(|b| method_of(b) == method).cloned().collect()
     }
 
-    /// Every raw transaction handed to this node, as sent.
+    pub(super) fn methods(&self) -> Vec<String> {
+        self.log.lock().expect("log").iter().map(|b| method_of(b)).collect()
+    }
+
     pub(super) fn raws(&self) -> Vec<String> {
         self.asked("eth_sendRawTransaction").iter().map(|b| first_param(b)).collect()
     }
 }
 
-/// A balance of one ether: more than any batch's fee cap times its gas limit.
 pub(super) const PLENTY: &str = "\"0xde0b6b3a7640000\"";
 
-/// Chain 31337 at height 64, with `balance` as the balance; the fee history has fractional `gasUsedRatio` as
-/// real nodes give it; a broadcast echoes the hash of the bytes it took; no transaction is known by hash and
-/// there is no receipt yet.
 pub(super) fn chain(method: &str, body: &str, balance: &str) -> Reply {
     Reply::Result(match method {
         "eth_chainId" => "\"0x7a69\"".into(),
@@ -121,26 +117,18 @@ pub(super) fn chain(method: &str, body: &str, balance: &str) -> Reply {
     })
 }
 
-/// A transaction a node knows, as `eth_getTransactionByHash` gives it.
 fn known_tx(body: &str) -> Reply {
     Reply::Result(format!("{{\"hash\":\"{}\",\"blockNumber\":null,\"from\":\"0x{}\",\"input\":\"0x\"}}", first_param(body), "11".repeat(20)))
 }
 
-// ───────────────────────── The bench ─────────────────────────
-
-/// Where this process's homes are made (removed at the end of each test, [`tidy`]).
 pub(super) fn homes() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("zk-a8-send-{}", std::process::id()))
 }
 
-/// Remove this process's homes. The shells that wrote them are kept to the end of the test, since a send
-/// leaves its receipt wait in flight on its shell.
 pub(super) fn tidy() {
     let _ = std::fs::remove_dir_all(homes());
 }
 
-/// A new shell writing its own home with a genesis and one work queued, chain 31337, a registry and `nodes`
-/// as its endpoints, no pause between rounds; the batch of one is estimated, so it may be sent.
 pub(super) fn bench(name: &str, nodes: &[&Node]) -> app::shell::Shell {
     vault_open();
     zikaron_anchor::patience::set_waits(Some(Duration::ZERO));
@@ -163,19 +151,16 @@ pub(super) fn bench(name: &str, nodes: &[&Node]) -> app::shell::Shell {
     shell
 }
 
-/// Make `nodes` the shell's endpoints and estimate the batch of one over them, so it may be sent.
 fn point(shell: &mut app::shell::Shell, name: &str, nodes: &[&Node]) {
     shell.endpoints = nodes.iter().map(|n| app::chainx::Endpoint::at(31337, n.url.clone())).collect();
     match apply_settled(shell, Action::EstimateGas { count: 1 }) {
         Applied::Gas { count: 1, .. } => {}
         other => panic!("{name}: the batch was not estimated: {other:?}"),
     }
-    // The fee reading used the chain's numbers, its tip read past the fee history's fractions.
     let fees = shell.fees.expect("fees read with the estimate");
     assert!(fees.from_chain && fees.priority == 0x5f5e100, "{name}: {fees:?}");
 }
 
-/// Press send for the batch of one and return the send's own landing (the first `Anchor` outcome).
 pub(super) fn send(shell: &mut app::shell::Shell) -> Result<Done, Fault> {
     assert_eq!(apply(shell, Action::SendBatch { count: 1 }), Applied::Started(Kind::Anchor));
     let until = Instant::now() + Duration::from_secs(60);
@@ -188,7 +173,6 @@ pub(super) fn send(shell: &mut app::shell::Shell) -> Result<Done, Fault> {
     }
 }
 
-/// Nothing was signed or broadcast at any of `nodes`: no nonce asked, no raw transaction handed over.
 pub(super) fn nothing_broadcast(form: &str, nodes: &[&Node]) {
     for n in nodes {
         assert!(n.asked("eth_sendRawTransaction").is_empty(), "{form}: nothing broadcast at {}", n.url);
@@ -196,8 +180,6 @@ pub(super) fn nothing_broadcast(form: &str, nodes: &[&Node]) {
     }
 }
 
-/// One signing over `nodes`: the pending nonce asked once of each, and every raw transaction any of them got
-/// is the same bytes. Returns those bytes (`0x` hex).
 fn signed_once(form: &str, nodes: &[&Node]) -> String {
     for n in nodes {
         assert_eq!(n.asked("eth_getTransactionCount").len(), 1, "{form}: the nonce asked once, one round, at {}", n.url);
@@ -209,12 +191,6 @@ fn signed_once(form: &str, nodes: &[&Node]) -> String {
     raws.remove(0)
 }
 
-// ───────────────────────── The tests ─────────────────────────
-
-/// The shape a test run by [`super::alone_in`] is given, pinned on its own: a child of this binary carrying its
-/// own full name as the marker, a machine directory of its own (named by the child's process, not the
-/// parent's), and the step this module's sends begin with, opening a home (`OpenHome`), answered `Homed`. One
-/// CI run once saw that step answer otherwise inside a child; any other answer here prints in full what it was.
 #[test]
 fn a_test_run_alone_gets_its_own_process_machine_and_home() {
     if super::alone_in(module_path!(), "a_test_run_alone_gets_its_own_process_machine_and_home") {
@@ -235,8 +211,6 @@ fn a_test_run_alone_gets_its_own_process_machine_and_home() {
     tidy();
 }
 
-/// The pre-send balance gate refuses too little as `INSUFFICIENT_FUNDS` (with need and balance) and refuses
-/// an unreadable or disputed balance by its own name; in every refused case nothing is signed or broadcast.
 #[test]
 fn the_balance_gate_refuses_by_name_and_nothing_is_broadcast() {
     if super::alone_in(module_path!(), "the_balance_gate_refuses_by_name_and_nothing_is_broadcast") {
@@ -291,8 +265,6 @@ fn the_balance_gate_refuses_by_name_and_nothing_is_broadcast() {
     tidy();
 }
 
-/// One signing goes byte for byte to every node, and only a node whose echoed hash matches counts as having
-/// taken it; a node that only echoes wrong hashes never counts, and nothing is signed again.
 #[test]
 fn one_signing_the_same_bytes_to_every_node_and_the_echo_must_match() {
     if super::alone_in(module_path!(), "one_signing_the_same_bytes_to_every_node_and_the_echo_must_match") {
@@ -304,7 +276,6 @@ fn one_signing_the_same_bytes_to_every_node_and_the_echo_must_match() {
             _ => chain(m, b, PLENTY),
         })
     };
-    // Three nodes: the first closes without answering, the second echoes a wrong hash, the third's echo matches.
     let form = "third";
     let silent = node(|m, b| match m {
         "eth_sendRawTransaction" => Reply::Close,
@@ -326,7 +297,6 @@ fn one_signing_the_same_bytes_to_every_node_and_the_echo_must_match() {
         }
         other => panic!("{form}: sent: {other:?}"),
     }
-    // One node, only ever a wrong echo.
     let form = "wrongEchoOnly";
     let wrong = wrong_echo();
     let mut other_shell = bench(form, &[&wrong]);
@@ -335,15 +305,12 @@ fn one_signing_the_same_bytes_to_every_node_and_the_echo_must_match() {
     assert_eq!(wrong.raws().len(), 1, "{form}: handed once");
     let f = got.expect_err("a wrong echo is not received");
     assert!(f.which().is_some() && f.which() != Some(Known::InsufficientFunds), "{form}: refused by name: {f:?}");
-    // Whether the bytes went out was asked by the signed hash, never by the echo.
     let asked: Vec<String> = wrong.asked("eth_getTransactionByHash").iter().map(|b| first_param(b)).collect();
     assert!(!asked.is_empty() && asked.iter().all(|h| *h == hash_of(&raw)), "{form}: asked by the signed hash: {asked:?}");
     drop((shell, other_shell));
     tidy();
 }
 
-/// "Already known", "nonce too low" and a connection closed after the bytes were taken are each resolved by
-/// asking for the signed hash: known counts as taken, unknown is refused by name; no new nonce is signed.
 #[test]
 fn already_taken_answers_are_asked_by_hash_and_no_new_nonce_is_signed() {
     if super::alone_in(module_path!(), "already_taken_answers_are_asked_by_hash_and_no_new_nonce_is_signed") {

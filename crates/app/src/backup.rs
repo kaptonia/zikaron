@@ -1,71 +1,53 @@
-//! The whole-machine backup: one file, sealed with a backup password, that restores everything.
-//!
-//! What it holds: the identity register and every identity's key (a recovery-word identity's 16 bytes of
-//! entropy, an existing-key identity's 32-byte private key), every sealed local file of this machine opened
-//! (ledger entries, held grants, settings, queues, indexes…) and the machine settings. It never holds the master
-//! key, the passcode or the failure count: a restore makes a new master key.
-//!
-//! The envelope (shared by the family's files): the first line is the magic [`MAGIC`]; the second line is a plain
-//! header (format version, app name, creation time, scrypt salt and parameters, nonce); the rest is the plain
-//! package sealed with XChaCha20-Poly1305 under K = scrypt(backup password, salt), with the two header lines as
-//! additional data. The plain package lives only in memory. A wrong password, a file of another app and a
-//! format newer than this one are each refused by name ([`Known::BackupPassword`], [`Known::BackupNotOurs`],
-//! [`Known::BackupTooNew`]); none of them touches the vault or its failure count.
-//!
-//! The file name is `zikaron-backup-YYYY-MM-DD.zikaron` ([`file_stem`], [`EXT`]), numbered if taken. It is
-//! written without ever replacing an existing file (`home::land_numbered`, 0600), then read back and opened
-//! before it counts.
-
 use crate::fault::{classify, Fault, Known};
 use crate::local::{Doc, Whose};
 use crate::roles::Role;
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// The first line of every backup (including its trailing newline).
 pub const MAGIC: &[u8] = b"zikaron-backup/1\n";
-/// The app named in the header.
 pub const APP: &str = "zikaron-desk";
-/// The format version of the plain package this version writes and reads.
 pub const FORMAT: u64 = 1;
-/// The file's extension.
 pub const EXT: &str = "zikaron";
-/// The minimum backup password length in characters, shared by the whole-machine backup and key file
-/// export.
 pub const PASSWORD_MIN: usize = 8;
+pub fn password_ok(password: &crate::secret::Secret, again: &crate::secret::Secret) -> Result<(), crate::fault::Fault> {
+    use crate::fault::{Fault, Known};
+    if password.overflowed() || again.overflowed() {
+        return Err(Fault::known(Known::PasswordLong, crate::secret::CAP.to_string()));
+    }
+    if password != again {
+        return Err(Fault::known(Known::PasswordsDiffer, String::new()));
+    }
+    if password.chars() < PASSWORD_MIN {
+        return Err(Fault::known(Known::PasswordShort, password.chars().to_string()));
+    }
+    Ok(())
+}
+
 const NONCE: usize = 24;
 const SALT: usize = 32;
 
-/// The file name stem for a backup written at `now` (UTC date): `zikaron-backup-YYYY-MM-DD`.
 pub fn file_stem(now: u64) -> String {
     let (y, m, d, _, _, _) = crate::when::civil(now);
     format!("zikaron-backup-{y:04}-{m:02}-{d:02}")
 }
 
-/// What a backup holds, counted (shown on the confirmation card and the toast).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub created: u64,
     pub identities: usize,
-    /// Ledger entries across every seat home.
     pub entries: usize,
-    /// Records (`history` entries) among them.
     pub records: usize,
-    /// Held grants across every seat home.
     pub held: usize,
 }
 
-/// One identity's key in the package.
 #[derive(Clone)]
 struct KeyOf {
     id: String,
-    /// "words" (16 bytes of entropy) or "key" (a 32-byte private key in `account`).
     kind: String,
     account: String,
     bytes: Vec<u8>,
 }
 
-/// One local file in the package.
 #[derive(Clone)]
 struct FileOf {
     whose: Whose,
@@ -74,14 +56,12 @@ struct FileOf {
     bytes: Vec<u8>,
 }
 
-/// The plain package (memory only).
 struct Package {
     registry: Vec<u8>,
     primary: Option<(String, crate::keybox::PrimaryKind)>,
     keys: Vec<KeyOf>,
     machine: Vec<u8>,
     files: Vec<FileOf>,
-    /// The read-only networks table's bytes (machine-wide); absent when this machine has none.
     read_nets: Option<Vec<u8>>,
 }
 
@@ -93,7 +73,6 @@ impl Drop for Package {
     }
 }
 
-/// Bytes that hold keys (the plain package, a primary identity's secret): wiped when dropped, on every path.
 struct Wiped(Vec<u8>);
 
 impl Drop for Wiped {
@@ -109,7 +88,6 @@ impl std::ops::Deref for Wiped {
     }
 }
 
-/// The vault's slots being rebuilt: every secret wiped when dropped, on every path.
 struct Slots(Vec<(String, Vec<u8>)>);
 
 impl Drop for Slots {
@@ -151,14 +129,10 @@ fn whose_value(w: &Whose) -> Vec<(&'static str, Value)> {
         Whose::Loose => vec![("whose", s("loose"))],
         Whose::Kept { n } => vec![("whose", s("kept")), ("n", Value::Int(*n as u64))],
         Whose::Seat { id, seat } => vec![("whose", s("seat")), ("id", s(id)), ("seat", s(seat.as_str()))],
-        // A deleted identity's home does not travel (`collect` leaves it out); named for completeness.
         Whose::Left { id, seat } => vec![("whose", s("left")), ("id", s(id)), ("seat", s(seat.as_str()))],
     }
 }
 
-/// How the package encodes a byte share (a key, a file, the machine settings, the read-only networks table, the
-/// register). Every byte share in the package goes through this single function, so the plaintext scan can
-/// take the encoded form from here rather than from a copy.
 pub fn transcribe(b: &[u8]) -> String {
     zikaron::hexfmt::encode(b)
 }
@@ -248,12 +222,9 @@ fn package_of(bytes: &[u8]) -> Result<Package, Fault> {
                 _ => return Err(bad("file")),
             };
             let rel = text(f, "rel").ok_or_else(|| bad("file"))?;
-            // Every path is checked: each segment must be one plain path component on every system ([`plain_member`])
-            // and match the kind it claims, so a crafted package cannot place a file outside a home or as another kind.
             if !plain_member(&rel) {
                 return Err(bad("file"));
             }
-            // The register travels in its own field; a backup never holds its own index (a restore writes it).
             let doc = text(f, "doc").and_then(|t| Doc::from_tag(&t)).filter(|d| !matches!(d, Doc::Registry | Doc::BackupIndex)).ok_or_else(|| bad("file"))?;
             let fits = match whose {
                 Whose::Machine => crate::local::machine_doc(&rel) == Some(doc),
@@ -266,8 +237,6 @@ fn package_of(bytes: &[u8]) -> Result<Package, Fault> {
             files.push(FileOf { whose, rel, doc, bytes });
         }
     }
-    // The read-only networks table is optional (older backups have none); when present it must parse as the
-    // table does, or the backup is refused by name before anything is staged.
     let read_nets = match v.member("readNetworks") {
         None => None,
         Some(x) => {
@@ -282,27 +251,14 @@ fn package_of(bytes: &[u8]) -> Result<Package, Fault> {
     Ok(Package { registry, primary, keys, machine, files, read_nets })
 }
 
-/// A member path is `/`-joined segments, each exactly one plain path component on every system: not empty (so
-/// no leading `/`), not ending in `.` or a space (which covers `.` and `..`, and the trailing dots and spaces
-/// Windows strips, turning `.. ` into `..`), and with no other system's separator, drive or stream mark (`\`,
-/// `:`) and no NUL. So no segment can be read as several steps, a drive or a parent, and no file can escape
-/// the home it is restored into. Names this app writes always pass.
 fn plain_member(rel: &str) -> bool {
     rel.split('/').all(|x| !x.is_empty() && !x.ends_with(['.', ' ']) && !x.contains(['\\', ':', '\0']))
 }
-
-// ───────────────────────── The envelope ─────────────────────────
 
 fn nonce_and_salt() -> Result<(Vec<u8>, Vec<u8>), Fault> {
     Ok((crate::key::random(NONCE)?, crate::key::random(SALT)?))
 }
 
-/// The scrypt parameters a new backup is sealed with: always the standard level, deliberately not calibrated
-/// to this machine, since a backup made on a fast machine must open on a slow one, where a higher level could
-/// take minutes or run out of memory. The loop below never raises it: doubling N from the standard level
-/// passes it immediately, so it returns the standard parameters after one timed derivation. The light
-/// parameters `keybox::params` returns under the test hooks (off in normal builds) are used as is: tests
-/// measure behavior, not time.
 pub fn params() -> crate::keystore::Params {
     let p = crate::keybox::params();
     if p != crate::keystore::Params::standard() {
@@ -314,8 +270,6 @@ pub fn params() -> crate::keystore::Params {
         let t = std::time::Instant::now();
         let _ = crate::cryptx::scrypt(b"calibrate", b"zikaron-backup", p.n, p.r, p.p, &mut out);
         let next = crate::keystore::Params { n: p.n * 2, ..p };
-        // What this app writes stays within the standard level (the accepted reading bounds are wider so other
-        // tools' files open; they are not a target).
         if t.elapsed() >= std::time::Duration::from_millis(500) || next.n > crate::keystore::Params::standard().n || !crate::keystore::in_range(next.n, next.r, next.p) {
             return p;
         }
@@ -355,11 +309,8 @@ fn seal(package: &[u8], password: &str, created: u64) -> Result<Vec<u8>, Fault> 
     Ok(out)
 }
 
-/// Reads a backup's header and opens its body. Another app's file, a newer format and a wrong password are
-/// each refused by name. Nothing on this machine is read or changed.
 fn open(bytes: &[u8], password: &str) -> Result<(u64, Wiped), Fault> {
     let not_ours = || Fault::known(Known::BackupNotOurs, String::new());
-    // Another app's backup of the same family has the same shape with its own name in the magic and header.
     if !bytes.starts_with(MAGIC) {
         return Err(not_ours());
     }
@@ -387,8 +338,6 @@ fn open(bytes: &[u8], password: &str) -> Result<(u64, Wiped), Fault> {
     let (Some(n), Some(r), Some(p)) = (num("n"), num("r"), num("p")) else {
         return Err(Fault::known(Known::BackupShape, "kdf".to_string()));
     };
-    // Parameters out of the keystore bounds are refused before deriving (a file cannot make derivation use
-    // terabytes of memory).
     if !crate::keystore::in_range(n, r, p) {
         return Err(Fault::known(Known::BackupShape, format!("kdf n={n} r={r} p={p}")));
     }
@@ -409,43 +358,41 @@ fn read_file(path: &Path) -> Result<Vec<u8>, Fault> {
     std::fs::read(path).map_err(|e| classify(&e, &path.display().to_string()))
 }
 
-// ───────────────────────── Export ─────────────────────────
-
-/// Collect this machine's package (vault open: keys and local files are opened).
 fn collect() -> Result<Package, Fault> {
     let reg = crate::register::read()?.unwrap_or_default();
     let mut keys = Vec::new();
     for row in &reg.rows {
+        let mut have: Vec<String> = Vec::new();
         match row.kind() {
             crate::identity::Kind::Words => {
                 let acct = crate::places::seed_slot(&row.id);
                 let b = crate::keybox::get(&acct)?.ok_or_else(|| Fault::known(Known::KeychainMissing, acct.clone()))?;
+                have.push(acct.clone());
+                if let Ok(e) = <[u8; crate::family::ENTROPY_BYTES]>::try_from(b.as_slice()) {
+                    have.extend(crate::key::seat_slots(&e).unwrap_or_default().into_iter().map(|(a, _)| a));
+                }
                 keys.push(KeyOf { id: row.id.clone(), kind: "words".into(), account: acct, bytes: b });
             }
-            crate::identity::Kind::Existing => {
-                for acct in row.accounts() {
-                    let b = crate::keybox::get(&acct)?.ok_or_else(|| Fault::known(Known::KeychainMissing, acct.clone()))?;
-                    keys.push(KeyOf { id: row.id.clone(), kind: "key".into(), account: acct, bytes: b });
-                }
+            crate::identity::Kind::Existing => {}
+        }
+        let needed = row.needed_accounts();
+        for acct in row.accounts().into_iter().filter(|a| !have.contains(a)) {
+            match crate::keybox::get(&acct)? {
+                Some(b) => keys.push(KeyOf { id: row.id.clone(), kind: "key".into(), account: acct, bytes: b }),
+                None if needed.contains(&acct) => return Err(Fault::known(Known::KeychainMissing, acct.clone())),
+                None => {}
             }
         }
     }
     let mut files = Vec::new();
     let key = crate::keybox::local_key()?;
-    // The register travels in its own field (its file name is this machine's, not the backup's). A deleted
-    // identity's homes stay on this machine. Each file travels by its logical path (what it is), never by its
-    // on-disk name (which depends on this vault's names key). The record of checked chain facts (`checkedx`)
-    // stays here: an export carries no chain readings, and a restored machine asks again.
-    // The machine settings travel whole in their own field (`machine`), the sealed part with the plain.
-    for f in crate::local::all_files()?.into_iter().filter(|f| !matches!(f.doc, Doc::Registry | Doc::Checked | Doc::BackupIndex | Doc::MachineSealed) && !matches!(f.whose, Whose::Left { .. })) {
+    for f in crate::local::all_files()?.into_iter().filter(|f| !matches!(f.doc, Doc::Registry | Doc::Checked | Doc::BackupIndex | Doc::MachineSealed | Doc::Exports) && !matches!(f.whose, Whose::Left { .. })) {
         let raw = read_file(&f.at)?;
         let bytes = crate::local::open_with(&key, &crate::local::expect_found(&f)?, &raw, &f.rel)?;
         let rel = crate::local::logical_rel(f.doc, &f.rel, &bytes)?;
         files.push(FileOf { whose: f.whose, rel, doc: f.doc, bytes });
     }
     let machine = crate::machine::to_bytes(&crate::machine::read()?)?;
-    // The read-only networks table travels when this machine has a readable one (it is plain, like the machine
-    // settings); an unreadable table stays behind, since the app already refuses it by name.
     let nets_at = crate::readnets::path_in(&crate::home::machine_dir()?);
     let read_nets = match std::fs::read(&nets_at) {
         Ok(b) if crate::readnets::from_bytes(&b, "").is_ok() => Some(b),
@@ -463,7 +410,7 @@ fn summary_of(p: &Package, created: u64) -> Summary {
         match f.doc {
             Doc::Entry => {
                 out.entries += 1;
-                if zikaron::entry::check(&f.bytes).map(|e| e.kind == zikaron::tokens::EntryType::History).unwrap_or(false) {
+                if zikaron_glue::book::check(&f.bytes).map(|e| e.kind == zikaron_glue::book::Kind::History).unwrap_or(false) {
                     out.records += 1;
                 }
             }
@@ -474,33 +421,35 @@ fn summary_of(p: &Package, created: u64) -> Summary {
     out
 }
 
-/// How many ledger entries and held grants this machine has now. Counts file names only; nothing is opened.
+pub fn content_now() -> Result<(usize, usize), Fault> {
+    let (mut entries, mut records) = (0usize, 0usize);
+    for f in crate::local::all_files()?.into_iter().filter(|f| f.doc == Doc::Entry) {
+        entries += 1;
+        if let Some(b) = crate::local::read(&f.at, Doc::Entry)? {
+            if zikaron_glue::book::check(&b).is_ok_and(|e| e.kind == zikaron_glue::book::Kind::History) {
+                records += 1;
+            }
+        }
+    }
+    Ok((entries, records))
+}
+
 pub fn count_now() -> Result<u64, Fault> {
     Ok(crate::local::all_files()?.iter().filter(|f| matches!(f.doc, Doc::Entry | Doc::Held)).count() as u64)
 }
 
-/// The folder in the machine directory recording which entries and held grants the last backup holds (by
-/// identity, never by location: on-disk names change with the vault's names key), and its file. The index
-/// names entries and held grants by id, so it is sealed like every local file that identifies someone
-/// (`local`, kind [`Doc::BackupIndex`]): no backup carries it (a restore writes its own), and it is resealed
-/// under a new master key with the rest.
 pub const INDEX_DIR: &str = "backup";
 pub const INDEX_FILE: &str = "index.json";
-/// The index's shape.
 pub const INDEX_FORM: &str = "zikaron-desk/backup-index/1";
 
-/// The sealed index's `/`-separated path inside the machine directory (how `local::machine_doc` recognizes it).
 pub fn index_rel() -> String {
     format!("{INDEX_DIR}/{INDEX_FILE}")
 }
 
-/// Where the sealed index lies.
 pub fn index_path() -> Result<PathBuf, Fault> {
     Ok(crate::home::machine_dir()?.join(INDEX_DIR).join(INDEX_FILE))
 }
 
-/// What a backup holds, per its index: each entry and held grant by kind and logical path, with the backup's
-/// time (so an index left by another backup is never mistaken for this one's).
 fn index_bytes(at: u64, held: &[(Doc, String)]) -> Vec<u8> {
     let mut items: Vec<String> = held.iter().filter(|(d, _)| matches!(d, Doc::Entry | Doc::Held)).map(|(d, l)| format!("{}:{l}", d.tag())).collect();
     items.sort();
@@ -508,17 +457,12 @@ fn index_bytes(at: u64, held: &[(Doc, String)]) -> Vec<u8> {
     json::canon_bytes(&obj(vec![("at", Value::Int(at)), ("form", s(INDEX_FORM)), ("items", Value::Arr(items.into_iter().map(Value::Str).collect()))]))
 }
 
-/// Writes what the last backup holds, sealed, to the machine directory ([`index_bytes`]). An existing index
-/// that cannot be read is never overwritten (`local::put` refuses by name and says how to proceed).
 fn write_index(at: u64, held: &[(Doc, String)]) -> Result<(), Fault> {
     let room = crate::home::machine_dir()?.join(INDEX_DIR);
     std::fs::create_dir_all(&room).map_err(|e| classify(&e, &room.display().to_string()))?;
     crate::local::put(&room, INDEX_FILE, Doc::BackupIndex, &index_bytes(at, held))
 }
 
-/// The index of the backup made at `at`: `None` when there is none, it belongs to another backup, or it cannot
-/// be read (sealed under another key, altered, truncated, another file); the plain count is then used. While
-/// locked this is `LOCKED` (the index cannot be opened, and its contents are not guessed).
 fn read_index(at: u64) -> Result<Option<Vec<(Doc, String)>>, Fault> {
     let Ok(at_path) = index_path() else { return Ok(None) };
     let bytes = match crate::local::read(&at_path, Doc::BackupIndex) {
@@ -539,11 +483,6 @@ fn read_index(at: u64) -> Result<Option<Vec<(Doc, String)>>, Fault> {
         .collect())
 }
 
-/// The count the "behind last backup" measure starts from (`machine::backup_behind` subtracts what the backup
-/// had). For a backup that recorded its contents: what it had plus the entries and held grants this machine
-/// has that it lacks, so a deleted folder no longer offsets what was recorded since. With no backup, or one
-/// whose index cannot be read: this machine's current count. Files are matched by logical path (read as
-/// the backup reads it), whatever their on-disk name; reading needs the vault open.
 pub fn measured(last: Option<&crate::machine::Backed>) -> Result<u64, Fault> {
     let index = match last {
         Some(b) => read_index(b.at)?.map(|i| (b.count, i)),
@@ -553,7 +492,6 @@ pub fn measured(last: Option<&crate::machine::Backed>) -> Result<u64, Fault> {
     let held: std::collections::BTreeSet<(&'static str, String)> = index.into_iter().map(|(d, l)| (d.tag(), l)).collect();
     let key = crate::keybox::local_key()?;
     let mut behind = 0u64;
-    // A deleted identity's homes never travel in a backup (`collect`), so they are not counted against it.
     for f in crate::local::all_files()?.into_iter().filter(|f| matches!(f.doc, Doc::Entry | Doc::Held) && !matches!(f.whose, Whose::Left { .. })) {
         let raw = read_file(&f.at)?;
         let bytes = crate::local::open_with(&key, &crate::local::expect_found(&f)?, &raw, &f.rel)?;
@@ -565,22 +503,16 @@ pub fn measured(last: Option<&crate::machine::Backed>) -> Result<u64, Fault> {
     Ok(had.saturating_add(behind))
 }
 
-/// What an export wrote.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Exported {
     pub path: PathBuf,
     pub summary: Summary,
 }
 
-/// Writes a backup into `folder` (vault open). The name is `zikaron-backup-YYYY-MM-DD.zikaron`, numbered if
-/// taken; an existing file is never replaced (0600). The file is then read back and opened with the same
-/// password, and only then counts: its time, place and count are recorded in the machine settings. The four
-/// stages are reported to the backup task as they start.
 pub fn export(folder: &Path, password: &str, now: u64) -> Result<Exported, Fault> {
     export_staged(folder, password, now, |at| crate::task::stage_at(crate::task::Kind::Backup, at))
 }
 
-/// [`export`], with `stage` told each stage before it starts: collect, seal, write, read back (0 to 3).
 pub fn export_staged(folder: &Path, password: &str, now: u64, mut stage: impl FnMut(u8)) -> Result<Exported, Fault> {
     crate::trace::mark(crate::feature::Feature::H4);
     stage(0);
@@ -590,9 +522,6 @@ pub fn export_staged(folder: &Path, password: &str, now: u64, mut stage: impl Fn
     stage(1);
     let sealed = seal(&package, password, now)?;
     stage(2);
-    // Named and written in one step that never replaces an existing file (`home::land_numbered`), then read
-    // back: the file on disk must open with the password to the same package. A failure anywhere here is
-    // recorded where the backup task ends (`action::identity::export_backup`, the task's one exit).
     let at = crate::home::land_numbered(folder, &file_stem(now), EXT, &sealed)?;
     stage(3);
     let back = read_file(&at)?;
@@ -600,7 +529,6 @@ pub fn export_staged(folder: &Path, password: &str, now: u64, mut stage: impl Fn
     if again.0 != package.0 {
         return Err(Fault::known(Known::BackupNotLanded, at.display().to_string()));
     }
-    // Unreadable settings are refused before the index is written.
     crate::machine::read()?;
     write_index(now, &p.files.iter().map(|f| (f.doc, f.rel.clone())).collect::<Vec<_>>())?;
     let count = count_now()?;
@@ -611,16 +539,12 @@ pub fn export_staged(folder: &Path, password: &str, now: u64, mut stage: impl Fn
     Ok(Exported { path: at, summary })
 }
 
-/// Opens a backup with its password and reports what it holds (nothing on this machine changes; works while
-/// locked).
 pub fn peek(path: &Path, password: &str) -> Result<Summary, Fault> {
     let (created, plain) = open(&read_file(path)?, password)?;
     let p = package_of(&plain)?;
     Ok(summary_of(&p, created))
 }
 
-/// One file a backup carries: whose it is, its kind, its path in the backup, and the SHA-256 of its plain bytes
-/// (the bytes themselves stay in the package).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Carried {
     pub whose: crate::local::Whose,
@@ -629,16 +553,12 @@ pub struct Carried {
     pub sha256: [u8; 32],
 }
 
-/// What a backup carries, file by file, opened with its password (nothing on this machine changes; works while
-/// locked).
 pub fn carries(path: &Path, password: &str) -> Result<Vec<Carried>, Fault> {
     let (_, plain) = open(&read_file(path)?, password)?;
     let p = package_of(&plain)?;
     Ok(p.files.iter().map(|f| Carried { whose: f.whose.clone(), doc: f.doc, rel: f.rel.clone(), sha256: zikaron::cryptox::sha256(&f.bytes) }).collect())
 }
 
-/// This identity's ledger entries for one seat, from a backup (the source for fetching a restored identity's
-/// ledger). The identity must be in the backup.
 pub fn ledger_of(path: &Path, password: &str, id: &str, seat: Role) -> Result<Vec<Vec<u8>>, Fault> {
     let (_, plain) = open(&read_file(path)?, password)?;
     let p = package_of(&plain)?;
@@ -653,35 +573,23 @@ pub fn ledger_of(path: &Path, password: &str, id: &str, seat: Role) -> Result<Ve
         .collect())
 }
 
-// ───────────────────────── Restore ─────────────────────────
-
-/// A backed-up file's path on this disk under the new names key, and its bytes.
 fn on_disk(f: &FileOf, nk: &crate::names::NameKey) -> Result<(String, Vec<u8>), Fault> {
     let bytes = f.bytes.clone();
-    // The logical path comes from the bytes themselves (the backup's paths were that machine's names).
     let logical = crate::local::logical_rel(f.doc, &f.rel, &bytes).map_err(|_| Fault::known(Known::BackupShape, f.rel.clone()))?;
     Ok((crate::local::disk_rel(f.doc, &logical, nk).map_err(|_| Fault::known(Known::BackupShape, f.rel.clone()))?, bytes))
 }
 
-/// Where a restore is started from; each seals the new vault its own way.
 pub enum From<'a> {
-    /// First run: the vault was made moments ago by this run's passcode and holds nothing else; its master key
-    /// is kept.
     FirstRun,
-    /// Settings: the passcode was just checked; the new vault is sealed with it under a new master key.
     Settings(&'a str),
-    /// The locked card: a new passcode, a new master key, the failure count at zero.
     Locked(&'a str),
 }
 
-/// The result of a restore.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Restored {
     pub summary: Summary,
 }
 
-/// A fresh place for a restored home: the usual place when it is free or empty, otherwise a numbered one
-/// beside it (a home already on this machine is never written into: its files are sealed under the old key).
 fn fresh_home(usual: &Path) -> PathBuf {
     let free = |p: &Path| !p.exists() || std::fs::read_dir(p).map(|mut d| d.next().is_none()).unwrap_or(false);
     if free(usual) {
@@ -699,11 +607,8 @@ fn fresh_home(usual: &Path) -> PathBuf {
     }
 }
 
-/// Where a restore puts the data folders the backed-up machine had previously opened (under the machine
-/// directory).
 pub const KEPT_HOMES: &str = "kept-homes";
 
-/// Removes every staged file under one directory (a restore that did not take effect).
 fn drop_staged_in(root: &Path) {
     fn walk(d: &Path) {
         let Ok(list) = std::fs::read_dir(d) else { return };
@@ -719,31 +624,17 @@ fn drop_staged_in(root: &Path) {
     walk(root);
 }
 
-/// Restores from a backup: identities, keys and local data are replaced by the backup's. Everything is staged
-/// first (new homes written in fresh places, machine files staged beside theirs, the new vault staged beside
-/// the vault); renaming the vault is the single moment it takes effect, and staged files settle after it. A
-/// failure before that leaves the machine unchanged (the new homes are removed); an interruption after it is
-/// settled on the next unlock (`local::settle_pending`).
 pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Fault> {
     crate::trace::mark(crate::feature::Feature::H4);
     let (created, plain) = open(&read_file(path)?, password)?;
     let p = package_of(&plain)?;
     let summary = summary_of(&p, created);
-    // The backup's machine settings are validated before anything is staged: settings written by a newer
-    // version, or malformed ones, are refused here rather than staged to fail at every unlock. The restored
-    // settings record this backup as the last one (a backup cannot hold its own record).
     let mut machine = if p.machine.is_empty() { crate::machine::Machine::default() } else { crate::machine::from_bytes(&p.machine).map_err(|f| Fault::known(Known::BackupShape, format!("machine · {}", f.tail())))? };
     machine.backup = Some(crate::machine::Backed { at: created, path: path.display().to_string(), count: (summary.entries + summary.held) as u64 });
-    // The last-backup record is this backup: a failed attempt the backed-up machine had recorded
-    // (`backup_failed`) is not carried over.
     machine.backup_failed = None;
-    // A restore is a new master key: no command-line credential survives it (none travels in a backup), so the
-    // restored machine has writing alone off.
     machine.cli_alone = None;
     let mut reg = crate::identity::Registry::parse(&p.registry).map_err(|w| Fault::known(Known::BackupShape, w))?;
-    // The homes the backed-up machine's deleted identities left are that machine's, not this one's.
     reg.left.clear();
-    // The vault's slots: recovery-word identities derive both seat keys from their entropy again.
     let mut slots = Slots(Vec::new());
     let mut primary_secret: Option<Wiped> = None;
     for k in &p.keys {
@@ -774,11 +665,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
         (Some((id, kind)), Some(sec)) => Some((id.as_str(), *kind, &sec[..])),
         _ => None,
     };
-    // This machine's homes before the change (seat homes, the resolved home, folders it opened): whatever the
-    // new key cannot open is moved aside once the change takes effect. The plain records and the layout find them
-    // all (`local::homes_on_record`); the register adds any home it names elsewhere when it can be read. While
-    // locked (from the lock card) it cannot be read, and never will be under the key being replaced, which is
-    // expected; any other read failure is reported, never treated as an empty list.
     let mut former: Vec<PathBuf> = crate::local::homes_on_record();
     match crate::local::homes() {
         Ok(h) => former.extend(h.into_iter().map(|(_, p)| p)),
@@ -789,18 +675,13 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
     drop(slots);
     drop(primary_secret);
     let key = nb.local_key();
-    // Names on disk are keyed by the new vault's names key from here on.
     let nk = nb.name_key();
-    // New homes in fresh places, written directly (nothing refers to them until the vault changes).
     let mut made: Vec<PathBuf> = Vec::new();
     let undo = |made: &[PathBuf]| {
         for d in made {
             let _ = std::fs::remove_dir_all(d);
         }
     };
-    // The staged vault is written first: while it is staged the change has not taken effect, whatever else is
-    // staged (`local::settle_pending`), so an interruption anywhere before the rename leaves this machine
-    // unchanged.
     let staged = (|| -> Result<(), Fault> {
         crate::keybox::stage_new(&nb)?;
         let mut homes: Vec<(Whose, PathBuf)> = Vec::new();
@@ -811,8 +692,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
                 }
                 let usual = crate::home::identity_home_under(&nk, &row.id, seat)?;
                 let at = fresh_home(&usual);
-                // Recorded in the plan before it is created: an interruption from here on removes it at the next
-                // unlock.
                 made.push(at.clone());
                 crate::local::stage_plan(crate::local::PLAN_MADE, &made)?;
                 crate::home::Home::open_or_create(&at)?;
@@ -823,8 +702,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
                 homes.push((Whose::Seat { id: row.id.clone(), seat }, at));
             }
         }
-        // The data folders the backed-up machine had opened come back in fresh places under this machine
-        // directory, remembered as this machine's (they can be reopened from settings).
         let mut kept: Vec<usize> = p.files.iter().filter_map(|f| if let Whose::Kept { n } = f.whose { Some(n) } else { None }).collect();
         kept.sort_unstable();
         kept.dedup();
@@ -837,9 +714,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
             machine.homes.push(at.display().to_string());
             homes.push((Whose::Kept { n }, at));
         }
-        // Each home keeps the backup's label, written into the home with the rest; every file of a home is sealed
-        // as that home's. A home the backup holds files for without a label is not one this version backed up:
-        // refused by name, never given a label made up now.
         let label_of = |w: &Whose| -> Result<crate::local::Label, Fault> {
             p.files
                 .iter()
@@ -849,7 +723,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
         };
         let mut owners: Vec<(Whose, crate::local::Owner)> = Vec::new();
         for (w, root) in &homes {
-            // A home the backup holds nothing for (a seat never opened) stays empty, without a label.
             if !p.files.iter().any(|f| f.whose == *w) {
                 continue;
             }
@@ -881,14 +754,9 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
                 crate::home::put_at(&dir, &name, &crate::local::seal_with(&key, &id, &bytes)?)?;
             }
         }
-        // The home this machine resolves to without an identity stays where it is (the pointer is unchanged): the
-        // backup's files for it are staged beside its own; its files the backup lacks stay sealed under the old key
-        // and are moved aside once the change takes effect.
         let loose = crate::home::where_is()?;
         let is_seat = homes.iter().any(|(_, h)| crate::home::same_place(h, &loose));
         if !is_seat && p.files.iter().any(|f| f.whose == Whose::Loose) {
-            // Its label is staged with its files: the backup's, or a new one (a backup with no files for it stages
-            // nothing).
             let l = label_of(&Whose::Loose)?;
             let owner = crate::local::Owner::Home(l.number.clone());
             let at = crate::local::label_path(&loose);
@@ -905,17 +773,12 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
                 crate::local::stage_next(&at, &key, &crate::local::ident_in(owner.clone(), f.doc, &rel, &bytes)?, &bytes)?;
             }
         }
-        // Machine files, staged beside theirs: the register (pointing at the new homes), the other sealed
-        // machine files, and the machine settings.
         let m = crate::home::machine_dir()?;
         let machine_id = |doc: Doc, rel: &str| crate::local::Ident { owner: crate::local::Owner::Machine, doc, logical: rel.to_string() };
         crate::local::stage_next(&m.join(crate::places::registry_file()), &key, &machine_id(Doc::Registry, &crate::places::registry_file()), &reg.to_bytes())?;
         for f in p.files.iter().filter(|f| f.whose == Whose::Machine && f.doc != Doc::Registry) {
             crate::local::stage_next(&m.join(&f.rel), &key, &machine_id(f.doc, &f.rel), &f.bytes)?;
         }
-        // The restored machine holds what this backup holds: its index is staged with the other machine files under
-        // the new key, replacing this machine's index (sealed under the old key) in the same settle; an interrupted
-        // settle completes it at the next unlock.
         let room = m.join(INDEX_DIR);
         std::fs::create_dir_all(&room).map_err(|e| classify(&e, &room.display().to_string()))?;
         let held: Vec<(Doc, String)> = p.files.iter().map(|f| (f.doc, f.rel.clone())).collect();
@@ -923,9 +786,6 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
         crate::local::stage_next(&m.join(crate::machine::FILE), &key, &machine_id(Doc::Machine, crate::machine::FILE), &crate::machine::plain_bytes(&machine)?)?;
         let sealed = crate::places::machine_file();
         crate::local::stage_next(&m.join(&sealed), &key, &machine_id(Doc::MachineSealed, &sealed), &crate::machine::sealed_bytes(&machine)?)?;
-        // What this machine had that the backup lacks (former homes, the kept home's other files, machine files)
-        // stays sealed under the old key and is planned to be moved aside intact once the change takes effect, never
-        // deleted.
         let mut roots = former.clone();
         roots.push(m.clone());
         roots.push(loose.clone());
@@ -950,14 +810,9 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
         return Err(f);
     }
     crate::local::cut_point(crate::local::Cut::AfterCommit)?;
-    // The change has taken effect; settling moves the staged files into place and carries out the plan (moving
-    // aside what the new key cannot open). A staged file that cannot be placed now is placed at the next unlock,
-    // and an interruption before this line leaves the whole pass to the next unlock.
     if let Err(f) = crate::local::settle_pending() {
         crate::local::note_trouble(f);
     }
-    // The read-only networks table goes back where the machine keeps it (after settling, which moves aside what
-    // the new key cannot open; the table is plain). A backup without one leaves this machine's as it is.
     if let Some(b) = &p.read_nets {
         let landed = crate::home::machine_dir().and_then(|m| crate::readnets::from_bytes(b, "readNetworks").and_then(|nets| crate::readnets::write(&m, &nets)));
         if let Err(f) = landed {
@@ -967,11 +822,57 @@ pub fn restore(path: &Path, password: &str, from: From) -> Result<Restored, Faul
     Ok(Restored { summary })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shade {
+    Green,
+    Amber,
+    Grey,
+    Red,
+}
+
+impl Shade {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Shade::Green => "green",
+            Shade::Amber => "amber",
+            Shade::Grey => "grey",
+            Shade::Red => "red",
+        }
+    }
+}
+
+pub fn backup_point(last: Option<&crate::machine::Backed>, now: Option<u64>, failed: Option<u64>) -> Shade {
+    if failed.is_some() {
+        return Shade::Red;
+    }
+    match (last, crate::machine::backup_behind(last, now)) {
+        (None, _) => Shade::Grey,
+        (Some(_), None) => Shade::Grey,
+        (Some(_), Some(n)) if n > 0 => Shade::Amber,
+        (Some(_), Some(_)) => Shade::Green,
+    }
+}
+
+#[cfg(test)]
+mod password_once {
+    #[test]
+    fn a_backup_password_is_judged_in_one_place() {
+        use crate::secret::Secret;
+        let named = |p: &str, a: &str| super::password_ok(&Secret::of(p), &Secret::of(a)).err().and_then(|f| f.which());
+        assert_eq!(named("correct-horse", "correct-horse"), None);
+        assert_eq!(named("correct-horse", "correct-hors"), Some(crate::fault::Known::PasswordsDiffer));
+        assert_eq!(named("短短短短短短短", "短短短短短短短"), Some(crate::fault::Known::PasswordShort), "seven characters, however many bytes");
+        assert_eq!(named("八个字的密码好了", "八个字的密码好了"), None, "eight characters");
+        let long = "x".repeat(crate::secret::CAP + 1);
+        assert_eq!(named(&long, &long), Some(crate::fault::Known::PasswordLong));
+        let src = include_str!("action/identity.rs");
+        assert_eq!(src.matches("crate::backup::password_ok(").count(), 2, "the backup's export and the key file's ask it");
+        assert!(!src.contains("Known::PasswordShort"), "and judge it nowhere else");
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    /// The package's read-only networks member is validated before anything is placed: a table travels and
-    /// reads back byte for byte; none (an older backup) reads as none; one that is not hex, not text, or not a
-    /// table refuses the whole backup by name.
     #[test]
     fn the_read_networks_member_is_judged_before_anything_is_placed() {
         let net = crate::readnets::cells("", "11155420", &format!("0x{}", "11".repeat(20)), "0", "https://read.example").expect("a row");
@@ -991,9 +892,6 @@ mod tests {
         assert!(refused(good.replacen(&format!("\"{hex}\""), "7", 1).into_bytes()), "not text");
     }
 
-    /// A backup never holds its own index (a restore writes the restored machine's): a package that carries a
-    /// machine file of the index's kind at the index's place is refused whole, by name; the same package with a
-    /// machine file of another kind at its own place reads.
     #[test]
     fn a_package_carrying_an_index_is_refused() {
         use crate::local::{Doc, Whose};
@@ -1012,12 +910,9 @@ mod tests {
         }
         let records = format!("{}/{}", crate::recordsx::DIR, crate::recordsx::FILE);
         assert!(super::package_of(&super::package_bytes(&package(Doc::Records, records))).is_ok());
-        // The index's kind and place are the machine directory's one sealed index (`local::machine_doc`).
         assert_eq!(crate::local::machine_doc(&super::index_rel()), Some(Doc::BackupIndex));
     }
 
-    /// Each segment is one plain component on every system: the forms another system would read as a parent,
-    /// a drive, a stream or a second step are refused here, wherever this runs.
     #[test]
     fn a_member_is_plain_segments_on_every_system() {
         for ok in ["settings/settings.json", "ledger/0001.entry", "kits/terms/ab/name-1.json", "a.b/c..d/.e"] {

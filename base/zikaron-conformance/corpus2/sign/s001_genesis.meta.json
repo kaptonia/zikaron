@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s001_genesis.bin",
+ "note": "sec 5.1: B6 of a genesis; prev null, seq 0",
+ "predicted": {
+  "digest": "0xb4f9ee21ed41c297ad083a40550ddf42098165775dec17cb293c3883f1df5655",
+  "presig": "0xb8a354b02d25949def7b78019f7edc57ab47518654295b88ab3622574e1be22b",
+  "sig": "0x40b7fd22097b625a9016cfd0b9aaabe19250c3698dc9317e7d39dec1d1c063fa5a4645f08d3345ca1e35d280eed1f7da9f6d55ca668b2e3ce78c5d8a27c4fe091b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

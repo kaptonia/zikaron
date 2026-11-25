@@ -1,18 +1,3 @@
-//! Toasts: one pill centered at the top of the main area (the whole window when there is no rail). It opens as
-//! a capsule: from 0.55 of its width to its whole width in 0.5 s, its words fading in after; it leaves fading
-//! and narrowing a little (260 ms). Under reduced motion it only fades. An
-//! ordinary sentence has a green check and leaves after 3.2 s; an error has a red cross, two lines (what
-//! happened, what to do next), and "details" and "close"; it stays 6 s, and stays while its details are open.
-//! An alert (raised by the watch) has the alerts page's mark on the warning colour and "close", and stays as
-//! long as an error.
-//!
-//! One at a time: a new sentence replaces the one on screen in place: the old one fades out first, and the new
-//! one drops in once it has left (its time starts then), so one place never holds two toasts in one frame. The
-//! same sentence as the one on screen gives it a small bump and starts its time again. Nothing is compared with
-//! sentences that have already left.
-//!
-//! This file says nothing itself: the labels of its keys come from the caller.
-
 use crate::button::{self, Key, Role};
 use crate::icons::{self, Glyph};
 use crate::motion::{self, Curve};
@@ -22,16 +7,11 @@ use egui::{pos2, vec2, Rect};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
-    /// Ordinary: a green check.
     Note,
-    /// Bad: a red cross, with close, and details when there is raw text.
     Bad,
-    /// An alert (something the watch raised, not a failure): the alerts page's mark on the warning colour,
-    /// with close; it stays as long as an error.
     Alert,
 }
 
-/// A key on a toast. `Copy` copies its text; `Tag` hands the tag back to the caller when pressed ("view").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Act {
     Copy(String),
@@ -46,23 +26,19 @@ struct Slip {
     raw: String,
     tone: Tone,
     born: f64,
-    /// When it came on screen (a bump restarts its time, not its entrance).
     entered: f64,
-    /// When the same sentence was said again (the bump).
     bumped: f64,
     open: bool,
     keys: Vec<(String, Act)>,
+    said: f64,
 }
 
-/// How long an ordinary toast and an error toast stay.
 pub const LIFE_NOTE: f64 = 3.2;
 pub const LIFE_BAD: f64 = 6.0;
-/// The capsule opens over `IN` from `NARROW` of its width; its words come in from `WORDS_FROM` over `WORDS_IN`.
 const IN: f32 = 0.5 * crate::tokens::PACE;
 const NARROW: f32 = 0.55;
 const WORDS_FROM: f32 = 0.18 * crate::tokens::PACE;
 const WORDS_IN: f32 = 0.24 * crate::tokens::PACE;
-/// Leaving: fading and narrowing to `LEAVE_TO` of its width.
 const OUT: f32 = 0.26 * crate::tokens::PACE;
 const LEAVE_TO: f32 = 0.85;
 
@@ -75,21 +51,18 @@ impl Slip {
     }
 }
 
-/// The toast slot.
 #[derive(Default)]
 pub struct Toasts {
     cur: Option<Slip>,
+    queued: std::collections::VecDeque<Slip>,
     leaving: Vec<(Slip, f64)>,
     minted: u64,
     labels: [String; 3],
 }
 
-/// What the toasts did this frame.
 #[derive(Default)]
 pub struct Drawn {
-    /// The rectangle of the toast on screen (and of those fading out).
     pub rects: Vec<Rect>,
-    /// A tagged key pressed this frame.
     pub pressed: Option<u64>,
 }
 
@@ -98,28 +71,23 @@ impl Toasts {
         Toasts::default()
     }
 
-    /// The labels of the three keys: details, hide details, close.
     pub fn set_labels(&mut self, detail: &str, hide: &str, close: &str) {
         self.labels = [detail.to_string(), hide.to_string(), close.to_string()];
     }
 
-    /// Say a sentence. `now` is egui's frame time.
     pub fn say(&mut self, text: impl Into<String>, tone: Tone, now: f64) {
         self.say_keys(text, "", "", tone, now, Vec::new());
     }
 
-    /// Say fully: what happened, what next, the raw text (raw text gives the details key).
     pub fn say_full(&mut self, text: impl Into<String>, next: &str, raw: &str, tone: Tone, now: f64) {
         self.say_keys(text, next, raw, tone, now, Vec::new());
     }
 
-    /// As above with a copy key: `act` is (label, text to copy).
     pub fn say_with(&mut self, text: impl Into<String>, next: &str, raw: &str, tone: Tone, now: f64, act: Option<(String, String)>) {
         let keys = act.map(|(l, t)| vec![(l, Act::Copy(t))]).unwrap_or_default();
         self.say_keys(text, next, raw, tone, now, keys);
     }
 
-    /// The general form: keys before "details" and "close".
     pub fn say_keys(&mut self, text: impl Into<String>, next: &str, raw: &str, tone: Tone, now: f64, keys: Vec<(String, Act)>) {
         let text = text.into();
         if let Some(cur) = self.cur.as_mut() {
@@ -128,37 +96,56 @@ impl Toasts {
                 cur.bumped = now;
                 return;
             }
+            if cur.said == now {
+                if !self.queued.iter().any(|q| q.text == text) {
+                    self.minted += 1;
+                    self.queued.push_back(Slip { id: self.minted, text, next: next.to_string(), raw: raw.to_string(), tone, born: now, entered: now, bumped: f64::NEG_INFINITY, open: false, keys, said: now });
+                }
+                return;
+            }
         }
+        self.queued.clear();
         if let Some(old) = self.cur.take() {
             self.leaving.push((old, now));
         }
-        // The new one enters once every one leaving has left.
         let enter = self.leaving.iter().map(|(_, at)| at + OUT as f64).fold(now, f64::max);
         self.minted += 1;
-        self.cur = Some(Slip { id: self.minted, text, next: next.to_string(), raw: raw.to_string(), tone, born: enter, entered: enter, bumped: f64::NEG_INFINITY, open: false, keys });
+        self.cur = Some(Slip { id: self.minted, text, next: next.to_string(), raw: raw.to_string(), tone, born: enter, entered: enter, bumped: f64::NEG_INFINITY, open: false, keys, said: now });
     }
 
-    /// How many toasts are on screen (zero or one; one leaving does not count).
+    fn next_in(&mut self, now: f64) {
+        if let Some(mut q) = self.queued.pop_front() {
+            let enter = now + OUT as f64;
+            q.born = enter;
+            q.entered = enter;
+            self.cur = Some(q);
+        }
+    }
+
+    pub fn waiting(&self) -> usize {
+        self.queued.len()
+    }
+
     pub fn live(&self) -> usize {
         usize::from(self.cur.is_some())
     }
 
-    /// The sentence on screen now.
     pub fn showing(&self) -> Option<&str> {
         self.cur.as_ref().map(|s| s.text.as_str())
     }
 
-    /// The keys of the toast on screen now (label and what it does), before "details" and "close".
+    pub fn showing_next(&self) -> Option<&str> {
+        self.cur.as_ref().map(|s| s.next.as_str())
+    }
+
     pub fn showing_keys(&self) -> Vec<(String, Act)> {
         self.cur.as_ref().map(|s| s.keys.clone()).unwrap_or_default()
     }
 
-    /// The tone of the sentence on screen now.
     pub fn showing_tone(&self) -> Option<Tone> {
         self.cur.as_ref().map(|s| s.tone)
     }
 
-    /// Draw, centered over `[left, right]` of the window, 14 from its top.
     pub fn draw(&mut self, ctx: &egui::Context, left: f32) -> Drawn {
         let now = crate::motion::now(ctx);
         let mut out = Drawn::default();
@@ -166,6 +153,7 @@ impl Toasts {
             if !cur.open && now - cur.born > cur.life() {
                 let s = self.cur.take().expect("checked above");
                 self.leaving.push((s, now));
+                self.next_in(now);
             }
         }
         self.leaving.retain(|(_, at)| now - at < OUT as f64);
@@ -191,7 +179,6 @@ impl Toasts {
             let r = paint_slip(ctx, &s, center_x, screen, &labels, Shown { card: e, words: e, wide, scale: 1.0 }, false);
             out.rects.push(r.0);
         }
-        // Waiting for the one leaving to leave: not drawn, and nothing to press.
         if let Some(s) = self.cur.as_ref().filter(|s| now < s.entered) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((s.entered - now).max(0.0)));
         }
@@ -232,6 +219,7 @@ impl Toasts {
         if close {
             if let Some(s) = self.cur.take() {
                 self.leaving.push((s, now));
+                self.next_in(now);
             }
             ctx.request_repaint();
         }
@@ -254,8 +242,6 @@ enum SlipAct {
     Key(usize),
 }
 
-/// How much of a toast shows: its card's opacity, its words' opacity, how much of its width the capsule spans,
-/// and its scale (the bump of a sentence said again).
 #[derive(Clone, Copy)]
 struct Shown {
     card: f32,
@@ -286,9 +272,6 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
     let wrap = |t: &str, font: egui::FontId, colour: egui::Color32, w: f32| {
         ctx.fonts_mut(|f| {
             let mut job = egui::text::LayoutJob::single_section(t.to_string(), egui::TextFormat { font_id: font, color: colour, line_height: Some(20.0), ..Default::default() });
-            // Break where the words allow (`break_anywhere: false`): at a space between English words, between
-            // any two Chinese characters, then at a dash or punctuation; only a single word longer than the line is
-            // cut inside itself. Never "try ag / ain".
             job.wrap = egui::text::TextWrapping { max_width: w, break_anywhere: false, ..Default::default() };
             f.layout_job(job)
         })
@@ -306,20 +289,16 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
     let c0 = rect.center();
     ctx.set_transform_layer(layer, egui::emath::TSTransform { scaling: scale, translation: c0.to_vec2() * (1.0 - scale) });
     let mut act = None;
-    // Placed on nothing: a press beside the toast reaches the page.
     crate::layer::place(ctx, layer, None);
     crate::layer::area(layer.id, egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(live).show(ctx, |ui| {
         ui.multiply_opacity(alpha);
         let (r, _) = ui.allocate_exact_size(rect.size(), egui::Sense::hover());
         let radius = if two { Radius::Sheet } else { Radius::Pill };
-        // The capsule as wide as it has opened; the words inside it, coming in after it.
         let capsule = Rect::from_center_size(r.center(), vec2((r.width() * shown.wide).max(r.height()), r.height()));
         crate::material::paint(ui.painter(), capsule, radius, crate::material::Level::Toast, 0.0);
         ui.set_clip_rect(capsule.intersect(ui.clip_rect()));
         ui.multiply_opacity(if alpha > 0.0 { (shown.words / alpha).min(1.0) } else { 0.0 });
         let p = ui.painter();
-        // The icon and the keys share one height, by one judgement: on the first line when there is more than
-        // one, so opening the details below never moves them; centred on a one-line pill.
         let line_y = if two { r.top() + pad_y + 10.0 } else { r.center().y };
         let ic = pos2(r.left() + pad_l + icon / 2.0, line_y);
         let (fill, glyph) = match s.tone {
@@ -342,7 +321,6 @@ fn paint_slip(ctx: &egui::Context, s: &Slip, center_x: f32, screen: Rect, labels
         if let Some(g) = raw {
             p.galley(pos2(tx, y + 6.0), g, c(C::Ink3));
         }
-        // The keys, right of the words, at the icon's height.
         let mut kx = r.right() - pad_r - keys_w + if keys.is_empty() { 0.0 } else { 10.0 };
         for (label, which) in &keys {
             let kw = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), crate::button::key_font(), egui::Color32::BLACK).size().x);

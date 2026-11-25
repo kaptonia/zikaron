@@ -1,16 +1,3 @@
-//! The Windows implementation. No third-party crate: the Win32 functions it needs are declared here.
-//!
-//! - Entropy: `BCryptGenRandom` with the system-preferred RNG.
-//! - Owner-only: the creating call (`CreateFileW`) passes a security descriptor with a protected DACL (nothing
-//!   inherited) allowing only this process's user; a file reads as owner-only when every allow entry of its
-//!   DACL names this user.
-//! - Syncing: a directory is opened with backup semantics and flushed; where the OS cannot flush a directory,
-//!   the file just named in it is flushed instead (NTFS journals in order, so the name reaches disk with it).
-//!   Which works depends on the volume; both are tried, in that order.
-//! - Replacing rename: `MoveFileExW` replacing an existing target, with write-through. Another handle that
-//!   holds either file for a moment (a reader of the target, the system's scanner on a file just written) makes
-//!   the move fail at once rather than wait; the move is tried again for a short while ([`MOVE_HELD_WAIT`]).
-
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
@@ -33,7 +20,6 @@ const TRUNCATE_EXISTING: u32 = 5;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-/// The `NTSTATUS` values an open meets on an entry that is not there, or is being deleted.
 const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
 const STATUS_OBJECT_PATH_NOT_FOUND: i32 = 0xC000_003A_u32 as i32;
 const STATUS_DELETE_PENDING: i32 = 0xC000_0056_u32 as i32;
@@ -41,10 +27,8 @@ const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
 const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x2;
 const TOKEN_QUERY: u32 = 0x8;
-/// `TOKEN_INFORMATION_CLASS::TokenUser`.
 const TOKEN_USER: u32 = 1;
 const SDDL_REVISION_1: u32 = 1;
-/// `SE_OBJECT_TYPE::SE_FILE_OBJECT`.
 const SE_FILE_OBJECT: u32 = 1;
 const DACL_SECURITY_INFORMATION: u32 = 0x4;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -57,7 +41,6 @@ struct SecurityAttributes {
     inherit: i32,
 }
 
-/// The fixed header of an access control list (`ACL`).
 #[repr(C)]
 struct Acl {
     revision: u8,
@@ -112,9 +95,7 @@ struct Guid {
     data4: [u8; 8],
 }
 
-/// `FOLDERID_Profile`.
 const FOLDER_PROFILE: Guid = Guid { data1: 0x5E6C_858F, data2: 0x0E22, data3: 0x4760, data4: [0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73] };
-/// `FOLDERID_LocalAppData`.
 const FOLDER_LOCAL_APP_DATA: Guid = Guid { data1: 0xF1B3_2785, data2: 0x6FBA, data3: 0x4FCF, data4: [0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91] };
 
 #[link(name = "shell32")]
@@ -159,8 +140,6 @@ pub fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A NUL-terminated UTF-16 path for the wide Win32 calls. An absolute path long enough to hit the legacy
-/// `MAX_PATH` limit uses the extended form (`\\?\`, or `\\?\UNC\` for a share), as the standard library does.
 fn wide(path: &Path) -> Vec<u16> {
     let raw: Vec<u16> = path.as_os_str().encode_wide().collect();
     let slash = u16::from(b'/');
@@ -180,7 +159,6 @@ fn wide(path: &Path) -> Vec<u16> {
     out
 }
 
-/// Memory allocated by the OS with `LocalAlloc`, freed on drop.
 struct Local(*mut c_void);
 
 impl Drop for Local {
@@ -191,8 +169,6 @@ impl Drop for Local {
     }
 }
 
-/// This process's user from its token: the buffer holding `TOKEN_USER`, whose first member points at the user's
-/// SID inside the same buffer.
 struct User(Vec<u64>);
 
 impl User {
@@ -200,7 +176,6 @@ impl User {
         User::of(unsafe { GetCurrentProcess() })
     }
 
-    /// The user another process runs as (by the process id a pipe reports for its peer).
     fn of_pid(pid: u32) -> std::io::Result<User> {
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
         let p = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -233,8 +208,6 @@ impl User {
         unsafe { *(self.0.as_ptr() as *const *mut c_void) }
     }
 
-    /// A security descriptor for an owner-only file: a protected DACL (nothing inherited from the folder) with
-    /// one entry granting this user all file access.
     fn owner_only_descriptor(&self) -> std::io::Result<Local> {
         let mut text: *mut u16 = std::ptr::null_mut();
         if unsafe { ConvertSidToStringSidW(self.sid(), &mut text) } == 0 {
@@ -261,7 +234,6 @@ pub fn open(o: &crate::Options, path: &Path) -> std::io::Result<std::fs::File> {
         s.read(o.read).write(o.write).create(o.create).create_new(o.create_new).truncate(o.truncate);
         return s.open(path);
     }
-    // As in the standard library: create or truncate requires write access.
     if (o.create || o.create_new || o.truncate) && !o.write {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
@@ -284,14 +256,10 @@ pub fn open(o: &crate::Options, path: &Path) -> std::io::Result<std::fs::File> {
     Ok(unsafe { std::fs::File::from_raw_handle(h) })
 }
 
-/// Widening a DACL is not supported here (tests that need it run on unix).
 pub fn open_to_others(_path: &Path, _group_only: bool) -> std::io::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "opening a file to other accounts is not done on this system"))
 }
 
-/// Owner-only when the DACL allows nobody but this user: every allow entry names this user (deny entries do
-/// not change that). A null DACL grants everyone access, so it is not owner-only; an entry of an unrecognized
-/// type counts as granting someone else.
 pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
     let name = wide(path);
     let mut dacl: *mut Acl = std::ptr::null_mut();
@@ -322,7 +290,6 @@ pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
         if unsafe { GetAce(dacl, i, &mut ace) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // `ACE_HEADER` (type, flags, size), then the access mask, then the identifier.
         let kind = unsafe { *(ace as *const u8) };
         match kind {
             ACCESS_DENIED_ACE_TYPE => continue,
@@ -338,20 +305,15 @@ pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Flush the directory itself through a handle opened with backup semantics (the only way to open a
-/// directory); if that fails, flush the file just named in it. With no such file, the directory's error is
-/// returned.
 pub fn sync_dir(path: &Path, landed: &Path) -> std::io::Result<()> {
     let dir = std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).and_then(|d| d.sync_all());
     match dir {
         Ok(()) => Ok(()),
         Err(e) if !landed.is_file() => Err(e),
-        // If both fail, report both: the directory's error, then the file's (with the file's kind).
         Err(d) => sync_file(landed).map_err(|f| std::io::Error::new(f.kind(), format!("the directory: {d}; then the file {}: {f}", landed.display()))),
     }
 }
 
-/// Flushing needs a handle with write access.
 pub fn sync_file(path: &Path) -> std::io::Result<()> {
     std::fs::OpenOptions::new().write(true).open(path)?.sync_all()
 }
@@ -360,23 +322,15 @@ pub fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
     move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
 }
 
-/// Without `MOVEFILE_REPLACE_EXISTING` the move refuses an existing target (`AlreadyExists`).
 pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     move_file(from, to, MOVEFILE_WRITE_THROUGH)
 }
 
-/// How long a move keeps retrying while another handle briefly holds one of its files without sharing
-/// deletion (a reader of the target, or a virus scanner on a fresh file). Windows then fails the move at once
-/// with `ERROR_SHARING_VIOLATION` or `ERROR_ACCESS_DENIED`. Past this the OS error is returned unchanged.
 pub const MOVE_HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The pause before the first try again; each pause doubles, up to [`MOVE_HELD_PAUSE_MAX`].
 const MOVE_HELD_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
 const MOVE_HELD_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// `MoveFileExW` with `flags`, retried within [`MOVE_HELD_WAIT`] while it fails as a held file does; any other
-/// failure is returned at once. A lasting refusal with the same codes (a read-only target, no folder rights)
-/// costs the wait, then is returned unchanged.
 fn move_file(from: &Path, to: &Path, flags: u32) -> std::io::Result<()> {
     let (f, t) = (wide(from), wide(to));
     let began = std::time::Instant::now();
@@ -399,7 +353,6 @@ fn known_folder(id: &Guid) -> Option<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     let mut p: *mut u16 = std::ptr::null_mut();
     let r = unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut p) };
-    // The caller must free the buffer whether or not the call succeeded.
     let out = if r == 0 && !p.is_null() {
         let wide = unsafe {
             let n = (0..).take_while(|i| *p.add(*i) != 0).count();
@@ -413,20 +366,14 @@ fn known_folder(id: &Guid) -> Option<std::path::PathBuf> {
     out
 }
 
-/// This app's folder in the local application data folder.
 const APP_FOLDER: &str = "ZIKARON";
 
-/// The variable that names the user's home (set by Windows from the profile at logon).
 pub const HOME_VAR: &str = "USERPROFILE";
 
-/// The user's home beyond [`HOME_VAR`]: the profile known folder.
 pub fn home_dir() -> Option<std::path::PathBuf> {
     known_folder(&FOLDER_PROFILE)
 }
 
-/// This app's folder in `%LOCALAPPDATA%` (which does not roam) when `user_home` is the profile known folder,
-/// however it is spelled ([`crate::same_folder`]). Any other home (e.g. a test stand-in) gets the same layout
-/// under itself, so tests never touch the user's real folder.
 pub fn app_data_dir(user_home: &Path) -> std::path::PathBuf {
     if home_dir().is_some_and(|profile| crate::same_folder(&profile, user_home)) {
         if let Some(local) = known_folder(&FOLDER_LOCAL_APP_DATA) {
@@ -436,12 +383,8 @@ pub fn app_data_dir(user_home: &Path) -> std::path::PathBuf {
     user_home.join("AppData").join("Local").join(APP_FOLDER)
 }
 
-// ───────────────────────── IPC endpoint: a named pipe ─────────────────────────
-
-/// Pipe names carry the token, not the machine directory path, so no realistic path can exceed this limit.
 pub const DOOR_PATH_MAX: usize = 256;
 
-/// On Windows the endpoint is a named pipe named after `name`, not the machine directory's path.
 pub fn door_place(_machine: &Path, name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!(r"\\.\pipe\{name}"))
 }
@@ -460,14 +403,11 @@ const PIPE_UNLIMITED_INSTANCES: u32 = 255;
 const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 const ERROR_SEM_TIMEOUT: i32 = 121;
-/// How long one wait for a busy pipe lasts before the pipe is tried again.
 const BUSY_WAIT_MS: u32 = 250;
 
-/// One pipe end, closed on drop (a server end disconnects its client first).
 pub struct DoorStream {
     h: Handle,
     server: bool,
-    /// When all its reads, and all its writes, must be done by (`set_read_deadline`, `set_write_deadline`).
     read_deadline: std::cell::Cell<Option<std::time::Instant>>,
     write_deadline: std::cell::Cell<Option<std::time::Instant>>,
 }
@@ -495,9 +435,6 @@ const ERROR_OPERATION_ABORTED: i32 = 995;
 struct ThreadHandle(Handle);
 unsafe impl Send for ThreadHandle {}
 
-/// Run the blocking pipe call `op` on this thread; past `deadline`, the system cancels it (`CancelSynchronousIo`)
-/// and it returns failing with `ERROR_OPERATION_ABORTED`. Without a deadline it runs as it is; when the cancel
-/// cannot be armed, it does not run (`None`).
 fn within<T>(deadline: Option<std::time::Duration>, op: impl FnOnce() -> T) -> Option<T> {
     let Some(d) = deadline else { return Some(op()) };
     let mut me: Handle = std::ptr::null_mut();
@@ -507,8 +444,6 @@ fn within<T>(deadline: Option<std::time::Duration>, op: impl FnOnce() -> T) -> O
     }
     let watched = ThreadHandle(me);
     let (done, wait) = std::sync::mpsc::channel::<()>();
-    // Past the deadline the cancel is repeated until the call has returned: one sent before the call began
-    // would find nothing to cancel.
     let watch = std::thread::spawn(move || {
         let t = watched;
         let mut wait_for = d;
@@ -524,17 +459,9 @@ fn within<T>(deadline: Option<std::time::Duration>, op: impl FnOnce() -> T) -> O
     Some(out)
 }
 
-/// The listening side: the pipe instance the next client connects to.
-///
-/// A pipe has no path to remove: it exists while an instance does. Closing ([`door_close`]) closes the waiting
-/// instance and marks it gone (`INVALID_HANDLE_VALUE`), and a woken accept creates no new one, so a connect then
-/// gets `NotFound`, as on unix.
 pub struct DoorListener {
     name: Vec<u16>,
-    /// The instance the next client connects to, or `INVALID_HANDLE_VALUE` once closed. Held across
-    /// `ConnectNamedPipe`, so a close waits for an accept in progress to finish its round.
     next: std::sync::Mutex<Handle>,
-    /// Set by [`door_close`] before it wakes the waiting accept.
     closing: std::sync::atomic::AtomicBool,
 }
 
@@ -545,8 +472,6 @@ fn pipe_name(place: &Path) -> Vec<u16> {
     place.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
 }
 
-/// One pipe instance, reachable only by this user and not remotely; with `first`, fails if the pipe already
-/// exists (someone else's, or a live endpoint: `AddrInUse`).
 fn instance(name: &[u16], first: bool) -> std::io::Result<Handle> {
     let sd = User::now()?.owner_only_descriptor()?;
     let mut sa = SecurityAttributes { length: std::mem::size_of::<SecurityAttributes>() as u32, descriptor: sd.0, inherit: 0 };
@@ -562,7 +487,6 @@ fn instance(name: &[u16], first: bool) -> std::io::Result<Handle> {
     Ok(h)
 }
 
-/// Check that the peer runs as this process's user; anyone else is refused (`PermissionDenied`).
 fn same_user(pid: std::io::Result<u32>) -> std::io::Result<()> {
     let them = User::of_pid(pid?)?;
     let me = User::now()?;
@@ -583,8 +507,6 @@ fn door_gone() -> std::io::Error {
 }
 
 impl DoorListener {
-    /// The next client; its user is not yet checked ([`DoorStream::same_user`]). A client that already hung up
-    /// (`ERROR_NO_DATA`) is returned like any other, with a stream that reads as ended.
     pub fn accept(&self) -> std::io::Result<DoorStream> {
         let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
         let h = *next;
@@ -598,13 +520,11 @@ impl DoorListener {
                 return Err(e);
             }
         }
-        // Woken by the close (or a client came at that moment): no next instance, and this one is closed now.
         if closing() {
             unsafe { CloseHandle(h) };
             *next = INVALID_HANDLE_VALUE;
             return Err(door_gone());
         }
-        // The next client connects to a fresh instance; this one now belongs to the stream.
         *next = instance(&self.name, false)?;
         Ok(DoorStream { h, server: true, read_deadline: std::cell::Cell::new(None), write_deadline: std::cell::Cell::new(None) })
     }
@@ -631,7 +551,6 @@ fn open_pipe(name: &[u16]) -> std::io::Result<Handle> {
         match e.raw_os_error() {
             Some(ERROR_FILE_NOT_FOUND) => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string())),
             Some(ERROR_ACCESS_DENIED) => return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())),
-            // All instances busy: wait in short slices and retry, so an endpoint closed meanwhile is `NotFound`.
             Some(ERROR_PIPE_BUSY) => {
                 if unsafe { WaitNamedPipeW(name.as_ptr(), BUSY_WAIT_MS) } == 0 {
                     let e = std::io::Error::last_os_error();
@@ -645,9 +564,6 @@ fn open_pipe(name: &[u16]) -> std::io::Result<Handle> {
     }
 }
 
-/// Close the endpoint (see [`DoorListener`]): mark it closing, wake a waiting accept by connecting once (without
-/// waiting on a busy pipe, which has no waiter), then close the instance under the accept's lock. A dropped
-/// listener has already closed its instance.
 pub fn door_close(_place: &Path, listener: Option<&DoorListener>) {
     let Some(l) = listener else { return };
     l.closing.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -664,34 +580,28 @@ pub fn door_close(_place: &Path, listener: Option<&DoorListener>) {
     }
 }
 
-/// Connect to the endpoint at `place` without checking its user ([`DoorStream::same_user`]).
 pub fn door_connect(place: &Path) -> std::io::Result<DoorStream> {
     let h = open_pipe(&pipe_name(place))?;
     Ok(DoorStream { h, server: false, read_deadline: std::cell::Cell::new(None), write_deadline: std::cell::Cell::new(None) })
 }
 
 impl DoorStream {
-    /// Whether the other end runs as this process's user (the server asks for the client's process, the client
-    /// for the server's); anyone else is refused (`PermissionDenied`).
     pub fn same_user(&self) -> std::io::Result<()> {
         let mut pid = 0u32;
         let asked = unsafe { if self.server { GetNamedPipeClientProcessId(self.h, &mut pid) } else { GetNamedPipeServerProcessId(self.h, &mut pid) } };
         same_user(if asked == 0 { Err(std::io::Error::last_os_error()) } else { Ok(pid) })
     }
 
-    /// How long all reads from now on may take together.
     pub fn set_read_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
         self.read_deadline.set(d.map(|d| std::time::Instant::now() + d));
         Ok(())
     }
 
-    /// How long all writes from now on may take together.
     pub fn set_write_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
         self.write_deadline.set(d.map(|d| std::time::Instant::now() + d));
         Ok(())
     }
 
-    /// What is left of the write deadline (zero once it has passed), or none.
     fn write_left(&self) -> Option<std::time::Duration> {
         self.write_deadline.get().map(|u| u.saturating_duration_since(std::time::Instant::now()))
     }
@@ -699,7 +609,6 @@ impl DoorStream {
 
 impl std::io::Read for DoorStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // A synchronous pipe read blocks forever; with a deadline, wait until bytes are available first.
         if let Some(until) = self.read_deadline.get() {
             loop {
                 let mut avail = 0u32;
@@ -741,7 +650,6 @@ impl std::io::Write for DoorStream {
         if left.is_some_and(|l| l.is_zero()) {
             return Err(late());
         }
-        // The error is read right after the call, before the watch's own calls can overwrite it.
         let wrote = within(left, || if unsafe { WriteFile(self.h, buf.as_ptr(), len, &mut put, std::ptr::null_mut()) } == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
         match wrote {
             None => Err(std::io::Error::other("the write could not be bounded")),
@@ -755,24 +663,15 @@ impl std::io::Write for DoorStream {
     }
 }
 
-// ───────────────────────── Children and lock descriptors ─────────────────────────
-
-/// A lock file's handle, as listed (`crate::LISTED`).
 pub fn listed_id(file: &std::fs::File) -> i64 {
     use std::os::windows::io::AsRawHandle;
     file.as_raw_handle() as isize as i64
 }
 
-/// Start the child. No child holds a copy of a lock: `open` here creates handles with `bInheritHandle` false (the
-/// standard library's files are not inheritable either), and `CreateProcess` passes only inheritable handles; the
-/// listed handles need nothing done.
 pub fn spawn(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     cmd.spawn()
 }
 
-// ───────────────────────── "Enable command line": the user's `Path` ─────────────────────────
-
-// The registry calls, declared once for this crate (the proxy reading reads through `reg_dword` / `reg_text`).
 #[link(name = "advapi32")]
 unsafe extern "system" {
     fn RegOpenKeyExW(key: Handle, sub: *const u16, options: u32, access: u32, out: *mut Handle) -> i32;
@@ -787,10 +686,8 @@ unsafe extern "system" {
     fn SystemParametersInfoW(action: u32, uparam: u32, pvparam: *mut c_void, winini: u32) -> i32;
 }
 
-/// `SPI_GETCLIENTAREAANIMATION`: whether the system shows animations in windows ("Animation effects").
 const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
 
-/// "Animation effects" off: reduce motion.
 pub fn reduce_motion() -> bool {
     let mut on: i32 = 1;
     // SAFETY: the call writes one BOOL into `on`.
@@ -804,14 +701,12 @@ const KEY_READ: u32 = 0x2_0019;
 const KEY_WRITE: u32 = 0x2_0006;
 const REG_EXPAND_SZ: u32 = 2;
 const ERROR_FILE_NOT_FOUND_REG: i32 = 2;
-/// Maximum length of an environment variable value, in characters.
 const PATH_MAX_CHARS: usize = 32_767;
 
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// On Windows the switch edits the user's `Path` rather than placing a link in a folder.
 pub fn cli_default_dir() -> Option<std::path::PathBuf> {
     None
 }
@@ -820,15 +715,11 @@ pub fn cli_unsupported(_cli: &Path) -> Option<String> {
     None
 }
 
-/// The CLI's folder is on the machine-wide `Path` (put there by an installer). Only the machine `Path` is read:
-/// the process `PATH` also inherits the switch's own user-`Path` entry, which would then read as "provided" and
-/// could never be turned off.
 pub fn cli_provided(cli: &Path, moved: bool) -> bool {
     let Some(dir) = cli.parent() else { return false };
     machine_path(moved).is_ok_and(|p| p.split(';').any(|e| same_dir(e, dir)))
 }
 
-/// The user's `Path` as stored (the stand-in file when redirected): where the switch writes.
 fn user_path(moved: bool) -> std::io::Result<String> {
     if moved {
         return stand_in(crate::cli_path::PATH_STAND_IN);
@@ -836,8 +727,6 @@ fn user_path(moved: bool) -> std::io::Result<String> {
     reg_path(HKEY_CURRENT_USER, "Environment")
 }
 
-/// The machine-wide `Path` as stored (the stand-in file when redirected): written by installers, never by the
-/// switch.
 fn machine_path(moved: bool) -> std::io::Result<String> {
     if moved {
         return stand_in(crate::cli_path::MACHINE_PATH_STAND_IN);
@@ -845,7 +734,6 @@ fn machine_path(moved: bool) -> std::io::Result<String> {
     reg_path(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
 }
 
-/// A stand-in file under the redirected folder; a missing file reads as empty.
 fn stand_in(name: &str) -> std::io::Result<String> {
     let f = crate::cli_path::place_dir().unwrap_or_default().join(name);
     match std::fs::read_to_string(&f) {
@@ -855,7 +743,6 @@ fn stand_in(name: &str) -> std::io::Result<String> {
     }
 }
 
-/// The `Path` value of one registry environment key (missing reads as empty).
 fn reg_path(root: Handle, sub: &str) -> std::io::Result<String> {
     let mut key: Handle = std::ptr::null_mut();
     let r = unsafe { RegOpenKeyExW(root, w(sub).as_ptr(), 0, KEY_READ, &mut key) };
@@ -880,9 +767,6 @@ fn reg_path(root: Handle, sub: &str) -> std::io::Result<String> {
     Ok(String::from_utf16_lossy(&buf[..n]))
 }
 
-// ───────────────────────── System proxy settings (read by `proxy.rs`) ─────────────────────────
-
-/// One registry value's bytes under `root\sub` (`None` when the key or the value is absent or unreadable).
 fn reg_raw(root: Handle, sub: &str, name: &str) -> Option<Vec<u8>> {
     let mut key: Handle = std::ptr::null_mut();
     // SAFETY: opened for reading only and closed below; the first query asks the size, the second reads into a
@@ -906,20 +790,16 @@ fn reg_raw(root: Handle, sub: &str, name: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// A registry number value (`REG_DWORD`).
 pub(crate) fn reg_dword(root: Handle, sub: &str, name: &str) -> Option<u32> {
     reg_raw(root, sub, name).and_then(|b| Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?)))
 }
 
-/// A registry text value (`REG_SZ`), up to its first zero.
 pub(crate) fn reg_text(root: Handle, sub: &str, name: &str) -> Option<String> {
     let b = reg_raw(root, sub, name)?;
     let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
     Some(String::from_utf16_lossy(&units))
 }
 
-/// The system's structure as the call fills it; automatic detection is laid out as the system requires and not
-/// handed on (discovery is not followed).
 #[repr(C)]
 struct IeProxyConfigRaw {
     _auto_detect: i32,
@@ -938,15 +818,12 @@ unsafe extern "system" {
     fn GlobalFree(p: *mut c_void) -> *mut c_void;
 }
 
-/// The current user's proxy settings as the system answers them.
 pub(crate) struct IeProxy {
     pub auto_config_url: Option<String>,
     pub proxy: Option<String>,
     pub bypass: Option<String>,
 }
 
-/// `WinHttpGetIEProxyConfigForCurrentUser` (`None` when the call fails). The strings it returns are copied and
-/// freed with `GlobalFree`, as the call requires.
 pub(crate) fn ie_proxy_config() -> Option<IeProxy> {
     let mut raw = IeProxyConfigRaw { _auto_detect: 0, auto_config_url: std::ptr::null_mut(), proxy: std::ptr::null_mut(), proxy_bypass: std::ptr::null_mut() };
     // SAFETY: the call fills the structure; each non-null string is zero-terminated, read once and freed once.
@@ -970,7 +847,6 @@ pub(crate) fn ie_proxy_config() -> Option<IeProxy> {
     }
 }
 
-/// Write the user's `Path` and broadcast the environment change (newly opened terminals pick it up).
 fn set_user_path(text: &str, moved: bool) -> std::io::Result<()> {
     if moved {
         let d = crate::cli_path::place_dir().unwrap_or_default();
@@ -997,7 +873,6 @@ fn set_user_path(text: &str, moved: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether a `Path` entry is the same folder, ignoring case and a trailing separator.
 fn same_dir(entry: &str, dir: &Path) -> bool {
     let norm = |s: &str| s.trim().trim_end_matches(['\\', '/']).to_lowercase();
     norm(entry) == norm(&dir.display().to_string())
@@ -1008,7 +883,6 @@ pub fn cli_state(cli: &Path, moved: bool) -> crate::cli_path::State {
     let Some(dir) = cli.parent() else { return State::Unsupported("no folder".into()) };
     match user_path(moved) {
         Ok(p) if p.split(';').any(|e| same_dir(e, dir)) => State::On,
-        // Another install's CLI earlier on the user's path would shadow the same name.
         Ok(p) => match p.split(';').filter(|e| !e.trim().is_empty()).find(|e| Path::new(e.trim()).join(format!("{}.exe", crate::cli_path::NAME)).is_file()) {
             Some(other) => State::Taken(other.trim().to_string()),
             None => State::Off,
@@ -1029,7 +903,6 @@ pub fn cli_enable(cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refuse
     set_user_path(&next, moved).map_err(|e| Refused::NotAllowed(e.to_string()))
 }
 
-/// Remove only the entry this switch added (the CLI's folder); every other entry stays as written.
 pub fn cli_disable(cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refused> {
     use crate::cli_path::Refused;
     let dir = cli.parent().ok_or_else(|| Refused::Unsupported("no folder".into()))?;
@@ -1042,7 +915,6 @@ pub fn cli_disable(cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refus
 mod tests {
     use super::*;
 
-    /// A scratch folder with `from` holding "new" and, when `target`, `to` holding "old".
     fn move_scratch(tag: &str, target: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("zikaron-os-move-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1055,8 +927,6 @@ mod tests {
         (d, from, to)
     }
 
-    /// Open `at` sharing reading only (not deletion), and close it after `hold`; `None` keeps it until the
-    /// returned handle is dropped.
     fn hold(at: &Path, hold: Option<std::time::Duration>) -> (Option<std::fs::File>, Option<std::thread::JoinHandle<()>>) {
         let f = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(at).expect("held");
         match hold {
@@ -1068,7 +938,6 @@ mod tests {
         }
     }
 
-    /// A move whose source or target is briefly held succeeds once released, for both move kinds.
     #[test]
     fn a_move_waits_out_a_file_held_for_a_moment() {
         let moment = Some(MOVE_HELD_WAIT / 5);
@@ -1097,8 +966,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Held past the wait, the move returns the OS error and leaves both files; a missing source fails at once;
-    /// a non-replacing move still refuses an existing target.
     #[test]
     fn a_move_held_past_the_wait_is_refused_as_before() {
         let (d, from, to) = move_scratch("held-long", true);
@@ -1114,15 +981,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The app data folder of a stand-in home stays under that home.
     #[test]
     fn a_stand_in_home_keeps_the_app_folder_under_it() {
         let stand_in = Path::new(r"C:\stand-in\home");
         assert_eq!(app_data_dir(stand_in), stand_in.join("AppData").join("Local").join(APP_FOLDER));
     }
 
-    /// The profile spelled differently (case, trailing separator) still maps to `%LOCALAPPDATA%`, where existing
-    /// users' data is.
     #[test]
     fn the_profile_spelled_otherwise_is_still_the_profile() {
         let (Some(profile), Some(local)) = (home_dir(), known_folder(&FOLDER_LOCAL_APP_DATA)) else { return };
@@ -1134,8 +998,6 @@ mod tests {
         }
     }
 
-    /// A file created in the temp folder without owner-only inherits the folder's DACL (SYSTEM and
-    /// Administrators besides this user), so it is not owner-only; one created with it is.
     #[test]
     fn the_access_list_reads_back() {
         let d = std::env::temp_dir().join(format!("zikaron-os-acl-{}", std::process::id()));
@@ -1152,8 +1014,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The switch's own entry reads as on (and can be turned off) even when the process `PATH` carries it; an
-    /// installer's machine `Path` entry reads as provided. Uses stand-in files, not the registry.
     #[test]
     fn the_switchs_own_entry_is_never_read_as_provided() {
         use crate::cli_path::{disable, enable, state, State, ENV_DIR, MACHINE_PATH_STAND_IN};
@@ -1180,7 +1040,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A long absolute path takes the extended form; a short or relative one is left as given.
     #[test]
     fn long_paths_take_the_extended_form() {
         let text = |p: &Path| String::from_utf16(&wide(p)[..wide(p).len() - 1]).expect("utf-16");
@@ -1192,8 +1051,6 @@ mod tests {
         assert_eq!(text(Path::new("relative")), "relative");
     }
 }
-
-// ───────────────────────── The single-writer lock (a byte-range lock) ─────────────────────────
 
 #[repr(C)]
 struct Overlapped {
@@ -1212,8 +1069,6 @@ unsafe extern "system" {
 const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x1;
 const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x2;
 
-/// The locked range: one byte far beyond any data in the file. Windows locks are mandatory, and the writer
-/// lock file holds the holder's pid, which the settings page reads while the lock is held.
 const LOCK_OFFSET_HIGH: u32 = 0x4000_0000;
 
 fn lock_with(file: &std::fs::File, flags: u32) -> bool {
@@ -1223,9 +1078,6 @@ fn lock_with(file: &std::fs::File, flags: u32) -> bool {
     unsafe { LockFileEx(file.as_raw_handle() as Handle, flags, 0, 1, 0, &mut at) != 0 }
 }
 
-/// The entry opened for its attributes alone (no access asked, every sharing allowed, a folder too, a link
-/// itself): an open that succeeds is an entry there; one that fails is read by the status the system met, read
-/// at once on this thread: not there, or delete pending (which the Win32 error alone spells as access denied).
 pub fn going(path: &Path) -> bool {
     let name = wide(path);
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -1248,9 +1100,6 @@ pub fn lock_wait(file: &std::fs::File) -> bool {
     lock_with(file, LOCKFILE_EXCLUSIVE_LOCK)
 }
 
-// ───────────────────────── The window's backdrop (Windows 11: Mica) ─────────────────────────
-
-/// The four margins `DwmExtendFrameIntoClientArea` takes (all -1: the whole window).
 #[repr(C)]
 struct Margins {
     left: i32,
@@ -1259,7 +1108,6 @@ struct Margins {
     bottom: i32,
 }
 
-/// `RTL_OSVERSIONINFOW`, enough of it for the build number.
 #[repr(C)]
 struct OsVersion {
     size: u32,
@@ -1281,11 +1129,9 @@ unsafe extern "system" {
     fn RtlGetVersion(info: *mut OsVersion) -> i32;
 }
 
-/// `DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_SYSTEMBACKDROP_TYPE` and its `DWMSBT_MAINWINDOW` (Mica).
 const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
 const DWMSBT_MAINWINDOW: i32 = 2;
-/// The first build with `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2).
 const MICA_BUILD: u32 = 22621;
 
 fn build() -> u32 {
@@ -1302,8 +1148,6 @@ fn set_dark(hwnd: isize, dark: bool) {
     unsafe { DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &on as *const i32 as *const c_void, 4) };
 }
 
-/// Windows tells the app of the system's appearance whatever the window's dark mode says: `follows` changes
-/// nothing here.
 pub fn backdrop(w: crate::Window, dark: bool, _follows: bool) -> crate::Backdrop {
     let crate::Window::Win32(hwnd) = w else { return crate::Backdrop::Tint };
     if hwnd == 0 || !backdrop_available() {

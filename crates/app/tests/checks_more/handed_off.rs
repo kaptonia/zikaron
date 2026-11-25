@@ -1,8 +1,3 @@
-//! A ledger handed off to another place (the family's handoff, `zikaron_seal::handover`; the command line's
-//! `hand-over`) is not written by the desktop until a handoff after it comes back: refused by name
-//! (`HANDED_OFF`), the ledger as it was. Every desktop write of an entry and every command-line write ask the pen
-//! list (`zikaron_seal::pens`) first. Each test runs alone (its own machine directory).
-
 use app::action::{apply, Action, Applied};
 use zikaron_seal::handover::{HandId, Pen};
 
@@ -48,28 +43,26 @@ fn a_handed_off_ledger_is_not_written_by_the_desktop_until_it_comes_back() {
     let _ = std::fs::remove_dir_all(&at);
 }
 
-/// Every writer asks the pen list: the desktop's one gate before an entry (`Shell::may_write_entries`), its
-/// adoption of a folder's entries (`firstrun::adopt`), and the command line's one write gate (`seal_and_append`).
 #[test]
 fn every_writer_asks_the_pen_list_before_an_entry() {
     let code = |krate: &str, file: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(krate).join("src").join(file)).expect("source");
     let shell = code("app", "shell.rs");
     let at = shell.find("pub fn may_write_entries(").expect("the gate");
-    assert!(shell[at..].split("\n    }\n").next().unwrap_or("").contains("zikaron_seal::pens::may_write("), "the desktop's gate");
+    assert!(shell[at..].split("\n    }\n").next().unwrap_or("").contains("sendx::write_gates("), "the desktop's gate");
+    assert!(code("app", "sendx.rs").contains("zikaron_send::shut::check("), "the home's write gates");
+    let shut = code("zikaron-send", "shut.rs");
+    assert!(shut.contains("zikaron_seal::pens::may_write("), "the write gates ask the pen list");
     let firstrun = code("app", "firstrun.rs");
     let at = firstrun.find("pub fn adopt(").expect("adopt");
     let body = firstrun[at..].split("\n}\n").next().unwrap_or("");
     let asked = body.find("pens::may_write(").expect("adopt asks");
     assert!(asked < body.find("book.append(").expect("appends"), "before the first entry");
     let verbs = code("zikaron-cli", "verbs.rs");
-    let at = verbs.find("fn seal_and_append(").expect("the write gate");
+    let at = verbs.find("fn seal_land(").expect("the write gate");
     let body = verbs[at..].split("\n}\n").next().unwrap_or("");
     assert!(body.find("handed_here(").expect("asks") < body.find("entry::seal(").expect("seals"), "before the entry is made");
 }
 
-/// The desktop wakes to look at the disk once a second while the command line writes alone and it is unlocked
-/// (`Shell::follow_wake`), at no other time; the window asks that wake where it asks its other timers'
-/// (`window/watch.rs` `tick`, one wake, the earliest).
 #[test]
 fn the_desktop_wakes_to_look_at_the_disk_only_while_writing_alone_and_unlocked() {
     if super::alone_in(module_path!(), "the_desktop_wakes_to_look_at_the_disk_only_while_writing_alone_and_unlocked") {

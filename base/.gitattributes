@@ -1,0 +1,8 @@
+# byte-exact trees: digests, identities and corpus predictions are taken over these bytes
+galeed-conformance/** -text
+galeed-core/** -text
+docs/galeed-*.md -text
+docs/courtevidence-v1.md -text
+zikaron-conformance/** -text
+zikaron-core/** -text
+docs/zikaron-*.md -text

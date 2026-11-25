@@ -1,5 +1,3 @@
-//! Checks of kit output: real binaries for behavior, source scans for discipline.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -10,7 +8,6 @@ fn src(name: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("读不出 {}:{e}", p.display()))
 }
 
-/// A per-test temporary directory, removed on drop whether the test passes or fails.
 struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -62,8 +59,6 @@ fn run_in(dir: &Path, args: &[&str]) -> Ran {
     }
 }
 
-/// A ready ledger: three entries, one grant and one revocation of it. Built through `zikaron-store`'s public
-/// API, since the CLI is another package's binary.
 fn a_ledger(dir: &Path) -> (String, String) {
     use zikaron::json::Value;
     use zikaron_store::layout::EntryName;
@@ -142,23 +137,18 @@ fn a_ledger(dir: &Path) -> (String, String) {
     (author, hex32(0xc1))
 }
 
-// Behavior.
-
 #[test]
 fn a_bundle_that_the_kit_law_refuses_never_reaches_the_caller_s_path() {
     let w = scratch("kit-gate");
     a_ledger(&w);
     std::fs::write(w.join("a.bin"), "A").expect("写不下");
     std::fs::write(w.join("b.bin"), "B").expect("写不下");
-    // Two different byte strings at one kit path: the manifest's `files` table is no longer strictly
-    // increasing and the kit core refuses.
     let r = run_in(
         &w,
         &["pack", "--ledger", "book", "--out", "bundle", "--file", "same.bin=a.bin", "--file", "same.bin=b.bin", "--note", ""],
     );
     assert_eq!(r.code, 1, "自验不符该退 1:{}", r.out);
     assert!(!w.join("bundle").exists(), "验不过的包不该落地");
-    // A partially laid-out staging area does not stay on disk.
     let leftovers: Vec<String> = std::fs::read_dir(&w)
         .expect("列不动")
         .filter_map(|x| x.ok())
@@ -172,12 +162,8 @@ fn a_bundle_that_the_kit_law_refuses_never_reaches_the_caller_s_path() {
 fn the_revocation_of_a_chosen_grant_is_always_in_the_bundle() {
     let w = scratch("closure");
     let (_, work) = a_ledger(&w);
-    // Choosing by work picks the grant; its revocation has no `work` member and the selector cannot see it,
-    // so the closure rule pulls it in. Without it the recipient's checks would pass a revoked grant.
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "bundle", "--work", &work, "--note", ""]);
     assert_eq!(r.code, 0, "{}", r.out);
-    // Three entries: the grant, the pulled-in revocation, and the spine (genesis, so the verifier can tell
-    // whose ledger it is).
     assert!(r.out.contains("\"entries\":3"), "该有三枚条目:{}", r.out);
     assert!(
         r.out.contains("\"pulled\":[\"0x"),
@@ -195,7 +181,6 @@ fn platform_junk_is_dropped_by_name_and_a_bad_path_is_refused_by_name() {
     std::fs::write(w.join("stuff/art.bin"), "作品").expect("写不下");
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b1", "--dir", "art=stuff", "--note", ""]);
     assert_eq!(r.code, 0, "{}", r.out);
-    // A dropped item is named, never silently missing.
     assert!(r.out.contains("\"dropped\":[\"art/.DS_Store\"]"), "{}", r.out);
     std::fs::write(w.join("up.bin"), "x").expect("写不下");
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b2", "--file", "README.md=up.bin", "--note", ""]);
@@ -239,25 +224,21 @@ fn every_part_of_a_tampered_bundle_is_refused_with_its_own_verdict() {
         to
     };
     let mut seen: Vec<String> = Vec::new();
-    // Entry bytes.
     let d = copy("t1");
     let f = std::fs::read_dir(d.join("entries")).expect("列不动").next().expect("空的").expect("坏的").path();
     let mut b = std::fs::read(&f).expect("读不出");
     b.push(b'X');
     std::fs::write(&f, b).expect("写不下");
-    // File bytes.
     let d2 = copy("t2");
     let vf = d2.join("files/verify.md");
     let mut b = std::fs::read(&vf).expect("读不出");
     b.push(b'X');
     std::fs::write(&vf, b).expect("写不下");
-    // Manifest.
     let d3 = copy("t3");
     let mf = d3.join("manifest.json");
     let mut b = std::fs::read(&mf).expect("读不出");
     b.push(b' ');
     std::fs::write(&mf, b).expect("写不下");
-    // One extra item.
     let d4 = copy("t4");
     std::fs::write(d4.join("extra.txt"), "清单里没有我").expect("写不下");
 
@@ -276,11 +257,8 @@ fn every_part_of_a_tampered_bundle_is_refused_with_its_own_verdict() {
     }
     seen.sort();
     seen.dedup();
-    // Each tampered part has its own refusal; the four must not collapse into one.
     assert_eq!(seen.len(), 4, "四处篡改只报出 {} 种拒因:{seen:?}", seen.len());
 }
-
-// Discipline: source scans.
 
 #[test]
 fn the_crate_leans_on_nothing_but_the_four_bases() {
@@ -295,13 +273,15 @@ fn the_crate_leans_on_nothing_but_the_four_bases() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        if line.starts_with("unicode-normalization = ") {
+            continue;
+        }
         assert!(line.contains("path ="), "第三方依赖:{line}");
     }
 }
 
 #[test]
 fn every_kit_output_module_emits_its_own_mark() {
-    // Every public module emits the kit output trace mark (this crate carries only that component).
     for name in ["pack.rs", "select.rs", "tidy.rs"] {
         let text = src(name);
         assert!(text.contains("seam_v2"), "{name} emits no kit output trace mark");
@@ -311,7 +291,6 @@ fn every_kit_output_module_emits_its_own_mark() {
 
 #[test]
 fn no_kit_law_literal_lives_outside_the_bases() {
-    // Kit spec bytes come from the kit core's constants.
     for name in ["pack.rs", "select.rs", "tidy.rs", "names.rs"] {
         let text = src(name);
         for f in ["\"zikaron.kit/1\"", "\"KIT_OK\"", "\"GREEN\"", "\"PARTIAL\"", "\"FAIL\""] {
@@ -323,10 +302,8 @@ fn no_kit_law_literal_lives_outside_the_bases() {
 #[test]
 fn the_junk_list_is_a_closed_table_and_the_path_law_is_the_kit_s() {
     let text = src("tidy.rs");
-    // Whether a path is a valid kit path is answered by the kit core; no second character-set check here.
     assert!(text.contains("kitdir::is_kit_path"));
     assert!(!text.contains("is_ascii_lowercase"), "别在这里重写一遍 kit 法 §7.2");
-    // The junk list is closed.
     assert!(text.contains("pub const JUNK: [&str; 6]"));
 }
 
@@ -336,8 +313,6 @@ fn a_write_that_fails_midway_leaves_nothing_behind() {
     a_ledger(&w);
     std::fs::write(w.join("x"), "X").expect("写不下");
     std::fs::write(w.join("y"), "Y").expect("写不下");
-    // `a` is a file while `a/b` needs `a` to be a directory: layout must fail halfway (the paths differ, so
-    // the duplicate check passes). Wherever it fails, the staging area must not remain.
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b", "--file", "a=x", "--file", "a/b=y", "--note", ""]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(!w.join("b").exists());
@@ -355,8 +330,6 @@ fn two_things_may_not_share_one_path_in_the_bundle() {
     let w = scratch("reserved");
     a_ledger(&w);
     std::fs::write(w.join("mine.md"), "我自己的说明").expect("写不下");
-    // A duplicate is reported by name, not as an opaque `E_KIT_MANIFEST:files`, and the caller's file is
-    // never silently replaced. Both kinds are tried: against the generated note, and two of the caller's own.
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b", "--file", "verify.md=mine.md", "--note", ""]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.out.contains("E_DUPLICATE_PATH") && r.out.contains("verify.md"), "{}", r.out);
@@ -375,7 +348,6 @@ fn one_call_gives_one_answer_and_a_repeated_flag_is_misuse() {
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b", "--work", "0xaa", "--work", "0xbb", "--note", ""]);
     assert_eq!(r.code, 2, "同一面旗给两次该是误用:{}", r.out);
     assert!(r.out.is_empty(), "误用不该往 stdout 写:{}", r.out);
-    // One call prints one value: stdout never has a second top-level `{`.
     let r = run_in(&w, &["pack", "--ledger", "book", "--out", "b2", "--note", ""]);
     assert_eq!(r.code, 0);
     assert_eq!(r.out.matches("\"ok\":").count(), 1, "一次调用印了不止一枚答:{}", r.out);
@@ -385,11 +357,9 @@ fn one_call_gives_one_answer_and_a_repeated_flag_is_misuse() {
 fn a_flag_outside_a_verb_s_own_list_is_misuse() {
     let w = scratch("closed-flags");
     a_ledger(&w);
-    // A verb outside the list is misuse, never silently ignored: `defend` is no longer a verb.
     let r = run_in(&w, &["defend", "--ledger", "book", "--out", "d"]);
     assert_eq!(r.code, 2, "{}", r.out);
     assert!(r.out.is_empty());
-    // Likewise `await`, which is not in the verb list.
     let r = run_in(&w, &["await", "--root", "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "--grant", "x"]);
     assert_eq!(r.code, 2, "{}", r.out);
     assert!(r.out.is_empty());
@@ -400,7 +370,6 @@ fn a_flag_outside_a_verb_s_own_list_is_misuse() {
 
 #[test]
 fn every_write_in_this_crate_goes_through_the_one_landing() {
-    // `std::fs::write`, `rename` and `File::create` appear only in `landing.rs`.
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for item in std::fs::read_dir(&dir).expect("列不动 src") {
         let e = item.expect("列不动");
@@ -417,7 +386,7 @@ fn every_write_in_this_crate_goes_through_the_one_landing() {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        for f in ["fs::write(", "fs::rename(", "File::create("] {
+        for f in ["fs::write(", "fs::rename(", "File::create(", "rename_over("] {
             assert!(!code.contains(f), "{name} 里有一句裸 {f}");
         }
     }
@@ -442,9 +411,6 @@ fn a_bundle_never_clobbers_and_a_failed_landing_leaves_no_half_tree() {
     assert!(leftovers.is_empty(), "临时地留在盘上:{leftovers:?}");
 }
 
-/// The verification note every kit carries is for whoever receives it: the same four steps and the same counts
-/// in Chinese and in English, one section each, and the manifest's row for it is the digest of its bytes as they
-/// are written.
 #[test]
 fn the_verification_note_says_the_same_in_both_languages_and_its_row_is_its_digest() {
     use zikaron_glue::pack::{enumerate, verification_note, Bundle};
@@ -458,7 +424,7 @@ fn the_verification_note_says_the_same_in_both_languages_and_its_row_is_its_dige
         let line = x.lines().find(|l| l.starts_with(head)).unwrap_or_else(|| panic!("no counts line {head}"));
         line.split(|c: char| !c.is_ascii_digit()).filter(|w| !w.is_empty()).map(|w| w.parse().expect("a count")).collect()
     };
-    assert_eq!(counts(zh, "本束"), vec![0, 3, 0], "entries, files (the note too), proofs");
+    assert_eq!(counts(zh, "本束"), vec![0, 3], "entries, files (the note too)");
     assert_eq!(counts(en, "This kit"), counts(zh, "本束"), "the same counts in both");
     let (pairs, _) = enumerate(bundle()).expect("a kit");
     let note = pairs.iter().find(|(p, _)| p.ends_with("verify.md")).map(|(_, b)| b.clone()).expect("the note is in the kit");

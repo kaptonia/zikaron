@@ -1,9 +1,3 @@
-//! What an input method is still composing never enters a field's value (`compose::around`), read in windowless
-//! frames for each of the kit's text boxes: the single-line field and the multi-line area, the joined and the small
-//! field, and the two kinds of number cells. Victim: whoever types with a Chinese or Japanese input method, the
-//! letters mid-composition read by a filter, a key that submits or a save, and kept on the chain where it is too
-//! late to change them.
-
 use std::path::PathBuf;
 use zikaron_ui::egui::{self, pos2, Event, ImeEvent, Rect};
 use zikaron_ui::{cells, fields, input, lasts};
@@ -30,14 +24,12 @@ struct Bench {
 }
 
 impl Bench {
-    /// A box of `kind` holding `start`.
     fn new(kind: Kind, start: &str) -> Bench {
         let ctx = egui::Context::default();
         let _ = zikaron_ui::skin::dress(&ctx);
         Bench { ctx, t: 0.0, kind, value: vec![start.to_string()] }
     }
 
-    /// One frame with `events`; the box is asked to take the focus when `focus`, and the focus is let go when not.
     fn frame(&mut self, events: Vec<Event>, focus: bool) {
         self.t += 0.1;
         let input = egui::RawInput { screen_rect: Some(SCREEN), time: Some(self.t), events, ..Default::default() };
@@ -83,8 +75,6 @@ fn enter() -> Event {
     Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
 }
 
-/// The words composed and the one committed for a box: number cells take digits only, so their method composes
-/// toward a digit.
 fn words(kind: Kind) -> (&'static str, &'static str, &'static str, &'static str) {
     match kind {
         Kind::Cells | Kind::Lasts => ("12", "yi", "yiq", "7"),
@@ -92,8 +82,6 @@ fn words(kind: Kind) -> (&'static str, &'static str, &'static str, &'static str)
     }
 }
 
-/// While the method composes, the value holds none of its letters (in the frame it composes, in a frame with no
-/// word from it, as it composes more); the committed character is put in and stays.
 #[test]
 fn a_box_holds_only_what_was_committed() {
     for kind in KINDS {
@@ -116,14 +104,11 @@ fn a_box_holds_only_what_was_committed() {
     }
 }
 
-/// A key that submits pressed while the method composes (in the same frame, or the frame after), and the focus
-/// taken away mid-composition: the value holds none of the letters, then or after.
 #[test]
 fn submitting_or_leaving_mid_composition_keeps_the_letters_out() {
     for kind in KINDS {
         let (start, first, more, _) = words(kind);
         let clean = |v: &str| !v.contains('y') && !v.contains('n') && !v.contains('i') && !v.contains('h');
-        // Composing, then the submitting key in the next frame.
         let mut b = Bench::new(kind, start);
         b.frame(vec![], true);
         b.frame(vec![], true);
@@ -133,13 +118,11 @@ fn submitting_or_leaving_mid_composition_keeps_the_letters_out() {
         b.frame(vec![], false);
         b.frame(vec![], false);
         assert!(clean(b.value()), "{kind:?}: nor later: {}", b.value());
-        // Composing and the submitting key in one frame.
         let mut b = Bench::new(kind, start);
         b.frame(vec![], true);
         b.frame(vec![], true);
         b.frame(vec![Event::Ime(ImeEvent::Enabled), preedit(more), enter()], true);
         assert!(clean(b.value()), "{kind:?}: composing and submitting in one frame: {}", b.value());
-        // Composing, then the focus taken away.
         let mut b = Bench::new(kind, start);
         b.frame(vec![], true);
         b.frame(vec![], true);
@@ -152,7 +135,6 @@ fn submitting_or_leaving_mid_composition_keeps_the_letters_out() {
     }
 }
 
-/// The method's words are the focused box's alone: another box whose value matches the words keeps its value.
 #[test]
 fn a_box_without_the_focus_keeps_its_value_while_another_composes() {
     let ctx = egui::Context::default();
@@ -178,9 +160,6 @@ fn a_box_without_the_focus_keeps_its_value_while_another_composes() {
     assert_eq!(a, "xy", "the focused box holds none of the letters");
 }
 
-/// Every text box of the kit is drawn through the one entrance: in the kit's source, each text edit made is made
-/// inside `compose::around`, except the masked field (which takes no input method). A box added later without it
-/// is named here.
 #[test]
 fn every_text_box_of_the_kit_draws_through_the_one_entrance() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -200,7 +179,6 @@ fn every_text_box_of_the_kit_draws_through_the_one_entrance() {
             seen += 1;
             let before = &lines[i.saturating_sub(4)..i];
             let after = &lines[i..(i + 12).min(lines.len())];
-            // The masked field's mark, spelled here in two halves (it is the one place's own word).
             let mark = format!(".{}(true)", "password");
             let masked = after.iter().any(|x| x.contains(&mark));
             let entered = before.iter().any(|x| x.contains("compose::around("));

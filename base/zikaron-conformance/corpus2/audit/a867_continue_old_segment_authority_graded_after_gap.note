@@ -1,0 +1,1 @@
+sec 12.6 with zikaron/1 sec 8.2: the old segment lacks seq 1 and k2 writes at seq 2 before the root hands it the seat at seq 3. zikaron/1 still compares authority after a gap and records the contradiction soft: the old report carries SEQ_GAP and a soft AUTHORITY_MISMATCH at seq 2, nothing at seq 3 and 4, and the whole reads GAPS.

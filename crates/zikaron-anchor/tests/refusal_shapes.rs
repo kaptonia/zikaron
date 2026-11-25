@@ -1,37 +1,17 @@
-//! What a node's refusal of a gas estimate says about the call, read by the shape of the node's answer and not
-//! by its words alone (`said::refusal_of`, `said::refuses_the_call`): the one table the app and the command line
-//! both use. Each test is one form of the closed table, named on it:
-//!
-//! - the marker sentences, one member each, before any shape;
-//! - a numeric `code` (the node's JSON-RPC refusal): 3, a revert's `data` (hex, nested), the two codes the table
-//!   names (-32601, -32005) with neutral words, and every other numeric code (-32000 with words not known, with
-//!   `data` that is not hex, -32603, the neighbours -32006 and -32004, past 64 bits, the 64-bit floor, written
-//!   as a fraction or with an exponent): the call refused, every one;
-//! - no numeric `code` (a code written as text, `null`, a boolean, none at all, an error that is a bare text):
-//!   not the node's refusal of the call;
-//! - the transport: an answer that is not JSON, JSON without the shape of an answer, a 5xx page, a 429 page, a
-//!   401 and a 403 page, the deadline passing, a node not listening: never about the call; and a coded error
-//!   carried under a 5xx or 4xx status, which is the node's word whatever the status.
-//!
-//! The answers in the last group come from a node started in this process; nothing reaches the network.
-
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use zikaron::json::Value;
 use zikaron_anchor::rpc::{self, Endpoint, Http, Trouble};
 use zikaron_anchor::said::{refusal, refusal_of, refuses_the_call, Refusal};
 
-/// The node's error object as an estimate's `error` member carries it.
 fn node(err: &str) -> Trouble {
     Trouble::Node(err.to_string())
 }
 
-/// The member the one table reads, and whether it is about the call.
 fn read(t: &Trouble) -> (Option<Refusal>, bool) {
     (refusal(t), refuses_the_call(t))
 }
 
-/// `Error(string)` with the text `no`, as hex.
 fn revert_data() -> String {
     let mut b = vec![0x08, 0xc3, 0x79, 0xa0];
     let word = |n: u8| {
@@ -46,8 +26,6 @@ fn revert_data() -> String {
     b.extend(text);
     zikaron::hexfmt::encode(&b)
 }
-
-// ───────────────────────── The marker sentences: one member each, about the call or not ─────────────────────────
 
 macro_rules! marked {
     ($($name:ident: $said:literal => $member:expr, $call:literal;)*) => {$(
@@ -72,15 +50,11 @@ marked! {
     a_marker_for_a_wrong_chain_is_the_nodes: "invalid chain id for signer" => Refusal::WrongChain, false;
 }
 
-/// A marker comes before the shape: a sentence the table knows, in an error without a numeric code, is still
-/// its member (here about the call).
 #[test]
 fn a_marker_without_a_code_is_still_its_member() {
     assert_eq!(read(&node("{\"message\":\"insufficient funds\"}")), (Some(Refusal::Funds), true));
     assert_eq!(read(&node("\"nonce too low\"")), (Some(Refusal::NonceUsed), true));
 }
-
-// ───────────────────────── A numeric code: the node's own refusal ─────────────────────────
 
 #[test]
 fn code_three_with_data_is_a_revert() {
@@ -170,8 +144,6 @@ fn a_code_written_with_an_exponent_is_the_calls_refusal_and_not_the_named_code()
     assert_eq!(read(&node(err)), (Some(Refusal::Coded(err.into())), true));
 }
 
-// ───────────────────────── No numeric code: not the node's refusal of the call ─────────────────────────
-
 #[test]
 fn a_code_written_as_text_is_not_the_nodes_refusal() {
     let err = "{\"code\":\"-32000\",\"message\":\"x\"}";
@@ -208,9 +180,6 @@ fn an_error_that_is_bare_text_is_not_the_nodes_refusal() {
     assert_eq!(read(&node(err)), (Some(Refusal::Other(err.into())), false));
 }
 
-// ───────────────────────── The transport: never about the call ─────────────────────────
-
-/// A node on a local port answering every question once with this status line and body (`{id}` put in).
 fn answering(status: &'static str, body: &'static str) -> String {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}/", l.local_addr().expect("addr"));
@@ -241,7 +210,6 @@ fn answering(status: &'static str, body: &'static str) -> String {
     url
 }
 
-/// The trouble one estimate asked of that node gives (the patience table's pauses set to zero).
 fn asked(url: &str) -> Trouble {
     zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
     Http::new(url).expect("an endpoint").call("eth_estimateGas", &Value::Arr(Vec::new())).expect_err("refused")
@@ -311,15 +279,12 @@ fn a_recordings_hole_is_not_about_the_call() {
     assert_eq!(read(&Trouble::Contradiction("eth_estimateGas".into())), (None, false));
 }
 
-/// The member is read once, by `refusal_of`; `refusal` of a node's error is that same reading.
 #[test]
 fn the_one_table_reads_a_nodes_error_in_one_place() {
     let err = "{\"code\":-32603,\"message\":\"internal error\"}";
     assert_eq!(refusal(&node(err)), Some(refusal_of(err)));
 }
 
-/// Every way the way to a node breaks, and every failure made on this side, is structure: its machine form (its
-/// evidence, and its `Debug`) leads with its code and carries no language, so each end says it in its own words.
 #[test]
 fn every_broken_way_is_machine_form_in_no_language() {
     use rpc::{Broke, ProofGap};
@@ -353,7 +318,6 @@ fn every_broken_way_is_machine_form_in_no_language() {
     assert_eq!(all[0].evidence(), "TIMEOUT http://n.example 1500ms");
     assert_eq!(all[2].evidence(), "HTTP_502 http://n.example");
     assert_eq!(rpc::status_of(&Trouble::Transport(all[2].clone())), Some(502));
-    // The proxy's question about credentials is read back from the machine form alone (the command line's token).
     assert_eq!(rpc::proxy_credentials_of(&all[6].evidence()), Some(false));
     assert_eq!(rpc::proxy_credentials_of(&format!("{:?}", Trouble::Transport(all[7].clone()))), Some(true));
     assert_eq!(rpc::proxy_credentials_of(&all[5].evidence()), None);

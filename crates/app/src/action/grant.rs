@@ -1,39 +1,33 @@
 use super::*;
 
-pub(super) fn draft_grant(
-    shell: &mut Shell,
-    d: &crate::grantx::Draft,
-    exclusive: bool,
-    terms_file: Option<&str>,
-) -> Result<(String, Enqueued), crate::fault::Fault> {
-    // Double-sale gate: if an existing grant on the same record has an overlapping window and the local
-    // exclusive flag, do not sign. The collisions are kept in `clash` for the UI to list.
+pub(super) fn grant_rules(shell: &mut Shell, d: &crate::grantx::Draft, terms_file: Option<&str>, waits: bool) -> Result<Vec<String>, crate::fault::Fault> {
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // A deleted record cannot be the subject of a new grant: refused when all of this record's anchor entries
-    // in this ledger are deleted.
-    let queued: Vec<String> = shell.queue.items.iter().map(|q| q.id.clone()).collect();
-    if crate::retractx::work_deleted(&crate::ledgerx::table(home, None, &queued)?.rows, &d.work) {
-        return Err(crate::fault::Fault::known(
-            crate::fault::Known::EntryRefused,
-            crate::lang::t(crate::lang::Key::Tail231).to_string(),
-        ));
-    }
-    let rows = crate::grantx::table(home)?;
+    let raw = home.ledger()?.pile()?.items;
+    let pile = zikaron_send::withdraw::standing(&raw, &crate::sendx::record::noticed());
     let window = window_of(&d.from, &d.to)?;
-    let clash = crate::grantx::conflicts(&rows, &d.work, window);
-    if !clash.is_empty() {
-        let n = clash.len();
-        shell.clash = clash;
-        return Err(crate::fault::Fault::known(
-            crate::fault::Known::Conflict,
-            crate::lang::filln(crate::lang::Key::Tail043, &[&(n).to_string()]),
-        ));
+    let mut waiting = Vec::new();
+    match zikaron_seal::terms::may_grant(&pile, &crate::termsx::records(home)?, &d.work, window, Some(d.supersedes.as_str()).filter(|s| !s.trim().is_empty())) {
+        Ok(()) => {}
+        Err(zikaron_seal::terms::Withheld::Clash(ids)) if waits && !zikaron_send::withdraw::unsettled(&raw, &ids).is_empty() => waiting = ids,
+        Err(w) => {
+            let token = Some(w.token());
+            match w {
+                zikaron_seal::terms::Withheld::Deleted => {
+                    return Err(crate::fault::Fault::known(crate::fault::Known::EntryRefused, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail231).to_string())).ruled(zikaron_glue::door::Rule::Withheld, token, None, Some(Vec::new())));
+                }
+                zikaron_seal::terms::Withheld::Undecided(ids) => return Err(undecided(&ids)),
+                zikaron_seal::terms::Withheld::Clash(ids) => {
+                    let n = ids.len();
+                    let clash: Vec<crate::grantx::Row> = crate::grantx::table(home)?.into_iter().filter(|r| ids.contains(&r.id)).collect();
+                    shell.clash = clash;
+                    return Err(crate::fault::Fault::known(crate::fault::Known::Conflict, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail043, &[&(n).to_string()]))).ruled(zikaron_glue::door::Rule::Withheld, token, None, Some(ids)));
+                }
+            }
+        }
     }
     shell.clash.clear();
-    // Check the terms document before signing: its digest must equal the terms digest signed into the grant,
-    // or nothing is signed. `termsx::keep` checks again when storing it after signing.
     let doc = terms_file.map(str::trim).filter(|p| !p.is_empty()).map(std::path::PathBuf::from);
     if let Some(p) = doc.as_ref() {
         let c = crate::anchorx::of_file(p)?;
@@ -41,8 +35,29 @@ pub(super) fn draft_grant(
             return Err(crate::fault::Fault::known(crate::fault::Known::TermsMismatch, format!("{} ≠ {}", c.hex(), d.terms.trim())));
         }
     }
+    Ok(waiting)
+}
+
+pub(super) fn undecided(ids: &[String]) -> crate::fault::Fault {
+    let w = zikaron_seal::terms::Withheld::Undecided(ids.to_vec());
+    crate::fault::Fault::known(crate::fault::Known::EntryRefused, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::TailWithdrawalUnread, &[&ids.len().to_string()]))).ruled(zikaron_glue::door::Rule::Withheld, Some(w.token()), None, Some(ids.to_vec()))
+}
+
+pub(super) fn sign_grant(
+    shell: &mut Shell,
+    d: &crate::grantx::Draft,
+    exclusive: bool,
+    terms_file: Option<&str>,
+    member: zikaron_send::issue::Member,
+) -> Result<(String, Enqueued), crate::fault::Fault> {
+    let doc = terms_file.map(str::trim).filter(|p| !p.is_empty()).map(std::path::PathBuf::from);
+    let d = &crate::grantx::Draft { revocation: Some(member), ..d.clone() };
     let (head, secret) = ready_to_append(shell)?;
-    let sealed = match crate::grantx::draft(&secret, d, head) {
+    let root = match shell.home.as_ref() {
+        Some(home) => crate::auditx::root_of(&home.ledger()?.pile()?.items)?,
+        None => return Err(crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())),
+    };
+    let sealed = match crate::grantx::draft(&secret, d, head, &root) {
         Ok(x) => {
             shell.flow.sign = crate::anchorx::Step::Done;
             x
@@ -53,24 +68,16 @@ pub(super) fn draft_grant(
         }
     };
     let id = land_sealed(shell, sealed)?;
-    // Queue before local bookkeeping. The bytes are already in the ledger and queueing is their only path to
-    // the chain; a failing bookkeeping write first would leave the grant recorded but never queued, and a
-    // retry would then conflict with it. The exclusive flag is local bookkeeping only: losing it skips one
-    // local check next time, and no guarantee depends on it.
     let n = queue_it(shell, &id);
-    // The issuance record (`termsx`), written once at signing: exclusivity, terms digest, document location.
-    // It cannot be rewritten later; a settings flag could be flipped after issuing without the buyer of
-    // exclusivity being able to stop it, so the settings list is only read-only history.
     if let Some(home) = shell.home.as_ref() {
         if let Err(f) = crate::termsx::keep(home, &id, &d.terms, exclusive, doc.as_deref()) {
             shell.faults.push(f);
         }
     }
-    shell.stale_grants();
+    shell.reread(crate::shell::Reread::Issued);
     Ok((id, n))
 }
 
-/// Parses the form's two window fields as a pair of numbers. Both must be present or both absent.
 pub(super) fn window_of(from: &str, to: &str) -> Result<Option<(u64, u64)>, crate::fault::Fault> {
     let (f, t) = (from.trim(), to.trim());
     match (f.is_empty(), t.is_empty()) {
@@ -81,7 +88,7 @@ pub(super) fn window_of(from: &str, to: &str) -> Result<Option<(u64, u64)>, crat
         }
         _ => Err(crate::fault::Fault::known(
             crate::fault::Known::FieldMissing,
-            crate::lang::t(crate::lang::Key::Tail045).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail045).to_string()),
         )),
     }
 }

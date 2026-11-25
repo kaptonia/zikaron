@@ -1,11 +1,6 @@
-//! Canonical form (law §3): value domain, integers, the two string character sets, canonical bytes,
-//! round-trip identity on acceptance. The parser is our own (no third-party JSON); faults are named by the
-//! earliest triggering byte (§3.5 test 2) through one left-to-right pass that stops at the first fault.
-
 use crate::tokens::CanonToken as Token;
 use crate::trace;
 
-/// Value domain of law §3.1: null, true, false, integers, strings, arrays, objects. No floats.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Null,
@@ -13,14 +8,11 @@ pub enum Value {
     Int(u64),
     Str(String),
     Arr(Vec<Value>),
-    /// Members keep input order, duplicates included: test 3 must see duplicates.
     Obj(Vec<(String, Value)>),
 }
 
-/// Law §3.2: integer upper bound 2^53 − 1.
 pub const MAX_INT: u64 = (1u64 << 53) - 1;
 
-/// Law §3.5 test 2: a container opened at depth 129 is E_DEPTH; the root container is depth 1.
 const MAX_DEPTH: usize = 128;
 
 impl Value {
@@ -57,9 +49,6 @@ struct Parser<'a> {
     b: &'a [u8],
     i: usize,
     depth: usize,
-    /// How surrogate pairs are read. Entries (law §3.3) accept no surrogate escape; the audit-input reader
-    /// (HARNESS five restrictions) reads an escaped pair as the one scalar RFC 8259 says it spells, and still
-    /// refuses a lone surrogate.
     pairs: bool,
 }
 
@@ -81,7 +70,6 @@ fn hexdigit(c: u8) -> Option<u32> {
     }
 }
 
-/// Law §3.2: decimal, unsigned, no leading zero, within [0, 2^53 − 1].
 fn integer_of(run: &[u8]) -> Option<u64> {
     if run.is_empty() || !run.iter().all(|c| c.is_ascii_digit()) {
         return None;
@@ -126,7 +114,6 @@ impl<'a> Parser<'a> {
             Some(b't') => self.literal(b"true", Value::Bool(true)),
             Some(b'f') => self.literal(b"false", Value::Bool(false)),
             Some(b'n') => self.literal(b"null", Value::Null),
-            // Law §3.1: a value starting with `-`, `+`, `.` or a digit is a number position.
             Some(b'-') | Some(b'+') | Some(b'.') | Some(b'0'..=b'9') => self.number(),
             Some(_) => Err(Token::Json),
         }
@@ -156,7 +143,7 @@ impl<'a> Parser<'a> {
     }
 
     fn string(&mut self) -> Result<String, Token> {
-        self.i += 1;  // Opening quote.
+        self.i += 1;
         let mut out = String::new();
         loop {
             let c = *self.b.get(self.i).ok_or(Token::Json)?;
@@ -186,13 +173,9 @@ impl<'a> Parser<'a> {
                             }
                             self.i += 4;
                             if (0xD800..=0xDFFF).contains(&cp) {
-                                // Law §3.3: in an entry, a \u escape of a surrogate code point is E_JSON,
-                                // whatever follows.
                                 if !self.pairs {
                                     return Err(Token::Json);
                                 }
-                                // Audit reader: a high surrogate followed by a `\u` low surrogate is one
-                                // scalar; a lone one is refused.
                                 if !(0xD800..=0xDBFF).contains(&cp) {
                                     return Err(Token::Json);
                                 }
@@ -215,7 +198,6 @@ impl<'a> Parser<'a> {
                         _ => return Err(Token::Json),
                     }
                 }
-                // RFC 8259: no unescaped U+0000-U+001F inside a string.
                 0x00..=0x1f => return Err(Token::Json),
                 _ => {
                     let n = utf8_len(c);
@@ -234,7 +216,7 @@ impl<'a> Parser<'a> {
         if self.depth > MAX_DEPTH {
             return Err(Token::Depth);
         }
-        self.i += 1; // `{`
+        self.i += 1;
         let mut members: Vec<(String, Value)> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
@@ -274,7 +256,7 @@ impl<'a> Parser<'a> {
         if self.depth > MAX_DEPTH {
             return Err(Token::Depth);
         }
-        self.i += 1; // `[`
+        self.i += 1;
         let mut items: Vec<Value> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b']') {
@@ -300,7 +282,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Law §3.5 tests 1 and 2: valid UTF-8 and one JSON text.
 pub fn parse(b: &[u8]) -> Result<Value, Token> {
     parse_with(b, false)
 }
@@ -320,8 +301,6 @@ fn parse_with(b: &[u8], pairs: bool) -> Result<Value, Token> {
     Ok(v)
 }
 
-/// Test 3: the decoded keys of every object at any depth are distinct. Sorted then compared with neighbours;
-/// pairwise comparison would grow with input size.
 fn distinct_keys(v: &Value) -> Result<(), Token> {
     match v {
         Value::Obj(ms) => {
@@ -351,7 +330,6 @@ fn is_skeleton(s: &str) -> bool {
     s.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
-/// Test 4: keys are non-empty skeleton strings (law §3.3).
 fn keys_ok(v: &Value) -> Result<(), Token> {
     match v {
         Value::Obj(ms) => {
@@ -373,8 +351,6 @@ fn keys_ok(v: &Value) -> Result<(), Token> {
     }
 }
 
-/// Test 5: string values outside prose subtrees are skeleton strings (law §3.3). A member whose key is `_md`
-/// or ends in `_md` opens a prose subtree; its value and every string inside are prose strings.
 fn values_ok(v: &Value, prose: bool) -> Result<(), Token> {
     match v {
         Value::Str(s) => {
@@ -399,7 +375,6 @@ fn values_ok(v: &Value, prose: bool) -> Result<(), Token> {
     }
 }
 
-/// Law §3.4: canonical bytes of a value.
 pub fn canon_bytes(v: &Value) -> Vec<u8> {
     trace::mark(trace::K1);
     let mut out = Vec::new();
@@ -426,7 +401,6 @@ fn write_canon(v: &Value, out: &mut Vec<u8>) {
         }
         Value::Obj(ms) => {
             let mut idx: Vec<usize> = (0..ms.len()).collect();
-            // Members sorted by the byte order of their decoded UTF-8 keys (law §3.4 item 5).
             idx.sort_by(|&a, &b| ms[a].0.as_bytes().cmp(ms[b].0.as_bytes()));
             out.push(b'{');
             for (n, &k) in idx.iter().enumerate() {
@@ -469,17 +443,12 @@ fn write_string(s: &str, out: &mut Vec<u8>) {
     out.push(b'"');
 }
 
-/// The HARNESS audit-input reader: RFC 8259 with exactly five restrictions: valid UTF-8; every number a §3.2
-/// integer; no duplicate member names; every string decodes to scalars (lone surrogates refused, pairs read
-/// as one); depth 129 unreadable. That is §3.5 tests 1 to 3 plus the pair reading, without canonical form or
-/// the two character sets.
 pub fn parse_tests_1_3(b: &[u8]) -> Result<Value, Token> {
     let v = parse_with(b, true)?;
     distinct_keys(&v)?;
     Ok(v)
 }
 
-/// Law §3.5 tests 1 to 5 (without round-trip identity); what `zk1 canon` judges by.
 pub fn parse_tests_1_5(b: &[u8]) -> Result<Value, Token> {
     let v = parse(b)?;
     distinct_keys(&v)?;
@@ -488,7 +457,6 @@ pub fn parse_tests_1_5(b: &[u8]) -> Result<Value, Token> {
     Ok(v)
 }
 
-/// All six tests of law §3.5: acceptance means round-trip identity.
 pub fn accept(b: &[u8]) -> Result<Value, Token> {
     let v = parse_tests_1_5(b)?;
     if canon_bytes(&v) != b {

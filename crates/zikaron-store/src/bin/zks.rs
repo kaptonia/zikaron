@@ -1,16 +1,3 @@
-//! `zks`: a small driver binary for the storage crate.
-//!
-//! Each verb is one real library call; every refusal, classification, cap and sweep decision is made in
-//! `zikaron_store`. This binary passes arguments in and prints results.
-//!
-//! `put`, `place` and `mkdir` are test scaffolding, not storage features: they write raw bytes under an entry
-//! name, raw bytes under any plain name (e.g. an OS side file), or a directory straight into an archive
-//! (bypassing append) to build foreign layouts, in-flight temporaries and oversized files.
-//!
-//! `--stop-at open|tmp|link` exits the process between append stages (exit code 70, nothing printed), so tests
-//! can simulate a real process death before, during and after a write.
-
-// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
@@ -18,15 +5,12 @@ use zikaron_store::codes::Trouble;
 use zikaron_store::layout::{self, EntryName};
 use zikaron_store::ledger::{Layout, LedgerDir, Pile, Skip, Survey, Sweep};
 
-/// Exit code when stopping between stages; 0 and 2 belong to verdicts and misuse.
 const STOP_CODE: u8 = 70;
 
 fn misuse(m: &str) -> ! {
     eprintln!("zks: {m}");
     std::process::exit(2)
 }
-
-// Printing: one-line JSON, keys in byte order.
 
 fn quote(s: &str, out: &mut String) {
     out.push('"');
@@ -70,7 +54,6 @@ fn say(line: String) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Print a refusal; the details (names, size, cap) always accompany the code.
 fn refused(t: &Trouble) -> ExitCode {
     let mut s = String::from("{");
     if let Some(c) = t.cap {
@@ -145,8 +128,6 @@ fn laid_out(l: &Layout) -> ExitCode {
     ))
 }
 
-// Arguments.
-
 struct Args {
     words: Vec<String>,
     zeros: Option<usize>,
@@ -191,8 +172,6 @@ fn open(dir: &str) -> Result<LedgerDir, Trouble> {
     LedgerDir::open(dir)
 }
 
-/// Bytes to append: a file, or `--zeros N` zero bytes (so the oversized cases need no 16 MiB sample in the
-/// tree).
 fn bytes_for(a: &Args, idx: usize) -> Vec<u8> {
     match a.zeros {
         Some(n) => vec![0u8; n],
@@ -208,7 +187,6 @@ fn main() -> ExitCode {
     let verb = argv.first().cloned().unwrap_or_default();
     let a = parse(argv.into_iter().skip(1).collect());
     match verb.as_str() {
-        // Storage features.
         "append" => {
             let dir = word(&a, 0, "usage: zks append <dir> <name> (<path> | --zeros N)");
             let name = entry_name(&word(&a, 1, "usage: zks append <dir> <name> ..."));
@@ -280,7 +258,6 @@ fn main() -> ExitCode {
                 Err(t) => refused(&t),
             }
         }
-        // Scaffolding.
         "put" => {
             let dir = word(&a, 0, "usage: zks put <dir> <name> --zeros N");
             let name = entry_name(&word(&a, 1, "usage: zks put <dir> <name> --zeros N"));

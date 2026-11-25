@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/1",
+ "input": "s028_previous_version_domain.bin",
+ "note": "sec 5.6 with HARNESS2: the previous version's literal is signed as given",
+ "predicted": {
+  "digest": "0xf357bec488273ddc04c9b72256e5f97fb148a247530fae4b361e4b13117da315",
+  "presig": "0x7c9dfa4e36d47cb86284711a289aa9653fc151acd243fb4d9b3dd313fd7084c0",
+  "sig": "0x71ecfcf280932901d5372909e8476c88c5018858462249830f828a093296973858cbbb41b9f3c3648d020443b34b56f7f69eb5e59c07ce2b0175b3b014e4082e1c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

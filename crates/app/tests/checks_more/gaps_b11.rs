@@ -1,16 +1,8 @@
-//! The app's gas estimate end to end (`Action::EstimateGas` over a home with work queued): a refusal the error
-//! table reads as about the call is reported as "the estimate was refused" (`GAS_REFUSED`); one that says
-//! nothing about the call is reported by its own member; a head the node will not give is never about the call.
-//! Places are set before any vault or shell use (`vault_open`); each test runs alone in its own process
-//! ([`super::alone_in`]). Nodes are local ports in this process; no network.
-
 use super::vault_open;
 use app::action::{apply, apply_settled, Action, Applied};
 use app::fault::Known;
 use std::io::{Read, Write};
 
-/// A node answering the head and the block as a node does, `head` for the head the estimate is asked at when
-/// given, and `estimate` (a JSON-RPC error object) for the estimate.
 fn node(head: Option<&'static str>, estimate: &'static str) -> String {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", l.local_addr().expect("addr"));
@@ -53,13 +45,10 @@ fn node(head: Option<&'static str>, estimate: &'static str) -> String {
     url
 }
 
-/// A home with a genesis and one work queued, its chain cell, registry and node set; the estimate asked for one
-/// entry; the member it is refused with.
 fn estimate_refused(name: &str, head: Option<&'static str>, estimate: &'static str) -> Option<Known> {
     estimate_refused_at(name, None, head, estimate)
 }
 
-/// [`estimate_refused`] with the node's address given (`None`: the node started here).
 fn estimate_refused_at(name: &str, address: Option<&str>, head: Option<&'static str>, estimate: &'static str) -> Option<Known> {
     vault_open();
     zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
@@ -128,8 +117,6 @@ fn a_head_refused_with_a_code_is_never_the_estimate_refused() {
     assert_eq!(said, Some(Known::NodeRefused));
 }
 
-/// Every node address of the chain fails to read: the estimate is never asked, and the refusal is the addresses'
-/// shape (`SETTINGS_SHAPE`), never "the transaction would fail".
 #[test]
 fn addresses_that_do_not_read_are_said_as_their_shape_not_the_estimate_refused() {
     if super::alone_in(module_path!(), "addresses_that_do_not_read_are_said_as_their_shape_not_the_estimate_refused") {

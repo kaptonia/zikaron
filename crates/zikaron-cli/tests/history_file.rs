@@ -1,8 +1,3 @@
-//! `history --file` fills the history entry by the same recording convention the app uses
-//! (`zikaron_glue::recording`): `content` is the sha256 of the file's bytes, `mode` the family mark with the
-//! mark's sha256 as its toolchain. Cases: bytes, empty file, the same bytes under another name, a missing path,
-//! a directory, and `--file` combined with the flags it fills.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -25,7 +20,6 @@ fn member<'a>(v: &'a zikaron::json::Value, path: &[&str]) -> Option<&'a zikaron:
     path.iter().try_fold(v, |at, k| at.member(k))
 }
 
-/// The body of the entry `history --file <name>` wrote, read back by `show`.
 fn written(dir: &Path, name: &str) -> (i32, Option<zikaron::json::Value>) {
     let (code, out) = run(dir, &["history", "--ledger", "b", "--key", KEY, "--file", name]);
     if code != 0 {

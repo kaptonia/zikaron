@@ -1,63 +1,55 @@
 use super::*;
 
-/// Verifies a record on a background thread.
-///
-/// Kit verification and depth work offline; anchor review needs the chain. When the chain is unreachable or
-/// the basis is not configured, that column carries a named refusal while the other two still show: "chain
-/// not read" is never presented as "not anchored".
 pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<Spawned, crate::fault::Fault> {
+    shell.verified = None;
     let source = crate::verifyx::source_of(path)?;
     let work = work.trim().to_string();
     if !work.is_empty() {
-        crate::depthx::work_of(&work)?;
+        crate::verifyx::work_of(&work)?;
     }
     let ground = ground_bare(shell);
     let eps = shell.endpoints.clone();
     let nets = read_nets_now()?;
     let machine = crate::home::machine_dir().ok();
+    let mut shelf = super::check::shelf_of(shell, "");
+    shelf.reads = nets.clone();
     let clock = shell.clock;
     let path = path.trim().to_string();
-    shell.verified = None;
     Ok(shell.tasks.spawn(Kind::Verify, move || {
         crate::task::stage_at(Kind::Verify, 0);
-        // Kit verification: a directory kit goes to `verify_kit_at`; grant files and publish addresses are
-        // enumerations and get the same checks. A publish address is fetched once and the result serves both
-        // kit verification and the entry bytes. `originals` maps each `contents` row to its original in the
-        // kit, for the per-record table.
-        // What taking the originals out would take (`zikaron_glue::extract`), for a local kit that passes: read from the
-        // originals the same reading judges the records by.
-        let (kit, bytes, rejected, originals, manifest, takes) = match &source {
+        let pairs_of = |d: &std::path::Path| zikaron_kit::v2::kit::walk(d).ok().map(|en| en.into_iter().collect::<Vec<_>>());
+        match &source {
+            crate::verifyx::Source::Kit(p) | crate::verifyx::Source::File(p) | crate::verifyx::Source::Bytes(p) => zikaron_glue::anchorproofs::offer_beside(p),
+            crate::verifyx::Source::Remote(base) => crate::supplyx::offer_fetched(base.as_str()),
+            crate::verifyx::Source::Addressed(_) => {}
+        }
+        let (kit, bytes, rejected, originals, manifest, takes, pairs) = match &source {
             crate::verifyx::Source::Kit(d) => {
                 let (b, r) = crate::verifyx::bytes_at(&source)?;
                 let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
                 let kit = crate::verifyx::verify_kit_at(d);
                 let held = zikaron_glue::extract::originals_in_dir(d);
-                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
-                (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes)
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_in(d, &b, &held));
+                let pairs = pairs_of(d);
+                (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes, pairs)
             }
             crate::verifyx::Source::Bytes(_) => {
                 let (b, r) = crate::verifyx::bytes_at(&source)?;
-                (None, b, r, Vec::new(), None, None)
+                (None, b, r, Vec::new(), None, None, None)
             }
             crate::verifyx::Source::File(p) => {
-                // One file (a record package, a grant file): read out into a folder of its own, streaming, with no
-                // total bound (`zikaron_glue::read::unpack`), then verified as a kit folder is; the folder goes
-                // when this is done.
                 let out = zikaron_glue::read::unpack(p).map_err(|b| crate::fault::Fault::known(crate::fault::Known::KitFileBad, format!("{}:{}", b.code(), b.subject())))?;
                 let d = out.dir.clone();
                 let (b, r) = crate::verifyx::bytes_at(&crate::verifyx::Source::Kit(d.clone()))?;
                 let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
                 let kit = crate::verifyx::verify_kit_at(&d);
                 let held = zikaron_glue::extract::originals_in_dir(&d);
-                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
-                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes);
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_in(&d, &b, &held));
+                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes, pairs_of(&d));
                 drop(out);
                 read
             }
             crate::verifyx::Source::Addressed(p) => {
-                // Sealed to one key: opened with this machine's identities into a folder of its own (none of them
-                // its recipient, or a segment that does not pass, is refused by name and nothing is left), then
-                // read out and verified as one file is; both folders go when this is done.
                 let opened = crate::addressedx::open(p)?;
                 let out = zikaron_glue::read::unpack(&opened.file).map_err(|b| crate::fault::Fault::known(crate::fault::Known::KitFileBad, format!("{}:{}", b.code(), b.subject())))?;
                 let d = out.dir.clone();
@@ -65,8 +57,8 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 let manifest = std::fs::read(d.join(zikaron_glue::names::MANIFEST)).ok();
                 let kit = crate::verifyx::verify_kit_at(&d);
                 let held = zikaron_glue::extract::originals_in_dir(&d);
-                let takes = kit.ok.then(|| zikaron_glue::extract::plan_of(&b, &held));
-                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes);
+                let takes = kit.ok.then(|| zikaron_glue::extract::plan_in(&d, &b, &held));
+                let read = (Some(kit), b, r, crate::verifyx::originals_of(&held), manifest, takes, pairs_of(&d));
                 drop(out);
                 drop(opened);
                 read
@@ -74,38 +66,22 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
             crate::verifyx::Source::Remote(base) => {
                 let got = crate::fetchx::fetch_kit(base)?;
                 let (b, r) = crate::verifyx::entries_of_pairs(&got.pairs);
-                (Some(crate::verifyx::kit_facts_of(&got.pairs)), b, r, crate::verifyx::originals_in_pairs(&got.pairs), crate::verifyx::manifest_in(&got.pairs), None)
+                (Some(crate::verifyx::kit_facts_of(&got.pairs)), b, r, crate::verifyx::originals_in_pairs(&got.pairs), crate::verifyx::manifest_in(&got.pairs), None, Some(got.pairs.clone()))
             }
         };
-        // The network the kit says it is anchored on: if it is not among the networks read (the main one and
-        // the read-only table), the kit is still verified and shown, but no chain is read.
         let stated = manifest.as_deref().and_then(crate::verifyx::stated_on);
         let listed = crate::widex::listed(stated.as_ref(), ground.as_ref().ok(), &nets);
         let not_added = if listed { None } else { stated.clone() };
-        // Anchor review: the lineage comes from these bytes, the chain is scanned once, and the core produces
-        // the report.
+        let offer = crate::readerx::book_offer(ground.as_ref().ok().filter(|_| !eps.is_empty()).map(|g| (&eps[..], g)), &nets);
+        let mut unanswered: Vec<String> = Vec::new();
+        let pick = crate::verifyx::own_pick(&bytes);
         let review: Result<(crate::verifyx::AnchorReview, zikaron::json::Value, zikaron_anchor::scan::Emitters, Vec<crate::widex::Missed>), String> = (|| {
-            let review_of = |v: crate::auditx::Verdict, anchors: usize, asked: usize| {
-                let unanchored: Vec<String> = crate::auditx::rows_of(&v.report, zikaron::tokens::Key::Unanchored)
-                    .iter()
-                    .filter_map(|r| match r {
-                        zikaron::json::Value::Str(s) => Some(s.clone()),
-                        zikaron::json::Value::Obj(m) => m.iter().find(|(k, _)| k == "entryId" || k == "id").and_then(|(_, x)| match x {
-                            zikaron::json::Value::Str(s) => Some(s.clone()),
-                            _ => None,
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                let anchored = crate::ledgerx::anchored_of(&v.report).len();
-                crate::verifyx::AnchorReview { label: v.label, anchors, asked, unanchored, anchored, unread: Vec::new() }
-            };
             if nets.is_empty() || !listed {
                 let g = ground.clone().map_err(|f| f.evidence())?;
                 if eps.is_empty() {
                     return Err(crate::fault::Fault::known(
                         crate::fault::Known::NoEndpoint,
-                        crate::lang::t(crate::lang::Key::Tail057).to_string(),
+                        crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail057).to_string()),
                     )
                     .said().to_string());
                 }
@@ -116,31 +92,34 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 let who = crate::readerx::who(&root).map_err(|f| f.evidence())?;
                 crate::task::stage_at(Kind::Verify, 1);
                 let g = to_head(&eps, g).map_err(|f| f.evidence())?;
-                let g = crate::readerx::basis_for(&g, &who, &bytes);
-                let (scanned, emitters) = crate::auditx::scan_once_noting(&eps, &g).map_err(|f| f.evidence())?;
-                let v = crate::auditx::ask_from(&bytes, &scanned.fragment, Vec::new(), scanned.asked, true)
-                    .map_err(|f| f.evidence())?;
-                return Ok((review_of(v, scanned.anchors, scanned.asked), scanned.fragment, emitters, Vec::new()));
+                let mut g = crate::readerx::basis_for(&g, &who, &bytes);
+                g.senders = crate::readerx::senders_with_book(&root, g.senders, &offer);
+                let (scanned, emitters, said) = crate::auditx::scan_table_picked(&eps, &zikaron::json::canon_bytes(&crate::auditx::basis_of(&g)), &pick).map_err(|u| {
+                    unanswered = u.unanswered;
+                    u.fault.evidence()
+                })?;
+                unanswered = said;
+                let review = crate::verifyx::own_anchors(&bytes, &scanned.fragment, scanned.anchors, scanned.asked);
+                return Ok((review, scanned.fragment, emitters, Vec::new()));
             }
-            // Across networks: the main network (if configured) and every read-only one, each chain separately;
-            // the senders are this ledger's lineage, as for the main network alone.
             let root = crate::auditx::root_of(&bytes).map_err(|f| f.evidence())?;
             let who = crate::readerx::who(&root).map_err(|f| f.evidence())?;
             crate::task::stage_at(Kind::Verify, 1);
             let senders = crate::readerx::basis_for(&crate::widex::carrier(ground.as_ref().ok(), &nets), &who, &bytes).senders;
-            // A configured main network is always scanned: with no node of its own it fails by name like any
-            // other chain, never silently dropped.
+            let senders = crate::readerx::senders_with_book(&root, senders, &offer);
             let main = ground.as_ref().ok().map(|g| (&eps[..], g));
-            let w = crate::widex::scan(main, &nets, &senders, crate::widex::Ask::First).map_err(|f| f.evidence())?;
-            let v = crate::auditx::ask_from(&bytes, &w.fragment, Vec::new(), w.asked, true).map_err(|f| f.evidence())?;
-            Ok((review_of(v, w.anchors, w.asked), w.fragment, w.emitters, w.missed))
+            let w = crate::widex::scan_picked(main, &nets, &senders, crate::widex::Ask::First, &pick).map_err(|f| {
+                unanswered = vec![f.evidence()];
+                f.evidence()
+            })?;
+            unanswered = w.unanswered.clone();
+            let review = crate::verifyx::own_anchors(&bytes, &w.fragment, w.anchors, w.asked);
+            Ok((review, w.fragment, w.emitters, w.missed))
         })();
         let (mut review, fragment, read_chain, emitters, missed) = match review {
             Ok((r, f, e, m)) => (Ok(r), f, true, e, m),
             Err(said) => (Err(said), crate::auditx::empty_fragment(), false, Default::default(), Vec::new()),
         };
-        // Per record: whether the original matches, whether it is anchored, and the first anchor's block time
-        // (from the same fragment). Without a chain read the last two say "chain not read".
         crate::task::stage_at(Kind::Verify, 2);
         let mut records = if kit.is_some() { crate::verifyx::records(&bytes, &originals, read_chain.then_some(&fragment)) } else { Vec::new() };
         for r in records.iter_mut() {
@@ -148,19 +127,18 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                 crate::auditx::name_registry(f, &emitters);
             }
         }
-        // For a network missed this pass, whatever only it could confirm reads "chain not read", not "not
-        // anchored".
         crate::verifyx::unread_where_missed(&missed, &mut review, &mut records);
-        // Depth: the same implementation as the author side (`depthx::read`), on the same fragment.
-        let depth = if work.is_empty() || bytes.is_empty() {
-            None
-        } else {
-            Some(crate::verifyx::depth_of(&bytes, &fragment, &work)?)
+        let grant = match (&kit, &pairs) {
+            (Some(k), Some(p)) if k.ok && zikaron_glue::grantfile::is_package(p) => {
+                let chain = ground.as_ref().ok().map(|g| g.chain);
+                let at = std::path::PathBuf::from(&path);
+                let check = |hops: crate::checkx::Hops| crate::checkx::run(hops, shelf.clone(), eps.clone(), ground.clone(), None, chain);
+                crate::verifyx::grant_read(p, &at, read_chain.then_some(&check as &dyn Fn(crate::checkx::Hops) -> crate::checkx::Checked))
+            }
+            _ => None,
         };
-        let mismatches = crate::verifyx::mismatches(kit.as_ref(), &rejected, &review, depth.as_ref());
-        // The result file reflects only chains actually read: a passing kit is filed only when this pass read a
-        // chain (not when its stated network was not added or no chain could be read); a failing kit is always
-        // filed.
+        let work_found = (!work.is_empty() && !bytes.is_empty()).then(|| crate::verifyx::work_present(&bytes, &work));
+        let mismatches = crate::verifyx::mismatches(kit.as_ref(), &rejected, &review, work_found);
         let filed = match (&kit, &manifest) {
             (Some(k), Some(m)) if !k.ok || read_chain => Some(
                 machine
@@ -174,13 +152,11 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
                                 kit: k,
                                 records: &records,
                                 fragment: read_chain.then_some(&fragment),
-                                emitters: &emitters,
-                                missed: &missed,
                             },
                         )
                     })
                     .map(|p| p.display().to_string())
-                    .map_err(|f| f.evidence()),
+                    .map_err(|f| [f.human().to_string(), f.shown()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ")),
             ),
             _ => None,
         };
@@ -192,26 +168,24 @@ pub(super) fn verify_work(shell: &mut Shell, path: &str, work: &str) -> Result<S
             rejected,
             review,
             work,
-            depth,
+            work_found,
             mismatches,
             records,
             takes,
             not_added,
             missed,
+            unanswered,
             read: if read_chain { crate::verifyx::chains_of(&fragment) } else { Vec::new() },
+            basis: if read_chain { crate::verifyx::basis_read(&fragment) } else { Vec::new() },
+            grant,
             filed,
         })))
     }))
 }
 
-/// Take the originals out of a record package (background, `Kind::Extract`): the package at `kit` read again and
-/// judged, its matching originals placed in `to`, all or nothing, by the one way the command line takes them too
-/// (`zikaron_glue::extract::take`). Nothing is trusted from the verification shown: the task judges what it reads.
 pub(super) fn extract_originals(shell: &mut Shell, kit: &str, to: &str) -> Applied {
     let (kit, to) = (std::path::PathBuf::from(kit.trim()), std::path::PathBuf::from(to.trim()));
     match shell.tasks.spawn(Kind::Extract, move || {
-        // A package sealed to one key is opened again here with this machine's identities (nothing is kept from the
-        // verification); its plain package is what the one way of taking out reads.
         let opened = if zikaron_glue::addressed::is_addressed_at(&kit) { Some(crate::addressedx::open(&kit)?) } else { None };
         let from = opened.as_ref().map(|o| o.file.clone()).unwrap_or_else(|| kit.clone());
         match zikaron_glue::extract::take(&from, &to) {
@@ -224,8 +198,6 @@ pub(super) fn extract_originals(shell: &mut Shell, kit: &str, to: &str) -> Appli
     }
 }
 
-/// A refusal to take originals out, as the desktop names it: one fault per refusal of `zikaron_glue::extract`, its
-/// subject in the evidence (the names, the path, the verdict).
 pub fn extract_fault(r: &zikaron_glue::extract::Refused) -> crate::fault::Fault {
     use crate::fault::Known;
     use zikaron_glue::extract::Refused;
@@ -234,6 +206,7 @@ pub fn extract_fault(r: &zikaron_glue::extract::Refused) -> crate::fault::Fault 
         Refused::Path(_) => Known::ExtractPath,
         Refused::Nothing => Known::ExtractNothing,
         Refused::Clash(_) => Known::ExtractClash,
+        Refused::Name(_) => Known::ExtractName,
         Refused::NotAFolder(_) => Known::ExtractNotFolder,
         Refused::Exists(_) => Known::ExtractExists,
         Refused::Link(_) => Known::ExtractLink,

@@ -1,10 +1,3 @@
-//! The gas estimate and the command line's estimated send (`send::estimate_gas`, `send::anchor_estimated`).
-//!
-//! Covers the estimate's edge forms (zero, the ceiling and one past it, malformed quantities, network and call
-//! failures) and the command line's send order on a scripted node: fees, head, estimate at that head, nonce,
-//! one broadcast, receipt. An estimate refused or past the ceiling sends nothing. Estimates from several nodes
-//! are judged as a quantity, the largest taken (`judge::rule_of`), and that one reading meets the ceiling.
-
 use zikaron::json::Value;
 use zikaron_anchor::judge::{self, Missing, NoReading};
 use zikaron_anchor::rpc::{Endpoint, Trouble};
@@ -39,16 +32,35 @@ fn an_estimate_is_read_once_by_its_shape_and_held_at_the_ceiling() {
     assert_eq!(head_net, Err(NoGas::Network(net)), "the head broke: the network's, the estimate never asked");
     let head_node = send::estimate_gas(|| Err(node.clone()), |_| Ok(Value::Str("0x1".into())), Value::Null, |t| matches!(t, Trouble::Transport(_)));
     assert_eq!(head_node, Err(NoGas::Refused(node)));
-    // The limit an estimate gives: one and a half times, rounded up, held at the ceiling (between 133,334 and
-    // 200,000 the ceiling takes some of the half: by design).
     assert_eq!((send::limit_for(30_000), send::limit_for(133_334), send::limit_for(GAS_LIMIT)), (45_000, GAS_LIMIT, GAS_LIMIT));
 }
 
-/// Several nodes' estimates of one call, judged by the one table and then read by the one estimate rule, as the
-/// app does (`chainx::ask_call` then `send::estimate_gas`). Each form is one row of the estimate's closed table:
-/// estimates that differ (the two Sepolia preset nodes' answers at one block), alike, one refusing, all
-/// refusing, one not a quantity, none a quantity, the largest past the ceiling, zero, the widest quantity, one
-/// digit past it.
+#[test]
+fn a_plain_estimate_is_read_the_same_way_without_the_anchor_ceiling() {
+    let plain = |answer: Result<Value, Trouble>| send::estimate_plain_gas(|| Ok(0x40), |_| answer, Value::Null, |t| matches!(t, Trouble::Transport(_)));
+    let q = |s: &str| plain(Ok(Value::Str(s.into())));
+    assert_eq!(q("0x3c6f8"), Ok(247_544), "the book's declare on Sepolia");
+    assert_eq!(q("0x30d41"), Ok(u64::from(GAS_LIMIT) + 1), "one past the anchor's ceiling");
+    assert_eq!(q("0x0"), Ok(0));
+    assert_eq!(q(&format!("0x{:x}", send::PLAIN_GAS_MAX)), Ok(send::PLAIN_GAS_MAX), "the field's bound");
+    assert_eq!(q(&format!("0x{:x}", u128::from(send::PLAIN_GAS_MAX) + 1)), Err(NoGas::OverCap(u128::from(send::PLAIN_GAS_MAX) + 1)), "one past it");
+    assert_eq!(q(&format!("0x{:x}", u64::MAX)), Err(NoGas::OverCap(u128::from(u64::MAX))), "the widest 64-bit quantity");
+    assert_eq!(q(&format!("0x{}", "f".repeat(32))), Err(NoGas::OverCap(u128::MAX)), "the widest quantity read");
+    assert_eq!(q("0X10"), Err(NoGas::Unreadable("0X10".into())));
+    assert_eq!(plain(Ok(Value::Int(16))), Err(NoGas::NotText(Value::Int(16))));
+    let net = Trouble::Transport(zikaron_anchor::rpc::Broke::Said("broke".into()));
+    let node = Trouble::Node("{\"code\":3,\"message\":\"execution reverted\"}".into());
+    assert_eq!(plain(Err(net.clone())), Err(NoGas::Network(net)));
+    assert_eq!(plain(Err(node.clone())), Err(NoGas::Refused(node)));
+    assert_eq!(send::plain_limit_for(247_544), 371_316, "one and a half times, the transaction's limit");
+    assert_eq!(send::plain_limit_for(1), 2, "rounded up");
+    assert_eq!(send::plain_limit_for(0), 0);
+    assert_eq!(send::plain_limit_for(send::PLAIN_GAS_MAX), u64::MAX, "the bound's limit fills the field");
+    assert_eq!(send::plain_limit_for(u64::MAX), u64::MAX, "past the bound: the field's largest, never wrapped");
+    let f = zikaron_anchor::send::Fees::of(Some(10), Some(3)).with_plain_estimate(247_544);
+    assert_eq!((f.gas_limit, f.cap_wei()), (371_316, 23 * 371_316), "the cap the balance check and the card read");
+}
+
 #[test]
 fn estimates_that_differ_are_a_quantity_read_by_the_largest() {
     let reverted = || Trouble::Node("{\"code\":3,\"message\":\"execution reverted\"}".into());
@@ -57,40 +69,31 @@ fn estimates_that_differ_are_a_quantity_read_by_the_largest() {
         judge::judge("eth_estimateGas", &Value::Arr(vec![]), answers)
     };
     let read = |j: &judge::Judged| estimate(Ok(j.value.clone()));
-    // Differ: no longer a disagreement; the largest is the reading, both nodes its sources.
     let j = judged(vec![("http://a", Ok("\"0x443a\"")), ("http://b", Ok("\"0x4398\""))]).expect("differing estimates are read");
     assert_eq!((read(&j), j.sources.len(), j.single_source), (Ok(0x443a), 2, false), "differ");
     let j = judged(vec![("http://a", Ok("\"0x4398\"")), ("http://b", Ok("\"0x443a\"")), ("http://c", Ok("\"0x5ce9\""))]).expect("three");
     assert_eq!(read(&j), Ok(0x5ce9), "the largest of three, wherever it stands");
-    // Alike: the same reading as before.
     let j = judged(vec![("http://a", Ok("\"0x5c12\"")), ("http://b", Ok("\"0x5c12\""))]).expect("alike");
     assert_eq!((read(&j), j.single_source), (Ok(0x5c12), false), "alike");
-    // One refuses: passed over and named; the other speaks alone, single-source.
     let j = judged(vec![("http://a", Err(reverted())), ("http://b", Ok("\"0x4398\""))]).expect("one answered");
     assert_eq!((read(&j), j.single_source), (Ok(0x4398), true), "one refused");
     assert_eq!(j.missing, vec![("http://a".to_string(), Missing::Trouble(reverted()))]);
-    // All refuse: no reading, each named with its own trouble (the caller reads the first: the call's refusal).
     match judged(vec![("http://a", Err(reverted())), ("http://b", Err(reverted()))]) {
         Err(NoReading::NoneAnswered(m)) => assert_eq!(m.len(), 2, "all refused: {m:?}"),
         other => panic!("all refused: {other:?}"),
     }
-    // One answer not a quantity: passed over by its text; the quantity is the reading.
     let j = judged(vec![("http://a", Ok("\"0xzz\"")), ("http://b", Ok("\"0x4398\""))]).expect("one read");
     assert_eq!((read(&j), j.missing.clone()), (Ok(0x4398), vec![("http://a".to_string(), Missing::Unreadable("\"0xzz\"".into()))]), "one not a quantity");
-    // None a quantity (text that is not one, not text at all): no reading, each named as unreadable.
     match judged(vec![("http://a", Ok("\"0xzz\"")), ("http://b", Ok("16"))]) {
         Err(NoReading::NoneAnswered(m)) => assert!(m.len() == 2 && m.iter().all(|(_, x)| matches!(x, Missing::Unreadable(_))), "none a quantity: {m:?}"),
         other => panic!("none a quantity: {other:?}"),
     }
-    // The largest past the ceiling: refused by the largest's own number, though the other is within it.
     let j = judged(vec![("http://a", Ok("\"0x30d40\"")), ("http://b", Ok("\"0x30d41\""))]).expect("read");
     assert_eq!(read(&j), Err(NoGas::OverCap(u128::from(GAS_LIMIT) + 1)), "the largest one past the ceiling");
-    // Zero and the ceiling: the ceiling, which is within.
     let j = judged(vec![("http://a", Ok("\"0x0\"")), ("http://b", Ok("\"0x30d40\""))]).expect("read");
     assert_eq!(read(&j), Ok(GAS_LIMIT), "zero beside the ceiling");
     let j = judged(vec![("http://a", Ok("\"0x0\"")), ("http://b", Ok("\"0x0\""))]).expect("read");
     assert_eq!(read(&j), Ok(0), "zero alone");
-    // The widest quantity read, and one digit past it (passed over, so the other is the reading).
     let widest = format!("\"0x{}\"", "f".repeat(32));
     let j = judged(vec![("http://a", Ok(widest.as_str())), ("http://b", Ok("\"0x1\""))]).expect("read");
     assert_eq!(read(&j), Err(NoGas::OverCap(u128::MAX)), "the widest quantity");
@@ -99,7 +102,6 @@ fn estimates_that_differ_are_a_quantity_read_by_the_largest() {
     assert_eq!((read(&j), j.missing.len()), (Ok(1), 1), "one digit past the widest is not a quantity");
 }
 
-/// A node answering as one does, with the estimate the test sets; every question asked is kept, in order.
 struct Scripted {
     asked: Vec<(String, String)>,
     estimate: Result<W, Trouble>,
@@ -125,7 +127,6 @@ impl Endpoint for Scripted {
     fn name(&self) -> String {
         "scripted".into()
     }
-    /// No address: the place is the name.
     fn place(&self) -> String {
         self.name()
     }
@@ -133,7 +134,7 @@ impl Endpoint for Scripted {
 
 fn send_with(estimate: Result<W, Trouble>) -> (Result<u64, NotSent>, Vec<(String, String)>) {
     let mut ep = Scripted { asked: Vec::new(), estimate };
-    let got = send::anchor_estimated(&mut ep, &[7u8; 32], 31337, send::Form::Bare, None, &[[0xaa; 32]], None, std::time::Duration::ZERO).map(|(_, limit)| limit);
+    let got = send::anchor_estimated(&mut ep, &[7u8; 32], 31337, send::Form::Registry, Some([0x11; 20]), &[[0xaa; 32]], None, std::time::Duration::ZERO).map(|(_, limit)| limit);
     (got, ep.asked)
 }
 
@@ -174,23 +175,18 @@ fn an_estimate_that_gives_no_figure_sends_nothing() {
     assert!(matches!(got, Err(NotSent::Gas(NoGas::Refused(_)))), "a revert is the call's");
 }
 
-/// A replacement's fees: the fee rule's pair read now, each field at least ten percent above the transaction it
-/// replaces (rounded up, and at least one wei more), the gas limit kept, the priority fee never above the cap.
 #[test]
 fn a_replacement_rises_by_the_pools_bump_at_least() {
     use zikaron_anchor::send::{Fees, REPLACE_BUMP_PERCENT};
     assert_eq!(REPLACE_BUMP_PERCENT, 10);
     let old = Fees { max_fee: 2_000_000_001, priority: 1_000_000_000, gas_limit: 90_000, from_chain: true };
-    // The price now is lower than the old pair: the bump decides both fields.
     let low = Fees::of(Some(100), Some(5));
     let r = Fees::replacing(old, low);
     assert_eq!((r.max_fee, r.priority, r.gas_limit), (2_200_000_002, 1_100_000_000, 90_000));
-    // The price now is higher: the rule's pair decides.
     let high = Fees::of(Some(5_000_000_000), Some(1_000_000_000));
     let r = Fees::replacing(old, high);
     assert_eq!((r.max_fee, r.priority, r.gas_limit), (11_000_000_000, 1_100_000_000, 90_000));
     assert!(r.from_chain);
-    // Tiny numbers still rise (ten percent of 1 rounds up to 1 more).
     let tiny = Fees { max_fee: 1, priority: 1, gas_limit: 21_000, from_chain: true };
     let r = Fees::replacing(tiny, Fees::of(Some(0), Some(0)));
     assert_eq!((r.max_fee, r.priority), (2, 2));

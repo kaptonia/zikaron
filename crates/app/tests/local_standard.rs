@@ -1,18 +1,10 @@
-//! The local data standard (`app::local`; text in `crates/app/local-data-standard.md`): the envelope's bytes
-//! against fixed test vectors that every implementation reproduces (the place's half of the identity digest
-//! keyed), the only form written and read; and every form of a file that does not read, each refused with its
-//! own reason, an earlier version's envelope among them as not sealed. Raw keys only: no vault, no machine
-//! directory, no disk.
-
 use app::fault::Known;
 use app::local::{envelope, opens_under_key, unseal, Doc, Expect, Ident, Owner, Unread, ALG_KEYED, DIGEST, MAGIC, MAGIC_V2, PLACE_DOMAIN};
 
-/// The vectors' key: bytes 0x00 to 0x1f.
 fn key() -> [u8; 32] {
     std::array::from_fn(|i| i as u8)
 }
 
-/// The vectors' nonce: bytes 0x40 to 0x57.
 fn nonce() -> [u8; 24] {
     std::array::from_fn(|i| 0x40 + i as u8)
 }
@@ -24,7 +16,6 @@ struct Vector {
     doc: Doc,
     logical: &'static str,
     plain: &'static [u8],
-    /// The identity digest and the whole envelope (`ALG_KEYED`, the place's half keyed).
     digest: &'static str,
     sealed: &'static str,
 }
@@ -84,7 +75,6 @@ fn unhex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex")).collect()
 }
 
-/// The fixed vectors, byte for byte: the digest and whole envelope as written; each opens back to its bytes.
 #[test]
 fn the_test_vectors_seal_byte_for_byte_and_open_back() {
     for v in vectors() {
@@ -97,7 +87,6 @@ fn the_test_vectors_seal_byte_for_byte_and_open_back() {
     }
 }
 
-/// What one who knows only the public logical name would guess for the place's half: its unkeyed digest.
 fn guess(logical: &str) -> [u8; DIGEST / 2] {
     let mut msg = PLACE_DOMAIN.as_bytes().to_vec();
     msg.push(0);
@@ -106,9 +95,6 @@ fn guess(logical: &str) -> [u8; DIGEST / 2] {
     std::array::from_fn(|i| d[i])
 }
 
-/// A locked disk's heads cannot be checked against the public logical names: the place's half a file carries is
-/// not the unkeyed digest of its name, and under another key the same name gives another half. The owner's half
-/// is unchanged (a home number is not a public name).
 #[test]
 fn a_place_half_is_keyed_and_a_guess_by_name_does_not_match() {
     for v in vectors() {
@@ -122,8 +108,6 @@ fn a_place_half_is_keyed_and_a_guess_by_name_does_not_match() {
     }
 }
 
-/// The head's shape: magic, algorithm, kind, version, digest, nonce; the digest's two halves are the owner's and
-/// the place's.
 #[test]
 fn the_head_carries_magic_algorithm_kind_version_digest_and_nonce() {
     let v = &vectors()[0];
@@ -143,7 +127,6 @@ fn the_head_carries_magic_algorithm_kind_version_digest_and_nonce() {
     assert_eq!(&s[at..at + DIGEST], &id.digest_keyed(&key()));
     at += DIGEST;
     assert_eq!(&s[at..at + 24], &nonce());
-    // The same owner elsewhere shares the owner's half; another owner the same place shares the place's half.
     let other_place = Ident { logical: "settings/queue.json".into(), doc: Doc::Queue, ..id.clone() };
     let other_owner = Ident { owner: Owner::Machine, ..id.clone() };
     let k = key();
@@ -153,7 +136,6 @@ fn the_head_carries_magic_algorithm_kind_version_digest_and_nonce() {
     assert_ne!(id.digest_keyed(&k)[..8], other_owner.digest_keyed(&k)[..8]);
 }
 
-/// Not sealed: plain bytes, and anything that starts otherwise, empty included.
 #[test]
 fn bytes_without_the_magic_are_not_sealed() {
     let v = &vectors()[0];
@@ -162,7 +144,6 @@ fn bytes_without_the_magic_are_not_sealed() {
     }
 }
 
-/// Cut short: the head cut at every byte up to the nonce's end, and the ciphertext shorter than its tag.
 #[test]
 fn a_head_cut_anywhere_is_cut_short() {
     let v = &vectors()[0];
@@ -173,7 +154,6 @@ fn a_head_cut_anywhere_is_cut_short() {
     }
 }
 
-/// Another kind: a file sealed as one kind, read as another; a kind tag this version does not know.
 #[test]
 fn another_kind_is_another_kind() {
     let v = &vectors()[0];
@@ -182,8 +162,6 @@ fn another_kind_is_another_kind() {
     assert_eq!(reason(unseal(&key(), &as_queue, &s, "t")), Some(Unread::OtherKind));
 }
 
-/// A newer version: a format version past this one's, and an algorithm number past the one written. An algorithm
-/// number below it (an earlier version's unkeyed place half) is no envelope of this version's: not sealed.
 #[test]
 fn a_newer_version_or_algorithm_is_newer() {
     let v = &vectors()[0];
@@ -200,16 +178,11 @@ fn a_newer_version_or_algorithm_is_newer() {
         alg[MAGIC_V2.len()] = older;
         assert_eq!(reason(unseal(&key(), &expect(v), &alg, "t")), Some(Unread::NotSealed), "algorithm {older}");
     }
-    // Version zero is no version this standard ever wrote: it does not open.
     let mut zero = s.clone();
     zero[ver_at..ver_at + 2].copy_from_slice(&0u16.to_be_bytes());
     assert_eq!(reason(unseal(&key(), &expect(v), &zero, "t")), Some(Unread::Unopenable));
 }
 
-/// Another file: another owner (another home, the machine), a home with no label, each told before any key is
-/// tried (a wrong key gives the same answer); another place of a fixed-name kind (the place's half keyed since
-/// the third version): another file under the right key, and under a wrong key a file that does not open — a
-/// wrong key and another file are still told apart.
 #[test]
 fn another_owner_or_place_is_another_file_before_any_key() {
     let v = &vectors()[0];
@@ -226,7 +199,6 @@ fn another_owner_or_place_is_another_file_before_any_key() {
     let elsewhere = Expect { rel: Some("settings/other.json".into()), ..expect(v) };
     assert_eq!(reason(unseal(&key(), &elsewhere, &s, "t")), Some(Unread::Swapped), "another place, the right key");
     assert_eq!(reason(unseal(&wrong_key, &elsewhere, &s, "t")), Some(Unread::Unopenable), "another place, a wrong key");
-    // The digest is authenticated: a head whose digest is changed to the asked one still does not open.
     let other = Ident { owner: Owner::Home("ffffffffffffffffffffffffffffffff".into()), ..ident(v) };
     let mut forged = s.clone();
     let d_at = MAGIC_V2.len() + 4 + v.doc.tag().len();
@@ -235,8 +207,6 @@ fn another_owner_or_place_is_another_file_before_any_key() {
     assert_eq!(reason(unseal(&key(), &ex, &forged, "t")), Some(Unread::Unopenable));
 }
 
-/// Does not open: another key, a ciphertext byte changed, a nonce byte changed (the whole head is the
-/// additional data).
 #[test]
 fn a_wrong_key_or_any_changed_byte_does_not_open() {
     let v = &vectors()[0];
@@ -253,8 +223,6 @@ fn a_wrong_key_or_any_changed_byte_does_not_open() {
     assert!(opens_under_key(&key(), &s) && !opens_under_key(&[7u8; 32], &s));
 }
 
-/// The first envelope an earlier version wrote is not this version's: not sealed, whoever asks and under any
-/// key, and nothing in it is read.
 #[test]
 fn the_first_envelope_is_not_sealed() {
     let v = &vectors()[0];
@@ -274,7 +242,6 @@ fn the_first_envelope_is_not_sealed() {
     assert!(!opens_under_key(&key(), &old));
 }
 
-/// The six reasons are a closed table: each word read back by `Unread::of`; any other refusal has none.
 #[test]
 fn the_six_reasons_read_back_from_their_refusal() {
     assert_eq!(Unread::ALL.len(), 6);

@@ -1,28 +1,6 @@
-//! One archive directory ("home") per identity. The product creates everything it needs (directories,
-//! subdirectories, the settings file); nobody has to prepare anything.
-//!
-//! Four subdirectories: `ledger` (the storage crate's `LedgerDir`), `kits`, `grants-held`, `settings`. This
-//! module defines no ledger layout: opening, reading and writing go through the storage crate (any directory
-//! is an archive; any copy is equivalent).
-//!
-//! No absolute path is stored anywhere in this tree, so copying it elsewhere or to another machine reads
-//! back byte for byte. Where this machine's home is lives outside the home, in [`PICKED`] in the machine
-//! directory.
-//!
-//! The machine directory, one per machine, holds the key vault, identity registry, `machine.json` and the kit
-//! index `kits/index.json`. It is found through the pointer `~/.zikaron-desk` (one line: the machine
-//! directory's absolute path, trailing newline, mode 0600, written to a temporary name and renamed
-//! atomically); without a pointer, the default is `~/.zikaron-desk.d/`. No other place is looked at. Companion
-//! apps read this pointer and index (read-only).
-//!
-//! Resolving and settling are separate: [`machine_dir`] only reads; the pointer and empty index are written
-//! only by [`settle_machine`], called once when the window starts (tests call it separately in a temporary
-//! place).
-
 use crate::fault::{classify, Fault, Known};
 use std::path::{Path, PathBuf};
 
-/// The four subdirectories. Closed; their names are written only here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
     Ledger,
@@ -44,36 +22,20 @@ impl Slot {
     }
 }
 
-/// The default machine directory (under the user's home) and the pointer file name: spelled in `zikaron-os`,
-/// where the one reading of the machine directory lives (the command line reads it too, to find the door).
 pub const APP_DIR: &str = zikaron_os::machine::APP_DIR;
 pub const POINTER: &str = zikaron_os::machine::POINTER;
-/// Default home name when nobody chose a place (under the machine directory), defined once.
 pub const DEFAULT_HOME: &str = "default";
-/// The file in the machine directory recording the chosen home (`{"home": absolute path}`), defined once.
 pub const PICKED: &str = "picked-home.json";
-/// Environment variable naming a home explicitly (used by tools and tests to start a home in a temporary
-/// place).
 pub const HOME_ENV: &str = "ZIKARON_DESK_HOME";
 
 
-
-/// Files the system leaves in folders on its own (folder view settings, thumbnail caches). A folder holding
-/// only these is empty to a person, and a home holding them is still a home.
 pub const SIDE_FILES: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
-/// The prefix of the companion files some systems write beside each file copied to a foreign disk.
 pub const SIDE_PREFIX: &str = "._";
 
-/// Whether a name in a folder is one of the system's side files (never a person's file).
 pub fn is_side_file(name: &str) -> bool {
     SIDE_FILES.contains(&name) || name.starts_with(SIDE_PREFIX)
 }
 
-/// What a folder is, to the one question "may a home open here?": not there yet (the product makes it);
-/// empty (nothing, or only the system's side files); already a home (every name in it is one of the home's
-/// rooms or a side file, at least one room there; an older home missing a room is still a home); or something
-/// else (a ledger folder written by the command line, a folder of documents), with the names that make it so.
-/// A name of a room standing as a file is the home's own (a damaged room), not a stranger's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     Absent,
@@ -82,8 +44,6 @@ pub enum Place {
     Other(Vec<String>),
 }
 
-/// Read what a folder is (see [`Place`]). "Change data folder" asks this before laying out rooms there: a home
-/// chosen by a person never lays its rooms beside someone else's files.
 pub fn place_of(root: &Path) -> Result<Place, Fault> {
     if !root.exists() {
         return Ok(Place::Absent);
@@ -99,8 +59,6 @@ pub fn place_of(root: &Path) -> Result<Place, Fault> {
         if is_side_file(&name) {
             continue;
         }
-        // Anything at a room's name belongs to the home: a file there is a damaged room (reported as "cannot
-        // create" when the rooms are laid out), not a stranger's file.
         if Slot::ALL.iter().any(|s| s.as_str() == name) {
             if e.path().is_dir() {
                 rooms += 1;
@@ -117,8 +75,6 @@ pub fn place_of(root: &Path) -> Result<Place, Fault> {
     })
 }
 
-/// A home may open here: refused by name ([`Known::NotAHome`], the first names that make it so) when the
-/// folder is neither a home nor empty.
 pub fn may_open_at(root: &Path) -> Result<(), Fault> {
     match place_of(root)? {
         Place::Absent | Place::Empty | Place::Home => Ok(()),
@@ -129,14 +85,7 @@ pub fn may_open_at(root: &Path) -> Result<(), Fault> {
     }
 }
 
-/// Lays out a home: the root and four subdirectories.
-///
-/// Verified on disk afterwards: success means the rooms exist as the file system reports them, and any
-/// failure is refused by name as "cannot create directory".
 pub fn lay(root: &Path) -> Result<(), Fault> {
-    // The create calls do not decide the outcome: `classify` recognizes only "missing" and "denied", so the
-    // common case (the name taken by a file) would pass a raw system message through. Creation errors are
-    // kept as the evidence tail, and the verdict is whether the rooms exist on disk now.
     let mut why: Vec<String> = Vec::new();
     if let Err(e) = std::fs::create_dir_all(root) {
         why.push(classify(&e, &root.display().to_string()).tail().to_string());
@@ -153,62 +102,43 @@ pub fn lay(root: &Path) -> Result<(), Fault> {
         .map(|s| s.as_str())
         .collect();
     if !root.is_dir() || !missing.is_empty() {
-        let what = if missing.is_empty() { crate::lang::t(crate::lang::Key::Tail159).to_string() } else { missing.join(" ") };
-        let tail = if why.is_empty() {
-            crate::lang::filln(crate::lang::Key::Tail016, &[&(root.display()).to_string(), &(what).to_string()])
-        } else {
-            crate::lang::filln(crate::lang::Key::Tail160, &[&(root.display()).to_string(), &(what).to_string(), &(why.join(" · ")).to_string()])
-        };
+        let tail = crate::lang::both_of(|| {
+            let what = if missing.is_empty() { crate::lang::t(crate::lang::Key::Tail159).to_string() } else { missing.join(" ") };
+            if why.is_empty() {
+                crate::lang::filln(crate::lang::Key::Tail016, &[&(root.display()).to_string(), &(what).to_string()])
+            } else {
+                crate::lang::filln(crate::lang::Key::Tail160, &[&(root.display()).to_string(), &(what).to_string(), &(why.join(" · ")).to_string()])
+            }
+        });
         return Err(Fault::known(Known::CannotLay, tail));
     }
     Ok(())
 }
 
-/// Writes a small file into a room of the home. Every home file is written here.
-///
-/// Written beside, then renamed: a temporary name in the same room, `sync_all`, then rename over. Rename is
-/// atomic on one file system, so a truncated file never appears. With this one write path, a power loss
-/// mid-write cannot leave a half-written queue or settings file that silently loses data.
 pub fn put(home: &Home, slot: Slot, name: &str, bytes: &[u8]) -> Result<(), Fault> {
     put_at(&home.dir(slot), name, bytes)
 }
 
-/// The same write into a given directory (machine-level files outside the home, such as the identity
-/// registry). The only write path; [`put`] goes through it.
 pub fn put_at(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), Fault> {
-    // The writing task's ticket (`task::ticket_void`): a worker whose home is no longer the one it started
-    // for writes nothing and ends with the refusal.
+    crate::reads::touch();
     if crate::task::ticket_void() {
         return Err(crate::task::void_ticket_fault(dir));
     }
     zikaron_os::put_at(dir, name, &put_tmp_name()?, bytes).map_err(unput)
 }
 
-/// A write that did not land, as a fault said with the path the platform piece names.
 fn unput(u: zikaron_os::Unput) -> Fault {
     classify(&u.error, &u.at.display().to_string())
 }
 
-/// The temporary name [`put_at`] writes beside its target: the product's one temporary shape
-/// (`zikaron_store::layout::tmp_file_name`), with sixteen hex digits from the system entropy source. Two paths
-/// writing one file at once (queueing in the frame, dequeuing in the background) get two names; a collision is
-/// refused by `create_new`, never mixed.
 fn put_tmp_name() -> Result<String, Fault> {
     Ok(zikaron_seal::land::tmp_name()?)
 }
 
-/// Whether a file name is this product's temporary name, by the name alone: the one shape every write puts
-/// beside its target before renaming it over (`zikaron_store::layout::tmp_shaped`: this crate's `put_at`, the
-/// glue crate's landings and the store's archive writes alike). A leftover one is from a write cut short. A file
-/// staged for a later commit (`keybox::NEXT`) is not temporary: it is settled at the next start.
 pub fn is_temp_name(name: &str) -> bool {
     zikaron_store::layout::tmp_shaped(name)
 }
 
-/// Removes every leftover temporary file under a home (regular files of [`is_temp_name`]'s shape, at any depth;
-/// links are not followed). Run by the writer when it opens the home, under its lock: no other process writes
-/// there, so whatever temporary file is found was cut short. Returns how many went; one that cannot be removed
-/// stays, and a strict read that meets it names it.
 pub fn sweep_temps(root: &Path) -> usize {
     fn walk(dir: &Path, gone: &mut usize) {
         let Ok(listing) = std::fs::read_dir(dir) else { return };
@@ -226,28 +156,23 @@ pub fn sweep_temps(root: &Path) -> usize {
     gone
 }
 
-/// Moves a file written beside its place (a staged `.zk-next`, itself written by [`put_at`]) over that place in
-/// one rename, the directory synced (`zikaron_os::rename_over`). The only rename of a written file outside
-/// `put_at`: the vault change and the settling of staged files go through it.
 pub fn rename_over(from: &Path, to: &Path) -> Result<(), Fault> {
     zikaron_os::rename_over(from, to).map_err(unput)
 }
 
-/// An archive directory.
 pub struct Home {
     root: PathBuf,
 }
 
 impl Home {
-    /// Opens a home, creating it and its four subdirectories if missing.
     pub fn open_or_create(root: impl Into<PathBuf>) -> Result<Home, Fault> {
         let root = root.into();
         lay(&root)?;
         Ok(Home { root })
     }
 
-    /// Opens an existing home. Missing subdirectories are reported, never silently added.
     pub fn open(root: impl Into<PathBuf>) -> Result<Home, Fault> {
+        crate::reads::touch();
         let root = root.into();
         if !root.is_dir() {
             return Err(Fault::known(Known::FileMissing, root.display().to_string()));
@@ -255,8 +180,6 @@ impl Home {
         Ok(Home { root })
     }
 
-    /// A home not yet on disk: only its path, without asking whether it exists. Used where the screen asks
-    /// whether the mirror location exists before a home is open.
     pub fn bare(root: PathBuf) -> Home {
         Home { root }
     }
@@ -269,7 +192,6 @@ impl Home {
         self.root.join(s.as_str())
     }
 
-    /// Which subdirectories are missing, read from disk now.
     pub fn missing(&self) -> Vec<&'static str> {
         Slot::ALL
             .iter()
@@ -278,22 +200,16 @@ impl Home {
             .collect()
     }
 
-    /// The ledger: the storage crate's `LedgerDir` holding sealed entries, opened on the way out
-    /// (`local::Ledger`); this layer defines no layout of its own.
     pub fn ledger(&self) -> Result<crate::local::Ledger, Fault> {
+        crate::reads::touch();
         crate::local::ledger_of(self)
     }
 
-    /// Bytes this home uses now, by walking the disk (not estimated).
     pub fn usage(&self) -> Result<u64, Fault> {
         walk_size(&self.root)
     }
 }
 
-/// The bytes under `p`, which must be there. A home is live while it is measured (a write's temporary file comes
-/// and goes), so an entry listed and gone by the time it is looked at counts nothing, not an error: gone as the
-/// look itself says (not found), or as the entry's own state says when the look failed otherwise
-/// (`zikaron_os::going`: not there, or being deleted).
 fn walk_size(p: &Path) -> Result<u64, Fault> {
     size_of(p, false)
 }
@@ -320,7 +236,6 @@ fn size_of(p: &Path, listed: bool) -> Result<u64, Fault> {
     for e in listing {
         let e = match e {
             Ok(e) => e,
-            // The folder went while its entries were read: what is left of it is not there.
             Err(e) if gone(&e) => return Ok(n),
             Err(e) => return Err(classify(&e, &p.display().to_string())),
         };
@@ -329,15 +244,10 @@ fn size_of(p: &Path, listed: bool) -> Result<u64, Fault> {
     Ok(n)
 }
 
-/// Where an identity's seat home lives. A new identity's two seat homes sit beside this machine's current
-/// home: `<home's parent>/<keyed name>/<seat>`. The name derives from the identity, so deleting and
-/// reimporting an identity finds the same two homes (deleting an identity does not delete ledger
-/// directories). This path is built only here.
 pub fn identity_home(identity: &str, seat: crate::roles::Role) -> Result<PathBuf, Fault> {
     identity_home_under(&crate::names::key()?, identity, seat)
 }
 
-/// The same place under a given names key (a master key change names the homes it lays down anew).
 pub fn identity_home_under(nk: &crate::names::NameKey, identity: &str, seat: crate::roles::Role) -> Result<PathBuf, Fault> {
     let here = where_is()?;
     let base = match here.parent() {
@@ -347,16 +257,10 @@ pub fn identity_home_under(nk: &crate::names::NameKey, identity: &str, seat: cra
     Ok(base.join(home_dir_name(nk, identity)).join(seat.as_str()))
 }
 
-/// An identity's home directory name under a names key. The name is keyed (`names`), so while locked it
-/// reveals nothing about the identity. Tests read it from here rather than computing it.
 pub fn home_dir_name(nk: &crate::names::NameKey, identity: &str) -> String {
     nk.name(crate::names::Logical::Home(identity))
 }
 
-/// The user's home directory (the pointer, default machine directory and old location derive from it). A
-/// stand-in set through `places` wins; with the machine directory set and no stand-in (usual in tests) it is
-/// `None` and the pointer is neither read nor written. Otherwise the system's home directory
-/// (`platform::home_dir`).
 pub fn user_home() -> Result<Option<PathBuf>, Fault> {
     let p = crate::places::get();
     if let Some(u) = p.user_home.clone() {
@@ -367,29 +271,21 @@ pub fn user_home() -> Result<Option<PathBuf>, Fault> {
     }
     crate::platform::home_dir()
         .map(Some)
-        .ok_or_else(|| Fault::known(Known::NoHomeDir, crate::lang::t(crate::lang::Key::Tail161).to_string()))
+        .ok_or_else(|| Fault::known(Known::NoHomeDir, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail161).to_string())))
 }
 
-/// Where the pointer file is (`None`: this run does not touch the pointer, see [`user_home`]).
 pub fn pointer_path() -> Result<Option<PathBuf>, Fault> {
     Ok(user_home()?.map(|u| pointer_dir(&u).join(POINTER)))
 }
 
-/// The folder the pointer file sits in, given the user's home directory: where the system keeps this app's
-/// machine data by default (`platform::app_data_dir`; on macOS and Linux the home directory itself), beside the
-/// default machine directory and outside it.
 pub fn pointer_dir(user_home: &Path) -> PathBuf {
     crate::platform::app_data_dir(user_home)
 }
 
-/// Which level the machine directory was resolved from. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layer {
-    /// Set through `places` (only tests set it).
     Placed,
-    /// The pointer `~/.zikaron-desk`.
     Pointer,
-    /// The default `~/.zikaron-desk.d/`.
     Default,
 }
 
@@ -403,37 +299,98 @@ impl Layer {
     }
 }
 
-/// Where the machine directory is and which level it came from. Reads only. Order: set through `places`,
-/// then the pointer, then the default. A pointer that is not one absolute path line is refused with
-/// `MACHINE_SHAPE`, never silently replaced by the default (which would leave the key vault and registry
-/// behind).
 pub fn machine_at() -> Result<(PathBuf, Layer), Fault> {
     if let Some(p) = crate::places::get().machine_dir.clone() {
         return Ok((p, Layer::Placed));
     }
+    if let Some(kept) = SETTLED.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(kept);
+    }
+    machine_fresh()
+}
+
+static SETTLED: std::sync::Mutex<Option<(PathBuf, Layer)>> = std::sync::Mutex::new(None);
+
+pub fn forget_machine() {
+    *SETTLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn keep_machine(machine: &Path) {
+    *SETTLED.lock().unwrap_or_else(|e| e.into_inner()) = Some((machine.to_path_buf(), Layer::Pointer));
+}
+
+fn machine_fresh() -> Result<(PathBuf, Layer), Fault> {
+    crate::reads::touch();
+    if let Some(p) = crate::places::get().machine_dir.clone() {
+        return Ok((p, Layer::Placed));
+    }
     let Some(u) = user_home()? else {
-        return Err(Fault::known(Known::NoHomeDir, crate::lang::t(crate::lang::Key::Tail161).to_string()));
+        return Err(Fault::known(Known::NoHomeDir, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail161).to_string())));
     };
-    // The remaining levels are read in `zikaron-os`, shared with the command line.
     use zikaron_os::machine::{self, Unread};
     match machine::of(&u) {
         Ok((p, machine::Layer::Pointer)) => Ok((p, Layer::Pointer)),
         Ok((p, machine::Layer::Default)) => Ok((p, Layer::Default)),
         Err(Unread::PointerShape(ptr)) => Err(Fault::known(Known::MachineShape, ptr.display().to_string())),
         Err(Unread::Pointer(ptr, e)) => Err(classify(&e, &ptr.display().to_string())),
-        Err(Unread::NoHome) => Err(Fault::known(Known::NoHomeDir, crate::lang::t(crate::lang::Key::Tail161).to_string())),
+        Err(Unread::NoHome) => Err(Fault::known(Known::NoHomeDir, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail161).to_string()))),
     }
 }
 
-/// The machine directory (where the key vault, registry, `machine.json` and kit index live). See
-/// [`machine_at`].
 pub fn machine_dir() -> Result<PathBuf, Fault> {
     machine_at().map(|(p, _)| p)
 }
 
-/// Where this machine's home is: named by the environment, then the choice recorded in the machine directory
-/// ([`PICKED`]), then the default home under the machine directory. An unreadable record is refused by name;
-/// no path is ever guessed.
+pub fn here(recorded: &Path) -> PathBuf {
+    match machine_dir() {
+        Ok(m) => here_under(&m, recorded),
+        Err(_) => recorded.to_path_buf(),
+    }
+}
+
+pub fn here_under(m: &Path, recorded: &Path) -> PathBuf {
+    if recorded.starts_with(m) {
+        return recorded.to_path_buf();
+    }
+    let parts: Vec<std::path::Component> = recorded.components().collect();
+    for tail_len in [2usize, 1] {
+        if parts.len() <= tail_len {
+            continue;
+        }
+        let (head, tail) = parts.split_at(parts.len() - tail_len);
+        let (was, rel): (PathBuf, PathBuf) = (head.iter().collect(), tail.iter().collect());
+        let was_machine = !was.exists() || was.join(crate::places::keybox_file()).is_file();
+        if was_machine && !same_place(&was, m) && m.join(&rel).is_dir() {
+            note_moved(&was, m);
+            return m.join(rel);
+        }
+    }
+    recorded.to_path_buf()
+}
+
+static MOVED: std::sync::Mutex<Option<(PathBuf, PathBuf)>> = std::sync::Mutex::new(None);
+
+fn note_moved(was: &Path, now: &Path) {
+    *MOVED.lock().unwrap_or_else(|e| e.into_inner()) = Some((was.to_path_buf(), now.to_path_buf()));
+}
+
+pub const MOVED_SAID: &str = "moved-said";
+
+pub fn moved_unsaid() -> Option<PathBuf> {
+    let (was, now) = MOVED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    say_once(&was, &now).then_some(was)
+}
+
+fn say_once(was: &Path, now: &Path) -> bool {
+    let mark = zikaron::hexfmt::encode(&zikaron::cryptox::sha256(was.display().to_string().as_bytes()));
+    let said = std::fs::read_to_string(now.join(MOVED_SAID)).unwrap_or_default();
+    if said.lines().any(|l| l.trim() == mark) {
+        return false;
+    }
+    let _ = put_at(now, MOVED_SAID, format!("{said}{mark}\n").as_bytes());
+    true
+}
+
 pub fn where_is() -> Result<PathBuf, Fault> {
     if let Some(p) = std::env::var_os(HOME_ENV) {
         let p = PathBuf::from(p);
@@ -442,66 +399,52 @@ pub fn where_is() -> Result<PathBuf, Fault> {
         }
     }
     let machine = machine_dir()?;
-    // An unreadable recorded choice is refused by name: silently opening the default home would make the
-    // ledger look lost, and the next home change would write the wrong path back.
     let picked = machine.join(PICKED);
     match std::fs::read(&picked) {
-        Ok(b) => return read_pointer(&b).ok_or_else(|| Fault::known(Known::MachineShape, picked.display().to_string())),
+        Ok(b) => return read_pointer(&b).map(|h| here_under(&machine, &h)).ok_or_else(|| Fault::known(Known::MachineShape, picked.display().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(classify(&e, &picked.display().to_string())),
     }
     Ok(machine.join(DEFAULT_HOME))
 }
 
-/// One pointer line: the machine directory's absolute path followed by exactly one newline (parsed in
-/// `zikaron-os`).
-fn read_machine_pointer(bytes: &[u8]) -> Option<PathBuf> {
-    zikaron_os::machine::read_pointer(bytes)
+fn read_machine_pointer(bytes: &[u8], folder: &Path) -> Option<PathBuf> {
+    zikaron_os::machine::read_pointer(bytes, folder)
 }
 
-/// The pointer file bytes (one absolute path line with a newline), matching what the reader expects.
 pub fn machine_pointer_bytes(machine: &Path) -> Vec<u8> {
-    format!("{}\n", machine.display()).into_bytes()
+    match user_home() {
+        Ok(Some(u)) => zikaron_os::machine::pointer_bytes(machine, &pointer_dir(&u)),
+        _ => format!("{}\n", machine.display()).into_bytes(),
+    }
 }
 
-/// Writes the pointer through [`put_at`] (temporary name, atomic rename, 0600). Not rewritten when the bytes
-/// are already this place. Returns whether it wrote; with no user-home stand-in in tests it writes nothing.
 pub fn write_machine_pointer(machine: &Path) -> Result<bool, Fault> {
     let Some(u) = user_home()? else { return Ok(false) };
-    let want = machine_pointer_bytes(machine);
-    // Check with the reader before writing: a path that does not round-trip through these bytes (a line break
-    // in it, or bytes a text line cannot carry) is refused by name, never written as a pointer that a later
-    // start could not read or that leads elsewhere.
-    if read_machine_pointer(&want).as_deref() != Some(machine) {
+    let dir = pointer_dir(&u);
+    let want = zikaron_os::machine::pointer_bytes(machine, &dir);
+    if read_machine_pointer(&want, &dir).as_deref() != Some(machine) {
         return Err(Fault::known(Known::MachineShape, machine.display().to_string()));
     }
-    let dir = pointer_dir(&u);
     if std::fs::read(dir.join(POINTER)).ok().as_deref() == Some(want.as_slice()) {
+        keep_machine(machine);
         return Ok(false);
     }
     put_at(&dir, POINTER, &want)?;
+    keep_machine(machine);
     Ok(true)
 }
 
-/// What was settled when the window started (read by tests).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settled {
     pub machine: PathBuf,
-    /// Which level it resolved from before this run.
     pub layer: Layer,
-    /// Whether this run wrote the pointer.
     pub pointer_written: bool,
-    /// Whether this run wrote an empty index.
     pub index_written: bool,
 }
 
-/// Settles the machine directory once when the window starts (tests call it separately in a temporary
-/// place):
-///
-/// 1. the machine directory is created and the pointer written to it (not rewritten when unchanged);
-/// 2. an empty kit index is written when missing.
 pub fn settle_machine() -> Result<Settled, Fault> {
-    let (machine, layer) = machine_at()?;
+    let (machine, layer) = machine_fresh()?;
     let before = pointer_path()?.and_then(|p| std::fs::read(p).ok());
     std::fs::create_dir_all(&machine).map_err(|e| classify(&e, &machine.display().to_string()))?;
     if layer != Layer::Placed {
@@ -512,17 +455,12 @@ pub fn settle_machine() -> Result<Settled, Fault> {
     Ok(Settled { machine, layer, pointer_written, index_written })
 }
 
-// ───────────────────────── The machine directory set aside whole ─────────────────────────
-
-/// What setting the machine directory aside moves, and the chosen data folder it leaves when that lies outside
-/// (from the plain record of the choice; the others are only in the sealed settings).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AsidePlan {
     pub machine: PathBuf,
     pub kept: Option<PathBuf>,
 }
 
-/// The machine directory set aside: from where, to which name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Aside {
     pub from: PathBuf,
@@ -539,8 +477,6 @@ pub fn aside_plan() -> Result<AsidePlan, Fault> {
     Ok(AsidePlan { machine, kept })
 }
 
-/// The one name the machine directory is set aside under on `day`: `<name>.aside-<day>` beside it, numbered while
-/// taken.
 pub fn aside_name(machine: &Path, day: &str) -> PathBuf {
     let name = machine.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let dir = machine.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -554,9 +490,6 @@ pub fn aside_name(machine: &Path, day: &str) -> PathBuf {
     }
 }
 
-/// Set the whole machine directory aside under [`aside_name`], not a byte deleted; the pointer stays, so the next
-/// settling makes a new one in its place. Nothing moves when another process holds a lock in it (`MACHINE_HELD`)
-/// or the system refuses the rename.
 pub fn set_machine_aside(day: &str) -> Result<Aside, Fault> {
     let machine = machine_dir()?;
     let to = aside_name(&machine, day);
@@ -569,12 +502,6 @@ pub fn set_machine_aside(day: &str) -> Result<Aside, Fault> {
     Ok(Aside { from: machine, to })
 }
 
-/// Whether this home was named by the environment. Such a home was not chosen in the product: the pointer
-/// follows only the user's choices, and a home the environment named once must not replace this machine's
-/// default home.
-///
-/// When both exist on disk, paths are compared canonically (`/tmp` and `/private/tmp` are the same place);
-/// otherwise as given.
 pub fn named_by_env(root: &Path) -> bool {
     let Some(p) = std::env::var_os(HOME_ENV) else { return false };
     let p = PathBuf::from(p);
@@ -584,26 +511,17 @@ pub fn named_by_env(root: &Path) -> bool {
     same_place(&p, root)
 }
 
-/// A canonical path as people and other programs read it. On Windows canonicalizing gives the extended form
-/// (`\\?\C:\x`, `\\?\UNC\host\share\x`); that prefix is removed (`C:\x`, `\\host\share\x`). Any other path,
-/// including every unix one, is returned unchanged. Paths that are stored or shown pass through here; paths
-/// only compared with other canonical paths need not.
 pub fn plain_path(p: PathBuf) -> PathBuf {
     let Some(t) = p.to_str() else { return p };
     if let Some(rest) = t.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
     }
     match t.strip_prefix(r"\\?\") {
-        // Only a drive path is given back plainly; other extended forms (a volume by its identifier) have no
-        // plain spelling.
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') && rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) => PathBuf::from(rest),
         _ => p,
     }
 }
 
-/// Whether two paths are the same place on disk. When both exist, compared by canonical path (`/tmp` and
-/// `/private/tmp` are the same place); otherwise as given. Lock reuse, signing key ownership and
-/// environment-named homes all ask it.
 pub fn same_place(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
@@ -611,34 +529,19 @@ pub fn same_place(a: &Path, b: &Path) -> bool {
     }
 }
 
-// Choosing where output lands is decided in one place: [`choose`]. It also says why the result differs from
-// the picked place ([`Why`], three closed forms), so an unusable pick never leads to a silent subfolder. The
-// chosen path is valid only while it does not exist.
-
-/// What kind of thing is landing. Closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Moving a home: the user picks a folder. If empty, move into it; otherwise open a new name inside it
-    /// (from [`HOME_STEM`]).
     Home,
-    /// Writing a bundle (kit, badge): a named file is used as is; a named folder gets a name from `stem`
-    /// inside it, numbered when taken.
     Bundle { stem: String },
-    /// Writing a file: `<stem>.<ext>` inside the chosen folder, numbered when taken.
     File { stem: String, ext: String },
 }
 
-/// The folder name opened inside a non-empty folder when moving a home.
 pub const HOME_STEM: &str = "ZIKARON";
 
-/// Why output lands where it does. Three closed forms (the page words each one).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Why {
-    /// The chosen place fits (an empty folder, a name not yet taken, or a named file).
     AsPicked,
-    /// The chosen folder already has content, so a new name was opened inside it.
     FolderNotEmpty,
-    /// The name was taken, so a number was added.
     NameTaken,
 }
 
@@ -651,7 +554,6 @@ impl Why {
         }
     }
 
-    /// The sentence on screen (`None` for the form that needs no explanation: landing where chosen).
     pub fn say(self) -> Option<crate::lang::Key> {
         match self {
             Why::AsPicked => None,
@@ -660,7 +562,6 @@ impl Why {
         }
     }
 
-    /// The same, said before the write: where it will land once the key is pressed.
     pub fn say_ahead(self) -> Option<crate::lang::Key> {
         match self {
             Why::AsPicked => None,
@@ -670,20 +571,12 @@ impl Why {
     }
 }
 
-/// The answer to where it lands, and why that is not the chosen place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chosen {
     pub at: PathBuf,
     pub why: Why,
 }
 
-/// The one check on a location given by the user: empty or not absolute is refused with `PATH_RELATIVE`
-/// before any write.
-///
-/// A relative path follows the process's current directory: homes, kits, backups, snapshots, badges, key
-/// files and grant files would land wherever the program happens to run from, and a recorded pointer would
-/// lead elsewhere next time. Every action that takes a location asks this, as does the window when enabling
-/// its primary buttons. It touches no disk, so it is cheap enough for every frame.
 pub fn landing(given: &str) -> Result<PathBuf, Fault> {
     let t = given.trim();
     let p = Path::new(t);
@@ -693,11 +586,6 @@ pub fn landing(given: &str) -> Result<PathBuf, Fault> {
     Ok(p.to_path_buf())
 }
 
-/// The one place a path stored in settings becomes absolute. The window's picker already gives absolute
-/// paths; relative ones (from tests or the command line) are resolved against the current directory now,
-/// without touching the disk or requiring the place to exist. A stored relative path would point elsewhere
-/// when started from another directory while the settings bytes stayed the same. An empty string is refused
-/// with `PATH_RELATIVE`; "empty means clear" is the caller's decision.
 pub fn kept(given: &str) -> Result<PathBuf, Fault> {
     let t = given.trim();
     if t.is_empty() {
@@ -706,14 +594,8 @@ pub fn kept(given: &str) -> Result<PathBuf, Fault> {
     std::path::absolute(t).map_err(|e| classify(&e, t))
 }
 
-/// Decides where output lands; the only place that does.
-///
-/// All three kinds follow one rule: a named file is used; a named folder gets a name inside it, and "it
-/// already has content" and "the name is taken" are each reported. The result is valid only while that path
-/// does not exist.
 pub fn choose(kind: &Kind, picked: &Path) -> Chosen {
     let chosen = match kind {
-        // Moving a home: an empty folder is used; otherwise a new name inside it.
         Kind::Home => {
             let empty = std::fs::read_dir(picked).map(|mut d| d.next().is_none()).unwrap_or(false);
             if empty {
@@ -722,7 +604,6 @@ pub fn choose(kind: &Kind, picked: &Path) -> Chosen {
                 numbered(picked, HOME_STEM, None, Why::FolderNotEmpty)
             }
         }
-        // A bundle: a named file is used as is (not a directory).
         Kind::Bundle { stem } => {
             if !picked.is_dir() {
                 Chosen { at: picked.to_path_buf(), why: Why::AsPicked }
@@ -736,26 +617,15 @@ pub fn choose(kind: &Kind, picked: &Path) -> Chosen {
 }
 
 impl Chosen {
-    /// The second check: whether the path is free now.
-    ///
-    /// New names from [`numbered`] are free by construction, while the picked place is expected to exist (an
-    /// empty folder or a named file). So this answers rather than asserts, for callers that re-check (only
-    /// tests; the product just takes the path).
     pub fn free(&self) -> bool {
         !self.at.exists()
     }
 
-    /// Whether this is a new name (only when the chosen place could not be used).
     pub fn is_new_name(&self) -> bool {
         self.why != Why::AsPicked
     }
 }
 
-/// Makes a landing name inside a folder, numbered when taken.
-///
-/// `first` is the reason used when the first name is free: the two writers give `AsPicked`, while moving a
-/// home already knows the folder is not empty and gives `FolderNotEmpty`. A taken first name gives
-/// `NameTaken`.
 fn numbered(dir: &Path, stem: &str, ext: Option<&str>, first: Why) -> Chosen {
     let mut n = 1u32;
     loop {
@@ -767,7 +637,6 @@ fn numbered(dir: &Path, stem: &str, ext: Option<&str>, first: Why) -> Chosen {
     }
 }
 
-/// The `n`th landing name for a stem: the stem itself first, then `stem-2`, `stem-3`… (the extension after).
 fn numbered_name(stem: &str, ext: Option<&str>, n: u32) -> String {
     match (n, ext) {
         (1, None) => stem.to_string(),
@@ -777,10 +646,6 @@ fn numbered_name(stem: &str, ext: Option<&str>, n: u32) -> String {
     }
 }
 
-/// Writes `bytes` (owner only) as a new file in `dir` under the first free numbered name (`stem.ext`, then
-/// `stem-2.ext`…) and returns its path. The write never replaces an existing entry (`zikaron_glue::landing`: a
-/// hard link or a non-replacing rename); a name found taken at that moment, by anything, moves on to the next
-/// number. Any other failure is refused by name.
 pub fn land_numbered(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf, Fault> {
     if crate::task::ticket_void() {
         return Err(crate::task::void_ticket_fault(dir));
@@ -789,7 +654,6 @@ pub fn land_numbered(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> Result<
     let mut n = 1u32;
     loop {
         let p = dir.join(numbered_name(stem, Some(ext), n));
-        // `symlink_metadata`: a link at the name (even a broken one) holds it too.
         if std::fs::symlink_metadata(&p).is_err() {
             match zikaron_glue::landing::land_bytes_for(zikaron_glue::landing::Readers::Owner, &p, bytes) {
                 Ok(()) => return Ok(p),
@@ -801,30 +665,19 @@ pub fn land_numbered(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> Result<
     }
 }
 
-/// Records the chosen home ([`PICKED`] in the machine directory): the only record of the home's absolute
-/// path, kept outside the home so copying the home does not carry it. Written by atomic rename, 0600. The
-/// machine pointer is written at the same time (not rewritten when unchanged), so companion apps always find
-/// the current machine directory.
 pub fn write_pointer(home: &Path) -> Result<(), Fault> {
     let machine = machine_dir()?;
-    // Every folder this machine has pointed at is remembered, so a later master key change or backup still
-    // reaches it after the pointer moves on: the one being left (the default, or one chosen by an older
-    // version that never passed through here) and the new one. Remembered before the pointer moves, so a
-    // failure leaves the pointer where it was.
     if let Ok(was) = where_is() {
         if was.is_dir() {
             crate::machine::remember_home(&was)?;
         }
     }
     crate::machine::remember_home(home)?;
-    // Canonical value `{"home": path}`; read by `read_pointer`.
     let doc = zikaron::json::Value::Obj(vec![(
         POINTER_MEMBER.to_string(),
         zikaron::json::Value::Str(home.display().to_string()),
     )]);
     let bytes = zikaron::json::canon_bytes(&doc);
-    // Check with the reader before writing, as for the machine pointer: a path that does not round-trip
-    // through these bytes is refused by name.
     if read_pointer(&bytes).as_deref() != Some(home) {
         return Err(Fault::known(Known::MachineShape, home.display().to_string()));
     }
@@ -835,10 +688,8 @@ pub fn write_pointer(home: &Path) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The pointer's one member (`{"home": path}`).
 pub const POINTER_MEMBER: &str = "home";
 
-/// Reads the `{"home": path}` shape ([`PICKED`]).
 pub fn read_pointer(bytes: &[u8]) -> Option<PathBuf> {
     let v = zikaron::json::parse(bytes).ok()?;
     match v {
@@ -853,6 +704,44 @@ pub fn read_pointer(bytes: &[u8]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_move_is_said_once_per_place_it_came_from() {
+        let d = std::env::temp_dir().join(format!("zikaron-moved-said-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("dir");
+        let (was, other) = (std::path::Path::new("/old/place/.zikaron-desk.d"), std::path::Path::new("/another/.zikaron-desk.d"));
+        assert!(super::say_once(was, &d), "said the first time");
+        assert!(!super::say_once(was, &d), "not again");
+        assert!(super::say_once(other, &d), "another place: said");
+        let record = std::fs::read_to_string(d.join(super::MOVED_SAID)).expect("recorded");
+        assert!(!record.contains("old"), "the place itself is not written");
+        std::fs::remove_file(d.join(super::MOVED_SAID)).expect("removed");
+        assert!(super::say_once(was, &d), "the record gone: said once more");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_recorded_home_follows_the_machine_directory_it_lay_in() {
+        let at = |base: &std::path::Path, parts: &[&str]| parts.iter().fold(base.to_path_buf(), |p, x| p.join(x));
+        let t = std::env::temp_dir().join(format!("zikaron-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let (was, now, chosen, gone) = (at(&t, &["was"]), at(&t, &["now"]), at(&t, &["documents"]), at(&t, &["gone"]));
+        let seat = ["k1", "author"];
+        for d in [at(&was, &seat), at(&now, &seat), at(&now, &[super::DEFAULT_HOME]), at(&chosen, &seat)] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(at(&was, &[&crate::places::keybox_file()]), b"vault").unwrap();
+        let here = |p: std::path::PathBuf| super::here_under(&now, &p);
+        assert_eq!(here(at(&was, &seat)), at(&now, &seat), "copied from a machine directory");
+        assert_eq!(here(at(&was, &[super::DEFAULT_HOME])), at(&now, &[super::DEFAULT_HOME]), "the default home with it");
+        assert_eq!(here(at(&gone, &seat)), at(&now, &seat), "moved from one no longer there");
+        assert_eq!(here(at(&chosen, &seat)), at(&chosen, &seat), "a home chosen elsewhere stays where it was chosen");
+        assert_eq!(here(at(&now, &seat)), at(&now, &seat), "already inside the opened one");
+        let other = ["k2", "author"];
+        assert_eq!(here(at(&was, &other)), at(&was, &other), "a home the opened directory does not hold is read as recorded");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
     fn every_temporary_name_this_product_writes_is_read_as_one() {
         let put = super::put_tmp_name().expect("a temporary name");
         let landing = zikaron_glue::landing::staging_beside(&std::env::temp_dir().join(std::path::Path::new("kit"))).expect("a temporary name").file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -865,8 +754,6 @@ mod tests {
         }
     }
 
-    /// Removes the extended prefix Windows canonicalization adds (shares back to their plain form); plain,
-    /// unix and extended paths with no plain spelling come back unchanged.
     #[test]
     fn a_canonical_path_is_shown_plainly() {
         let plain = |s: &str| super::plain_path(std::path::PathBuf::from(s)).to_string_lossy().into_owned();

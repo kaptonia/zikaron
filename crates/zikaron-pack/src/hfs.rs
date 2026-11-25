@@ -1,21 +1,10 @@
-//! An HFS+ volume built from a folder records, for every catalog entry, the creating user's owner and group
-//! and its timestamps, which a non-root user cannot change through the file system. So they are rewritten in
-//! the catalog directly: every owner and group other than root (0) becomes 99 (the "unknown" owner, shown on
-//! mount as whoever is looking), and every date becomes one given moment, also set in both volume headers.
-//! Nothing else changes (sizes, extents, contents).
-
-/// Seconds between 1904-01-01 (the HFS epoch) and 1970-01-01.
 const HFS_EPOCH: u64 = 2_082_844_800;
 const UNKNOWN: u32 = 99;
 
-/// What the rewrite found and changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// File and folder records seen in the catalog.
     pub records: usize,
-    /// Records whose owner or group changed.
     pub owners_changed: usize,
-    /// Records in the attributes tree (extended attributes); a clean volume has none.
     pub attribute_records: u32,
 }
 
@@ -30,8 +19,6 @@ fn put32(b: &mut [u8], o: usize, v: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// A B-tree file of the volume: its extents (start block, block count), up to the eight held in the volume
-/// header.
 struct Fork {
     extents: Vec<(u64, u64)>,
     size: u64,
@@ -56,7 +43,6 @@ impl Fork {
         }
         Ok(Fork { extents, size })
     }
-    /// The byte offset in the volume of logical byte `l` of this fork.
     fn byte(&self, vol: &[u8], l: u64) -> Result<usize, String> {
         let block = be32(vol, 1024 + 40)? as u64;
         let mut base = 0;
@@ -70,8 +56,6 @@ impl Fork {
     }
 }
 
-/// Rewrite owners and dates in the HFS+ volume `vol` (the whole volume, from its first byte) to `epoch`
-/// (seconds since 1970).
 pub fn neutral_owners(vol: &mut [u8], epoch: u64) -> Result<Report, String> {
     let sig = be16(vol, 1024)?;
     if sig != 0x482B && sig != 0x4858 {
@@ -80,7 +64,6 @@ pub fn neutral_owners(vol: &mut [u8], epoch: u64) -> Result<Report, String> {
     let when = u32::try_from(epoch + HFS_EPOCH).map_err(|_| "the moment is out of HFS range".to_string())?;
     let block = be32(vol, 1024 + 40)? as usize;
     let total = be32(vol, 1024 + 44)? as usize;
-    // Both volume headers: create, modify and checked dates (the backup date stays zero).
     let alternate = (total * block).min(vol.len()).checked_sub(1024).ok_or("volume too small")?;
     for h in [1024, alternate] {
         if be16(vol, h)? != sig {

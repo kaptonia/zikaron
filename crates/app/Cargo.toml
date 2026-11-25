@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
@@ -8,64 +8,43 @@ license = "MIT"
 name = "app"
 path = "src/lib.rs"
 
-# The shipped binary: the window. Zero arguments, zero doors.
 [[bin]]
 name = "app"
 path = "src/bin/app.rs"
 
 [dependencies]
 zikaron-ui = { path = "../zikaron-ui" }
-# The public surfaces of the core, kit, store and anchoring crates: the app only consumes them.
-# Cryptography, canonical bytes, hex spelling and domain literals are never rewritten in the app.
 zikaron = { path = "../zikaron" }
 zikaron-kit = { path = "../zikaron-kit" }
 zikaron-store = { path = "../zikaron-store" }
 zikaron-anchor = { path = "../zikaron-anchor" }
-# The one transport: https nodes and remote files go through it (`chainx::Https`); TLS is not built here.
 zikaron-net = { path = "../zikaron-net" }
-# The only exit for writing files (the landing seam). A second atomic write here would be a copy.
 zikaron-glue = { path = "../zikaron-glue" }
-# The operating system's four (entropy, owner-only files, syncing, replacing rename): one place per system.
 zikaron-os = { path = "../zikaron-os" }
-# The sealed layer (envelope, names key, key vault, sealed ledger), one implementation with the command line: the
-# app keeps only its wiring (where the machine directory is, its fault table and words, its trace marks).
 zikaron-seal = { path = "../zikaron-seal" }
-# The sender, one with the command line: reading the chain, the exit gate, the queue's lock and steps, sending a
-# batch and its receipt wait. The app keeps only its wiring (`sendx`, `chainx`, `exitgate`, `queue`, the queue
-# actions): its words for the sender's codes, its home under this machine's seal, its key's signing port.
 zikaron-send = { path = "../zikaron-send" }
-# Third party: the egui family. On the app side only the `window` module touches it.
 eframe = { version = "0.34", default-features = false, features = ["glow"] }
-# The window's native handle, as eframe hands it, for the platform piece to put the system's material under it.
 raw-window-handle = "0.6"
-# Third-party cryptography: on the app side only the `cryptx` module touches these (phrases and private-key
-# derivation). scrypt, AES-128-CTR, HKDF, HMAC-SHA256 and XChaCha20-Poly1305 are the sealed layer's (`zikaron-seal`).
 bip39 = { version = "2", default-features = false, features = ["alloc"] }
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha2 = "0.10"
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 
-# macOS: the window drawn through Metal (`wgpu`, Metal alone), which presents one frame per refresh of the screen at
-# its own rate (120 Hz on a ProMotion screen); OpenGL there hands two frames to one refresh, unevenly.
 [target.'cfg(target_os = "macos")'.dependencies]
 eframe = { version = "0.34", default-features = false, features = ["glow", "wgpu_no_default_features"] }
 wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 
-# H11 · Linux only: the window on X11 and Wayland, and the file dialog through the XDG desktop portal (`rfd`,
-# portal backend only, no GTK). Both enter through the `platform` module; the macOS build is unchanged.
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.34", default-features = false, features = ["glow", "x11", "wayland"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 log = "0.4"
-# The windowing layer eframe already brings, named here only to ask it for X11 (`window/faces.rs`).
 winit = { version = "0.30", default-features = false, features = ["x11"] }
+smithay-client-toolkit = { version = "0.19.2", default-features = false }
+wayland-client = { version = "0.31", features = ["system"] }
 
-# H11 · Windows only: the file dialog is `rfd` over the system's own dialog. It enters through the `platform`
-# module; the macOS and Linux builds are unchanged.
 [target.'cfg(target_os = "windows")'.dependencies]
 rfd = { version = "0.17", default-features = false }
 
-# The third-party notices generator the build script runs (`build.rs`); the packages use the same one.
 [build-dependencies]
 zikaron-pack = { path = "../zikaron-pack" }

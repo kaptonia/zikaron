@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s034_object_empty.bin",
+ "note": "HARNESS: an object of any member count is signed as given; the empty object",
+ "predicted": {
+  "digest": "0xc0d4ca28c933d8acb8512a255c38ca0b90f44e59c57976b7d18bc7d27cb8224d",
+  "presig": "0x44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "sig": "0x3ce3d12f58e814d84c316d2596d95bdb0c758fc92ff677d518b47e5f30dfd6c62d0ab84007786061fd22715f68dd7b6e4d1884eb5a2c71b8efc4a4ee656493111b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

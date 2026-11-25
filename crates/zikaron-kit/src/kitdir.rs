@@ -1,6 +1,3 @@
-//! Disclosure kits: enumeration (kit law §7.1), kit paths (§7.2), manifest (§7.3) and verification (§7.4).
-//! Proof file bytes are not read (§7.5); they are pinned by digest.
-
 use crate::tokens::{self as t, KitFailToken, Rule};
 use zikaron::tokens::Token;
 use std::collections::{HashMap, HashSet};
@@ -10,8 +7,6 @@ use zikaron::hexfmt;
 use zikaron::json::{self, Value};
 use zikaron::trace;
 
-/// Verification outcome: counts and the invalid-entry table on success, the verdict and its subject on
-/// failure.
 #[derive(Clone, Debug)]
 pub enum KitVerdict {
     Ok {
@@ -34,37 +29,80 @@ fn fail(verdict: KitFailToken, subject: &str) -> KitVerdict {
     }
 }
 
-/// Kit law §7.2: a kit path is one or more segments joined by `/`, each of `a-z0-9._-`, 1 to 255 long, not
-/// `.` or `..`, not starting with `-`; at most 1024 in all, not starting with `/`.
 pub fn is_kit_path(p: &str) -> bool {
-    let b = p.as_bytes();
-    if b.is_empty() || b.len() > 1024 || b[0] == b'/' {
-        return false;
-    }
-    for seg in p.split('/') {
-        let s = seg.as_bytes();
-        if s.is_empty() || s.len() > 255 {
-            return false;
-        }
-        if seg == "." || seg == ".." {
-            return false;
-        }
-        if s[0] == b'-' {
-            return false;
-        }
-        if !s
-            .iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
-        {
-            return false;
-        }
-    }
-    true
+    kit_path_fault(p).is_none()
 }
 
-/// The walk of kit law §7.1: each directory in name byte order; it stops at a symlink, an unlistable
-/// directory, a file that cannot be read in full, anything neither file nor directory, or a name that is not
-/// valid UTF-8.
+pub fn kit_path_fault(p: &str) -> Option<PathFault> {
+    let b = p.as_bytes();
+    if b.is_empty() {
+        return Some(PathFault::Empty);
+    }
+    if b.len() > 1024 {
+        return Some(PathFault::TooLong { len: b.len() });
+    }
+    if b[0] == b'/' {
+        return Some(PathFault::LeadingSlash);
+    }
+    for (i, seg) in p.split('/').enumerate() {
+        let segment = i + 1;
+        let s = seg.as_bytes();
+        if s.is_empty() {
+            return Some(PathFault::EmptySegment { segment });
+        }
+        if s.len() > 255 {
+            return Some(PathFault::SegmentTooLong { segment, len: s.len() });
+        }
+        if seg == "." || seg == ".." {
+            return Some(PathFault::Dot { segment });
+        }
+        if s[0] == b'-' {
+            return Some(PathFault::LeadingDash { segment });
+        }
+        if let Some(c) = seg.chars().find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))) {
+            return Some(PathFault::Char { segment, c });
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathFault {
+    Empty,
+    TooLong { len: usize },
+    LeadingSlash,
+    EmptySegment { segment: usize },
+    SegmentTooLong { segment: usize, len: usize },
+    Dot { segment: usize },
+    LeadingDash { segment: usize },
+    Char { segment: usize, c: char },
+}
+
+impl PathFault {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PathFault::Empty => "EMPTY",
+            PathFault::TooLong { .. } => "TOO_LONG",
+            PathFault::LeadingSlash => "LEADING_SLASH",
+            PathFault::EmptySegment { .. } => "EMPTY_SEGMENT",
+            PathFault::SegmentTooLong { .. } => "SEGMENT_TOO_LONG",
+            PathFault::Dot { .. } => "DOT_SEGMENT",
+            PathFault::LeadingDash { .. } => "LEADING_DASH",
+            PathFault::Char { .. } => "CHAR",
+        }
+    }
+
+    pub fn evidence(&self) -> String {
+        match self {
+            PathFault::Empty | PathFault::LeadingSlash => String::new(),
+            PathFault::TooLong { len } => format!("length={len} max=1024"),
+            PathFault::EmptySegment { segment } | PathFault::Dot { segment } | PathFault::LeadingDash { segment } => format!("segment={segment}"),
+            PathFault::SegmentTooLong { segment, len } => format!("segment={segment} length={len} max=255"),
+            PathFault::Char { segment, c } => format!("segment={segment} char=U+{:04X}", *c as u32),
+        }
+    }
+}
+
 fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
     let listing = match std::fs::read_dir(dir) {
         Ok(l) => l,
@@ -90,15 +128,12 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> Result<()
         }
     }
     names.sort_by(|a, b| as_bytes(a).cmp(as_bytes(b)));
-    // The path listed for this directory: the kit directory itself is `.`, others lose the trailing `/`.
     let here = if prefix.is_empty() {
         ".".to_string()
     } else {
         prefix.trim_end_matches('/').to_string()
     };
     for name in &names {
-        // A name that is not valid UTF-8 cannot be spelled as a path, so the subject is the directory that
-        // lists it (§7.1).
         let name_str = match name.to_str() {
             Some(x) => x,
             None => return Err(here),
@@ -172,7 +207,6 @@ fn hex32_of(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Kit law §7.3: manifest rules in the written order; the first failure names its rule as subject.
 fn parse_manifest(bytes: &[u8]) -> Result<KitManifest, Rule> {
     let v = json::accept(bytes).map_err(|_| Rule::Canonical)?;
     let members = match &v {
@@ -196,20 +230,17 @@ fn parse_manifest(bytes: &[u8]) -> Result<KitManifest, Rule> {
         _ => return Err(Rule::Root),
     }
 
-    // entries: hex32 elements, distinct, in byte order.
     let entries_arr = v.member("entries").and_then(|x| x.as_arr()).ok_or(Rule::Entries)?;
     let mut entries: Vec<String> = Vec::with_capacity(entries_arr.len());
     for it in entries_arr {
         entries.push(hex32_of(Some(it)).ok_or(Rule::Entries)?);
     }
-    // The order rule also enforces distinctness: neighbours not strictly increasing fail.
     for i in 1..entries.len() {
         if entries[i - 1].as_bytes() >= entries[i].as_bytes() {
             return Err(Rule::Entries);
         }
     }
 
-    // files: {path, sha256, size}; path is a kit path, paths distinct, sorted by path.
     let files_ms = arr_of_obj(v.member("files"), &["path", "sha256", "size"]).ok_or(Rule::Files)?;
     let mut files: Vec<(String, String, u64)> = Vec::with_capacity(files_ms.len());
     for ms in &files_ms {
@@ -231,8 +262,6 @@ fn parse_manifest(bytes: &[u8]) -> Result<KitManifest, Rule> {
         }
     }
 
-    // contents: {content, path}; path must be in files and its sha256 must equal content; rows distinct,
-    // sorted by content then path.
     let contents_ms =
         arr_of_obj(v.member("contents"), &["content", "path"]).ok_or(Rule::Contents)?;
     let files_at: HashMap<&str, &String> =
@@ -259,7 +288,6 @@ fn parse_manifest(bytes: &[u8]) -> Result<KitManifest, Rule> {
         }
     }
 
-    // proofs: {path, sha256, tx}; path is a kit path, paths distinct, sorted by path.
     let proofs_ms =
         arr_of_obj(v.member("proofs"), &["path", "sha256", "tx"]).ok_or(Rule::Proofs)?;
     let mut proofs: Vec<(String, String)> = Vec::with_capacity(proofs_ms.len());
@@ -291,7 +319,6 @@ fn parse_manifest(bytes: &[u8]) -> Result<KitManifest, Rule> {
     })
 }
 
-/// Kit law §7.1 plus §7.4: verify one directory.
 pub fn verify_kit(dir: &Path) -> KitVerdict {
     trace::mark(t::K2);
     let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
@@ -301,9 +328,7 @@ pub fn verify_kit(dir: &Path) -> KitVerdict {
     verify_enumeration(&pairs)
 }
 
-/// Kit law §7.4: verification over an enumeration, in the written order.
 pub fn verify_enumeration(pairs: &[(String, Vec<u8>)]) -> KitVerdict {
-    // Index the enumeration by path once; a linear scan per lookup would cost paths times manifest rows.
     let at: HashMap<&str, &Vec<u8>> = pairs.iter().map(|(p, b)| (p.as_str(), b)).collect();
     let manifest_bytes = match at.get("manifest.json") {
         Some(b) => (*b).clone(),
@@ -357,7 +382,6 @@ pub fn verify_enumeration(pairs: &[(String, Vec<u8>)]) -> KitVerdict {
         return fail(KitFailToken::Extra, extra[0]);
     }
 
-    // Listed ids whose bytes fail `accept`, in entries order, each with its `zikaron/1` token (informational).
     let mut invalid: Vec<(String, Token)> = Vec::new();
     for id in &m.entries {
         let path = format!("entries/{}.zk1", &id[2..]);
@@ -374,5 +398,43 @@ pub fn verify_enumeration(pairs: &[(String, Vec<u8>)]) -> KitVerdict {
         proofs: m.proofs.len(),
         invalid,
         kit_id: entry::entry_id(&manifest_bytes),
+    }
+}
+
+#[cfg(test)]
+mod path_fault_tests {
+    use super::*;
+
+    #[test]
+    fn each_part_of_the_kit_path_rule_is_named_with_where() {
+        let long_seg = "a".repeat(256);
+        let long_path = vec!["a"; 600].join("/");
+        let cases: Vec<(&str, Option<PathFault>)> = vec![
+            ("a/b.txt", None),
+            ("f0.txt", None),
+            ("x_y-z.9", None),
+            ("", Some(PathFault::Empty)),
+            (&long_path, Some(PathFault::TooLong { len: long_path.len() })),
+            ("/a", Some(PathFault::LeadingSlash)),
+            ("a//b", Some(PathFault::EmptySegment { segment: 2 })),
+            ("a/", Some(PathFault::EmptySegment { segment: 2 })),
+            (&long_seg, Some(PathFault::SegmentTooLong { segment: 1, len: 256 })),
+            ("a/../b", Some(PathFault::Dot { segment: 2 })),
+            (".", Some(PathFault::Dot { segment: 1 })),
+            ("-a", Some(PathFault::LeadingDash { segment: 1 })),
+            ("文件.txt", Some(PathFault::Char { segment: 1, c: '文' })),
+            ("docs/my file.txt", Some(PathFault::Char { segment: 2, c: ' ' })),
+            ("A.txt", Some(PathFault::Char { segment: 1, c: 'A' })),
+            ("a=b", Some(PathFault::Char { segment: 1, c: '=' })),
+        ];
+        for (p, want) in cases {
+            assert_eq!(kit_path_fault(p), want, "{p:?}");
+            assert_eq!(is_kit_path(p), want.is_none(), "{p:?}");
+        }
+        assert!(is_kit_path(&"a".repeat(255)));
+        let at_most = format!("{}/{}", "a".repeat(255), vec!["b"; 384].join("/"));
+        assert_eq!(at_most.len(), 1023);
+        assert!(is_kit_path(&at_most));
+        assert_eq!(PathFault::Char { segment: 2, c: '文' }.evidence(), "segment=2 char=U+6587");
     }
 }

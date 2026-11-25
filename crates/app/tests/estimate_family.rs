@@ -1,15 +1,8 @@
-//! The app reads a refused gas estimate with the same table the command line uses (`chainx::ask_call`,
-//! `said::refuses_the_call`): whether the refusal is about the call is judged on the same trouble its member is
-//! taken from, by the shape of the node's answer. One test per form of the closed table, each against nodes
-//! started in this process (no network); the member reported is the same for every form (`said_fault`).
-
 use app::chainx::{ask_call, Endpoint};
 use app::fault::Known;
 use std::io::{Read, Write};
 use zikaron::json::Value;
 
-/// A node on a local port answering every question with this status line and body (`{id}` put in), or closing
-/// the connection when the status line is empty.
 fn node(status: &'static str, body: String) -> String {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", l.local_addr().expect("addr"));
@@ -45,12 +38,10 @@ fn node(status: &'static str, body: String) -> String {
     url
 }
 
-/// A node whose every answer is this JSON-RPC error.
 fn erring(err: &str) -> String {
     node("200 OK", format!("{{\"jsonrpc\":\"2.0\",\"id\":{{id}},\"error\":{err}}}"))
 }
 
-/// The estimate asked of these places: the member said and whether it is about the call.
 fn estimate(urls: &[String]) -> (Option<Known>, bool) {
     zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
     let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(31337, u.as_str())).collect();
@@ -150,14 +141,11 @@ fn no_place_at_all_is_not_the_calls() {
     assert_eq!(estimate(&[]), (Some(Known::NoEndpoint), false));
 }
 
-/// Places whose addresses do not read are never asked: the refusal is the addresses' shape, not the call's.
 #[test]
 fn places_whose_addresses_do_not_read_are_not_the_calls() {
     assert_eq!(estimate(&["wss://node.example".to_string()]), (Some(Known::SettingsShape), false));
 }
 
-/// Places whose estimates differ refuse nothing: an estimate is a quantity each node works out, read by the
-/// largest (`judge::rule_of`), so there is no disagreement to read as the call's or the network's.
 #[test]
 fn places_that_answer_differently_are_not_the_calls() {
     zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
@@ -168,21 +156,15 @@ fn places_that_answer_differently_are_not_the_calls() {
     assert_eq!((r.value, r.sources, r.single_source), (Value::Str("0x5209".into()), 2, false));
 }
 
-/// Places that all answer, none with a quantity (text that is not one, a number that is not text, `null`): the
-/// reading refuses as the chain's shape, not as unreachable, and not as the call's.
 #[test]
 fn places_answering_no_quantity_are_the_chains_shape() {
     let a = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\"0xzz\"}".into());
     let b = node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":16}".into());
     assert_eq!(estimate(&[a, b]), (Some(Known::ChainShape), false));
-    // Every place says null: a call has an outcome or a refusal, never "none", so null is the chain's shape, as
-    // one node's null is on the command line's path (`send::estimate_gas`).
     let (a, b) = (node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":null}".into()), node("200 OK", "{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":null}".into()));
     assert_eq!(estimate(&[a, b]), (Some(Known::ChainShape), false));
 }
 
-/// With several places refusing, the member and whether it is about the call are both read off the first
-/// place's trouble (in the table's order): the two never come from different places.
 #[test]
 fn several_refusing_places_are_read_off_the_first() {
     let coded = || erring("{\"code\":-32000,\"message\":\"x\"}");

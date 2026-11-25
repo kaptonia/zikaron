@@ -1,35 +1,54 @@
-//! What a home's settings say about where its anchors are: the chain, the registry contract and the block to scan
-//! from (law §9.4's basis fields), and the nodes to ask. The settings file is the desktop's (`settings/desk.json`,
-//! sealed as `Doc::Settings`); these four members are read here only, by the desktop and by the command line
-//! reading a home with the credential alike.
-
 use zikaron::json::Value;
 
-/// The settings file's name, in a home's settings room.
 pub const SETTINGS_FILE: &str = "desk.json";
 
-/// The four members' names.
 pub const CHAIN_ID: &str = "chainId";
 pub const REGISTRY: &str = "registry";
 pub const FROM_BLOCK: &str = "fromBlock";
 pub const ENDPOINTS: &str = "endpoints";
+pub const EARLIER: &str = "earlier";
+pub const PUBLISH: &str = "publish";
+pub const REST: &str = "restApis";
+pub const REST_ON: &str = "restApiMode";
+pub const LOG_ASKS: &str = "logAsks";
 
-/// The four fields as the settings hold them: a chain and a registry not set are `None`, a start block not set
-/// is block 0, no nodes is an empty list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Ground {
-    pub chain_id: Option<u64>,
-    pub registry: Option<[u8; 20]>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Earlier {
+    pub chain_id: u64,
+    pub registry: [u8; 20],
     pub from_block: u64,
-    /// The nodes, each as written (`<chain id>=<url>`, the address possibly carrying a key): read as text, their
-    /// form judged where they are used, so one that does not read is reported there and never dropped here.
-    pub endpoints: Vec<String>,
 }
 
-/// Read the four from the settings' value. A member of another shape reads as not set (a registry that is not
-/// forty hex digits included); in the node list, an item that is not text is not a node.
-pub fn of_settings(v: &Value) -> Ground {
-    let registry = match v.member(REGISTRY) {
+impl Earlier {
+    pub fn value(&self) -> Value {
+        Value::Obj(vec![
+            (CHAIN_ID.to_string(), Value::Int(self.chain_id)),
+            (FROM_BLOCK.to_string(), Value::Int(self.from_block)),
+            (REGISTRY.to_string(), Value::Str(zikaron::hexfmt::encode(&self.registry))),
+        ])
+    }
+}
+
+pub fn earlier_of(v: &Value) -> Vec<Earlier> {
+    let Some(Value::Arr(a)) = v.member(EARLIER) else { return Vec::new() };
+    a.iter()
+        .filter_map(|x| {
+            let chain_id = match x.member(CHAIN_ID) {
+                Some(Value::Int(n)) => *n,
+                _ => return None,
+            };
+            let from_block = match x.member(FROM_BLOCK) {
+                Some(Value::Int(n)) => *n,
+                _ => return None,
+            };
+            let registry = registry_of(x.member(REGISTRY))?;
+            Some(Earlier { chain_id, registry, from_block })
+        })
+        .collect()
+}
+
+fn registry_of(v: Option<&Value>) -> Option<[u8; 20]> {
+    match v {
         Some(Value::Str(s)) => {
             let low = s.trim().to_ascii_lowercase();
             if zikaron::hexfmt::is_hex20(&low) {
@@ -39,7 +58,61 @@ pub fn of_settings(v: &Value) -> Ground {
             }
         }
         _ => None,
-    };
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ground {
+    pub chain_id: Option<u64>,
+    pub registry: Option<[u8; 20]>,
+    pub from_block: u64,
+    pub endpoints: Vec<String>,
+    pub earlier: Vec<Earlier>,
+    pub publish: Option<String>,
+    pub rest: Vec<String>,
+    pub rest_on: bool,
+    pub log_asks: Option<u64>,
+}
+
+impl Ground {
+    pub fn other_chains(&self) -> Vec<u64> {
+        let mut out: Vec<u64> = Vec::new();
+        for e in &self.earlier {
+            if Some(e.chain_id) != self.chain_id && !out.contains(&e.chain_id) {
+                out.push(e.chain_id);
+            }
+        }
+        out
+    }
+
+    pub fn window_of(&self, chain: u64) -> Option<([u8; 20], u64)> {
+        if Some(chain) == self.chain_id {
+            return self.registry.map(|r| (r, self.from_block));
+        }
+        self.earlier.iter().find(|e| e.chain_id == chain).map(|e| (e.registry, e.from_block))
+    }
+
+    pub fn can_anchor(&self) -> bool {
+        self.chain_id.is_some() && (!self.endpoints.is_empty() || !self.rest_asked().is_empty())
+    }
+
+    pub fn rest_asked(&self) -> &[String] {
+        if self.rest_on { &self.rest } else { &[] }
+    }
+
+    pub fn chains(&self) -> Vec<u64> {
+        let mut out: Vec<u64> = self.chain_id.into_iter().collect();
+        out.extend(self.other_chains());
+        out
+    }
+
+    pub fn home_chain(&self) -> u64 {
+        self.earlier.first().map(|e| e.chain_id).or(self.chain_id).unwrap_or(0)
+    }
+}
+
+pub fn of_settings(v: &Value) -> Ground {
+    let registry = registry_of(v.member(REGISTRY));
     Ground {
         chain_id: match v.member(CHAIN_ID) {
             Some(Value::Int(n)) => Some(*n),
@@ -50,16 +123,31 @@ pub fn of_settings(v: &Value) -> Ground {
             Some(Value::Int(n)) => *n,
             _ => 0,
         },
-        endpoints: match v.member(ENDPOINTS) {
-            Some(Value::Arr(a)) => a
-                .iter()
-                .filter_map(|x| match x {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
+        endpoints: texts(v.member(ENDPOINTS)),
+        earlier: earlier_of(v),
+        publish: match v.member(PUBLISH) {
+            Some(Value::Str(x)) => Some(x.clone()),
+            _ => None,
         },
+        rest: texts(v.member(REST)),
+        rest_on: matches!(v.member(REST_ON), Some(Value::Bool(true))),
+        log_asks: match v.member(LOG_ASKS) {
+            Some(Value::Int(n)) => Some(*n),
+            _ => None,
+        },
+    }
+}
+
+fn texts(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::Arr(a)) => a
+            .iter()
+            .filter_map(|x| match x {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

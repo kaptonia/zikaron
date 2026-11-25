@@ -1,56 +1,17 @@
-//! The anchor queue's model, one for both ends: its rows and steps, its one way in ([`Queue::push`]) and its ways
-//! out, and its bytes (canonical JSON) read and written once ([`Queue::parse`], [`Queue::to_bytes`]). Where the
-//! file lives, its seal, the in-process lock and the words a refusal is said in are each end's (the desktop's
-//! `queue`; the command line's sealed write, which only pushes).
-//!
-//! ─── No miscounting ───
-//!
-//! The risk is an entry sent but not removed, or removed without being sent. There is one way in
-//! ([`Queue::push`]) and three ways out, each with its reason: a successful chain receipt goes through
-//! [`Queue::anchored_out`] (removed and recorded as anchored; [`Queue::included_out`] also records the block),
-//! called by the receipt path and by [`Queue::seen_out`] (an entry a self-audit read on chain while it still
-//! waited here, another writer having anchored it); a deleted entry goes through [`Queue::drop_ids`] (removed,
-//! nothing recorded). Anything that failed to send stays queued for retry because no other removal path
-//! exists.
-//!
-//! ─── Only the receipt path records "anchored" ───
-//!
-//! The `anchored` list states a chain fact. If one exit recorded "anchored" for every caller, a retraction
-//! would mark an entry that never reached the chain as anchored, and re-queueing it would wrongly answer
-//! "already on chain". So only the exit that states a chain fact writes `anchored`, reached from the receipt path
-//! and from a self-audit's reading.
-
 use crate::trouble::{Code, Trouble};
 use zikaron::json::{self, Value};
 
-/// The queue file's name.
 pub const FILE: &str = "queue.json";
 
-/// A queued entry's sending state. Entries included in a block are recorded separately ([`Block`]). The
-/// status light, entry card, record card, queue page and watch line all derive from this (the desktop's
-/// `ledgerx::Lamp`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// Queued, not sent.
     Queued,
-    /// Broadcast, and the node returned the matching transaction hash: waiting for the receipt. Saved to disk,
-    /// so after a restart the same transaction is awaited, never resent. `nonce` is the batch's signed nonce,
-    /// always written and required when read; it distinguishes a batch no node holds any more from one whose
-    /// nonce another transaction used (the desktop's `action::confirm_batch`).
     Submitted { tx: String, chain: u64, nonce: Option<u64> },
-    /// Included, but the receipt status is not 1 (law §9.1: not an anchor). Stays queued and can be
-    /// resent.
     Reverted { tx: String, chain: u64 },
-    /// Refused before broadcast (insufficient balance, node refusal, unreachable): never sent. Stays queued
-    /// and can be resent.
     Refused { said: String },
-    /// Broadcast, then resent by the user with higher fees at the same nonce. All the batch's transactions
-    /// (oldest first) are awaited, and whichever is included counts (one nonce, so at most one can be). Saved
-    /// to disk like `Submitted`: after a restart all are awaited, none resent. `nonce` as in `Submitted`.
     Resent { txs: Vec<String>, chain: u64, nonce: Option<u64> },
 }
 
-/// The most times one batch is resent with higher fees (its first transaction and at most this many more).
 pub const RESENDS_MAX: usize = 3;
 
 impl Step {
@@ -64,13 +25,10 @@ impl Step {
         }
     }
 
-    /// Whether this entry's transaction is out and awaited (submitted or resent): such entries are never picked
-    /// for another batch, never counted as sendable, and count as published.
     pub fn in_flight(&self) -> bool {
         matches!(self, Step::Submitted { .. } | Step::Resent { .. })
     }
 
-    /// The transactions awaited for this entry (oldest first) and their chain; `None` when none is out.
     pub fn awaited(&self) -> Option<(Vec<String>, u64)> {
         match self {
             Step::Submitted { tx, chain, .. } => Some((vec![tx.clone()], *chain)),
@@ -79,7 +37,6 @@ impl Step {
         }
     }
 
-    /// The nonce the awaited transactions were signed with, when recorded.
     pub fn nonce(&self) -> Option<u64> {
         match self {
             Step::Submitted { nonce, .. } | Step::Resent { nonce, .. } => *nonce,
@@ -88,7 +45,6 @@ impl Step {
     }
 }
 
-/// Values of the `state` member in the queue file.
 pub mod state {
     pub const QUEUED: &str = "queued";
     pub const SUBMITTED: &str = "submitted";
@@ -97,7 +53,6 @@ pub mod state {
     pub const RESENT: &str = "resent";
 }
 
-/// Member names in the queue file (top level, rows and blocks).
 pub mod member {
     pub const QUEUED: &str = "queued";
     pub const ANCHORED: &str = "anchored";
@@ -111,20 +66,62 @@ pub mod member {
     pub const BLOCK: &str = "block";
     pub const TXS: &str = "txs";
     pub const NONCE: &str = "nonce";
+    pub const ON: &str = "on";
+    pub const PASSED: &str = "passed";
 }
 
-/// One queued entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub law: zikaron_glue::book::Law,
+    pub seq: u64,
+    pub alone: bool,
+    pub carried_on: Option<u64>,
+}
+
+impl Place {
+    pub fn of(e: &zikaron_glue::book::Entry) -> Place {
+        Place { law: e.law, seq: e.seq, alone: e.kind.goes_alone(), carried_on: None }
+    }
+
+    pub fn of_pile(items: &[Vec<u8>]) -> std::collections::BTreeMap<String, Place> {
+        let entries: Vec<zikaron_glue::book::Entry> = items.iter().filter_map(|b| zikaron_glue::book::check(b).ok()).collect();
+        let seats = zikaron_glue::face::seats_of(&entries);
+        entries
+            .iter()
+            .map(|e| {
+                let id = e.id_hex().to_ascii_lowercase();
+                let carried_on = seats.get(&id).copied();
+                (id, Place { carried_on, ..Place::of(e) })
+            })
+            .collect()
+    }
+
+    pub fn carried(&self, chain: u64) -> bool {
+        self.carried_on == Some(chain)
+    }
+}
+
+pub fn places_of(items: &[Vec<u8>]) -> std::collections::BTreeMap<String, Place> {
+    Place::of_pile(items)
+}
+
+pub fn at_boundary(ids: &[String], places: &std::collections::BTreeMap<String, Place>) -> bool {
+    let mine: Vec<Place> = ids.iter().filter_map(|id| places.get(&id.to_ascii_lowercase()).copied()).collect();
+    if mine.len() < ids.len() || mine.iter().any(|p| p.alone) {
+        return true;
+    }
+    let Some(first) = mine.iter().min_by_key(|p| (p.law, p.seq)) else { return false };
+    places.values().filter(|p| (p.law, p.seq) < (first.law, first.seq)).max_by_key(|p| (p.law, p.seq)).is_some_and(|p| p.alone)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Queued {
-    /// Entry id (hex32, law §2.1).
     pub id: String,
-    /// When it was queued (only for ordering and display, never for decisions).
     pub at: u64,
-    /// Its state.
     pub step: Step,
+    pub chain: u64,
 }
 
-/// An included transaction (receipt status 1): entry, transaction, chain and block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub id: String,
@@ -135,25 +132,23 @@ pub struct Block {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Queue {
+    pub chain: u64,
     pub items: Vec<Queued>,
-    /// The entries this file records as anchored.
-    ///
-    /// Without it, "is it on chain" could only be answered by the queue (useless after removal) and the last
-    /// self-audit report (absent after a restart). An already anchored entry could then be queued and anchored
-    /// again, costing gas twice. Recording it here survives restarts and home copies.
-    pub anchored: Vec<String>,
-    /// Included transactions with chain and block number, recorded by the receipt path.
+    pub anchored: Vec<(String, u64)>,
     pub blocks: Vec<Block>,
+    pub passed: Vec<String>,
 }
 
-/// The result of queueing an entry; the caller reports each form with its own message.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Retracting {
+    pub publish: bool,
+    pub drop: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pushed {
-    /// Queued.
     Queued,
-    /// Already queued (each entry is queued once).
     InQueue,
-    /// Already recorded as anchored in this file (this survives restarts).
     Anchored,
 }
 
@@ -166,7 +161,6 @@ impl Pushed {
         }
     }
 
-    /// Whether it was actually queued by this call.
     pub fn landed(self) -> bool {
         matches!(self, Pushed::Queued)
     }
@@ -179,23 +173,20 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// Why queue bytes are not this version's queue. Each end says it with the file's place.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Shape {
-    /// Not canonical JSON (the core's trouble).
     Json(String),
-    /// No `queued` table.
     NoQueued,
-    /// A row, an anchored id or a block not in its shape.
     BadRow,
-    /// A required top-level member missing (its name).
     Missing(&'static str),
 }
 
+fn on(row: u64, c: u64) -> bool {
+    row == c || row == 0 || c == 0
+}
+
 impl Queue {
-    /// Read queue bytes. Every member this version writes is required: bytes missing one (an earlier version's,
-    /// or altered) are refused ([`Shape`]), never read with a member guessed.
-    pub fn parse(bytes: &[u8]) -> Result<Queue, Shape> {
+    pub fn parse(bytes: &[u8], home: u64) -> Result<Queue, Shape> {
         let v = json::parse(bytes).map_err(|t| Shape::Json(format!("{t:?}")))?;
         let Some(Value::Arr(rows)) = member(&v, member::QUEUED) else {
             return Err(Shape::NoQueued);
@@ -221,12 +212,10 @@ impl Queue {
                 Some(Value::Int(n)) => Some(*n),
                 _ => None,
             };
-            // The batch's nonce, required where a batch was signed (submitted, resent).
             let nonce = match member(r, member::NONCE) {
                 Some(Value::Int(n)) => Ok(Some(*n)),
                 _ => Err(()),
             };
-            // `state`: required; unknown or incomplete is a shape error, never guessed.
             let step = match text(member::STATE).as_deref() {
                 Some(state::QUEUED) => Step::Queued,
                 Some(state::SUBMITTED) => match (text(member::TX), chain, nonce) {
@@ -238,7 +227,6 @@ impl Queue {
                     _ => return Err(bad()),
                 },
                 Some(state::REFUSED) => Step::Refused { said: text(member::SAID).ok_or_else(bad)? },
-                // Resent: 2 to `1 + RESENDS_MAX` transaction hashes; anything else is a shape error.
                 Some(state::RESENT) => {
                     let txs: Option<Vec<String>> = match member(r, member::TXS) {
                         Some(Value::Arr(xs)) => xs.iter().map(|x| match x {
@@ -254,16 +242,25 @@ impl Queue {
                 }
                 _ => return Err(bad()),
             };
-            items.push(Queued { id, at, step });
+            let on = match member(r, member::ON) {
+                None => home,
+                Some(Value::Int(0)) => home,
+                Some(Value::Int(n)) => *n,
+                Some(_) => return Err(bad()),
+            };
+            items.push(Queued { id, at, step, chain: on });
         }
-        // `anchored` and `blocks`: required (empty lists when there are none).
         let missing = Shape::Missing;
-        let mut anchored: Vec<String> = Vec::new();
+        let mut anchored: Vec<(String, u64)> = Vec::new();
         let Some(Value::Arr(rows)) = member(&v, member::ANCHORED) else { return Err(missing(member::ANCHORED)) };
         {
             for r in rows {
                 match r {
-                    Value::Str(x) if zikaron::hexfmt::is_hex32(x) => anchored.push(x.clone()),
+                    Value::Str(x) if zikaron::hexfmt::is_hex32(x) => anchored.push((x.clone(), home)),
+                    Value::Obj(_) => match (member(r, member::ID), member(r, member::ON)) {
+                        (Some(Value::Str(x)), Some(Value::Int(c))) if zikaron::hexfmt::is_hex32(x) => anchored.push((x.clone(), if *c == 0 { home } else { *c })),
+                        _ => return Err(Shape::BadRow),
+                    },
                     _ => {
                         return Err(Shape::BadRow)
                     }
@@ -282,10 +279,22 @@ impl Queue {
                 blocks.push(Block { id: id.clone(), tx: tx.clone(), chain: *chain, block: *block });
             }
         }
-        Ok(Queue { items, anchored, blocks })
+        let mut passed: Vec<String> = Vec::new();
+        match member(&v, member::PASSED) {
+            None => {}
+            Some(Value::Arr(rows)) => {
+                for r in rows {
+                    match r {
+                        Value::Str(x) if zikaron::hexfmt::is_hex32(x) => passed.push(x.clone()),
+                        _ => return Err(Shape::BadRow),
+                    }
+                }
+            }
+            Some(_) => return Err(Shape::BadRow),
+        }
+        Ok(Queue { chain: home, items, anchored, blocks, passed })
     }
 
-    /// The queue's bytes: canonical JSON, members in order.
     pub fn to_bytes(&self) -> Vec<u8> {
         let rows: Vec<Value> = self
             .items
@@ -294,6 +303,7 @@ impl Queue {
                 let mut m = vec![
                     (member::AT.to_string(), Value::Int(q.at)),
                     (member::ID.to_string(), Value::Str(q.id.clone())),
+                    (member::ON.to_string(), Value::Int(q.chain)),
                     (member::STATE.to_string(), Value::Str(q.step.as_str().to_string())),
                 ];
                 match &q.step {
@@ -315,7 +325,8 @@ impl Queue {
                 Value::Obj(m)
             })
             .collect();
-        let anchored: Vec<Value> = self.anchored.iter().map(|x| Value::Str(x.clone())).collect();
+        let anchored: Vec<Value> =
+            self.anchored.iter().map(|(x, c)| Value::Obj(vec![(member::ID.to_string(), Value::Str(x.clone())), (member::ON.to_string(), Value::Int(*c))])).collect();
         let blocks: Vec<Value> = self
             .blocks
             .iter()
@@ -328,68 +339,110 @@ impl Queue {
                 ])
             })
             .collect();
-        json::canon_bytes(&Value::Obj(vec![
+        let mut members = vec![
             (member::ANCHORED.to_string(), Value::Arr(anchored)),
             (member::BLOCKS.to_string(), Value::Arr(blocks)),
             (member::QUEUED.to_string(), Value::Arr(rows)),
-        ]))
+        ];
+        if !self.passed.is_empty() {
+            members.push((member::PASSED.to_string(), Value::Arr(self.passed.iter().map(|x| Value::Str(x.clone())).collect())));
+        }
+        json::canon_bytes(&Value::Obj(members))
     }
 
-    /// Queue an entry. Each entry is queued once, and an entry recorded as anchored can never be queued again.
-    ///
-    /// Every queueing path (automatic after recording, manual from the page) goes through here, so they all
-    /// share one record of what is on chain.
     pub fn push(&mut self, id: &str, at: u64) -> Pushed {
-        if self.anchored.iter().any(|x| x == id) {
+        self.push_on(id, self.chain, at)
+    }
+
+    pub fn push_on(&mut self, id: &str, chain: u64, at: u64) -> Pushed {
+        if self.anchored_on(id, chain) {
             return Pushed::Anchored;
         }
-        if self.items.iter().any(|q| q.id == id) {
+        if self.items.iter().any(|q| q.id == id && on(q.chain, chain)) {
             return Pushed::InQueue;
         }
-        self.items.push(Queued { id: id.to_string(), at, step: Step::Queued });
+        self.items.push(Queued { id: id.to_string(), at, step: Step::Queued, chain });
         Pushed::Queued
     }
 
-    /// Remove entries without recording anything. Used when an entry will no longer be anchored for a reason
-    /// other than being anchored (currently only deletion), so `anchored` is not touched.
+    pub fn push_placed(&mut self, id: &str, alone: bool, carried_on: Option<u64>, others: &[u64], at: u64) -> Pushed {
+        match carried_on {
+            Some(chain) => self.push_on(id, chain, at),
+            None => self.push_entry(id, alone, others, at),
+        }
+    }
+
+    pub fn push_entry(&mut self, id: &str, alone: bool, others: &[u64], at: u64) -> Pushed {
+        let here = self.push(id, at);
+        if !alone {
+            return here;
+        }
+        let mut took = false;
+        let here_chain = self.chain;
+        for c in others.iter().filter(|c| **c != here_chain) {
+            took |= self.push_on(id, *c, at).landed();
+        }
+        if took && !here.landed() {
+            Pushed::Queued
+        } else {
+            here
+        }
+    }
+
+    pub fn retracting(&self, target: &str, last: Option<&[String]>, can_anchor: bool) -> Option<Retracting> {
+        let publish = self.published(target, last.unwrap_or_default());
+        if can_anchor && !publish && last.is_none() && !self.has(target) {
+            return None;
+        }
+        Some(Retracting { publish, drop: !self.step_of(target).is_some_and(Step::in_flight) })
+    }
+
+    pub fn retracted(&mut self, target: &str, delete: &str, r: Retracting) -> usize {
+        let dropped = if r.drop { self.drop_ids(&[target.to_string()]) } else { 0 };
+        if !r.publish {
+            self.drop_ids(&[delete.to_string()]);
+        }
+        dropped
+    }
+
     pub fn drop_ids(&mut self, ids: &[String]) -> usize {
         let before = self.items.len();
         self.items.retain(|q| !ids.iter().any(|x| x == &q.id));
         before - self.items.len()
     }
 
-    /// A chain fact: remove and record as anchored. Reached from the receipt path (the desktop's `queue::settle`)
-    /// and from a self-audit's reading ([`Queue::seen_out`]).
-    ///
-    /// Removal and recording happen together; split apart, there would be a moment where the entry was removed
-    /// but not recorded and could be queued again. `anchored` is written only here.
     pub fn anchored_out(&mut self, ids: &[String]) -> usize {
-        let n = self.drop_ids(ids);
+        self.anchored_out_on(ids, self.chain)
+    }
+
+    pub fn anchored_out_on(&mut self, ids: &[String], chain: u64) -> usize {
+        let before = self.items.len();
+        self.items.retain(|q| !(on(q.chain, chain) && ids.iter().any(|x| x == &q.id)));
         for id in ids {
-            if !self.anchored.iter().any(|x| x == id) {
-                self.anchored.push(id.clone());
+            if !self.anchored_on(id, chain) {
+                self.anchored.push((id.clone(), chain));
             }
         }
-        n
+        before - self.items.len()
     }
 
-    /// Entries a self-audit read on chain (the registry's logs carry them): those with no transaction of theirs
-    /// out leave through [`Queue::anchored_out`], removed and recorded as anchored (another writer, the command
-    /// line, put them on chain); one whose transaction is out is left to its receipt. Only the desktop's
-    /// `queue::follow` calls this.
     pub fn seen_out(&mut self, ids: &[String]) -> usize {
-        let not_out: Vec<String> =
-            ids.iter().filter(|id| !self.step_of(id).is_some_and(Step::in_flight)).cloned().collect();
-        self.anchored_out(&not_out)
+        self.seen_out_on(ids, self.chain)
     }
 
-    /// Set the state of these entries, only where no transaction of theirs is out: an entry submitted or resent
-    /// (in flight, [`Step::in_flight`]) keeps its step, so no writer overwrites a batch another has out. Returns
-    /// how many changed. An entry's in-flight step changes only by [`Queue::moved_by`].
+    pub fn seen_out_on(&mut self, ids: &[String], chain: u64) -> usize {
+        let not_out: Vec<String> = ids.iter().filter(|id| !self.step_on(id, chain).is_some_and(Step::in_flight)).cloned().collect();
+        self.anchored_out_on(&not_out, chain)
+    }
+
     pub fn mark(&mut self, ids: &[String], step: Step) -> usize {
+        self.mark_on(ids, self.chain, step)
+    }
+
+    pub fn mark_on(&mut self, ids: &[String], chain: u64, step: Step) -> usize {
         let mut n = 0;
         for q in self.items.iter_mut() {
-            if ids.iter().any(|x| x == &q.id) && !q.step.in_flight() {
+            if on(q.chain, chain) && ids.iter().any(|x| x == &q.id) && !q.step.in_flight() {
                 q.step = step.clone();
                 n += 1;
             }
@@ -397,14 +450,10 @@ impl Queue {
         n
     }
 
-    /// Move a batch out in flight on to its next step: only these entries whose step awaits exactly `txs` on
-    /// `chain` (the batch's own transactions, held by whoever sent them) change; an entry waiting on other
-    /// transactions, or none, is left as it is. Returns how many changed. The receipt wait (included with another
-    /// status, voided), a resend (its new transaction joining) and a broadcast refused outright come here.
     pub fn moved_by(&mut self, ids: &[String], txs: &[String], chain: u64, step: Step) -> usize {
         let mut n = 0;
         for q in self.items.iter_mut() {
-            if ids.iter().any(|x| x == &q.id) && q.step.awaited().is_some_and(|(t, c)| t == txs && c == chain) {
+            if on(q.chain, chain) && ids.iter().any(|x| x == &q.id) && q.step.awaited().is_some_and(|(t, c)| t == txs && c == chain) {
                 q.step = step.clone();
                 n += 1;
             }
@@ -412,29 +461,27 @@ impl Queue {
         n
     }
 
-    /// Included with receipt status 1: remove, record as anchored, and record the block. Only the receipt path (the
-    /// desktop's `queue::settle`) calls this.
     pub fn included_out(&mut self, ids: &[String], tx: &str, chain: u64, block: u64) -> usize {
-        let n = self.anchored_out(ids);
+        let n = self.anchored_out_on(ids, chain);
         for id in ids {
-            self.blocks.retain(|b| &b.id != id);
+            self.blocks.retain(|b| !(&b.id == id && b.chain == chain));
             self.blocks.push(Block { id: id.clone(), tx: tx.to_string(), chain, block });
         }
         n
     }
 
-    /// This entry's state (`None` when not queued).
     pub fn step_of(&self, id: &str) -> Option<&Step> {
-        self.items.iter().find(|q| q.id == id).map(|q| &q.step)
+        self.step_on(id, self.chain)
     }
 
-    /// The block this entry's transaction was included in (`None` when not recorded).
+    pub fn step_on(&self, id: &str, chain: u64) -> Option<&Step> {
+        self.items.iter().find(|q| q.id == id && on(q.chain, chain)).map(|q| &q.step)
+    }
+
     pub fn block_of(&self, id: &str) -> Option<&Block> {
-        self.blocks.iter().find(|b| b.id == id)
+        self.blocks.iter().find(|b| b.id == id && b.chain == self.chain).or_else(|| self.blocks.iter().find(|b| b.id == id))
     }
 
-    /// Batches still waiting for a receipt, used at startup to resume waiting: each batch's transactions (oldest
-    /// first), chain and entry ids.
     pub fn submitted(&self) -> Vec<(Vec<String>, u64, Vec<String>)> {
         let mut out: Vec<(Vec<String>, u64, Vec<String>)> = Vec::new();
         for q in &self.items {
@@ -448,19 +495,27 @@ impl Queue {
         out
     }
 
-    /// Whether this entry was published: in flight, included, recorded as anchored here, or anchored per the
-    /// last report. Queued, reverted, refused, or out of the queue with neither source saying anchored count as
-    /// unpublished. Used by the delete path.
     pub fn published(&self, id: &str, report_anchored: &[String]) -> bool {
-        self.step_of(id).is_some_and(Step::in_flight)
-            || self.block_of(id).is_some()
-            || self.anchored_here(id)
+        self.items.iter().any(|q| q.id == id && q.step.in_flight())
+            || self.blocks.iter().any(|b| b.id == id)
+            || self.anchored.iter().any(|(x, _)| x == id)
             || report_anchored.iter().any(|x| x == id)
     }
 
-    /// Whether this file records it as anchored.
     pub fn anchored_here(&self, id: &str) -> bool {
-        self.anchored.iter().any(|x| x == id)
+        self.anchored_on(id, self.chain)
+    }
+
+    pub fn anchored_on(&self, id: &str, chain: u64) -> bool {
+        self.anchored.iter().any(|(x, c)| x == id && on(*c, chain))
+    }
+
+    pub fn anchored_ids(&self) -> Vec<String> {
+        self.anchored.iter().filter(|(_, c)| on(*c, self.chain)).map(|(x, _)| x.clone()).collect()
+    }
+
+    pub fn sent_ids(&self) -> Vec<String> {
+        self.items.iter().filter(|q| q.step.in_flight()).map(|q| q.id.clone()).chain(self.anchored.iter().map(|(x, _)| x.clone())).collect()
     }
 
     pub fn has(&self, id: &str) -> bool {
@@ -475,24 +530,66 @@ impl Queue {
         self.items.is_empty()
     }
 
-    /// Ids of the first `n` sendable entries, for the next batch. In-flight entries are skipped: sending them
-    /// again would anchor the same batch twice.
-    pub fn take_ids(&self, n: usize) -> Vec<String> {
-        self.items
-            .iter()
-            .filter(|q| !q.step.in_flight())
-            .take(n)
-            .map(|q| q.id.clone())
-            .collect()
+    pub fn take_ids(&self, n: usize, place: impl Fn(&str) -> Option<Place>) -> Vec<String> {
+        match self.next_batch(n, place) {
+            Some((chain, ids)) if chain == self.chain => ids,
+            _ => Vec::new(),
+        }
     }
 
-    /// How many can be sent (in-flight entries do not count).
+    pub fn next_batch(&self, n: usize, place: impl Fn(&str) -> Option<Place>) -> Option<(u64, Vec<String>)> {
+        let lane_of = |q: &Queued| if q.chain == 0 { self.chain } else { q.chain };
+        let carried = |q: &Queued| place(&q.id).is_some_and(|p| p.carried(lane_of(q)));
+        if let Some(b) = self.batch_of(n, &place, |q| !carried(q)) {
+            return Some(b);
+        }
+        let mut faces: Vec<(&Queued, Place)> = self.items.iter().filter(|q| carried(q) && !q.step.in_flight()).filter_map(|q| place(&q.id).map(|p| (q, p))).collect();
+        faces.sort_by(|(a, pa), (b, pb)| (pa.law, pa.seq, &a.id).cmp(&(pb.law, pb.seq, &b.id)));
+        faces.first().map(|(q, _)| (lane_of(q), vec![q.id.clone()]))
+    }
+
+    fn batch_of(&self, n: usize, place: &impl Fn(&str) -> Option<Place>, keep: impl Fn(&Queued) -> bool) -> Option<(u64, Vec<String>)> {
+        let key = |q: &Queued, p: &Option<Place>| match p {
+            Some(x) => (0u8, x.law, x.seq, 0u64, q.id.clone()),
+            None => (1u8, zikaron_glue::book::Law::Two, 0, q.at, q.id.clone()),
+        };
+        let mut order: Vec<(&Queued, Option<Place>)> = self.items.iter().filter(|q| keep(q)).map(|q| (q, place(&q.id))).collect();
+        order.sort_by(|(a, pa), (b, pb)| key(a, pa).cmp(&key(b, pb)).then(((a.chain != self.chain), a.chain).cmp(&((b.chain != self.chain), b.chain))));
+        let (first, _) = order.first()?;
+        let first_key = key(first, &place(&first.id));
+        let lane_of = |q: &Queued| if q.chain == 0 { self.chain } else { q.chain };
+        let mut lanes: Vec<u64> = order.iter().filter(|(q, p)| key(q, p) == first_key).map(|(q, _)| lane_of(q)).collect();
+        lanes.dedup();
+        for lane in lanes {
+            let mut run: Vec<&Queued> = Vec::new();
+            for (q, p) in order.iter() {
+                let alone = p.is_none_or(|p| p.alone);
+                if lane_of(q) != lane {
+                    if key(q, p) != first_key {
+                        break;
+                    }
+                    continue;
+                }
+                if alone && !run.is_empty() {
+                    break;
+                }
+                run.push(q);
+                if alone {
+                    break;
+                }
+            }
+            let ids: Vec<String> = run.into_iter().filter(|q| !q.step.in_flight()).take(n).map(|q| q.id.clone()).collect();
+            if !ids.is_empty() {
+                return Some((lane, ids));
+            }
+        }
+        None
+    }
+
     pub fn sendable(&self) -> usize {
         self.items.iter().filter(|q| !q.step.in_flight()).count()
     }
 
-    /// Convert a batch of ids into 32-byte hashes for anchoring. Any invalid id fails the whole batch, so a
-    /// partial batch is never sent.
     pub fn hashes(ids: &[String]) -> Result<Vec<[u8; 32]>, Trouble> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -513,8 +610,127 @@ impl Queue {
 mod seen_tests {
     use super::*;
 
-    /// An entry a self-audit read on chain leaves the queue recorded as anchored, unless its transaction is out
-    /// (left to its receipt, recorded then); one not queued is recorded too, so it can never be queued again.
+    #[test]
+    fn a_batch_never_crosses_a_succession() {
+        use zikaron_glue::book::Law;
+        let ids = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let place = |id: &str| match id {
+            "old1" => Some(Place { law: Law::One, seq: 1, alone: false, carried_on: None }),
+            "old2" => Some(Place { law: Law::One, seq: 2, alone: false, carried_on: None }),
+            "close" => Some(Place { law: Law::One, seq: 3, alone: true, carried_on: None }),
+            "gen" => Some(Place { law: Law::Two, seq: 0, alone: false, carried_on: None }),
+            "note" => Some(Place { law: Law::Two, seq: 1, alone: false, carried_on: None }),
+            _ => None,
+        };
+        let mut q = Queue::default();
+        for (i, id) in ["gen", "stray", "close", "old2", "note", "old1"].iter().enumerate() {
+            let _ = q.push(id, i as u64);
+        }
+        assert_eq!(q.take_ids(10, place), ids(&["old1", "old2"]));
+        assert_eq!(q.take_ids(1, place), ids(&["old1"]));
+        q.mark(&ids(&["old1"]), Step::Submitted { tx: "0x01".into(), chain: 1, nonce: Some(0) });
+        assert_eq!(q.take_ids(10, place), ids(&["old2"]), "the rest of the batch out may go");
+        q.mark(&ids(&["old2"]), Step::Submitted { tx: "0x02".into(), chain: 1, nonce: Some(1) });
+        assert!(q.take_ids(10, place).is_empty(), "nothing after a batch still out");
+        q.anchored_out(&ids(&["old1", "old2"]));
+        assert_eq!(q.take_ids(10, place), ids(&["close"]), "the succession alone");
+        q.anchored_out(&ids(&["close"]));
+        assert_eq!(q.take_ids(10, place), ids(&["gen", "note"]));
+        q.anchored_out(&ids(&["gen", "note"]));
+        assert_eq!(q.take_ids(10, place), ids(&["stray"]), "unplaced: alone, last");
+        let all: std::collections::BTreeMap<String, Place> = ["old1", "old2", "close", "gen", "note"].iter().filter_map(|x| place(x).map(|p| (x.to_string(), p))).collect();
+        assert!(!at_boundary(&ids(&["old1", "old2"]), &all));
+        assert!(at_boundary(&ids(&["close"]), &all));
+        assert!(at_boundary(&ids(&["gen"]), &all));
+        assert!(!at_boundary(&ids(&["note"]), &all));
+        assert!(at_boundary(&ids(&["stray"]), &all), "not placed: held");
+    }
+
+    #[test]
+    fn a_succession_goes_on_every_chain_before_anything_after_it() {
+        use zikaron_glue::book::Law;
+        let hex = |x: &str| match x {
+            "e1" => format!("0x{}", "e1".repeat(32)),
+            "s" => format!("0x{}", "5a".repeat(32)),
+            _ => format!("0x{}", "e3".repeat(32)),
+        };
+        let ids = |xs: &[&str]| xs.iter().map(|x| hex(x)).collect::<Vec<_>>();
+        let place = |id: &str| match id {
+            x if x == hex("e1") => Some(Place { law: Law::Two, seq: 1, alone: false, carried_on: None }),
+            x if x == hex("s") => Some(Place { law: Law::Two, seq: 2, alone: true, carried_on: None }),
+            x if x == hex("e3") => Some(Place { law: Law::Two, seq: 3, alone: false, carried_on: None }),
+            _ => None,
+        };
+        let (a, b) = (11u64, 22u64);
+        let mut q = Queue { chain: b, ..Queue::default() };
+        let _ = q.push(&hex("e3"), 3);
+        let _ = q.push(&hex("s"), 2);
+        let _ = q.push_on(&hex("s"), a, 2);
+        let _ = q.push(&hex("e1"), 1);
+        assert_eq!(q.next_batch(10, place), Some((b, ids(&["e1"]))));
+        q.included_out(&ids(&["e1"]), "0x01", b, 5);
+        assert_eq!(q.next_batch(10, place), Some((b, ids(&["s"]))), "the anchoring chain first");
+        q.mark_on(&ids(&["s"]), b, Step::Submitted { tx: "0x02".into(), chain: b, nonce: Some(1) });
+        assert_eq!(q.next_batch(10, place), Some((a, ids(&["s"]))), "the other chain's row of the same entry");
+        q.included_out(&ids(&["s"]), "0x02", b, 6);
+        assert_eq!(q.next_batch(10, place), Some((a, ids(&["s"]))), "e3 waits for every chain");
+        q.included_out(&ids(&["s"]), "0x03", a, 9);
+        assert_eq!(q.next_batch(10, place), Some((b, ids(&["e3"]))));
+        assert!(q.anchored_on(&hex("s"), a) && q.anchored_on(&hex("s"), b) && !q.anchored_on(&hex("e1"), a));
+        assert_eq!(q.push_on(&hex("e1"), a, 7), Pushed::Queued, "anchored on one chain is no record on another");
+        let back = Queue::parse(&q.to_bytes(), b).expect("reads");
+        assert_eq!(back.items, q.items);
+        assert_eq!(back.anchored, q.anchored);
+        let old = br#"{"anchored":["0x1111111111111111111111111111111111111111111111111111111111111111"],"blocks":[],"queued":[{"at":1,"id":"0x2222222222222222222222222222222222222222222222222222222222222222","state":"queued"}]}"#;
+        let old = Queue::parse(old, a).expect("an earlier file reads");
+        assert_eq!(old.items[0].chain, a);
+        assert_eq!(old.anchored[0].1, a);
+    }
+
+    #[test]
+    fn a_face_entry_goes_alone_on_its_chain_and_cuts_no_batch() {
+        use zikaron_glue::book::Law;
+        let hex = |x: &str| format!("0x{}", x.repeat(32));
+        let (a, h, c) = (11u64, 22u64, 33u64);
+        let place = |id: &str| match id {
+            x if x == hex("e1") => Some(Place { law: Law::Two, seq: 1, alone: false, carried_on: None }),
+            x if x == hex("f2") => Some(Place { law: Law::Two, seq: 2, alone: false, carried_on: Some(h) }),
+            x if x == hex("e3") => Some(Place { law: Law::Two, seq: 3, alone: false, carried_on: None }),
+            _ => None,
+        };
+        let mut q = Queue { chain: a, ..Queue::default() };
+        let _ = q.push(&hex("e1"), 1);
+        let _ = q.push_on(&hex("f2"), h, 2);
+        let _ = q.push(&hex("e3"), 3);
+        assert_eq!(q.next_batch(10, place), Some((a, vec![hex("e1"), hex("e3")])), "the ordinary entries, one batch");
+        q.included_out(&[hex("e1"), hex("e3")], "0x01", a, 5);
+        assert_eq!(q.next_batch(10, place), Some((h, vec![hex("f2")])), "then the face entry alone, on its chain");
+        assert!(place(&hex("f2")).is_some_and(|p| p.carried(h) && !p.carried(c)));
+        let mut moved = Queue { chain: c, ..Queue::default() };
+        for (id, at) in [("e1", 1), ("f2", 2), ("e3", 3)] {
+            let _ = moved.push_on(&hex(id), c, at);
+        }
+        assert_eq!(moved.next_batch(10, place), Some((c, vec![hex("e1"), hex("f2"), hex("e3")])), "as a hash on another chain");
+    }
+
+    #[test]
+    fn an_entry_is_queued_where_its_place_puts_it() {
+        use zikaron_glue::book::Law;
+        let hex = |x: &str| format!("0x{}", x.repeat(32));
+        let (a, h) = (11u64, 22u64);
+        let mut q = Queue { chain: a, ..Queue::default() };
+        let face = Place { law: Law::Two, seq: 2, alone: false, carried_on: Some(h) };
+        let succession = Place { law: Law::Two, seq: 3, alone: true, carried_on: None };
+        for (id, p, at) in [("f2", face, 1), ("c3", succession, 2)] {
+            let _ = q.push_placed(&hex(id), p.alone, p.carried_on, &[h], at);
+        }
+        let _ = q.push_placed(&hex("e4"), false, None, &[h], 3);
+        let at = |id: &str| -> Vec<u64> { q.items.iter().filter(|x| x.id == hex(id)).map(|x| x.chain).collect() };
+        assert_eq!(at("f2"), vec![h], "the face entry on its chain alone");
+        assert_eq!(at("c3"), vec![a, h], "a succession on every chain of the basis");
+        assert_eq!(at("e4"), vec![a], "an ordinary entry on the anchoring chain");
+    }
+
     #[test]
     fn an_entry_seen_on_chain_leaves_unless_its_transaction_is_out() {
         let mut q = Queue::default();
@@ -524,14 +740,10 @@ mod seen_tests {
         let gone = q.seen_out(&["aa".to_string(), "bb".to_string(), "cc".to_string()]);
         assert_eq!(gone, 1);
         assert!(!q.has("aa") && q.has("bb"), "{q:?}");
-        assert_eq!(q.anchored, vec!["aa".to_string(), "cc".to_string()]);
+        assert_eq!(q.anchored, vec![("aa".to_string(), 0), ("cc".to_string(), 0)]);
         assert_eq!(q.push("cc", 3), Pushed::Anchored);
     }
 
-    /// `mark` changes only entries with no transaction out; a batch in flight moves only by the transactions it
-    /// awaits (`moved_by`). One line per form: queued, refused and reverted are marked; submitted and resent are
-    /// not; `moved_by` with the batch's own transactions moves it, with other transactions, another chain or a
-    /// queued entry moves nothing.
     #[test]
     fn mark_leaves_a_batch_in_flight_to_the_one_who_sent_it() {
         let ids = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();

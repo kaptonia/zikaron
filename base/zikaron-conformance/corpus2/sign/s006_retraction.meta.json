@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s006_retraction.bin",
+ "note": "sec 5.1: B6 of a retraction",
+ "predicted": {
+  "digest": "0xabcf6cd5a426e47cf1914e6c6781b2a8c536f160c1e62267f967900be9f7711f",
+  "presig": "0x8079c1df5eaecd70c125ea64c2d4e4b132e087ee8bd589ae6bd76d77e8c1b266",
+  "sig": "0x9c6b797bb12d1c9bed9014714c962825c5865dca2db6ec59863d04f89077020e5cc4599d8f6a3d8f49c436841d16c35ad385036d6cc39fc09772b838bdbdff3c1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

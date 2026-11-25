@@ -1,9 +1,3 @@
-//! `--key-file`: read the private key from a file rather than the command line, where it would show up in the
-//! process table and shell history. Cases: the file gives the same key as `--key` (with prefix, line endings and
-//! outer whitespace); exactly one of the two flags; bad paths (missing, a directory); a file readable by other
-//! accounts; bad contents (not hex, empty, over the cap, not text, out of range); and every verb that takes
-//! `--key` takes `--key-file`.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -11,7 +5,6 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_zikaron");
 const KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
-/// The secp256k1 group order: one past the largest valid key.
 const ORDER: &str = "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
 
 fn run(dir: &Path, args: &[&str]) -> (i32, String, String) {
@@ -19,8 +12,6 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String, String) {
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
@@ -33,7 +24,6 @@ fn scratch(tag: &str) -> PathBuf {
     p
 }
 
-/// Who else may read a test key file.
 #[derive(Clone, Copy)]
 enum Reach {
     Owner,
@@ -41,7 +31,6 @@ enum Reach {
     Everyone,
 }
 
-/// A file holding `bytes`, created owner-only through `zikaron_os`, then opened to others as `reach` says.
 fn key_file(dir: &Path, name: &str, bytes: &[u8], reach: Reach) -> String {
     use std::io::Write;
     let p = dir.join(name);
@@ -129,11 +118,11 @@ fn every_other_form_is_misuse_by_name() {
 fn every_verb_that_takes_the_key_takes_the_key_file() {
     let w = scratch("verbs");
     let open = key_file(&w, "open.key", KEY.as_bytes(), Reach::Everyone);
-    for verb in ["init", "history", "grant", "revoke", "adopt", "attest", "succeed", "annotate", "retract", "anchor", "fpm-sign", "ack-sign"] {
+    for verb in ["init", "history", "grant", "revoke", "migrate", "annotate", "retract", "anchor"] {
         let (_, _, err) = run(&w, &[verb, "--key-file", &open]);
         assert!(!err.contains("not among this verb's flags"), "{verb}: takes --key-file: {err}");
     }
-    for verb in ["scan", "audit", "show", "badge", "depth"] {
+    for verb in ["scan", "audit", "show", "badge"] {
         let (code, _, err) = run(&w, &[verb, "--key-file", &open]);
         assert_eq!(code, 2, "{verb}");
         assert!(err.starts_with("E_ARGS --key-file") && err.contains("not among this verb's flags"), "{verb}: a verb without --key does not take it: {err}");

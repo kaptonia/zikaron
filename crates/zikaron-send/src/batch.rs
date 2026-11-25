@@ -1,20 +1,3 @@
-//! Sending a batch of a home's queued anchors, one path for every end, in four stages: ready it (estimate, the
-//! home's write gates, ask the chain, the balance and exit gates) and sign and send it (sign through the end's
-//! port, land the batch as in flight, broadcast), both under the home's writer lock ([`anchor`]); wait for the
-//! receipt and judge a batch no node holds, holding no lock ([`wait`]); and settle it, under the lock again, on
-//! the queue read anew ([`settle`]). Another sender taking the lock meanwhile finds the batch in flight and leaves
-//! it to its receipt, sending only the rest.
-//!
-//! Before anything is signed, a batch is asked about twice. What this home already has out for these entries
-//! (the queue on disk records their transactions) is asked about by hash through the receipt wait and never
-//! signed again ([`Sent::earlier`]); and the chain is asked whether it already holds these anchors from this key
-//! (`zikaron_anchor::send::on_chain`, the rule the command line's `anchor` asks by too): held already is refused
-//! by name (`OnChain`) and nothing is signed. Then the balance gate and the exit gate, the signature, and the
-//! batch is recorded as in flight (`Submitted`, with its hash and nonce) BEFORE its bytes go out, so a
-//! transaction that may be out is always one the queue awaits: a node's own verdict on the broadcast puts it
-//! back (refused), anything else leaves it awaited, and the receipt wait asks every node by hash and judges one
-//! no node holds by its nonce (void and back in the queue, or offered again).
-
 use crate::gate;
 use crate::keep;
 use crate::node::{self, Endpoint, Next, NodeAddr};
@@ -24,31 +7,74 @@ use zikaron_anchor::rpc;
 use zikaron_anchor::send::{Confirm, Fees};
 use zikaron_seal::queue::{Queue, Queued, Step, RESENDS_MAX};
 
-/// The signing port: the key stays with the end, which lends it for exactly one signature of an anchoring
-/// transaction (a registry call over `hashes`, or the call data `input`) at the given fees and nonce.
 pub trait Signer {
-    /// The account the key sends from (`None`: the key gives no address).
     fn from(&self) -> Option<[u8; 20]>;
-    /// Sign one anchoring transaction; nothing is sent.
     #[allow(clippy::too_many_arguments)]
     fn sign(&self, chain: u64, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], input: Option<Vec<u8>>, fees: Fees, nonce: u64) -> Result<(Vec<u8>, [u8; 32]), rpc::Trouble>;
 }
 
-/// The anchors of a batch and what is needed to send them.
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub ids: Vec<String>,
     pub hashes: Vec<[u8; 32]>,
     pub chain: u64,
     pub registry: [u8; 20],
-    /// All of the chain's endpoints, in settings order.
     pub urls: Vec<NodeAddr>,
-    /// The retry backoff delays when a node rate-limits.
     pub backoff: Vec<std::time::Duration>,
+    pub basis: Vec<Lane>,
+    pub carried: Option<Vec<u8>>,
 }
 
-/// What estimating a batch needs: its chain, the call to estimate (byte-identical to the real transaction, both
-/// built by the anchoring crate's `registry_calldata`) and that chain's nodes.
+impl Batch {
+    pub fn calldata(&self) -> Vec<u8> {
+        calldata_of(&self.hashes, self.carried.as_deref())
+    }
+}
+
+pub fn calldata_of(hashes: &[[u8; 32]], carried: Option<&[u8]>) -> Vec<u8> {
+    match carried {
+        Some(e) => zikaron_anchor::send::carried_calldata(e),
+        None => zikaron_anchor::send::registry_calldata(hashes),
+    }
+}
+
+pub fn carried_of(pile: &[Vec<u8>], ids: &[String], chain: u64) -> Option<Vec<u8>> {
+    let [id] = ids else { return None };
+    let id = id.to_ascii_lowercase();
+    let bytes = pile.iter().find(|b| zikaron::hexfmt::encode(&zikaron::cryptox::sha256(b)) == id)?;
+    let e = zikaron_glue::book::check(bytes).ok()?;
+    if e.kind != zikaron_glue::book::Kind::Face {
+        return None;
+    }
+    let faces: Vec<zikaron_glue::book::Entry> = pile.iter().filter_map(|b| zikaron_glue::book::check(b).ok()).filter(|e| e.kind == zikaron_glue::book::Kind::Face).collect();
+    (zikaron_glue::face::seats_of(&faces).get(&id) == Some(&chain)).then(|| bytes.clone())
+}
+
+pub fn face_gate(urls: &[NodeAddr], chain: u64, registry: &[u8; 20], entry: &[u8], pile: &[Vec<u8>], from: &[u8; 20]) -> Result<(), Trouble> {
+    let places: Vec<String> = urls.iter().map(|u| u.for_transport().to_string()).collect();
+    let (gate, _) = crate::fingerprint::gate_counted(chain, registry, &places, zikaron_anchor::deploy::CODE_HASH);
+    if !gate.admits() {
+        return Err(Trouble::text(Code::RegistryCode, format!("{chain} {} {}", zikaron::hexfmt::encode(registry), gate.code())));
+    }
+    let h20 = |s: &str| -> Option<[u8; 20]> { zikaron::hexfmt::decode(s)?.try_into().ok() };
+    let author = zikaron_glue::book::check(entry).ok().and_then(|e| h20(&e.author)).ok_or_else(|| Trouble::text(Code::ContentShape, zikaron::hexfmt::encode(&zikaron::cryptox::sha256(entry))))?;
+    if author != *from {
+        return Err(Trouble::text(Code::AddressMismatch, format!("author={} sender={}", zikaron::hexfmt::encode(&author), zikaron::hexfmt::encode(from))));
+    }
+    let root = zikaron_glue::book::root_of(pile).ok().as_deref().and_then(h20).ok_or_else(|| Trouble::text(Code::ContentShape, "root".to_string()))?;
+    let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let lineage: Vec<[u8; 20]> = zikaron_glue::book::read(pile, &zikaron_glue::book::empty_fragment()).map(|r| r.lineage.iter().filter_map(|k| h20(k)).collect()).unwrap_or_default();
+    crate::book::seated(&eps, chain, &root, from, &lineage)
+}
+
+#[derive(Clone, Debug)]
+pub struct Lane {
+    pub chain: u64,
+    pub registry: [u8; 20],
+    pub urls: Vec<NodeAddr>,
+    pub from_block: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct GasAsk {
     pub chain: u64,
@@ -57,9 +83,6 @@ pub struct GasAsk {
     pub eps: Vec<Endpoint>,
 }
 
-/// One estimate: the node's gas figure, the call data given to the node, the fees read at the same nodes with
-/// the gas limit the estimate sets (and the nodes left out of that reading), and the chain's time when it could
-/// be read.
 #[derive(Clone, Debug)]
 pub struct Estimate {
     pub gas: u64,
@@ -69,19 +92,22 @@ pub struct Estimate {
     pub head_time: Option<u64>,
 }
 
-/// Estimates gas once, by the rule the command line takes too (`zikaron_anchor::send::estimate_gas`), through
-/// this chain's nodes. Nodes that estimate different amounts do not disagree: the largest is taken (an estimate
-/// is compared as a quantity), and it meets the ceiling like any estimate. If gas cannot be estimated the
-/// transaction would revert, so it is refused by name and not sent.
 pub fn estimate(a: &GasAsk) -> Result<Estimate, Trouble> {
+    let _read = node::OneRead::open();
     use zikaron_anchor::send::NoGas;
     let GasAsk { chain, call, data, eps } = a;
     let chain = *chain;
-    // A failed estimate is reported as "will revert" only when the node itself refused the call, judged by the
-    // same table the command line uses (`node::ask_call`, `said::refuses_the_call`). Unreachable nodes,
-    // timeouts, rate limiting and other errors keep their own codes, so a person whose node is down is not told
-    // the transaction will fail. The estimate is made at the lowest head every endpoint has reached
-    // (`head_block`); failing to get the head is never about the call.
+    node::ask_ahead(eps, chain, &|_, lowest, _| {
+        let at = Value::Str(format!("0x{lowest:x}"));
+        vec![
+            ("eth_estimateGas", Value::Arr(vec![call.clone(), at.clone()])),
+            ("eth_getBlockByNumber", Value::Arr(vec![at, Value::Bool(false)])),
+            ("eth_feeHistory", zikaron_anchor::send::tip_params(lowest)),
+            ("eth_getBlockByNumber", Value::Arr(vec![Value::Str("latest".into()), Value::Bool(false)])),
+        ]
+    });
+    let (eps, left) = serving_eps(eps, chain)?;
+    let eps = &eps;
     let gas = zikaron_anchor::send::estimate_gas(
         || node::head_block(eps, chain).map(|(height, _)| height).map_err(|t| (t, false)),
         |params| node::ask_call(eps, "eth_estimateGas", params).map(|r| r.value),
@@ -89,44 +115,27 @@ pub fn estimate(a: &GasAsk) -> Result<Estimate, Trouble> {
         |(_, about_the_call): &(Trouble, bool)| !about_the_call,
     )
     .map_err(|no| match no {
-        NoGas::Network((t, _)) => t,
+        NoGas::Network((t, _)) => with_left(t, &left),
         NoGas::Refused((t, _)) => Trouble::new(Code::GasRefused, t.why),
         NoGas::NotText(other) => Trouble::new(Code::ChainShape, Why::GasNotText(format!("{:?}", other))),
         NoGas::Unreadable(hex) => Trouble::new(Code::ChainShape, Why::GasNotQty(hex)),
-        // No transaction carries more than `send::GAS_LIMIT`: an estimate above it would run out of gas on chain
-        // with the fee still paid, so it is refused with the node's own number before anything is shown or
-        // sent.
         NoGas::OverCap(n) => Trouble::text(Code::GasRefused, format!("{n} > {}", zikaron_anchor::send::GAS_LIMIT)),
     })?;
-    // The node was reached, so fetch the chain's current time too (failure does not block the estimate).
     let head_time = node::head_time(eps, chain).ok().map(|(time, _, _)| time);
-    // The fee cap comes from the chain's base fee and the gas limit from this estimate (`Fees::with_estimate`),
-    // so the confirmation card, the pre-send balance gate and the signed transaction all use the same values.
-    let (fees, fees_left) = node::fees(eps, chain);
+    let (fees, more_left) = node::fees(eps, chain);
+    let fees_left: Vec<Why> = left.into_iter().chain(more_left).collect();
     let fees = fees.with_estimate(gas);
-    // Also return the call data used for estimating: the `input` of the sent transaction, read back from the
-    // chain, must match it byte for byte.
     Ok(Estimate { gas, calldata: zikaron::hexfmt::encode(data), fees, fees_left, head_time })
 }
 
-/// Pre-send balance gate. The required amount comes from the same source as the transaction (`Fees::cap_wei`:
-/// fee cap times gas limit, exactly what the node checks at broadcast). The balance is read now by the single
-/// balance reader (`node::balance`): only this chain's nodes, at one pinned block (the lowest head all have
-/// reached, so a lagging node never causes a split), with differing answers refused by name and a lone answer
-/// marked single-source. An unreadable balance is refused for that reason, never assumed sufficient. The
-/// chain's own refusal at broadcast remains as a backstop.
 pub fn funds_gate(b: &Batch, signer: &dyn Signer, fees: Fees, note: &dyn Fn(Note)) -> Result<(), Trouble> {
     let who = signer.from().ok_or_else(|| Trouble::new(Code::KeyMalformed, Why::NoAddress))?;
-    // The balance uses every endpoint for this chain: those that answer and agree count; those that do not
-    // answer are skipped and reported.
     let eps: Vec<Endpoint> = b.urls.iter().map(|u| Endpoint::at(b.chain, u.clone())).collect();
     note(Note::Balance);
     let (have, _) = node::balance(&eps, b.chain, &who)?;
     funds_check(fees.cap_wei(), have)
 }
 
-/// The balance gate's comparison: a balance at least equal to the maximum spend passes (exactly enough
-/// included); one wei less is refused by name with both numbers.
 pub fn funds_check(need: u128, have: u128) -> Result<(), Trouble> {
     if have < need {
         return Err(Trouble::new(Code::InsufficientFunds, Why::Funds { need, have }));
@@ -134,38 +143,83 @@ pub fn funds_check(need: u128, have: u128) -> Result<(), Trouble> {
     Ok(())
 }
 
-/// The batch's nodes that serve its chain (each checked once per process, `node::serving`); the pre-send
-/// balance, nonce and broadcast use only these. Nodes serving another chain are left out and reported as a
-/// `WrongChain` refusal naming them.
-pub fn serving_urls(urls: &[NodeAddr], chain: u64) -> Result<Vec<NodeAddr>, Trouble> {
+pub fn serving_urls(urls: &[NodeAddr], chain: u64) -> Result<(Vec<NodeAddr>, Vec<Why>), Trouble> {
+    if urls.is_empty() {
+        return Err(Trouble::text(Code::NoEndpoint, chain.to_string()));
+    }
     let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
-    let (kept, _) = node::serving(&eps, chain)?;
-    Ok(kept.into_iter().map(|e| e.url).collect())
+    let (kept, left) = node::serving(&eps, chain)?;
+    Ok((kept.into_iter().map(|e| e.url).collect(), left))
 }
 
-/// What the chain already holds of `hashes` from `from` through `registry`, asked before anything is signed:
-/// each serving node is asked by the one rule (`zikaron_anchor::send::on_chain`, from block `start` to its head),
-/// and a hash any node answers with counts (each with its earliest transaction and block). Held already is refused
-/// by name (`OnChain`: the hashes held, the first one's transaction and block) and nothing is signed. A node that
-/// cannot say is passed over; when none can, nothing is sent on a guess, with each node's words as the evidence.
-/// The refusal is named by what kept the answer away: the way to a node breaking (a handshake, a timeout, a proxy,
-/// a status) by the one table, as every other read of the chain names it (`node::said_trouble`, the first such);
-/// a node reached that could not say (it refused the question, or answered out of shape) is no answer
-/// (`Unreachable`).
-pub fn on_chain(urls: &[NodeAddr], chain: u64, registry: &[u8; 20], from: &[u8; 20], hashes: &[[u8; 32]], start: u64) -> Result<(), Trouble> {
+pub(crate) fn serving_eps(eps: &[Endpoint], chain: u64) -> Result<(Vec<Endpoint>, Vec<Why>), Trouble> {
+    let urls: Vec<NodeAddr> = eps.iter().filter(|e| e.chain == chain).map(|e| e.url.clone()).collect();
+    let (kept, left) = serving_urls(&urls, chain)?;
+    Ok((kept.into_iter().map(|u| Endpoint::at(chain, u)).collect(), left))
+}
+
+pub(crate) fn with_left(t: Trouble, left: &[Why]) -> Trouble {
+    if left.is_empty() {
+        return t;
+    }
+    let mut all = match t.why.clone() {
+        Why::Each(xs) => xs,
+        other => vec![other],
+    };
+    all.extend(left.iter().cloned());
+    t.retold(Why::Each(all))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn on_chain(urls: &[NodeAddr], chain: u64, registry: &[u8; 20], from: &[u8; 20], hashes: &[[u8; 32]], start: u64, lineage: &[[u8; 20]]) -> Result<Option<u64>, Trouble> {
+    let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let nodes = crate::agree::node_list(&eps, chain);
+    let lineage: Vec<[u8; 20]> = if lineage.is_empty() { vec![*from] } else { lineage.to_vec() };
+    let registries = zikaron_anchor::revoke::registries(chain, &[*registry]);
     let mut found: Vec<zikaron_anchor::send::OnChain> = Vec::new();
+    let mut latest: Option<u64> = None;
     let mut heard = false;
+    let mut over: Vec<zikaron_anchor::scan::Refusal> = Vec::new();
     let mut said: Vec<Why> = Vec::new();
     let mut first: Option<Trouble> = None;
-    for u in urls {
-        let Some(mut ep) = node::endpoint_at(u.for_transport()) else {
+    let ask = |urls: &[NodeAddr]| {
+        let (reg, lin, who, hs) = (registries.clone(), lineage.clone(), *from, hashes.to_vec());
+        let list = nodes.clone();
+        let names = urls.to_vec();
+        node::each_node(urls, &node::endpoint_at, move |_, ep| ep.map(|ep| zikaron_anchor::send::held_among(ep, chain, &reg, &lin, &who, &hs, start, None, &list)), |view| {
+            let alike: Vec<(String, Vec<u8>)> = names
+                .iter()
+                .zip(view)
+                .filter_map(|(u, a)| match a {
+                    Some(Some(Ok(h))) => Some((u.for_transport().to_string(), format!("{:?}", (&h.found, h.latest)).into_bytes())),
+                    _ => None,
+                })
+                .collect();
+            zikaron_anchor::judge::two_places_alike(&alike) || alike.iter().any(|(p, _)| zikaron_anchor::action::splits(&zikaron_anchor::endpoints::place_of(p)))
+        })
+    };
+    let mut each = ask(urls);
+    zikaron_anchor::action::cut_and_ask(
+        &mut each,
+        |i, _| vec![zikaron_anchor::endpoints::place_of(urls[i].for_transport())],
+        |a| matches!(a, Some(Some(Ok(_)))),
+        |a| matches!(a, Some(Some(Err(n))) if n.cut()),
+        |idx, _| ask(&idx.iter().map(|i| urls[*i].clone()).collect::<Vec<NodeAddr>>()),
+    );
+    for (u, asked) in urls.iter().zip(each) {
+        let Some(answer) = asked else {
+            said.push(node::node_why(u.for_transport(), &rpc::Trouble::Transport(rpc::Broke::Short)));
+            continue;
+        };
+        let Some(answer) = answer else {
             said.push(node::address_said(u.for_transport()));
             continue;
         };
-        match zikaron_anchor::send::on_chain(ep.as_mut(), chain, registry, from, hashes, start) {
+        match answer {
             Ok(got) => {
                 heard = true;
-                for x in got {
+                latest = latest.max(got.latest);
+                for x in got.found {
                     match found.iter_mut().find(|f| f.hash == x.hash) {
                         Some(f) if f.block <= x.block => {}
                         Some(f) => *f = x,
@@ -174,6 +228,10 @@ pub fn on_chain(urls: &[NodeAddr], chain: u64, registry: &[u8; 20], from: &[u8; 
                 }
             }
             Err(not) => match not.trouble() {
+                _ if over_asks(&not).is_some() => {
+                    over.extend(over_asks(&not));
+                    said.push(Why::Text(format!("{} {}", u.said(), not.evidence())));
+                }
                 Some(t @ rpc::Trouble::Transport(_)) => {
                     first.get_or_insert_with(|| node::said_trouble(u.for_transport(), &t));
                     said.push(node::node_why(u.for_transport(), &t));
@@ -190,18 +248,187 @@ pub fn on_chain(urls: &[NodeAddr], chain: u64, registry: &[u8; 20], from: &[u8; 
         return Err(Trouble::new(Code::OnChain, Why::OnChain { names, tx: zikaron::hexfmt::encode(&earliest.tx), block: earliest.block }));
     }
     if !heard {
-        return Err(match first {
-            Some(t) => t.retold(Why::Each(said)),
-            None => Trouble::new(Code::Unreachable, Why::Each(said)),
+        return Err(match (first, over.is_empty()) {
+            (_, false) => Trouble::new(Code::ScanRefused, Why::Scan { unanswered: said, refused: over }),
+            (Some(t), true) => t.retold(Why::Each(said)),
+            (None, true) => Trouble::new(Code::Unreachable, Why::Each(said)),
         });
     }
-    Ok(())
+    Ok(latest)
 }
 
-/// A batch put out: its last transaction, its chain, the node that took it, its entries, the gas estimated for
-/// it and the queue as written. `earlier`: these entries were already out from this home (the queue records their
-/// transactions), so nothing new was signed and this is that batch, handed to the receipt wait to be asked about
-/// by hash.
+fn over_asks(not: &zikaron_anchor::send::NotSaid) -> Option<zikaron_anchor::scan::Refusal> {
+    match not {
+        zikaron_anchor::send::NotSaid::Logs(r) if r.over_asks().is_some() => Some(r.clone()),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OnChain {
+    read: Vec<(Option<u64>, String)>,
+    own: Vec<(u64, String, Option<u64>)>,
+}
+
+impl OnChain {
+    pub fn of(read: impl IntoIterator<Item = (Option<u64>, String)>, queue: &Queue) -> OnChain {
+        let mut own: Vec<(u64, String, Option<u64>)> = queue.blocks.iter().map(|b| (if b.chain == 0 { queue.chain } else { b.chain }, b.id.to_ascii_lowercase(), Some(b.block))).collect();
+        for (id, c) in &queue.anchored {
+            let c = if *c == 0 { queue.chain } else { *c };
+            let id = id.to_ascii_lowercase();
+            if !own.iter().any(|(x, y, _)| *x == c && *y == id) {
+                own.push((c, id, None));
+            }
+        }
+        OnChain { read: read.into_iter().map(|(c, id)| (c, id.to_ascii_lowercase())).collect(), own }
+    }
+
+    pub fn on(&self, chain: u64, id: &str) -> bool {
+        let id = id.to_ascii_lowercase();
+        self.read.iter().any(|(c, x)| *x == id && c.is_none_or(|c| c == chain)) || self.own.iter().any(|(c, x, _)| *c == chain && *x == id)
+    }
+
+    pub fn anywhere(&self, id: &str) -> bool {
+        let id = id.to_ascii_lowercase();
+        self.read.iter().any(|(_, x)| *x == id) || self.own.iter().any(|(_, x, _)| *x == id)
+    }
+
+    pub fn own_latest(&self, chain: u64, ids: &[String]) -> Option<u64> {
+        self.own.iter().filter(|(c, x, _)| *c == chain && ids.iter().any(|i| i.eq_ignore_ascii_case(x))).filter_map(|(_, _, b)| *b).max()
+    }
+}
+
+pub const FENCE_PAUSES: [std::time::Duration; 10] = [std::time::Duration::from_secs(3); 10];
+
+pub fn fence_open(head_time: u64, before: &[(u64, u64)]) -> Result<(), u64> {
+    match before.iter().map(|(_, t)| *t).max() {
+        Some(after) if head_time <= after => Err(after),
+        _ => Ok(()),
+    }
+}
+
+pub fn before_of(b: &Batch, pile: &[Vec<u8>], queue: &Queue, key: Option<&str>, moved: Option<&str>) -> Result<Vec<(u64, u64)>, Trouble> {
+    let own = OnChain::of(std::iter::empty(), queue);
+    let places = zikaron_seal::queue::Place::of_pile(pile);
+    let mine: Vec<zikaron_seal::queue::Place> = b.ids.iter().filter_map(|id| places.get(&id.to_ascii_lowercase()).copied()).collect();
+    let first = if mine.len() < b.ids.len() { None } else { mine.iter().map(|p| (p.law, p.seq)).min() };
+    let went_before: Vec<String> = places
+        .iter()
+        .filter(|(_, p)| first.is_none_or(|f| (p.law, p.seq) < f))
+        .filter(|(id, _)| !b.ids.iter().any(|x| x.eq_ignore_ascii_case(id)))
+        .map(|(id, _)| id.to_string())
+        .collect();
+    let hashes: Vec<[u8; 32]> = went_before.iter().filter_map(|id| zikaron::hexfmt::decode(id).and_then(|v| v.try_into().ok())).collect();
+    let senders: Vec<[u8; 20]> = zikaron_glue::basis::senders_of(pile).iter().filter_map(|a| zikaron::hexfmt::decode(a).and_then(|v| v.try_into().ok())).collect();
+    let lanes: Vec<Lane> = if b.basis.is_empty() { vec![Lane { chain: b.chain, registry: b.registry, urls: b.urls.clone(), from_block: 0 }] } else { b.basis.clone() };
+    let lineage = crate::gate::lineage_bytes(&crate::gate::lineage(pile, key, moved));
+    let mut out = Vec::new();
+    for lane in &lanes {
+        let urls = if lane.urls.is_empty() { Vec::new() } else { serving_urls(&lane.urls, lane.chain)?.0 };
+        let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(lane.chain, u.clone())).collect();
+        let head = node::head_block(&eps, lane.chain).ok().map(|(h, _)| h);
+        let nodes = crate::agree::node_list(&eps, lane.chain);
+        let mut latest: Option<u64> = None;
+        let mut heard = false;
+        let mut over: Vec<zikaron_anchor::scan::Refusal> = Vec::new();
+        let mut said: Vec<Why> = Vec::new();
+        let registries = zikaron_anchor::revoke::registries(lane.chain, &[lane.registry]);
+        let ask = |urls: &[NodeAddr]| {
+            let (c, from_block, reg, lin, snd, hs, list) = (lane.chain, lane.from_block, registries.clone(), lineage.clone(), senders.clone(), hashes.clone(), nodes.clone());
+            let names = urls.to_vec();
+            node::each_node(urls, &node::endpoint_at, move |_, ep| ep.map(|ep| zikaron_anchor::send::latest_among(ep, c, &reg, &lin, &snd, &hs, from_block, head, &list)), |view| {
+                let alike: Vec<(String, Vec<u8>)> = names
+                    .iter()
+                    .zip(view)
+                    .filter_map(|(u, a)| match a {
+                        Some(Some(Ok(l))) => Some((u.for_transport().to_string(), format!("{l:?}").into_bytes())),
+                        _ => None,
+                    })
+                    .collect();
+                zikaron_anchor::judge::two_places_alike(&alike) || alike.iter().any(|(p, _)| zikaron_anchor::action::splits(&zikaron_anchor::endpoints::place_of(p)))
+            })
+        };
+        let mut each = ask(&urls);
+        zikaron_anchor::action::cut_and_ask(
+            &mut each,
+            |i, _| vec![zikaron_anchor::endpoints::place_of(urls[i].for_transport())],
+            |a| matches!(a, Some(Some(Ok(_)))),
+            |a| matches!(a, Some(Some(Err(n))) if n.cut()),
+            |idx, _| ask(&idx.iter().map(|i| urls[*i].clone()).collect::<Vec<NodeAddr>>()),
+        );
+        for (u, asked) in urls.iter().zip(each) {
+            match asked {
+                None => said.push(node::node_why(u.for_transport(), &rpc::Trouble::Transport(rpc::Broke::Short))),
+                Some(None) => said.push(node::address_said(u.for_transport())),
+                Some(Some(Ok(l))) => {
+                    heard = true;
+                    latest = latest.max(l);
+                }
+                Some(Some(Err(not))) => {
+                    over.extend(over_asks(&not));
+                    said.push(Why::Text(format!("{} {}", u.said(), not.evidence())));
+                }
+            }
+        }
+        if !heard && !over.is_empty() {
+            return Err(Trouble::new(Code::ScanRefused, Why::Scan { unanswered: said, refused: over }));
+        }
+        if !heard {
+            return Err(Trouble::new(Code::Unreachable, Why::AtChain { chain: lane.chain, why: Box::new(Why::Each(said)) }));
+        }
+        latest = latest.max(own.own_latest(lane.chain, &went_before));
+        if let Some(block) = latest {
+            out.push((lane.chain, node::block_time(&eps, lane.chain, block)?));
+        }
+    }
+    Ok(out)
+}
+
+pub fn fence_after(urls: &[NodeAddr], chain: u64, before: &[(u64, u64)]) -> Result<(), Trouble> {
+    if before.is_empty() {
+        return Ok(());
+    }
+    let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let head = || node::head_time_now(&eps, chain);
+    match await_fence(before, head) {
+        Ok(()) => Ok(()),
+        Err(Fenced::Unread(t)) => Err(t),
+        Err(Fenced::TooEarly { head_time, after }) => Err(Trouble::new(Code::TooEarly, Why::TooEarly { chain, head_time, after })),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fenced<T> {
+    Unread(T),
+    TooEarly { head_time: u64, after: u64 },
+}
+
+pub fn await_fence<T>(before: &[(u64, u64)], mut head: impl FnMut() -> Result<u64, T>) -> Result<(), Fenced<T>> {
+    let pauses: Vec<std::time::Duration> = FENCE_PAUSES.iter().map(|d| zikaron_anchor::patience::waited(*d)).collect();
+    let mut pauses = pauses.into_iter();
+    let mut head_time = head().map_err(Fenced::Unread)?;
+    loop {
+        let after = match fence_open(head_time, before) {
+            Ok(()) => return Ok(()),
+            Err(after) => after,
+        };
+        let Some(p) = pauses.next() else { return Err(Fenced::TooEarly { head_time, after }) };
+        head_time = zikaron_anchor::action::after_a_beat(p, &mut head).map_err(Fenced::Unread)?;
+    }
+}
+
+pub fn fence(urls: &[NodeAddr], chain: u64, latest: Option<u64>) -> Result<(), Trouble> {
+    let Some(block) = latest else { return Ok(()) };
+    let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let after = node::block_time(&eps, chain, block)?;
+    let head = || node::head_time_now(&eps, chain);
+    match await_fence(&[(chain, after)], head) {
+        Ok(()) => Ok(()),
+        Err(Fenced::Unread(t)) => Err(t),
+        Err(Fenced::TooEarly { head_time, after }) => Err(Trouble::new(Code::TooEarly, Why::TooEarly { chain, head_time, after })),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Sent {
     pub tx: String,
@@ -213,55 +440,66 @@ pub struct Sent {
     pub earlier: bool,
 }
 
-/// The batch out from this home for any of `ids`, as the queue on disk records it: its transactions (oldest
-/// first), its chain and every entry awaiting them. `None` when none of `ids` has a transaction out.
+pub fn out_first(q: &Queue) -> Option<(Vec<String>, u64, Vec<String>)> {
+    q.submitted().into_iter().next()
+}
+
+pub fn again_at(l: &Landed, switch: zikaron_seal::machine::CliAnchor) -> Option<(Stuck, Fees)> {
+    match (&l.stuck, switch) {
+        (Some(stuck @ Stuck { offer: Offer::Unheld { fees, .. }, .. }), zikaron_seal::machine::CliAnchor::Send) if l.receipt == Receipt::Unused && !l.voided => Some((stuck.clone(), *fees)),
+        _ => None,
+    }
+}
+
 pub fn out_for(q: &Queue, ids: &[String]) -> Option<(Vec<String>, u64, Vec<String>)> {
-    let (txs, chain) = ids.iter().find_map(|id| q.step_of(id).and_then(Step::awaited))?;
-    let all: Vec<String> = q.items.iter().filter(|x| x.step.awaited().is_some_and(|(t, c)| t == txs && c == chain)).map(|x| x.id.clone()).collect();
+    out_on(q, ids, q.chain)
+}
+
+pub fn out_on(q: &Queue, ids: &[String], chain: u64) -> Option<(Vec<String>, u64, Vec<String>)> {
+    let (txs, chain) = ids.iter().find_map(|id| q.step_on(id, chain).and_then(Step::awaited))?;
+    let all: Vec<String> = q.items.iter().filter(|x| (x.chain == chain || x.chain == 0) && x.step.awaited().is_some_and(|(t, c)| t == txs && c == chain)).map(|x| x.id.clone()).collect();
     Some((txs, chain, all))
 }
 
-/// Sends one batch for `end`: earlier, the home's write gates, on chain, balance, exit gate, sign, land, broadcast
-/// (the module's head): the first two stages of a send, which the end runs holding the home's writer lock. It goes
-/// only as far as "submitted": once the batch is landed as in flight and a node took the bytes, `Sent` is
-/// returned and the end starts the receipt wait ([`wait`], holding no lock) and writes what it heard ([`settle`],
-/// holding the lock again). A refusal before the landing records the batch as
-/// refused, with the refusal's code (entries in flight are never overwritten, `Queue::mark`). `start` is the
-/// block the chain is asked from whether it already holds the anchors (the home's scan window).
 #[allow(clippy::too_many_arguments)]
-pub fn anchor<E: End + Facts>(end: &E, b: Batch, signer: &dyn Signer, gas: Option<u64>, fees: Fees, ask: gate::Ask, start: u64) -> Result<Sent, E::Fail> {
+pub fn anchor<E: End + Facts>(end: &E, b: Batch, signer: &dyn Signer, gas: Option<u64>, fees: Fees, ask: gate::Ask) -> Result<Sent, E::Fail> {
     let mut b = b;
+    let chain = b.chain;
     let refused = |f: E::Fail, ids: &[String]| -> E::Fail {
         let said = E::code_of(&f).unwrap_or_default();
-        let _ = keep::amend(end, |q| q.mark(ids, Step::Refused { said }));
+        let _ = keep::amend(end, |q| q.mark_on(ids, chain, Step::Refused { said }));
         f
     };
-    // What this home already has out for these entries is asked about by hash (the receipt wait), never signed
-    // again.
+    let start = ask.from_block_of(chain).ok_or_else(|| refused(Trouble::text(Code::NoRegistry, chain.to_string()).into(), &b.ids))?;
     let disk = keep::read(end)?;
-    if let Some(out) = out_for(&disk, &b.ids) {
+    if let Some(out) = out_on(&disk, &b.ids, b.chain) {
         return Ok(earlier(out, &b, gas, disk));
     }
-    // The home's write gates, from what is on disk, before the chain is asked anything.
     crate::shut::check(end).map_err(|f| refused(f, &b.ids))?;
-    b.urls = serving_urls(&b.urls, b.chain).map_err(|t| refused(t.into(), &b.ids))?;
+    b.urls = serving_urls(&b.urls, b.chain).map_err(|t| refused(t.into(), &b.ids))?.0;
     let from = signer.from().ok_or_else(|| refused(Trouble::new(Code::KeyMalformed, Why::NoAddress).into(), &b.ids))?;
-    // What the chain already holds is not sent again, whichever side put it there.
-    on_chain(&b.urls, b.chain, &b.registry, &from, &b.hashes, start).map_err(|t| refused(t.into(), &b.ids))?;
-    // Pre-send balance gate: if the balance does not cover fee cap times gas, refuse by name with both amounts
-    // and broadcast nothing. It runs after the end's show-before-send gate, not instead of it.
+    let pile = end.pile().map_err(|f| refused(f, &b.ids))?;
+    let moved = gate::moved_to(&ask, &pile);
+    let lineage = gate::lineage_bytes(&gate::lineage(&pile, ask.own.as_deref(), moved.as_deref()));
+    ahead_of_send(&b, &from, start, &lineage);
+    b.carried = carried_of(&pile, &b.ids, b.chain);
+    if let Some(entry) = &b.carried {
+        face_gate(&b.urls, b.chain, &b.registry, entry, &pile, &from).map_err(|t| refused(t.into(), &b.ids))?;
+    }
+    on_chain(&b.urls, b.chain, &b.registry, &from, &b.hashes, start, &lineage).map_err(|t| refused(t.into(), &b.ids))?;
+    if zikaron_seal::queue::at_boundary(&b.ids, &zikaron_seal::queue::Place::of_pile(&pile)) {
+        let before = before_of(&b, &pile, &disk, ask.own.as_deref(), moved.as_deref()).map_err(|t| refused(t.into(), &b.ids))?;
+        fence_after(&b.urls, b.chain, &before).map_err(|t| refused(t.into(), &b.ids))?;
+    }
     funds_gate(&b, signer, fees, &|n| end.note(n)).map_err(|t| refused(t.into(), &b.ids))?;
-    // The exit gate, last before the chain: every anchor of this ledger's lineage, read now, must be held here.
     let pass = gate::pass(&ask, end).map_err(|f| refused(f, &b.ids))?;
     end.note(Note::Stage(0));
     let (raw, hash, nonce) = sign_new(signer, &b, fees).map_err(|t| refused(t.into(), &b.ids))?;
     let tx = zikaron::hexfmt::encode(&hash);
-    // Landed as in flight before its bytes go: after a restart this transaction is awaited, never resent. Only
-    // when every entry of the batch is still not out; one another sender put out meanwhile sends nothing now.
-    let (out, queue) = keep::amend(end, |q| match out_for(q, &b.ids) {
+    let (out, queue) = keep::amend(end, |q| match out_on(q, &b.ids, b.chain) {
         Some(out) => Some(out),
         None => {
-            q.mark(&b.ids, Step::Submitted { tx: tx.clone(), chain: b.chain, nonce: Some(nonce) });
+            q.mark_on(&b.ids, b.chain, Step::Submitted { tx: tx.clone(), chain: b.chain, nonce: Some(nonce) });
             None
         }
     })?;
@@ -271,10 +509,6 @@ pub fn anchor<E: End + Facts>(end: &E, b: Batch, signer: &dyn Signer, gas: Optio
     match cast(&pass, &b.urls, b.chain, &raw, hash, &b.backoff, None, &|n| end.note(n)) {
         Ok(c) => Ok(Sent { tx, chain: b.chain, url: c.taken, ids: b.ids, gas, queue, earlier: false }),
         Err(t) => {
-            // A node's own verdict (insufficient funds, nonce used, underpriced, …) means the bytes were not
-            // accepted: the batch goes back, refused with that code. Any other failure (no node answered, a
-            // network error after the bytes were sent) may leave them in a pool: the batch stays awaited, and the
-            // receipt wait asks every node by hash.
             if node::next_after(&t) == Next::Stop {
                 let f: E::Fail = t.into();
                 let said = E::code_of(&f).unwrap_or_default();
@@ -286,19 +520,25 @@ pub fn anchor<E: End + Facts>(end: &E, b: Batch, signer: &dyn Signer, gas: Optio
     }
 }
 
-/// The batch already out, as [`Sent`] for the receipt wait.
+fn ahead_of_send(b: &Batch, from: &[u8; 20], start: u64, lineage: &[[u8; 20]]) {
+    let eps: Vec<Endpoint> = b.urls.iter().map(|u| Endpoint::at(b.chain, u.clone())).collect();
+    let nodes = crate::agree::node_list(&eps, b.chain);
+    let lineage: Vec<[u8; 20]> = if lineage.is_empty() { vec![*from] } else { lineage.to_vec() };
+    let registries = zikaron_anchor::revoke::registries(b.chain, &[b.registry]);
+    node::ask_ahead(&eps, b.chain, &|ep, lowest, own| {
+        let mut asks = zikaron_anchor::send::held_among_asks(ep, b.chain, &registries, &lineage, start, own, &nodes);
+        asks.push(("eth_getBalance", Value::Arr(vec![Value::Str(zikaron::hexfmt::encode(from)), Value::Str(format!("0x{lowest:x}"))])));
+        asks
+    });
+}
+
 fn earlier((txs, chain, ids): (Vec<String>, u64, Vec<String>), b: &Batch, gas: Option<u64>, queue: Queue) -> Sent {
     let url = b.urls.first().cloned().unwrap_or_else(|| NodeAddr::new(String::new()));
     Sent { tx: txs.last().cloned().unwrap_or_default(), chain, url, ids, gas, queue, earlier: true }
 }
 
-/// Sign a new batch once: the pending nonce is asked of every endpoint at once, each with the patience table
-/// (`zikaron_anchor::patience`: a rate limit is waited out there, never here), and the largest is taken (a node
-/// that is behind would hand out a nonce already used). An endpoint that did not answer is skipped; a node's
-/// substantive verdict refuses at once; if none answers, the last answer is returned.
 fn sign_new(signer: &dyn Signer, b: &Batch, fees: Fees) -> Result<(Vec<u8>, [u8; 32], u64), Trouble> {
     let urls = &b.urls;
-    // The first node in its safe-to-display form, as a refusal's evidence names it.
     let first = urls.first().map(NodeAddr::said).unwrap_or_default();
     let open = |url: &NodeAddr| node::endpoint_at(url.for_transport()).ok_or_else(|| Trouble::new(Code::SettingsShape, node::address_said(url.for_transport())));
     let mut last: Option<Trouble> = None;
@@ -310,16 +550,16 @@ fn sign_new(signer: &dyn Signer, b: &Batch, fees: Fees) -> Result<(Vec<u8>, [u8;
     let mut words: Vec<(usize, Trouble)> = Vec::new();
     for (i, url) in urls.iter().enumerate() {
         match open(url) {
-            Ok(h) => nodes.push((url.for_transport().to_string(), h)),
+            Ok(h) => nodes.push((url.for_transport().to_string(), node::one_ask(h))),
             Err(t) => words.push((i, t)),
         }
     }
-    let answers = zikaron_anchor::endpoints::ask_each(nodes, "eth_getTransactionCount", &params);
+    let answers = node::came(zikaron_anchor::endpoints::ask_each(nodes, "eth_getTransactionCount", &params, node::enough_for("eth_getTransactionCount", &params)));
     match zikaron_anchor::judge::judge("eth_getTransactionCount", &params, answers) {
         Ok(j) => {
             let taker = j.sources.first().cloned().unwrap_or_default();
             match j.value.as_str().and_then(node::wei).and_then(|n| u64::try_from(n).ok()) {
-                Some(nonce) => match signer.sign(b.chain, Some(b.registry), &b.hashes, None, fees, nonce) {
+                Some(nonce) => match signer.sign(b.chain, Some(b.registry), &b.hashes, b.carried.as_ref().map(|_| b.calldata()), fees, nonce) {
                     Ok((raw, hash)) => return Ok((raw, hash, nonce)),
                     Err(t) => return Err(node::said_trouble(&taker, &t)),
                 },
@@ -341,51 +581,30 @@ fn sign_new(signer: &dyn Signer, b: &Batch, fees: Fees) -> Result<(Vec<u8>, [u8;
             }
             last = words.pop().map(|(_, t)| t);
         }
-        // Taking the maximum, the answers never disagree.
         Err(_) => last = Some(Trouble::text(Code::Unreachable, first.clone())),
     }
     Err(last.unwrap_or_else(|| Trouble::text(Code::NoEndpoint, first)))
 }
 
-/// A node whose answer to the nonce question did not read: the node answered, so it is no connection's failure,
-/// but there is no nonce to sign with (`Unreachable`, as no answer); the evidence names the node.
 fn nonce_unread(url: &str) -> Trouble {
     Trouble::new(Code::Unreachable, Why::NonceUnread { node: zikaron_net::sayable(url) })
 }
 
-/// Where a broadcast went: hash, how many submissions were made, which node took it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cast {
     pub hash: [u8; 32],
-    /// How many times the transaction (`eth_sendRawTransaction`) was submitted in total (including backoff
-    /// retries at the same place).
     pub asked: usize,
-    /// The endpoint that took it.
     pub taken: NodeAddr,
 }
 
-/// Submit signed bytes endpoint by endpoint (every anchoring transaction goes out here, once per signing), with
-/// the exit gate's [`gate::Pass`]: there is no way to the chain except through the gate.
-///
-/// 1. Submit the same signed bytes endpoint by endpoint; a matching echo is success. Network-kind refusals
-///    (rate limit, no answer, timeout, bad answer, access refused: [`Code::NETWORK`]) move to the next endpoint
-///    (a rate limit first retries the same one per `backoff`). The nonce is fixed and the hash identical, so
-///    there is no double spend.
-/// 2. A node's substantive verdict (insufficient balance, nonce used, underpriced, execution reverted…) would be
-///    the same everywhere, so it is returned at once without asking further; one that answers "already pending"
-///    or "nonce used" is first asked by hash whether it knows this very transaction.
-/// 3. Only when no endpoint took it is it refused, with the last answer.
 #[allow(clippy::too_many_arguments)]
 pub fn cast(_pass: &gate::Pass, urls: &[NodeAddr], chain: u64, raw: &[u8], hash: [u8; 32], backoff: &[std::time::Duration], last: Option<Trouble>, note: &dyn Fn(Note)) -> Result<Cast, Trouble> {
-    // The first node in its safe-to-display form, as a refusal's evidence names it.
     let first = urls.first().map(NodeAddr::said).unwrap_or_default();
     let mut last = last;
     let open = |url: &NodeAddr| node::endpoint_at(url.for_transport()).ok_or_else(|| Trouble::new(Code::SettingsShape, node::address_said(url.for_transport())));
     let waits: Vec<std::time::Duration> = std::iter::once(std::time::Duration::ZERO).chain(backoff.iter().copied()).collect();
     note(Note::Stage(1));
     let mut asked = 0usize;
-    // An earlier endpoint already received these bytes (it answered with a network-kind refusal, and the
-    // bytes may be in its pool).
     let mut handed = false;
     for url in urls {
         let mut http = match open(url) {
@@ -403,10 +622,7 @@ pub fn cast(_pass: &gate::Pass, urls: &[NodeAddr], chain: u64, raw: &[u8], hash:
             match zikaron_anchor::send::submit(http.as_mut(), raw, &hash) {
                 Ok(()) => return Ok(Cast { hash, asked, taken: url.clone() }),
                 Err(e) => {
-                    // What the node said, classified only in `node::said_trouble`.
                     let t = node::said_trouble(url.for_transport(), &e);
-                    // "Already pending" or "nonce used": ask once by hash; if a node knows the transaction it was
-                    // taken (then wait for the receipt), otherwise refuse as before.
                     if node::already_taken(&t) && node::tx_known(urls, chain, &hash) {
                         return Ok(Cast { hash, asked, taken: url.clone() });
                     }
@@ -423,10 +639,6 @@ pub fn cast(_pass: &gate::Pass, urls: &[NodeAddr], chain: u64, raw: &[u8], hash:
             }
         }
     }
-    // Submitted but no endpoint answered (timeout, disconnect): the bytes may be in some pool. Ask once by hash;
-    // known means taken (the receipt decides), unknown means refuse. Refusing outright without the landing before
-    // would make the next pass anchor again with a new nonce, and if the earlier transaction was also included the
-    // batch would be anchored twice.
     if handed && node::tx_known(urls, chain, &hash) {
         let Some(taken) = urls.first().cloned() else { return Err(last.unwrap_or_else(|| Trouble::text(Code::NoEndpoint, first))) };
         return Ok(Cast { hash, asked, taken });
@@ -434,62 +646,62 @@ pub fn cast(_pass: &gate::Pass, urls: &[NodeAddr], chain: u64, raw: &[u8], hash:
     Err(last.unwrap_or_else(|| Trouble::text(Code::NoEndpoint, first)))
 }
 
-/// A batch's transaction not included by the end of a receipt wait: every transaction of the batch, oldest
-/// first, and the latest as the chain holds it (nonce, recipient, call data and fees), with the current price.
-/// Read where the wait ended; the "resend with higher fees" offer reads only this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stuck {
     pub txs: Vec<String>,
     pub chain: u64,
-    /// The account the transactions were sent from (a resend is signed by the same key or refused).
     pub from: [u8; 20],
     pub nonce: u64,
     pub to: [u8; 20],
     pub input: Vec<u8>,
-    /// The last transaction's fee cap, priority fee and gas limit.
     pub sent: Fees,
-    /// What may be done now.
     pub offer: Offer,
-    /// The nodes the current price was not read from because they serve another chain, each named.
     pub left: Vec<Why>,
+    pub unpriced: Option<Unpriced>,
 }
 
-/// Whether a stuck batch may be resent with higher fees, and at what.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unpriced {
+    NoNode,
+    OtherChain,
+    Unread,
+}
+
+impl Unpriced {
+    fn of(urls: &[NodeAddr], serving: Result<(), Code>) -> Unpriced {
+        match serving {
+            Err(c) if c.another_chain() => Unpriced::OtherChain,
+            _ if urls.is_empty() => Unpriced::NoNode,
+            Err(Code::NoEndpoint) => Unpriced::NoNode,
+            _ => Unpriced::Unread,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Offer {
-    /// The current price (the head's base fee) is above the last transaction's cap: a resend carries these fees
-    /// (the current fee rule, at least the pools' replacement bump above the last, `Fees::replacing`).
     Resend { fees: Fees, base_now: u64 },
-    /// The current price is not above the cap: the transaction can still be included as is; waiting continues.
     NotAbove { base_now: u64 },
-    /// The current price could not be read: nothing is offered (waiting continues).
     PriceUnread,
-    /// Already resent [`RESENDS_MAX`] times: waiting continues, nothing more is offered.
     Spent,
-    /// No node holds any transaction of the batch any more (dropped from the pools) and its nonce is still
-    /// unused on chain: the batch as recorded (its entries, at its nonce) may be sent again at the current price
-    /// with these fees (gas as the node estimates now; nothing is replaced, so no bump is needed).
     Unheld { fees: Fees, base_now: u64 },
 }
 
-/// Resends a stuck batch with higher fees, with the fees the end showed (`fees`, never above what was shown):
-/// ask the chain whether it already holds these anchors, check the balance for the new cap, pass the exit gate,
-/// sign the same transaction again (its nonce, recipient and call data, `Stuck`) with the same key (another is
-/// refused by name), then record the new hash with the batch (`Resent`) BEFORE the single broadcast, so any
-/// resend that goes out is one the queue watches. If a node refuses the broadcast the hash is removed again; if
-/// the bytes may be out it stays; a refusal before broadcast changes nothing. Transactions already out stay
-/// awaited either way (never marked refused, since the first may still be included), and a recorded hash no
-/// node holds is skipped by the wait.
 #[allow(clippy::too_many_arguments)]
-pub fn resend<E: End + Facts>(end: &E, b: Batch, stuck: Stuck, fees: Fees, signer: &dyn Signer, ask: gate::Ask, start: u64) -> Result<Sent, E::Fail> {
+pub fn resend<E: End + Facts>(end: &E, b: Batch, stuck: Stuck, fees: Fees, signer: &dyn Signer, ask: gate::Ask) -> Result<Sent, E::Fail> {
     let mut b = b;
+    let start = ask.from_block_of(b.chain).ok_or_else(|| Trouble::text(Code::NoRegistry, b.chain.to_string()))?;
     crate::shut::check(end)?;
-    b.urls = serving_urls(&b.urls, b.chain)?;
-    // What the chain already holds is not sent again, whichever side put it there.
-    on_chain(&b.urls, b.chain, &b.registry, &stuck.from, &b.hashes, start)?;
+    b.urls = serving_urls(&b.urls, b.chain)?.0;
+    let pile = end.pile()?;
+    let moved = gate::moved_to(&ask, &pile);
+    let lineage = gate::lineage_bytes(&gate::lineage(&pile, ask.own.as_deref(), moved.as_deref()));
+    if let Some(entry) = carried_of(&pile, &b.ids, b.chain) {
+        face_gate(&b.urls, b.chain, &b.registry, &entry, &pile, &stuck.from)?;
+    }
+    on_chain(&b.urls, b.chain, &b.registry, &stuck.from, &b.hashes, start, &lineage)?;
     funds_gate(&b, signer, fees, &|n| end.note(n))?;
     let pass = gate::pass(&ask, end)?;
-    // The same key that sent the batch, or nothing is signed.
     if signer.from() != Some(stuck.from) {
         return Err(Trouble::text(Code::AddressMismatch, zikaron::hexfmt::encode(&stuck.from)).into());
     }
@@ -502,8 +714,6 @@ pub fn resend<E: End + Facts>(end: &E, b: Batch, stuck: Stuck, fees: Fees, signe
     } else {
         Step::Resent { txs: stuck.txs.clone(), chain: b.chain, nonce: Some(stuck.nonce) }
     };
-    // Signing the same bytes again (a batch no node holds, offered at its original price) gives the same
-    // transaction: broadcast it again but watch it once.
     let mut txs = stuck.txs.clone();
     if !txs.contains(&tx) {
         txs.push(tx.clone());
@@ -516,9 +726,6 @@ pub fn resend<E: End + Facts>(end: &E, b: Batch, stuck: Stuck, fees: Fees, signe
     let c = match cast(&pass, &b.urls, b.chain, &raw, hash, &b.backoff, None, &|n| end.note(n)) {
         Ok(c) => c,
         Err(t) => {
-            // A node's own verdict (underpriced, nonce used, …) means the bytes were not accepted, so the hash is
-            // removed. Any other failure (no node answered, a network error after the bytes were sent) may leave
-            // them in a mempool: the hash stays watched, and the wait skips it while no node holds it.
             if node::next_after(&t) == Next::Stop {
                 let _ = keep::amend(end, |q| q.moved_by(&b.ids, &txs, b.chain, before));
             }
@@ -528,9 +735,6 @@ pub fn resend<E: End + Facts>(end: &E, b: Batch, stuck: Stuck, fees: Fees, signe
     Ok(Sent { tx, chain: b.chain, url: c.taken, ids: b.ids, gas: None, queue, earlier: false })
 }
 
-/// What one receipt wait found, as evidence: included (its status and block), not yet, out of sight (the last
-/// words heard), split between nodes, void (held by no node, its nonce used by another transaction), or held by
-/// no node with its nonce unused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Receipt {
     Included { status: u64, block: u64 },
@@ -541,11 +745,8 @@ pub enum Receipt {
     Unused,
 }
 
-/// What one receipt wait heard ([`wait`]), nothing written yet: the batch asked about (every transaction, oldest
-/// first, and its entries) and what the chain said, for [`settle`] to write under the writer's lock.
 #[derive(Clone, Debug)]
 pub struct Heard {
-    /// The transaction included, or the batch's latest.
     pub tx: String,
     pub chain: u64,
     pub txs: Vec<String>,
@@ -557,57 +758,46 @@ pub struct Heard {
     pub stuck: Option<Stuck>,
     pub voided: bool,
     pub waited: u64,
+    pub landing: Option<Landing>,
+    pub kept: Option<Kept>,
 }
 
-/// A batch's receipt wait ended. The transaction hash is always present: the bytes were broadcast and must be
-/// traceable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kept {
+    pub anchors: Vec<zikaron::json::Value>,
+    pub single_source: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Landing {
+    pub urls: Vec<NodeAddr>,
+    pub registry: [u8; 20],
+    pub from: [u8; 20],
+}
+
 #[derive(Clone, Debug)]
 pub struct Landed {
     pub tx: String,
     pub chain: u64,
-    /// Whether the transaction succeeded (`zikaron/1` §9.1: a status other than 1 is no anchor in either form).
     pub confirmed: bool,
     pub receipt: Receipt,
-    /// How many were sent in this batch, and how many left the queue.
     pub sent: usize,
     pub dropped: usize,
-    /// The queue table on disk after this wait, unchanged.
     pub queue: Vec<Queued>,
-    /// Gas estimated by the node before sending.
     pub gas: Option<u64>,
-    /// The call data of the transaction actually sent, read back from the chain by its hash (never rebuilt
-    /// here). Empty when it cannot be read.
     pub calldata: String,
-    /// Not included by the end of this wait: the batch's latest transaction as the chain holds it and the
-    /// current price. `None` once included (successfully or not), or when the wait ended with no node seeing it.
     pub stuck: Option<Stuck>,
-    /// No transaction of the batch was included, none is held by a node, and its nonce is used on chain by
-    /// another transaction: the batch is void and its entries are back in the queue.
     pub voided: bool,
-    /// How long the receipt wait actually ran, in whole seconds (measured, not the wait it was given).
     pub waited: u64,
+    pub kept: Option<Kept>,
 }
 
-/// The account a batch is sent from and the registry it calls. Used to judge a batch no node holds (via the
-/// account's on-chain nonce) and to resend it.
 #[derive(Clone, Copy, Debug)]
 pub struct Sender {
     pub from: [u8; 20],
     pub registry: [u8; 20],
 }
 
-/// The receipt wait (a send's third stage): waits at most `wait` for the receipt and returns what was heard,
-/// writing nothing and holding no lock, so another sender may send the rest of the queue meanwhile; [`settle`]
-/// writes it. If not yet included the batch stays submitted (or resent) and the next wait asks again.
-///
-/// Every transaction of the batch is awaited (`txs`, oldest first: one, or more after fee-bump resends),
-/// sharing the wait. They share one nonce, so at most one can be included, and the first found included
-/// counts. If none is included by the end, the latest is read as the chain holds it, with the current price
-/// ([`stuck_of`]): this is what the "resend with higher fees" offer reads. If none is included and no node holds
-/// any (dropped from every mempool, or the nonce used by another transaction), the batch is judged by the
-/// sending account's on-chain nonce against its own ([`unheld`]): voided and requeued, or offered again as
-/// recorded at its nonce and the current price. Whether a node still holds the transaction never decides
-/// whether action is possible: a batch no node holds is exactly the one that needs it.
 #[allow(clippy::too_many_arguments)]
 pub fn wait(
     urls: Vec<NodeAddr>,
@@ -619,8 +809,8 @@ pub fn wait(
     backoff: &[std::time::Duration],
     sender: Option<Sender>,
     nonce: Option<u64>,
+    carried: Option<&[u8]>,
 ) -> Result<Heard, Trouble> {
-    let url = urls.first().map(|u| u.for_transport().to_string()).unwrap_or_default();
     let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(txs.len());
     for tx in &txs {
         let h: [u8; 32] = zikaron::hexfmt::decode(tx).and_then(|b| b.try_into().ok()).ok_or_else(|| Trouble::text(Code::ContentShape, tx.clone()))?;
@@ -629,15 +819,23 @@ pub fn wait(
     if hashes.is_empty() {
         return Err(Trouble::text(Code::QueueEmpty, ids.join(" ")));
     }
-    // Ask each endpoint for the receipt, starting with the one that accepted the transaction; if none can be
-    // opened, refuse by name.
+    let table = urls;
+    let (urls, elsewhere) = if table.is_empty() {
+        (Vec::new(), false)
+    } else {
+        match serving_urls(&table, chain) {
+            Ok((kept, _)) => (kept, false),
+            Err(t) if t.code.another_chain() => (Vec::new(), true),
+            Err(t) => return Err(t),
+        }
+    };
+    let reads = if elsewhere { &table } else { &urls };
+    let url = urls.first().map(|u| u.for_transport().to_string()).unwrap_or_default();
     let mut opened: Vec<Box<dyn rpc::Endpoint + Send>> = urls.iter().filter_map(|u| node::endpoint_at(u.for_transport())).collect();
-    if opened.is_empty() {
+    if opened.is_empty() && !elsewhere {
         return Err(Trouble::new(Code::SettingsShape, node::address_said(&url)));
     }
     let mut refs: Vec<&mut dyn rpc::Endpoint> = opened.iter_mut().map(|b| b.as_mut() as &mut dyn rpc::Endpoint).collect();
-    // One wait shared between the transactions; the first included counts. Otherwise report the most
-    // informative result: some nodes with a receipt and some without, then "not yet", then unreachable.
     let share = wait / hashes.len() as u32;
     let rank = |c: &Confirm| match c {
         Confirm::Included { .. } => 3,
@@ -648,7 +846,7 @@ pub fn wait(
     let mut confirm: Option<Confirm> = None;
     let mut tx = txs.last().cloned().unwrap_or_default();
     let began = std::time::Instant::now();
-    for (h, t) in hashes.iter().zip(&txs) {
+    for (h, t) in hashes.iter().zip(&txs).filter(|_| !elsewhere) {
         let c = zikaron_anchor::send::confirm_each(&mut refs, h, share, backoff);
         let included = matches!(c, Confirm::Included { .. });
         if confirm.as_ref().is_none_or(|was| rank(&c) > rank(was)) {
@@ -661,58 +859,61 @@ pub fn wait(
     }
     let confirm = confirm.unwrap_or(Confirm::NotYet);
     let waited = began.elapsed().as_secs();
-    // What the sent transaction actually contains: `input` read back from the chain by hash, never rebuilt
-    // here. If unreadable it is empty; the broadcast already happened, so this must not fail the call.
-    let calldata = node::tx_as_held(&urls, chain, &tx).as_ref().and_then(|v| text_member(v, "input")).unwrap_or_default();
+    let calldata = Queue::hashes(&ids).map(|h| zikaron::hexfmt::encode(&calldata_of(&h, carried))).unwrap_or_default();
     let receipt = match &confirm {
         Confirm::Included { status, block_number } => Receipt::Included { status: *status, block: *block_number },
         Confirm::NotYet => Receipt::NotYet,
         Confirm::Unreachable(e) => Receipt::Unheard(e.to_string()),
-        // Some nodes have the receipt and others not yet, even after re-asking: not treated as anchored on the
-        // word of some nodes; it stays submitted and the next call asks again.
         Confirm::Split { has, not_yet } => Receipt::Split { has: has.clone(), not_yet: not_yet.clone() },
     };
-    // Only a receipt reporting success anchors (a status other than 1 is not an anchor).
     let anchored = matches!(confirm, Confirm::Included { status: 1, .. });
-    // If not included by the end of this wait: the latest transaction of the batch a node still holds (later
-    // ones recorded but never accepted, or dropped from mempools, are skipped).
     let held = match &confirm {
-        Confirm::NotYet => Some(txs.iter().rev().find_map(|t| node::tx_as_held(&urls, chain, t))),
+        Confirm::NotYet => Some(latest_held(&txs, |t| node::tx_as_held(reads, chain, t))),
         _ => None,
     };
-    // Held by no node: judge it by the account's on-chain nonce (`unheld`) rather than waiting silently.
     let unheld = match (&confirm, &held, sender) {
-        (Confirm::NotYet, Some(None), Some(who)) => unheld(&urls, chain, &txs, &ids, nonce, who, &mut refs),
+        (Confirm::NotYet, Some(node::AsHeld::Nobody | node::AsHeld::NoNode), Some(who)) => unheld(reads, chain, &txs, &ids, nonce, who, carried),
         _ => Unheld::Wait,
     };
     let receipt = match &unheld {
         Unheld::Void => Receipt::Void,
         Unheld::Again(_) => Receipt::Unused,
-        Unheld::Wait => receipt,
+        Unheld::Wait | Unheld::Unserved(_) => receipt,
     };
     let voided = matches!(unheld, Unheld::Void);
-    // What can be done now, from the transaction a node holds and the current price; if no node holds it and
-    // its nonce is unused, the batch as recorded at the current price.
     let stuck = match unheld {
-        Unheld::Again(s) => Some(s),
-        _ => held.flatten().and_then(|v| stuck_of(&urls, chain, &txs, &v)),
+        Unheld::Again(s) | Unheld::Unserved(s) => Some(s),
+        _ => held.and_then(node::AsHeld::held).and_then(|v| stuck_of(reads, chain, &txs, &v)),
     };
-    Ok(Heard { tx, chain, txs, ids, confirmed: anchored, receipt, gas, calldata, stuck, voided, waited })
+    let landing = sender.map(|s| Landing { urls: urls.clone(), registry: s.registry, from: s.from });
+    Ok(Heard { tx, chain, txs, ids, confirmed: anchored, receipt, gas, calldata, stuck, voided, waited, landing, kept: None })
 }
 
-/// The receipt written into the queue (a send's last stage), under the writer's lock the end holds again: the
-/// queue is read anew, and only entries still awaiting this batch change, so a batch another sender settled
-/// meanwhile is left as it stands. Included with status 1: those still awaiting a set of transactions holding the
-/// included one leave the queue, recorded as anchored at that block (removal goes only through here and
-/// `keep::settle`); included with another status: reverted; void: back in the queue (`Queued`, sendable again),
-/// and answered as void unless the entries now await a later set holding those transactions (resent by another
-/// sender meanwhile: no void of this batch, `Landed::voided` false); otherwise nothing is written (still in flight,
-/// the next wait asks again).
+fn latest_held(txs: &[String], ask: impl Fn(&str) -> node::AsHeld) -> node::AsHeld {
+    let mut unread = false;
+    let mut no_node = false;
+    for t in txs.iter().rev() {
+        match ask(t) {
+            node::AsHeld::Held(v) => return node::AsHeld::Held(v),
+            node::AsHeld::Unread => unread = true,
+            node::AsHeld::NoNode => no_node = true,
+            node::AsHeld::Nobody => {}
+        }
+    }
+    if unread {
+        node::AsHeld::Unread
+    } else if no_node {
+        node::AsHeld::NoNode
+    } else {
+        node::AsHeld::Nobody
+    }
+}
+
 pub fn settle<E: End>(end: &E, h: Heard) -> Result<Landed, E::Fail> {
-    let Heard { tx, chain, txs, ids, confirmed, receipt, gas, calldata, stuck, mut voided, waited } = h;
+    let Heard { tx, chain, txs, ids, confirmed, receipt, gas, calldata, stuck, mut voided, waited, landing: _, kept } = h;
     let (dropped, queue) = match &receipt {
         Receipt::Included { status: 1, block } => keep::amend(end, |q| {
-            let ours: Vec<String> = ids.iter().filter(|id| q.step_of(id).and_then(Step::awaited).is_some_and(|(t, c)| c == chain && t.contains(&tx))).cloned().collect();
+            let ours: Vec<String> = ids.iter().filter(|id| q.step_on(id, chain).and_then(Step::awaited).is_some_and(|(t, c)| c == chain && t.contains(&tx))).cloned().collect();
             q.included_out(&ours, &tx, chain, *block)
         })?,
         Receipt::Included { .. } => keep::amend(end, |q| {
@@ -722,10 +923,7 @@ pub fn settle<E: End>(end: &E, h: Heard) -> Result<Landed, E::Fail> {
         _ if voided => {
             let ((moved, resent), queue) = keep::amend(end, |q| {
                 let moved = q.moved_by(&ids, &txs, chain, Step::Queued);
-                // Judged void on the transactions asked about. Entries that now await a later set holding one of
-                // them (another sender resent them meanwhile, and that may well be in) are no void of these; entries
-                // already back (another wait on the same batch settled first) are.
-                let resent = ids.iter().any(|id| q.step_of(id).and_then(Step::awaited).is_some_and(|(t, c)| c == chain && t.iter().any(|x| txs.contains(x))));
+                let resent = ids.iter().any(|id| q.step_on(id, chain).and_then(Step::awaited).is_some_and(|(t, c)| c == chain && t.iter().any(|x| txs.contains(x))));
                 (moved, resent)
             })?;
             voided = moved > 0 || !resent;
@@ -733,73 +931,138 @@ pub fn settle<E: End>(end: &E, h: Heard) -> Result<Landed, E::Fail> {
         }
         _ => (0, keep::read(end)?),
     };
-    Ok(Landed { tx, chain, confirmed, receipt, sent: ids.len(), dropped, queue: queue.items, gas, calldata, stuck, voided, waited })
+    Ok(Landed { tx, chain, confirmed, receipt, sent: ids.len(), dropped, queue: queue.items, gas, calldata, stuck, voided, waited, kept })
 }
 
-/// What becomes of a batch no node holds ([`unheld`]).
+pub fn landed_facts<F: Facts>(facts: &F, h: &mut Heard) {
+    if let (Receipt::Included { status: 1, block }, Some(l)) = (&h.receipt, &h.landing) {
+        h.kept = land(facts, h.chain, l, *block);
+    }
+}
+
+fn land<F: Facts>(facts: &F, chain: u64, l: &Landing, block: u64) -> Option<Kept> {
+    let eps: Vec<Endpoint> = l.urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let senders = vec![zikaron::hexfmt::encode(&l.from)];
+    let registry = zikaron::hexfmt::encode(&l.registry);
+    let w = zikaron_glue::basis::Window { chain, registries: std::slice::from_ref(&registry), from_block: block, to_block: block, senders: &senders };
+    match crate::agree::scan(&eps, &zikaron::json::canon_bytes(&zikaron_glue::basis::basis_of(&w)), facts) {
+        Ok(crate::agree::Scan::Basis(a)) => Some(Kept { anchors: a.fragment.member("anchors").and_then(zikaron::json::Value::as_arr).cloned().unwrap_or_default(), single_source: a.single_source }),
+        _ => None,
+    }
+}
+
 enum Unheld {
-    /// Its nonce is used on chain and none of its transactions was included: void, back in the queue.
     Void,
-    /// Its nonce is unused: the batch as recorded may be sent again (the offer).
     Again(Stuck),
-    /// Not decided (on-chain nonce unread, or a receipt found on re-asking): keep waiting.
     Wait,
+    Unserved(Stuck),
 }
 
-/// Judges a batch whose transactions no node holds by comparing the sending account's on-chain nonce with the
-/// batch's own (`nonce`, recorded at signing; a batch held without one takes the account's next nonce, and is
-/// offered again rather than voided on a guess):
-/// - **used** (every answering node's nonce is past it): each transaction's receipt is asked once more (a node
-///   past the nonce has the block, and the receipt if it was this batch's); if all are "not yet" the batch is
-///   void, otherwise it waits.
-/// - **unused**: the batch as recorded here (its entries, the registry call over them, at its nonce) is offered
-///   again at the current price ([`again_of`]).
-///
-/// The rule is the anchoring crate's (`zikaron_anchor::send::unheld`, also used by the command line's `anchor`
-/// on a rerun); this side supplies the queries (every node serving the chain).
 #[allow(clippy::too_many_arguments)]
-fn unheld(urls: &[NodeAddr], chain: u64, txs: &[String], ids: &[String], nonce: Option<u64>, who: Sender, refs: &mut [&mut dyn rpc::Endpoint]) -> Unheld {
-    let on_chain = chain_nonce(urls, chain, &who.from);
-    let mine = nonce.or(on_chain).unwrap_or_default();
-    let none_included = || {
-        txs.iter().all(|t| {
-            let h: Option<[u8; 32]> = zikaron::hexfmt::decode(t).and_then(|b| b.try_into().ok());
-            h.is_some_and(|h| matches!(zikaron_anchor::send::confirm_each(refs, &h, std::time::Duration::ZERO, &[]), Confirm::NotYet))
-        })
+fn unheld(urls: &[NodeAddr], chain: u64, txs: &[String], ids: &[String], nonce: Option<u64>, who: Sender, carried: Option<&[u8]>) -> Unheld {
+    let (on_chain, none) = match void_read(urls, chain, &who.from, txs, nonce) {
+        Ok(read) => read,
+        Err(code) if code == Code::NoEndpoint || code.another_chain() => {
+            let why = Unpriced::of(urls, Err(code));
+            return match Queue::hashes(ids) {
+                Ok(h) => Unheld::Unserved(Stuck { txs: txs.to_vec(), chain, from: who.from, nonce: nonce.unwrap_or_default(), to: who.registry, input: calldata_of(&h, carried), sent: Fees::fallback(), offer: Offer::PriceUnread, left: Vec::new(), unpriced: Some(why) }),
+                Err(_) => Unheld::Wait,
+            };
+        }
+        Err(_) => (None, false),
     };
-    match zikaron_anchor::send::unheld(on_chain, mine, none_included) {
+    let mine = nonce.or(on_chain).unwrap_or_default();
+    match zikaron_anchor::send::unheld(on_chain, mine, || none) {
         zikaron_anchor::send::Unheld::Void => Unheld::Void,
         zikaron_anchor::send::Unheld::Wait => Unheld::Wait,
-        zikaron_anchor::send::Unheld::Unused => match again_of(urls, chain, txs, ids, mine, who) {
+        zikaron_anchor::send::Unheld::Unused => match again_of(urls, chain, txs, ids, mine, who, carried) {
             Some(s) => Unheld::Again(s),
             None => Unheld::Wait,
         },
     }
 }
 
-/// The sending account's nonce at the `latest` block, the lowest among nodes serving this chain (so a lagging
-/// node never makes a batch look void). `None` when no node answers.
-fn chain_nonce(urls: &[NodeAddr], chain: u64, from: &[u8; 20]) -> Option<u64> {
-    let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
-    let (eps, _) = node::serving(&eps, chain).ok()?;
-    let nodes: Vec<(String, Box<dyn rpc::Endpoint + Send>)> = eps.iter().filter_map(|e| node::endpoint_at(e.url.for_transport()).map(|h| (e.url.for_transport().to_string(), h))).collect();
-    let params = Value::Arr(vec![Value::Str(zikaron::hexfmt::encode(from)), Value::Str("latest".into())]);
-    zikaron_anchor::endpoints::ask_each(nodes, "eth_getTransactionCount", &params)
-        .into_iter()
-        .filter_map(|(_, got)| match got.ok().and_then(|w| zikaron_anchor::wire::to_core(&w)) {
-            Some(Value::Str(x)) => node::wei(&x).and_then(|n| u64::try_from(n).ok()),
-            _ => None,
-        })
-        .min()
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VoidSaid {
+    Nonce(u64),
+    Past(u64, Option<bool>),
+    Unread,
 }
 
-/// Offers a batch no node holds again, as recorded here: the registry call over its entries, to the registry,
-/// from the account, at `nonce`, with the current price and a fresh gas estimate (nothing is replaced, so no
-/// bump over the last). Once resent [`RESENDS_MAX`] times nothing more is offered; if the price or gas cannot be
-/// read, nothing is offered and the wait goes on.
-fn again_of(urls: &[NodeAddr], chain: u64, txs: &[String], ids: &[String], nonce: u64, who: Sender) -> Option<Stuck> {
-    let input = zikaron_anchor::send::registry_calldata(&Queue::hashes(ids).ok()?);
+fn void_read(urls: &[NodeAddr], chain: u64, from: &[u8; 20], txs: &[String], mine: Option<u64>) -> Result<(Option<u64>, bool), Code> {
+    let (urls, _) = serving_urls(urls, chain).map_err(|t| t.code)?;
+    let params = Value::Arr(vec![Value::Str(zikaron::hexfmt::encode(from)), Value::Str("latest".into())]);
+    let txs = txs.to_vec();
+    let names = urls.clone();
+    let got = node::each_node(
+        &urls,
+        &node::endpoint_at,
+        move |_, ep| {
+            let Some(ep) = ep else { return VoidSaid::Unread };
+            let n = ep.call_within("eth_getTransactionCount", &params, node::ONE_ASK).ok().and_then(|w| match zikaron_anchor::wire::to_core(&w) {
+                Some(Value::Str(x)) => node::wei(&x).and_then(|n| u64::try_from(n).ok()),
+                _ => None,
+            });
+            match (n, mine) {
+                (None, _) => VoidSaid::Unread,
+                (Some(n), Some(m)) if n > m => {
+                    let mut none = Some(true);
+                    for t in &txs {
+                        match ep.call("eth_getTransactionReceipt", &Value::Arr(vec![Value::Str(t.clone())])) {
+                            Ok(w) if w.is_null() => {}
+                            Ok(_) => {
+                                none = Some(false);
+                                break;
+                            }
+                            Err(_) => none = None,
+                        }
+                    }
+                    VoidSaid::Past(n, none)
+                }
+                (Some(n), _) => VoidSaid::Nonce(n),
+            }
+        },
+        |view| {
+            view.iter().any(|v| matches!(v, Some(VoidSaid::Past(_, Some(false)))))
+                || node::two_places(&names, view, |v| matches!(v, VoidSaid::Past(_, Some(true))))
+                || node::two_places(&names, view, |v| matches!(v, VoidSaid::Nonce(_)))
+        },
+    );
+    let said: Vec<(&NodeAddr, VoidSaid)> = urls.iter().zip(got).filter_map(|(u, v)| v.map(|v| (u, v))).collect();
+    Ok(void_judged(&said))
+}
+
+fn void_judged(said: &[(&NodeAddr, VoidSaid)]) -> (Option<u64>, bool) {
+    let nonce_of = |v: &VoidSaid| match v {
+        VoidSaid::Nonce(n) | VoidSaid::Past(n, _) => Some(*n),
+        VoidSaid::Unread => None,
+    };
+    let places = |pick: &dyn Fn(&VoidSaid) -> bool| -> Vec<&(&NodeAddr, VoidSaid)> { said.iter().filter(|(_, v)| pick(v)).collect() };
+    let two = |xs: &[&(&NodeAddr, VoidSaid)]| zikaron_anchor::endpoints::distinct_places(xs.iter().map(|(u, _)| u.for_transport())) >= 2;
+    if let Some((_, v)) = said.iter().find(|(_, v)| matches!(v, VoidSaid::Past(_, Some(false)))) {
+        return (nonce_of(v), false);
+    }
+    let gone = places(&|v| matches!(v, VoidSaid::Past(_, Some(true))));
+    if two(&gone) {
+        return (gone.iter().filter_map(|(_, v)| nonce_of(v)).min(), true);
+    }
+    let short = places(&|v| matches!(v, VoidSaid::Nonce(_)));
+    if two(&short) {
+        return (short.iter().filter_map(|(_, v)| nonce_of(v)).min(), false);
+    }
+    let low = said.iter().filter_map(|(_, v)| nonce_of(v)).min();
+    let none = said.iter().filter(|(_, v)| nonce_of(v).is_some()).all(|(_, v)| matches!(v, VoidSaid::Past(_, Some(true))));
+    (low, low.is_some() && none)
+}
+
+fn again_of(urls: &[NodeAddr], chain: u64, txs: &[String], ids: &[String], nonce: u64, who: Sender, carried: Option<&[u8]>) -> Option<Stuck> {
+    let _read = node::OneRead::open();
+    let input = calldata_of(&Queue::hashes(ids).ok()?, carried);
     let eps: Vec<Endpoint> = urls.iter().map(|u| Endpoint::at(chain, u.clone())).collect();
+    let (eps, serving) = match serving_eps(&eps, chain) {
+        Ok((kept, _)) => (kept, Ok(())),
+        Err(t) => (Vec::new(), Err(t.code)),
+    };
     let now = node::fee_reading(&eps, chain);
     let gas = zikaron_anchor::send::estimate_gas(
         || node::head_block(&eps, chain).map(|(height, _)| height).map_err(|t| (t, false)),
@@ -817,7 +1080,8 @@ fn again_of(urls: &[NodeAddr], chain: u64, txs: &[String], ids: &[String], nonce
         Offer::Unheld { fees, .. } => *fees,
         _ => now.fees,
     };
-    Some(Stuck { txs: txs.to_vec(), chain, from: who.from, nonce, to: who.registry, input, sent, offer, left: now.left })
+    let unpriced = (offer == Offer::PriceUnread).then(|| Unpriced::of(urls, serving));
+    Some(Stuck { txs: txs.to_vec(), chain, from: who.from, nonce, to: who.registry, input, sent, offer, left: now.left, unpriced })
 }
 
 fn text_member(v: &Value, k: &str) -> Option<String> {
@@ -830,8 +1094,6 @@ fn text_member(v: &Value, k: &str) -> Option<String> {
     }
 }
 
-/// A batch not included by the end of a wait: its last transaction as the chain holds it (`held`) and what can
-/// be done now. `None` if the transaction's fields cannot be read (nothing is offered then).
 fn stuck_of(urls: &[NodeAddr], chain: u64, txs: &[String], held: &Value) -> Option<Stuck> {
     let qty = |k: &str| text_member(held, k).as_deref().and_then(node::wei).and_then(|n| u64::try_from(n).ok());
     let addr = |k: &str| text_member(held, k).as_deref().and_then(zikaron::hexfmt::decode).and_then(|b| <[u8; 20]>::try_from(b).ok());
@@ -850,37 +1112,114 @@ fn stuck_of(urls: &[NodeAddr], chain: u64, txs: &[String], held: &Value) -> Opti
         };
         (offer, now.left)
     };
-    Some(Stuck { txs: txs.to_vec(), chain, from, nonce, to, input, sent, offer, left })
+    let unpriced = (offer == Offer::PriceUnread).then(|| if !urls.is_empty() && left.len() == urls.len() { Unpriced::OtherChain } else { Unpriced::of(urls, Ok(())) });
+    Some(Stuck { txs: txs.to_vec(), chain, from, nonce, to, input, sent, offer, left, unpriced })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// What this home has out for a batch, one form per line: nothing out (`None`); one of the asked entries out
-    /// (that batch's transactions, chain and every entry awaiting them, asked or not); a resent batch (all its
-    /// transactions); another chain's batch with the same transactions is not the same batch.
+    fn local(answer: fn(&str) -> &'static str) -> NodeAddr {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", l.local_addr().expect("addr"));
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut s = s;
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    let body = loop {
+                        match s.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => raw.extend_from_slice(&buf[..n]),
+                        }
+                        let text = String::from_utf8_lossy(&raw).to_string();
+                        if let Some(i) = text.find("\r\n\r\n") {
+                            let len: usize = text[..i].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|n| n.trim().parse().ok())).unwrap_or(0);
+                            if raw.len() >= i + 4 + len {
+                                break text[i + 4..].to_string();
+                            }
+                        }
+                    };
+                    let method = body.split("\"method\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+                    let id = body.split("\"id\":").nth(1).and_then(|r| r.split([',', '}']).next()).unwrap_or("1").trim().to_string();
+                    let member = if method == "eth_chainId" { r#""result":"0x7a69""# } else { answer(&method) };
+                    let body = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",{member}}}");
+                    let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                });
+            }
+        });
+        NodeAddr::new(url)
+    }
+
+    #[test]
+    fn a_batch_is_held_by_none_only_on_every_nodes_word() {
+        let txs = vec!["0xa".to_string(), "0xb".to_string()];
+        assert_eq!(latest_held(&txs, |_| node::AsHeld::Nobody), node::AsHeld::Nobody);
+        assert_eq!(latest_held(&txs, |t| if t == "0xa" { node::AsHeld::Unread } else { node::AsHeld::Nobody }), node::AsHeld::Unread);
+        assert_eq!(latest_held(&txs, |t| if t == "0xa" { node::AsHeld::Held(Value::Null) } else { node::AsHeld::Unread }), node::AsHeld::Held(Value::Null));
+    }
+
+    #[test]
+    fn a_void_reads_only_the_nodes_whose_nonce_was_read_past_it() {
+        crate::node::forget_serving();
+        let past_silent = local(|m| if m == "eth_getTransactionCount" { r#""result":"0x6""# } else { r#""error":{"code":-32000,"message":"busy"}"# });
+        let behind = local(|m| if m == "eth_getTransactionCount" { r#""error":{"code":-32000,"message":"busy"}"# } else { r#""result":null"# });
+        let past_not_yet = local(|m| if m == "eth_getTransactionCount" { r#""result":"0x6""# } else { r#""result":null"# });
+        let who = Sender { from: [0x22; 20], registry: [0x33; 20] };
+        let txs = vec![format!("0x{}", "ab".repeat(32))];
+        let ids = vec![format!("0x{}", "cd".repeat(32))];
+        assert!(matches!(unheld(&[past_silent, behind.clone()], 31337, &txs, &ids, Some(5), who, None), Unheld::Wait), "the node past it silent: it waits");
+        assert!(matches!(unheld(&[past_not_yet, behind], 31337, &txs, &ids, Some(5), who, None), Unheld::Void), "every node past it says not yet: void");
+    }
+
+    #[test]
+    fn a_batch_goes_only_at_a_later_block_time() {
+        assert_eq!(fence_open(100, &[(1, 100)]), Err(100), "the same second");
+        assert_eq!(fence_open(101, &[(1, 100)]), Ok(()));
+        assert_eq!(fence_open(0, &[]), Ok(()), "nothing before");
+        assert_eq!(fence_open(150, &[(1, 100), (42161, 150)]), Err(150), "the latest on any chain");
+        assert_eq!(fence_open(u64::MAX, &[(1, u64::MAX - 1)]), Ok(()));
+        assert_eq!(fence_open(u64::MAX, &[(1, u64::MAX)]), Err(u64::MAX));
+        zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
+        let mut heads = [100u64, 100, 101].into_iter();
+        assert_eq!(await_fence(&[(1, 100)], || Ok::<u64, ()>(heads.next().unwrap_or(100))), Ok(()), "opens once the head moves on");
+        let mut asks = 0usize;
+        assert_eq!(
+            await_fence(&[(1, 100)], || {
+                asks += 1;
+                Ok::<u64, ()>(100)
+            }),
+            Err(Fenced::TooEarly { head_time: 100, after: 100 })
+        );
+        assert_eq!(asks, 1 + FENCE_PAUSES.len(), "bounded");
+        assert_eq!(await_fence(&[(1, 100)], || Err::<u64, &str>("down")), Err(Fenced::Unread("down")));
+        assert!(FENCE_PAUSES.iter().sum::<std::time::Duration>() >= std::time::Duration::from_secs(24), "two blocks of the slowest shipped chain");
+    }
+
     #[test]
     fn what_a_home_has_out_is_read_by_the_transactions_awaited() {
         let id = |n: u8| zikaron::hexfmt::encode(&[n; 32]);
         let tx = |n: u8| zikaron::hexfmt::encode(&[0xf0 | n; 32]);
-        let mut q = Queue::default();
-        for n in 1..=5 {
+        let mut q = Queue { chain: 7, ..Queue::default() };
+        for n in [1, 2, 3, 5] {
             let _ = q.push(&id(n), n as u64);
         }
+        let _ = q.push_on(&id(4), 8, 4);
         assert_eq!(out_for(&q, &[id(1), id(2)]), None, "nothing out");
         q.mark(&[id(2), id(3)], Step::Submitted { tx: tx(1), chain: 7, nonce: Some(0) });
-        q.mark(&[id(4)], Step::Submitted { tx: tx(1), chain: 8, nonce: Some(0) });
+        q.mark_on(&[id(4)], 8, Step::Submitted { tx: tx(1), chain: 8, nonce: Some(0) });
         assert_eq!(out_for(&q, &[id(1), id(2)]), Some((vec![tx(1)], 7, vec![id(2), id(3)])), "the batch out, every entry of it");
         q.mark(&[id(5)], Step::Resent { txs: vec![tx(2), tx(3)], chain: 7, nonce: Some(1) });
         assert_eq!(out_for(&q, &[id(5)]), Some((vec![tx(2), tx(3)], 7, vec![id(5)])), "a resent batch, all its transactions");
-        assert_eq!(out_for(&q, &[id(4)]), Some((vec![tx(1)], 8, vec![id(4)])), "the same transaction on another chain is another batch");
+        assert_eq!(out_on(&q, &[id(4)], 8), Some((vec![tx(1)], 8, vec![id(4)])), "the same transaction on another chain is another batch");
+        assert_eq!(out_for(&q, &[id(4)]), None, "not out on the anchoring chain");
     }
 
-    /// A queue held in memory, for the settling stage.
     struct Mem(std::cell::RefCell<Queue>);
 
-    /// The memory end words a sealed-layer trouble as the sender's own refusal, its code's spelling the evidence.
     impl From<zikaron_seal::Trouble> for Trouble {
         fn from(t: zikaron_seal::Trouble) -> Trouble {
             Trouble::text(Code::SettingsShape, format!("{:?} {}", t.code, t.tail))
@@ -902,8 +1241,8 @@ mod tests {
         fn pile(&self) -> Result<Vec<Vec<u8>>, Trouble> {
             Ok(Vec::new())
         }
-        fn behind(&self, missing: usize) -> Trouble {
-            Trouble::text(Code::NewerElsewhere, missing.to_string())
+        fn behind(&self, lacks: &[String]) -> Trouble {
+            Trouble::text(Code::NewerElsewhere, lacks.len().to_string())
         }
         fn unread(&self, f: Trouble) -> Trouble {
             f
@@ -911,15 +1250,21 @@ mod tests {
         fn mark(&self) -> Result<Option<zikaron_seal::unfetched::State>, Trouble> {
             Ok(None)
         }
+        fn lift(&self) -> Result<(), Trouble> {
+            Ok(())
+        }
         fn machine(&self) -> Result<std::path::PathBuf, Trouble> {
             Ok(std::path::PathBuf::new())
         }
     }
 
-    /// Settling reads the queue anew and moves only entries still awaiting the batch heard about: included, those
-    /// awaiting a set holding the included transaction leave (one another sender settled already, or one waiting
-    /// on another transaction, stays as it is); void and reverted move only entries awaiting exactly these
-    /// transactions; not yet writes nothing.
+    impl Facts for Mem {
+        fn known(&self) -> zikaron_anchor::scan::Known {
+            zikaron_anchor::scan::Known::default()
+        }
+        fn add(&self, _runs: &[(Vec<u64>, zikaron_anchor::scan::Sightings)], _thin: &[u64]) {}
+    }
+
     #[test]
     fn settling_moves_only_what_still_awaits_its_batch() {
         let id = |n: u8| zikaron::hexfmt::encode(&[n; 32]);
@@ -936,9 +1281,11 @@ mod tests {
             stuck: None,
             voided,
             waited: 0,
+            landing: None,
+            kept: None,
         };
         let fresh = || {
-            let mut q = Queue::default();
+            let mut q = Queue { chain: 7, ..Queue::default() };
             for n in 1..=4 {
                 let _ = q.push(&id(n), n as u64);
             }
@@ -963,13 +1310,10 @@ mod tests {
         assert!(q.step_of(&id(3)).is_some_and(Step::in_flight) && q.step_of(&id(4)).is_some_and(Step::in_flight), "others stay in flight");
         assert!(l.voided, "entries went back: answered as void");
         drop(q);
-        // Void judged on transactions none of these entries awaits any more (another sender resent them, maybe
-        // into a block): nothing moves, and it is not answered as void.
         let m = fresh();
         let l = settle(&m, heard(Receipt::Void, true, vec![id(3)])).expect("settled");
         assert!(m.0.borrow().step_of(&id(3)).is_some_and(Step::in_flight), "a resent batch stays as it is");
         assert!(!l.voided, "no entry went back: no void of theirs");
-        // A second wait on the same batch, settling after the first moved its entries back: still void.
         let m = fresh();
         let first = settle(&m, heard(Receipt::Void, true, all.clone())).expect("settled");
         let second = settle(&m, heard(Receipt::Void, true, vec![id(1), id(2)])).expect("settled again");
@@ -984,8 +1328,6 @@ mod tests {
         assert_eq!(m.0.borrow().to_bytes(), before, "not yet: nothing written");
     }
 
-    /// The balance gate's comparison at its edges: nothing needed and nothing held passes; exactly enough passes;
-    /// one wei short is refused with both numbers; the largest amounts compare whole.
     #[test]
     fn the_balance_gate_compares_at_its_edges() {
         assert!(funds_check(0, 0).is_ok());
@@ -993,5 +1335,85 @@ mod tests {
         assert_eq!(funds_check(10, 9), Err(Trouble::new(Code::InsufficientFunds, Why::Funds { need: 10, have: 9 })));
         assert!(funds_check(u128::MAX, u128::MAX).is_ok());
         assert_eq!(funds_check(u128::MAX, u128::MAX - 1).map_err(|t| t.code), Err(Code::InsufficientFunds));
+    }
+
+    fn rpc_node(answer: fn(&str) -> Option<&'static str>) -> NodeAddr {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", l.local_addr().expect("addr"));
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                let body = loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break None,
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                    }
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(i) = text.find("\r\n\r\n") {
+                        let len: usize = text[..i].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|n| n.trim().parse().ok())).unwrap_or(0);
+                        if raw.len() >= i + 4 + len {
+                            break Some(text[i + 4..].to_string());
+                        }
+                    }
+                };
+                let Some(body) = body else { continue };
+                let method = body.split("\"method\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+                let id = body.split("\"id\":").nth(1).and_then(|r| r.split([',', '}']).next()).unwrap_or("1").trim().to_string();
+                let reply = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{}}}", answer(&method).unwrap_or("null"));
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes());
+            }
+        });
+        NodeAddr::new(url)
+    }
+
+    #[test]
+    fn a_carried_entry_offered_again_still_carries_its_bytes() {
+        let who = Sender { from: [0x22; 20], registry: [0x11; 20] };
+        let entry = b"{\"entryType\":\"zikaron.face/1\"}".to_vec();
+        let ids = vec![zikaron::hexfmt::encode(&zikaron::cryptox::sha256(&entry))];
+        let tx = format!("0x{}", "44".repeat(32));
+        let carried = again_of(&[], 31337, std::slice::from_ref(&tx), &ids, 4, who, Some(&entry)).expect("a stuck batch");
+        assert_eq!(carried.input, zikaron_anchor::send::carried_calldata(&entry));
+        let plain = again_of(&[], 31337, std::slice::from_ref(&tx), &ids, 4, who, None).expect("a stuck batch");
+        assert_eq!(plain.input, zikaron_anchor::send::registry_calldata(&[zikaron::cryptox::sha256(&entry)]));
+    }
+
+    #[test]
+    fn a_stuck_batch_without_a_price_says_whether_no_node_of_the_chain_every_node_elsewhere_or_the_price_unread() {
+        let who = Sender { from: [0x22; 20], registry: [0x11; 20] };
+        let id = format!("0x{}", "33".repeat(32));
+        let tx = format!("0x{}", "44".repeat(32));
+        let ids = vec![id.clone()];
+        let none = again_of(&[], 31337, std::slice::from_ref(&tx), &ids, 4, who, None).expect("a stuck batch");
+        assert_eq!((none.offer.clone(), none.unpriced), (Offer::PriceUnread, Some(Unpriced::NoNode)));
+        let elsewhere = rpc_node(|m| (m == "eth_chainId").then_some("\"0x1\""));
+        let h = wait(vec![elsewhere], 31337, vec![tx.clone()], ids.clone(), None, std::time::Duration::ZERO, &[], Some(who), Some(4), None).expect("heard");
+        let s = h.stuck.expect("a stuck batch");
+        assert_eq!((s.offer, s.unpriced, h.receipt), (Offer::PriceUnread, Some(Unpriced::OtherChain), Receipt::NotYet));
+        let unread = rpc_node(|m| match m {
+            "eth_chainId" => Some("\"0x7a69\""),
+            "eth_getTransactionCount" => Some("\"0x4\""),
+            "eth_blockNumber" => Some("\"0x40\""),
+            _ => None,
+        });
+        let h = wait(vec![unread], 31337, vec![tx], ids, None, std::time::Duration::ZERO, &[], Some(who), Some(4), None).expect("heard");
+        let s = h.stuck.expect("a stuck batch");
+        assert_eq!((s.offer, s.unpriced, h.receipt), (Offer::PriceUnread, Some(Unpriced::Unread), Receipt::Unused));
+    }
+
+    #[test]
+    fn a_batchs_void_takes_two_places_and_a_receipt_anywhere_stops_it() {
+        let (a, b, c) = (NodeAddr::new("https://a.test"), NodeAddr::new("https://b.test"), NodeAddr::new("https://c.test"));
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true))), (&b, VoidSaid::Past(8, Some(true)))]), (Some(8), true), "two places gone");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true))), (&b, VoidSaid::Past(9, Some(false)))]), (Some(9), false), "a receipt there");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Nonce(5)), (&c, VoidSaid::Nonce(4))]), (Some(4), false), "two not past");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true))), (&b, VoidSaid::Nonce(5)), (&c, VoidSaid::Unread)]), (Some(5), false), "fewer than two alike: the lowest");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true))), (&b, VoidSaid::Past(9, None))]), (Some(9), false), "a receipt question unanswered");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true)))]), (Some(9), true), "a table of one: as it says");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Unread), (&b, VoidSaid::Unread)]), (None, false), "nothing read");
+        let a2 = NodeAddr::new("https://a.test");
+        assert_eq!(void_judged(&[(&a, VoidSaid::Past(9, Some(true))), (&a2, VoidSaid::Past(9, Some(true))), (&b, VoidSaid::Nonce(5))]), (Some(5), false), "one place twice is one");
     }
 }

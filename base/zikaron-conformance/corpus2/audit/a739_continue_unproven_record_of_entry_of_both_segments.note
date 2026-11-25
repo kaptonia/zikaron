@@ -1,0 +1,1 @@
+sec 8.6 item 15 rule 2 with sec 12.6: the annotation anchored before the cut is a byte string of both segments; its late UNPROVEN record is a new record over bytes in hand and moves no label; GAPS comes from the old report's MISSING over the same bytes.

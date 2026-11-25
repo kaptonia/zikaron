@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s038_key_upper_prefix.bin",
+ "note": "HARNESS: the private key spelled with 0X and uppercase digits",
+ "predicted": {
+  "digest": "0x48ff1007c72e5fb702443dd4726d30f320502b69f20817eee43ec2fa570184dd",
+  "presig": "0x6fdd99f3d57e0c7bf2ec5a1746b71e8fdc18d30ddb92985a7c54c371b30cfa0b",
+  "sig": "0xfc10639e555c3c0b3b33a976b0d19a9120e587bf1e92ed8f7148f4cb3a6efe4e3999a49ed49cea6d02749323a72659dc8728f7b5e33ee12b66c55c6a0bb405dc1c",
+  "signer": "0x7ec30184c8170e680fcd6d8a29d61b8b8d42752b"
+ },
+ "privkey": "0X0A9335949E309BF0372AE6F3D58912A1B8403DA24A2B66B0458C0B87C9F3F977"
+}

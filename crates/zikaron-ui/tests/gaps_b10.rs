@@ -1,12 +1,6 @@
-//! Widget-library edge cases, read in headless egui frames: a menu key pressed again while its menu is open,
-//! Esc on a key's menu, a pill cut short showing its whole words on hover, and a table's type tag wider than
-//! its cap elided and whole on hover.
-
 use zikaron_ui::egui::{self, pos2, vec2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::{layer, mark, menu, table};
 
-/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
-/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
 fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
     top.set_clip_rect(ctx.content_rect());
@@ -27,11 +21,9 @@ impl Frames {
         Frames { ctx, t: 0.0 }
     }
 
-    /// One frame `dt` after the last, with `events`; overlays that left fade at its end, as in the window.
     fn run(&mut self, dt: f64, events: Vec<Event>, mut ui: impl FnMut(&egui::Context)) -> egui::FullOutput {
         self.t += dt;
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
-        // Two pixels a point, as the window has on the screens it ships to (layout rounds to pixels).
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
         self.ctx.run_ui(input, |root| {
             let ctx = &root.ctx().clone();
@@ -53,7 +45,6 @@ fn esc_key() -> Vec<Event> {
     vec![Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]
 }
 
-/// Every text drawn in a frame, with where.
 fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
     out.shapes
         .iter()
@@ -68,14 +59,12 @@ fn rows() -> Vec<menu::Item<'static>> {
     vec![menu::row("一"), menu::row("二"), menu::row("三")]
 }
 
-/// Which of the two menu keys a page draws.
 #[derive(Clone, Copy, Debug)]
 enum Anchor {
     MenuKey,
     PlainKey,
 }
 
-/// A page with one menu key at a fixed place. Returns the key's rect and the menu's id (as the key makes it).
 fn page(ctx: &egui::Context, which: Anchor) -> (Rect, egui::Id) {
     let mut at = (Rect::NOTHING, egui::Id::NULL);
     central(ctx, egui::CentralPanel::default(), |ui| {
@@ -94,7 +83,6 @@ fn page(ctx: &egui::Context, which: Anchor) -> (Rect, egui::Id) {
     at
 }
 
-/// Open the key's menu by pressing the key, and let it settle. Returns the key's rect and the menu's id.
 fn opened(f: &mut Frames, which: Anchor) -> (Rect, egui::Id) {
     let mut at = (Rect::NOTHING, egui::Id::NULL);
     for _ in 0..3 {
@@ -110,9 +98,6 @@ fn opened(f: &mut Frames, which: Anchor) -> (Rect, egui::Id) {
     at
 }
 
-/// Pressing a menu's own key while the menu is open: the guard takes the press, the menu closes and stays
-/// closed (the press neither reopens it nor clicks the key through). Both keys, with press and release in one
-/// frame and in two.
 #[test]
 fn pressing_the_menus_own_key_while_it_is_open_closes_it_and_it_stays_closed() {
     for which in [Anchor::MenuKey, Anchor::PlainKey] {
@@ -143,7 +128,6 @@ fn pressing_the_menus_own_key_while_it_is_open_closes_it_and_it_stays_closed() {
     }
 }
 
-/// Esc closes an open key menu (both keys), and it stays closed.
 #[test]
 fn esc_closes_an_open_key_menu() {
     for which in [Anchor::MenuKey, Anchor::PlainKey] {
@@ -162,8 +146,6 @@ fn esc_closes_an_open_key_menu() {
     }
 }
 
-/// A pill cut short in too little room shows its whole words as a hover tip; before the hover the whole
-/// words are drawn nowhere.
 #[test]
 fn a_pill_cut_short_shows_its_whole_words_on_hover() {
     let words = "等待节点确认收据中";
@@ -189,8 +171,6 @@ fn a_pill_cut_short_shows_its_whole_words_on_hover() {
     assert!(all.iter().any(|s| s == words), "the hover tip carries the whole words: {all:?}");
 }
 
-/// A type tag wider than the type column's cap is drawn elided (shorter than the tag, ending in "…") and
-/// shows the whole tag as a hover tip.
 #[test]
 fn a_table_tag_past_its_cap_is_elided_and_whole_on_hover() {
     let tag = "一枚远远宽过类型列上限的类型标签文字";

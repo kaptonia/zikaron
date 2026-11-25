@@ -1,7 +1,5 @@
 use super::*;
 
-/// The configured audit basis (chain, registry, start block, senders). If a setting is missing it is refused
-/// by name, never querying the chain with a partial basis.
 pub(super) fn ground(shell: &Shell) -> Result<crate::auditx::Ground, crate::fault::Fault> {
     let chain = shell.settings.chain_id.ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoChainId, String::new())
@@ -9,20 +7,33 @@ pub(super) fn ground(shell: &Shell) -> Result<crate::auditx::Ground, crate::faul
     let registry = shell.settings.registry.ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new())
     })?;
-    let home = shell.home.as_ref().ok_or_else(|| {
+    shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    let pile = home
-        .ledger()?
-        .pile()?;
     Ok(crate::auditx::Ground {
         chain,
         registry,
         from_block: shell.settings.from_block,
-        // Placeholder: the background pass raises this to the chain's latest block (see `run_audit`).
         to_block: shell.settings.from_block,
-        senders: crate::auditx::senders_of(&pile.items),
+        senders: Vec::new(),
+        earlier: shell
+            .basis_chains()
+            .into_iter()
+            .skip(1)
+            .map(|(chain, registry, from_block)| crate::auditx::Window { chain, registry, from_block, to_block: from_block })
+            .collect(),
     })
+}
+
+pub(super) fn ground_read(shell: &Shell) -> Result<crate::auditx::Ground, crate::fault::Fault> {
+    let g = ground(shell)?;
+    let pile = shell.home.as_ref().ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?.ledger()?.pile()?;
+    Ok(with_senders(g, &pile.items))
+}
+
+fn with_senders(mut g: crate::auditx::Ground, items: &[Vec<u8>]) -> crate::auditx::Ground {
+    g.senders = crate::auditx::senders_of(items);
+    g
 }
 
 pub(super) fn start_audit(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
@@ -31,7 +42,7 @@ pub(super) fn start_audit(shell: &mut Shell) -> Result<Spawned, crate::fault::Fa
     if eps.is_empty() {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::NoEndpoint,
-            crate::lang::t(crate::lang::Key::Tail021).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail021).to_string()),
         ));
     }
     let root = shell
@@ -39,9 +50,6 @@ pub(super) fn start_audit(shell: &mut Shell) -> Result<Spawned, crate::fault::Fa
         .as_ref()
         .map(|h| h.root().to_path_buf())
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
-    // Record the mark only when a pass actually started. The mark says this version of the ledger was audited;
-    // setting it while an older pass is still running would vouch for that pass's stale report, and the lights
-    // would not refresh after it lands.
     let spawned = shell.tasks.spawn(Kind::Audit, move || run_audit(&root, &eps, g));
     if matches!(spawned, Spawned::Started) {
         shell.audit_asked = Some(shell.book_mark);
@@ -49,20 +57,32 @@ pub(super) fn start_audit(shell: &mut Shell) -> Result<Spawned, crate::fault::Fa
     Ok(spawned)
 }
 
-/// Runs one self-audit on a background thread.
 pub(super) fn run_audit(
     root: &std::path::Path,
     eps: &[crate::chainx::Endpoint],
     mut g: crate::auditx::Ground,
 ) -> Result<Done, crate::fault::Fault> {
-    // `to_block` is read from the chain now (a fixed number would be wrong for some chains): the lowest height
-    // across the chain's endpoints (`head_block`). Endpoints may be a block or two apart and all have reached
-    // the lowest, so the scan still requires agreement without treating a node one block ahead as a
-    // disagreement.
     let (n, _) = crate::chainx::head_block(eps, g.chain)?;
     g.to_block = n.max(g.from_block);
+    let mut unread: Vec<String> = Vec::new();
+    g.earlier.retain_mut(|w| match crate::chainx::head_block(eps, w.chain) {
+        Ok((h, _)) => {
+            w.to_block = h.max(w.from_block);
+            true
+        }
+        Err(f) => {
+            unread.push(format!("chainId={} {}", w.chain, f.evidence()));
+            false
+        }
+    });
     let home = crate::home::Home::open(root)?;
-    let v = crate::auditx::online(&home, eps, &g)?;
+    let pile = home.ledger()?.pile()?;
+    if g.senders.is_empty() {
+        g = with_senders(g, &pile.items);
+    }
+    let mut v = crate::auditx::online(&home, eps, &g)?;
+    v.unanswered.extend(unread);
+    crate::sendx::keep_noticed(eps, &pile.items);
     Ok(Done::Audited {
         broken: v.broken(),
         label: v.label,
@@ -70,10 +90,187 @@ pub(super) fn run_audit(
         entries: v.entries,
         report: v.report,
         unanswered: v.unanswered,
+        unproven: v.unproven,
         asked: v.asked,
         single_source: v.single_source,
         fragment: v.fragment,
+        recounted: false,
     })
+}
+
+pub fn recount(shell: &mut Shell) -> bool {
+    if !shell.audit_stale() {
+        return false;
+    }
+    let Some(held) = shell.audit.clone() else { return false };
+    if held.nodes != shell.endpoints || held.fragment.member("anchors").is_none() {
+        return false;
+    }
+    let Ok(g) = ground(shell) else { return false };
+    let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return false };
+    let eps = shell.endpoints.clone();
+    let spawned = shell.tasks.spawn(Kind::Audit, move || {
+        let home = crate::home::Home::open(&root)?;
+        let pile = home.ledger()?.pile()?;
+        let g = with_senders(g, &pile.items);
+        if !same_basis(&held.fragment, &g) {
+            if eps.is_empty() {
+                return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail021).to_string())));
+            }
+            return run_audit(&root, &eps, g);
+        }
+        let v = crate::auditx::ask_from(&pile.items, &held.fragment, held.unanswered.clone(), held.asked, held.single_source)?;
+        Ok(Done::Audited {
+            broken: v.broken(),
+            label: v.label,
+            complete: v.complete,
+            entries: v.entries,
+            report: v.report,
+            unanswered: v.unanswered,
+            unproven: held.unproven.clone(),
+            asked: v.asked,
+            single_source: v.single_source,
+            fragment: v.fragment,
+            recounted: true,
+        })
+    });
+    if matches!(spawned, Spawned::Started) {
+        shell.audit_asked = Some(shell.book_mark);
+        return true;
+    }
+    false
+}
+
+fn same_basis(fragment: &zikaron::json::Value, g: &crate::auditx::Ground) -> bool {
+    use zikaron::json::Value;
+    let low = |v: &Value| -> Vec<String> {
+        let mut out: Vec<String> = match v {
+            Value::Arr(xs) => xs.iter().filter_map(Value::as_str).map(str::to_ascii_lowercase).collect(),
+            _ => Vec::new(),
+        };
+        out.sort();
+        out.dedup();
+        out
+    };
+    let mut read: Vec<(u64, u64, Vec<String>, Vec<String>)> = match fragment.member("basis").and_then(|b| b.member("chains")) {
+        Some(Value::Arr(cs)) => cs
+            .iter()
+            .filter_map(|c| match (c.member("chainId"), c.member("fromBlock")) {
+                (Some(Value::Int(id)), Some(Value::Int(from))) => Some((*id, *from, low(c.member("registries")?), low(c.member("senders")?))),
+                _ => None,
+            })
+            .collect(),
+        _ => return false,
+    };
+    let senders = low(&Value::Arr(g.senders.iter().map(|s| Value::Str(s.clone())).collect()));
+    let regs = |chain: u64, registry: &crate::key::Address| -> Vec<String> {
+        let mut out: Vec<String> = zikaron_anchor::revoke::registries(chain, &[registry.0]).iter().map(|r| zikaron::hexfmt::encode(r).to_ascii_lowercase()).collect();
+        out.sort();
+        out.dedup();
+        out
+    };
+    let mut now: Vec<(u64, u64, Vec<String>, Vec<String>)> = std::iter::once((g.chain, g.from_block, regs(g.chain, &g.registry), senders.clone()))
+        .chain(g.earlier.iter().map(|w| (w.chain, w.from_block, regs(w.chain, &w.registry), senders.clone())))
+        .collect();
+    read.sort();
+    now.sort();
+    read == now
+}
+
+pub fn merge_sent(shell: &mut Shell, chain: u64, tx: &str, block: u64, sent: usize, kept: Option<&zikaron_send::batch::Kept>) -> bool {
+    let Some(held) = shell.audit.clone() else { return false };
+    if held.nodes != shell.endpoints || held.fragment.member("anchors").is_none() || sent == 0 {
+        return false;
+    }
+    let Some(kept) = kept.filter(|k| held.single_source || !k.single_source).cloned() else { return false };
+    let Ok(g) = ground(shell) else { return false };
+    let (Some(from), Some(tx)) = (shell.anchor.map(|a| a.0), zikaron::hexfmt::decode(tx).and_then(|b| <[u8; 32]>::try_from(b).ok())) else { return false };
+    let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return false };
+    let eps = shell.endpoints.clone();
+    let spawned = shell.tasks.spawn(Kind::Audit, move || {
+        let home = crate::home::Home::open(&root)?;
+        let pile = home.ledger()?.pile()?;
+        let g = with_senders(g, &pile.items);
+        if !same_basis(&held.fragment, &g) {
+            return run_audit(&root, &eps, g);
+        }
+        let Some(fragment) = with_sent(&held.fragment, &kept.anchors, chain, &tx, block, &from, sent) else {
+            return run_audit(&root, &eps, g);
+        };
+        let v = crate::auditx::ask_from(&pile.items, &fragment, held.unanswered.clone(), held.asked, held.single_source)?;
+        Ok(Done::Audited {
+            broken: v.broken(),
+            label: v.label,
+            complete: v.complete,
+            entries: v.entries,
+            report: v.report,
+            unanswered: v.unanswered,
+            unproven: held.unproven.clone(),
+            asked: v.asked,
+            single_source: v.single_source,
+            fragment: v.fragment,
+            recounted: false,
+        })
+    });
+    if matches!(spawned, Spawned::Started) {
+        shell.audit_asked = Some(shell.book_mark);
+        return true;
+    }
+    false
+}
+
+fn with_sent(fragment: &zikaron::json::Value, read: &[zikaron::json::Value], chain: u64, tx: &[u8; 32], block: u64, from: &[u8; 20], sent: usize) -> Option<zikaron::json::Value> {
+    use zikaron::json::Value;
+    let (tx_hex, from_hex) = (zikaron::hexfmt::encode(tx), zikaron::hexfmt::encode(from));
+    let new: Vec<Value> = read
+        .iter()
+        .filter(|a| {
+            a.member("chainId").and_then(Value::as_int) == Some(chain)
+                && a.member("blockNumber").and_then(Value::as_int) == Some(block)
+                && a.member("tx").and_then(Value::as_str).is_some_and(|t| t.eq_ignore_ascii_case(&tx_hex))
+                && a.member("sender").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case(&from_hex))
+        })
+        .cloned()
+        .collect();
+    if new.len() != sent {
+        return None;
+    }
+    let Value::Obj(mut top) = fragment.clone() else { return None };
+    let sender = zikaron::hexfmt::encode(from).to_ascii_lowercase();
+    let mut reached = false;
+    for (k, v) in top.iter_mut() {
+        match (k.as_str(), v) {
+            ("anchors", Value::Arr(xs)) => {
+                for a in &new {
+                    if !xs.contains(a) {
+                        xs.push(a.clone());
+                    }
+                }
+            }
+            ("basis", Value::Obj(b)) => {
+                let Some((_, Value::Arr(chains))) = b.iter_mut().find(|(k, _)| k == "chains") else { return None };
+                let takes = |c: &Value| {
+                    matches!(c.member("chainId"), Some(Value::Int(id)) if *id == chain)
+                        && matches!(c.member("fromBlock"), Some(Value::Int(f)) if *f <= block)
+                        && matches!(c.member("senders"), Some(Value::Arr(ss)) if ss.iter().filter_map(Value::as_str).any(|s| s.eq_ignore_ascii_case(&sender)))
+                };
+                let from_of = |c: &Value| match c.member("fromBlock") {
+                    Some(Value::Int(f)) => *f,
+                    _ => 0,
+                };
+                let Some(w) = chains.iter_mut().filter(|c| takes(c)).max_by_key(|c| from_of(c)) else { return None };
+                let Value::Obj(ms) = w else { return None };
+                for (k, v) in ms.iter_mut() {
+                    if let ("toBlock", Value::Int(to)) = (k.as_str(), v) {
+                        *to = (*to).max(block);
+                        reached = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    reached.then_some(Value::Obj(top))
 }
 
 pub(super) fn set_basis(
@@ -82,25 +279,16 @@ pub(super) fn set_basis(
     registry: &str,
     from_block: &str,
 ) -> Result<Basis, crate::fault::Fault> {
-    // Parse numbers the settings can store (`whole_within_ceiling`); anything past the ceiling is refused
-    // before any node is asked.
     let c: u64 = crate::fault::whole_within_ceiling(chain, crate::lang::Key::Tail024)?;
     let r = Address::parse(registry).ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::AddressShape, registry.trim().to_string())
     })?;
     let f: u64 = crate::fault::whole_within_ceiling(from_block, crate::lang::Key::Tail025)?;
-    // A chain and registry from the built-in table (`deploy::KNOWN`) are already pinned; save at once.
     if crate::deploy::KNOWN.iter().any(|d| d.chain_id == c && d.registry_address() == r) {
         write_basis(shell, c, r, f)?;
         shell.basis_read = None;
         return Ok(Basis::Saved(c));
     }
-    // Any other registry is checked on save, not on read: on every node of this home for this chain that
-    // answers, the code at that address must be the pinned registry build (`widex::gate_said`, the same gate
-    // as for read-only networks; see [`basis_read`]). With no node for this chain yet there is nothing to ask:
-    // the basis is saved as typed and shows "not checked" (people often fill the basis before the nodes), and
-    // the same check runs when nodes for this chain are saved ([`check_basis_after_nodes`]).
-    // The read-only network's node list keeps its written form (it is the same kind of list the machine keeps).
     let nodes: Vec<String> = shell.endpoints.iter().filter(|e| e.chain == c).map(|e| e.url.for_transport().to_string()).collect();
     if nodes.is_empty() {
         write_basis(shell, c, r, f)?;
@@ -110,8 +298,6 @@ pub(super) fn set_basis(
     Ok(Basis::Checking(spawn_check(shell, c, r, f, nodes, false)))
 }
 
-/// The single check of a custom main network, as a `Kind::Basis` task. It runs when the basis is saved with
-/// nodes present, and when nodes are saved for a basis written unchecked.
 fn spawn_check(shell: &mut Shell, c: u64, r: Address, f: u64, nodes: Vec<String>, after_nodes: bool) -> Spawned {
     let asked = basis_stamp(shell, c);
     let net = crate::readnets::Net { chain_id: c, registry: r, from_block: f, nodes, name: None };
@@ -121,17 +307,11 @@ fn spawn_check(shell: &mut Shell, c: u64, r: Address, f: u64, nodes: Vec<String>
     })
 }
 
-/// After nodes are saved: if this home's main network is custom (not a built-in row) and the nodes cover its
-/// chain, check it again on them, as when the basis is saved. The basis itself is never changed here (saving
-/// nodes never removes the person's chain settings); the reading is shown beside it, and a registry that is
-/// not the pinned build is reported ([`basis_read`]). If such a check is already in flight, the reading is
-/// left as it is.
 pub(super) fn check_basis_after_nodes(shell: &mut Shell) {
     let (Some(c), Some(r)) = (shell.settings.chain_id, shell.settings.registry) else { return };
     if crate::deploy::KNOWN.iter().any(|d| d.chain_id == c && d.registry_address() == r) {
         return;
     }
-    // The read-only network's node list keeps its written form (it is the same kind of list the machine keeps).
     let nodes: Vec<String> = shell.endpoints.iter().filter(|e| e.chain == c).map(|e| e.url.for_transport().to_string()).collect();
     if nodes.is_empty() {
         return;
@@ -142,16 +322,12 @@ pub(super) fn check_basis_after_nodes(shell: &mut Shell) {
     }
 }
 
-/// What a main-network check applies to, taken when it is asked and again when it lands: the main network as
-/// stored in settings (chain, registry, start block, chosen row) and the nodes for the checked chain. Writing
-/// any other setting meanwhile (language, audit interval) leaves the reading valid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BasisStamp {
     pub cell: u64,
     pub nodes: u64,
 }
 
-/// The stamp of what a check of chain `c` applies to now.
 pub fn basis_stamp(shell: &Shell, c: u64) -> BasisStamp {
     use std::hash::{Hash, Hasher};
     let s = &shell.settings;
@@ -165,27 +341,11 @@ pub fn basis_stamp(shell: &Shell, c: u64) -> BasisStamp {
     BasisStamp { cell, nodes: h.finish() }
 }
 
-/// The immediate outcome of saving the main network: saved (a built-in deployment, or a chain with no node
-/// yet, written unchecked), or a check started.
 pub(super) enum Basis {
     Saved(u64),
     Checking(Spawned),
 }
 
-/// Handles a finished main-network check.
-///
-/// On a basis save, the basis is written only if the registry read as the pinned build (on one node, or
-/// several agreeing); a different fingerprint, or no node answering, is reported and nothing is written. After
-/// a node save (`after_nodes`), nothing is written or removed: the reading is shown and a fingerprint that is
-/// not the pinned build is reported.
-///
-/// A reading applies only to what it was asked for (`asked`, [`BasisStamp`]). If the main network changed
-/// since (another network chosen, the basis saved again), the reading is dropped, since the later choice wins.
-/// If only the chain's nodes changed, the same check reruns on the current nodes, so a save is not lost and no
-/// tick shows for nodes never asked. Other settings written meanwhile change nothing.
-///
-/// Returns whether the reading was taken. The reading stays beside the basis; "not checked" is never shown as
-/// checked.
 #[allow(clippy::too_many_arguments)]
 pub fn basis_read(shell: &mut Shell, c: u64, r: Address, f: u64, reading: crate::widex::Reading, said: Option<crate::fault::Fault>, after_nodes: bool, asked: BasisStamp) -> bool {
     let now = basis_stamp(shell, c);
@@ -196,7 +356,6 @@ pub fn basis_read(shell: &mut Shell, c: u64, r: Address, f: u64, reading: crate:
         if after_nodes || asked.cell != now.cell {
             check_basis_after_nodes(shell);
         } else {
-            // A save whose chain's nodes changed meanwhile: save again as typed, on the current nodes.
             match set_basis(shell, &c.to_string(), &r.hex(), &f.to_string()) {
                 Ok(_) => {}
                 Err(e) => shell.faults.push(e),
@@ -229,19 +388,20 @@ pub fn basis_read(shell: &mut Shell, c: u64, r: Address, f: u64, reading: crate:
     true
 }
 
-/// Writes the main network's basis: chain, registry, start block (a value the settings cannot store is refused
-/// by name and nothing is written). The identity's record follows; a failure there is reported as a fault.
 fn write_basis(shell: &mut Shell, c: u64, r: Address, f: u64) -> Result<(), crate::fault::Fault> {
+    let before = crate::chainx::nodes_of(&shell.settings);
     shell.commit_settings(|s| {
         s.chain_id = Some(c);
         s.registry = Some(r);
         s.from_block = f;
         s.network = None;
     })?;
+    if crate::chainx::nodes_of(&shell.settings) != before {
+        super::archive::endpoints_changed(shell);
+    }
     if let Err(f) = super::archive::remember_custom(shell) {
         shell.faults.push(f);
     }
-    // A new basis answers the tail question afresh.
     shell.tail_asked = None;
     tail_if_due(shell);
     Ok(())

@@ -1,15 +1,9 @@
-//! A file landed by a bare name lands in the working directory and syncs `.`, through the one place that says a
-//! path's directory (`zikaron_os::parent_dir`). Run in a child process started in a fresh temporary directory,
-//! so this process's working directory never moves.
-
 use std::process::Command;
 use zikaron_glue::landing::{Trouble, land_bytes};
 
 const FORM: &str = "ZIKARON_GLUE_BARE_FORM";
 const CHILD: &str = "the_child_lands_a_bare_name_where_it_was_started";
 
-/// The child's side: land `out.json` by its bare name (with the sync of `.` made to fail when asked) and say
-/// what came back. Started without `FORM` (the ordinary run), it does nothing.
 #[test]
 fn the_child_lands_a_bare_name_where_it_was_started() {
     let Ok(mode) = std::env::var(FORM) else { return };
@@ -39,8 +33,6 @@ fn child(mode: &str) -> (String, std::path::PathBuf) {
     (said.lines().find_map(|l| l.split_once("REPORT ").map(|(_, r)| r)).unwrap_or_else(|| panic!("{mode} reported nothing: {said}")).to_string(), dir)
 }
 
-/// The bare name lands, says it did, and leaves no temporary file; with the sync of `.` made to fail, the
-/// landing is said failed naming `.`, the bytes in place.
 #[test]
 fn a_bare_name_lands_in_the_working_directory_and_syncs_it() {
     let before = std::env::current_dir().expect("this process's directory");

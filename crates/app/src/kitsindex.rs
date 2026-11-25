@@ -1,43 +1,8 @@
-//! Record bundle (kit) index.
-//!
-//! Bundles live in each identity's home (`<home>/kits/…`), and sibling apps need one place to find which
-//! bundles were exported on this machine, and where. Homes may not store absolute paths (any copy of a home
-//! is equivalent), so the index lives in the machine directory: `<machine directory>/kits/index.json`. Only
-//! this app rewrites it, atomically (`home::put_at`: temporary name then rename, mode 0600). It is created
-//! empty at startup when absent, and rewritten when the home moves.
-//!
-//! ─── Shape ───
-//!
-//! `{"form":"zikaron.kits-index/1","kits":[{"contents":[hex32…],"created":seconds,"id":hex32,
-//! "link":"https://…"?,"note_md":"…","path":"/…","root":hex32}…]}`, canonical key order. Readers recognize
-//! the file by the `form` literal, not by an integer version.
-//!
-//! ─── `link` ───
-//!
-//! By default `link` is the home's publish base (`settings.publish`) plus the bundle's path relative to the
-//! `kits` directory. A hand-filled link overrides it and is recorded in [`OVERRIDES`] (read only by this app).
-//! When the publish base changes, rows without an override are reassembled; overridden rows are kept.
-//!
-//! ─── `oneTimeKey` ───
-//!
-//! A package sealed to one key (`addressedx`) is one file whose manifest cannot be read without that key, so its
-//! row carries the package's one-time public key (its head, random for each package and naming no recipient): the
-//! local copy is told to be this package by it ([`drop_copy`]). The row's other cells were read from the plain
-//! package before it was sealed and came back with the export ([`RowFacts`]). No row records a recipient.
-//!
-//! ─── `anchoredOn` ───
-//!
-//! Where the kit says it is anchored: the chain id, registry and start block of the home it was exported
-//! from, written at export as the fixed last line of the manifest's `note_md` ([`AnchoredOn::line`]). The row
-//! keeps it in a separate optional field, and the row's `note_md` is the author's text with that line removed
-//! ([`split_note`]). Informational only; no check depends on it.
-
 use crate::fault::{classify, Fault, Known};
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 use zikaron_glue::names::Field;
 
-/// The `contents` and `note_md` key names, taken from the shared kit name table rather than copied here.
 fn contents_key() -> &'static str {
     Field::Contents.as_str()
 }
@@ -45,18 +10,11 @@ fn note_key() -> &'static str {
     Field::NoteMd.as_str()
 }
 
-/// The index's form literal.
 pub const FORM: &str = "zikaron.kits-index/1";
-/// The directory in the machine directory that holds the index.
-pub const DIR: &str = "kits";
-/// Index file name.
-pub const FILE: &str = "index.json";
-/// Hand-filled `link`s are recorded here (read only by this app, not by other index readers).
+pub const DIR: &str = zikaron_seal::exports::DIR;
+pub const FILE: &str = zikaron_seal::exports::INDEX;
 pub const OVERRIDES: &str = "links.json";
 
-/// Every kind of export and where it lands. Two have fixed places under the machine directory (the kits index
-/// file, and a directory of kit verification results); the other four go wherever the user picks. The path
-/// builders (`path_in`, `verifiedx::path_of`) use the same constants.
 pub const EXPORTS: [Export; 6] = [
     Export { name: "kitsIndex", place: Some(&[DIR, FILE]), room: false },
     Export { name: "kitVerifications", place: Some(&[DIR, crate::verifiedx::DIR]), room: true },
@@ -66,8 +24,6 @@ pub const EXPORTS: [Export; 6] = [
     Export { name: "grantFile", place: None, room: false },
 ];
 
-/// One row of [`EXPORTS`]: the export's name, its path under the machine directory (`None` when the user picks
-/// the place), and whether that path is a directory of exports (`room`) rather than a single file.
 #[derive(Clone, Copy, Debug)]
 pub struct Export {
     pub name: &'static str,
@@ -75,11 +31,8 @@ pub struct Export {
     pub room: bool,
 }
 
-/// Where an exported kit says it is anchored, and the note line that says it: the glue's
-/// (`zikaron_glue::anchoredon`), where the command line's record package states it too.
 pub use zikaron_glue::anchoredon::{note_with, split_note, AnchoredOn};
 
-/// An anchoring point as an index row's `anchoredOn` value.
 fn anchored_value(a: &AnchoredOn) -> Value {
     Value::Obj(vec![
         ("chainId".to_string(), Value::Int(a.chain_id)),
@@ -88,7 +41,6 @@ fn anchored_value(a: &AnchoredOn) -> Value {
     ])
 }
 
-/// An index row's `anchoredOn` value read back; only values that round-trip through the line form are accepted.
 fn anchored_of(v: &Value) -> Option<AnchoredOn> {
     let int = |k: &str| match member(v, k) {
         Some(Value::Int(n)) => Some(*n),
@@ -98,30 +50,19 @@ fn anchored_of(v: &Value) -> Option<AnchoredOn> {
     (AnchoredOn::of_line(&a.line()).as_ref() == Some(&a)).then_some(a)
 }
 
-/// One index row (seven cells, and `anchoredOn` when the kit says where it is anchored).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// The bundle's `kit_id`, lowercase with 0x.
     pub id: String,
-    /// Export time, whole unix seconds.
     pub created: u64,
-    /// This ledger's root (the genesis entry's id).
     pub root: String,
-    /// The bundle directory's absolute path.
     pub path: String,
-    /// Digests of the original files (the `contents` values already in the bundle's MANIFEST).
     pub contents: Vec<String>,
-    /// The author's text: the manifest's `note_md` without its anchoring line.
     pub note_md: String,
     pub link: Option<String>,
     pub anchored_on: Option<AnchoredOn>,
-    /// A sealed package's one-time public key (hex), by which its local copy is told apart; `None` for a plain one.
     pub one_time: Option<String>,
 }
 
-/// What a row records of a package besides where and when: its original digests, the author's note, where it says
-/// it is anchored, and a sealed package's one-time key. Read from the plain package by the export itself and carried
-/// back with its result, so the index never reads the landed package back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RowFacts {
     pub contents: Vec<String>,
@@ -131,17 +72,14 @@ pub struct RowFacts {
 }
 
 impl RowFacts {
-    /// The facts of the plain package at `kit` (a folder or one file), as its manifest says them.
     pub fn of_kit(kit: &Path) -> Result<RowFacts, Fault> {
         let (contents, note_md, anchored_on) = manifest_row_facts(kit)?;
         Ok(RowFacts { contents, note_md, anchored_on, one_time: None })
     }
 }
 
-/// The member a sealed package's one-time key is written under.
 const ONE_TIME: &str = "oneTimeKey";
 
-/// Where the index file is.
 pub fn path_in(machine: &Path) -> PathBuf {
     machine.join(DIR).join(FILE)
 }
@@ -185,7 +123,6 @@ fn row_value(r: &Row) -> Value {
     Value::Obj(m)
 }
 
-/// The index's canonical bytes. Writing and reading share one source.
 pub fn bytes_of(rows: &[Row]) -> Vec<u8> {
     json::canon_bytes(&Value::Obj(vec![
         ("form".to_string(), Value::Str(FORM.to_string())),
@@ -193,8 +130,6 @@ pub fn bytes_of(rows: &[Row]) -> Vec<u8> {
     ]))
 }
 
-/// Read the index. No file gives `None`; a `form` other than [`FORM`] or a row with missing cells is an
-/// error, never silently treated as empty.
 pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
     let p = path_in(machine);
     let bytes = match std::fs::read(&p) {
@@ -230,12 +165,10 @@ pub fn read(machine: &Path) -> Result<Option<Vec<Row>>, Fault> {
     Ok(Some(out))
 }
 
-/// Atomic rewrite (temporary name then rename, 0600, through `home::put_at`).
 pub fn write(machine: &Path, rows: &[Row]) -> Result<(), Fault> {
     crate::home::put_at(&machine.join(DIR), FILE, &bytes_of(rows))
 }
 
-/// At startup: write an empty index when there is none. Returns whether it wrote.
 pub fn ensure(machine: &Path) -> Result<bool, Fault> {
     if path_in(machine).exists() {
         return Ok(false);
@@ -244,8 +177,6 @@ pub fn ensure(machine: &Path) -> Result<bool, Fault> {
     Ok(true)
 }
 
-/// Hand-filled `link`s (bundle directory absolute path → address; the same bundle exported twice is two rows,
-/// each with its own source). No file means empty.
 pub fn overrides(machine: &Path) -> Result<Vec<(String, String)>, Fault> {
     let p = machine.join(DIR).join(OVERRIDES);
     let Some(bytes) = crate::local::read(&p, crate::local::Doc::KitLinks)? else { return Ok(Vec::new()) };
@@ -264,14 +195,10 @@ fn write_overrides(machine: &Path, o: &[(String, String)]) -> Result<(), Fault> 
     crate::local::put(&machine.join(DIR), OVERRIDES, crate::local::Doc::KitLinks, &json::canon_bytes(&v))
 }
 
-/// The canonical path in the plain form rows store (`home::plain_path`), so `/tmp` and `/private/tmp` compare
-/// equal; the path unchanged when it does not exist.
 fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).map(crate::home::plain_path).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// The bundle's path for assembling `link`: relative to the `kits` directory when inside it, otherwise the
-/// bundle directory's name.
 pub fn rel_of(kits_room: &Path, kit: &Path) -> String {
     let (room, kit) = (canon(kits_room), canon(kit));
     match kit.strip_prefix(&room) {
@@ -280,41 +207,29 @@ pub fn rel_of(kits_room: &Path, kit: &Path) -> String {
     }
 }
 
-/// The default `link`: the publish base (validated by `fetchx::base_of`, ending in `/`) plus the relative
-/// path and a trailing `/`. `None` when no base is configured.
 pub fn default_link(publish: Option<&str>, rel: &str) -> Option<String> {
     let base = crate::fetchx::base_of(publish?).ok()?;
     if rel.is_empty() {
         return None;
     }
-    // Percent-encode each segment so spaces, non-ASCII and reserved characters never appear raw in the URL.
     let enc: Vec<String> = rel.split('/').map(pct).collect();
     Some(format!("{}{}/", base.as_str(), enc.join("/")))
 }
 
-/// The default `link` a package exported into `kits_room` at `kit` is offered: none for a package in one file
-/// (publication reads a folder file by file, so a file has no address to fetch it from), the publish base and
-/// its relative path for a folder. Decided only here: at add time, after the publish base changes, and when a
-/// hand-set link is taken back.
 fn default_for(publish: Option<&str>, kits_room: &Path, kit: &Path) -> Option<String> {
     if kit.is_file() { None } else { default_link(publish, &rel_of(kits_room, kit)) }
 }
 
-/// Percent-encode one path segment (RFC 3986 unreserved characters unchanged, everything else `%XX` per
-/// byte).
 fn pct(seg: &str) -> String {
     seg.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
 }
 
-/// Read the bundle's manifest for the `contents` digests (as recorded, not recomputed) and the author's
-/// `note_md` without its anchoring line.
 pub fn manifest_facts(kit: &Path) -> Result<(Vec<String>, String), Fault> {
     manifest_row_facts(kit).map(|(c, n, _)| (c, n))
 }
 
-/// As [`manifest_facts`], plus the anchoring point from the note's last line.
 pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<AnchoredOn>), Fault> {
     let p = kit.join(zikaron_glue::names::MANIFEST);
     let bytes = manifest_of(kit)?;
@@ -323,11 +238,10 @@ pub fn manifest_row_facts(kit: &Path) -> Result<(Vec<String>, String, Option<Anc
         Some(Value::Arr(a)) => a.iter().filter_map(|r| str_of(r, Field::Content.as_str())).collect(),
         _ => Vec::new(),
     };
-    let (note, at) = split_note(&str_of(&v, note_key()).unwrap_or_default());
+    let (note, at) = zikaron_glue::anchoredon::of_manifest(&bytes);
     Ok((contents, note, at))
 }
 
-/// A kit's manifest bytes: a folder's manifest file, or a single-file kit's first item (`container::manifest_at`).
 fn manifest_of(kit: &Path) -> Result<Vec<u8>, Fault> {
     if kit.is_file() {
         return zikaron_glue::container::manifest_at(kit).ok_or_else(|| Fault::known(Known::KitFileBad, kit.display().to_string()));
@@ -336,9 +250,6 @@ fn manifest_of(kit: &Path) -> Result<Vec<u8>, Fault> {
     std::fs::read(&p).map_err(|e| classify(&e, &p.display().to_string()))
 }
 
-/// Add a row after an export, with the facts the export read (`facts`). Rows are keyed by bundle directory path: the
-/// same bundle exported to two places is two rows, and exporting again to the same place replaces the row. `link`
-/// uses that path's override, otherwise the default.
 pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, created: u64, publish: Option<&str>, facts: RowFacts) -> Result<Row, Fault> {
     let RowFacts { contents, note_md, anchored_on, one_time } = facts;
     let root = crate::ledgerx::root_of(home)?;
@@ -353,12 +264,8 @@ pub fn add(machine: &Path, home: &crate::home::Home, kit: &Path, id: &str, creat
     Ok(row)
 }
 
-/// Set `link` by hand: a non-empty value is recorded as an override; an empty one removes the override and
-/// restores the default from the home's publish base.
 pub fn set_link(machine: &Path, path: &str, link: &str, root: &str, kits_room: &Path, publish: Option<&str>) -> Result<Option<String>, Fault> {
     let mut rows = read(machine)?.unwrap_or_default();
-    // Only rows exported from this ledger (`root`) change: restoring the default needs this home's publish
-    // base, and other homes' rows are edited from those homes.
     let Some(at) = rows.iter().position(|r| r.path == path && r.root.eq_ignore_ascii_case(root)) else {
         return Err(Fault::known(Known::SubjectMissing, path.to_string()));
     };
@@ -378,8 +285,6 @@ pub fn set_link(machine: &Path, path: &str, link: &str, root: &str, kits_room: &
     Ok(now)
 }
 
-/// After the publish base changes: rows from this ledger (`root`) without an override get `link` rebuilt on
-/// the new base, the same way as at add time. Returns how many rows changed.
 pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str>) -> Result<usize, Fault> {
     let Some(mut rows) = read(machine)? else { return Ok(0) };
     let o = overrides(machine)?;
@@ -400,10 +305,6 @@ pub fn relink(machine: &Path, root: &str, kits_room: &Path, publish: Option<&str
     Ok(n)
 }
 
-/// Delete the local copy. The row is always removed; the bundle directory is deleted only when its manifest's
-/// bundle id equals the row's `id`, and a sealed package's file only when its head's one-time key equals the row's,
-/// so a directory or file that is gone or now holds another bundle is never touched. The ledger is not affected.
-/// Returns the removed row and whether the directory was deleted.
 pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     let mut rows = read(machine)?.unwrap_or_default();
     let Some(at) = rows.iter().position(|r| r.path == path) else {
@@ -431,8 +332,6 @@ pub fn drop_copy(machine: &Path, path: &str) -> Result<(Row, bool), Fault> {
     Ok((row, same))
 }
 
-/// When the home moves: rows whose bundle path is under the old home are re-prefixed with the new home.
-/// Returns how many rows changed.
 pub fn rebase(machine: &Path, from: &Path, to: &Path) -> Result<usize, Fault> {
     let Some(mut rows) = read(machine)? else { return Ok(0) };
     let (from_c, to) = (canon(from), canon(to));
@@ -448,7 +347,6 @@ pub fn rebase(machine: &Path, from: &Path, to: &Path) -> Result<usize, Fault> {
         }
     }
     if n > 0 {
-        // Overrides are keyed by bundle path, so they move with it.
         let mut o = overrides(machine)?;
         let mut touched = false;
         for (k, _) in o.iter_mut() {

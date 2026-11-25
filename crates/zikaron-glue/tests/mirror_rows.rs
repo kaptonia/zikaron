@@ -1,10 +1,6 @@
-//! A mirror manifest's row names must be entry names, or the bundle is refused before anything is read.
-
 use zikaron::json::Value;
 use zikaron_glue::mirror::{entries, sheet, ReadTrouble, Row, ENTRIES, KIND, MANIFEST, VERSION};
 
-/// A row name that is not an entry name is refused by name before any file is read; a path leaving the
-/// entries folder (`..`, absolute, a separator) is never read.
 #[test]
 fn a_row_that_is_not_an_entry_name_is_refused_and_nothing_outside_is_read() {
     let dir = std::env::temp_dir().join(format!("zikaron-glue-mirror-{}", std::process::id()));
@@ -30,8 +26,6 @@ fn a_row_that_is_not_an_entry_name_is_refused_and_nothing_outside_is_read() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
-/// A manifest's absent members read as empty (row names are checked by `entries`, not here).
 #[test]
 fn a_manifests_absent_members_read_as_empty() {
     let s = sheet(b"{\"entries\":[{\"name\":\"x\"},{}]}").expect("JSON");

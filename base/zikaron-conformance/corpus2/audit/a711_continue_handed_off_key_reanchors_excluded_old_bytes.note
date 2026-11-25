@@ -1,0 +1,1 @@
+sec 12.6: a stranger's zikaron/1 genesis anchored before the cut is an old byte string, EXCLUDED there; the old root key, handed off under zikaron/1, re-anchors its hash after the cut. The bytes are no old ledger entry, so the record is placed by time into the new segment, where the root is outside the lineage: DISCARDED, nothing MISSING.

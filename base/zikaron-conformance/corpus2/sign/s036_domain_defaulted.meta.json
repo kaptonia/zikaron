@@ -1,0 +1,11 @@
+{
+ "input": "s036_domain_defaulted.bin",
+ "note": "HARNESS: with no domain argument the domain is zikaron/2",
+ "predicted": {
+  "digest": "0xe40a3098dc1824573d9bf77c160df7c37c067b4b4a9283c9e0404f4b4952f33a",
+  "presig": "0x92697f796f89192d2b4510a8253b204fd8bc7f704aef63a02e3534cf4bebe6fa",
+  "sig": "0xb6f1ba7cb471503813a915122e4f7b65d2b804ef67464d98ee19110092610f765fcd22baf800604e6ccf4881cf3d7c3af8d02f85d29339ff6aba926ff004f1e11c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

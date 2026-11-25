@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s005_migration.bin",
+ "note": "sec 5.1: B6 of a migration",
+ "predicted": {
+  "digest": "0x7595c7aba4707710f29ff9c665d6efa53272e7a7ffa61a38e2c0501c77d65f47",
+  "presig": "0xa822260769eb2a337c41d9de27c1f002a49ebb8b5b8dfb3797faad475903d013",
+  "sig": "0x06dd6edafad50871196bed30e0334a6b61b8dd87e91c51d1c5ca651aa855a3d133acddb16246fc72746637706c362141f2c645ea53ab9abce1874ca85a9dfdef1c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,28 +1,17 @@
 [package]
 name = "zikaron-cli"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
-# A thin shell: assembles inputs, calls the base crates and renders state; it invents no byte format and
-# decides nothing. No third-party crates of its own: entries come from the core, directories from the store
-# crate, chain access from the anchoring crate (http and https through the one transport it uses,
-# zikaron-net, never through the app), documents, payloads, kits, depth and checks from the kit crate.
-# Randomness comes only from the system entropy source (standard library).
 [dependencies]
 zikaron = { path = "../zikaron" }
 zikaron-kit = { path = "../zikaron-kit" }
 zikaron-store = { path = "../zikaron-store" }
 zikaron-anchor = { path = "../zikaron-anchor" }
-# Laying out disclosure kits belongs to zikaron-glue; the `kit-export` verb calls its surface.
 zikaron-glue = { path = "../zikaron-glue" }
-# The system's entropy source, read through the one place that knows each system's.
 zikaron-os = { path = "../zikaron-os" }
-# The sealed layer, one implementation with the desktop: writing a home the desktop keeps sealed, with the
-# command line's credential (`sealed`).
 zikaron-seal = { path = "../zikaron-seal" }
-# The sender, one for every road that puts anchors on chain: the direct `anchor` keeps its record of what it sent
-# there (`sent`).
 zikaron-send = { path = "../zikaron-send" }
 
 [[bin]]

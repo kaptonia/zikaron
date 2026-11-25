@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s015_member_order.bin",
+ "note": "sec 3.4 item 5: bytewise key order inside the preimage",
+ "predicted": {
+  "digest": "0x7d07d78437eb475c82f568d0d9e7d21621e8db8c85fbf9fe4d514e06b901a1e2",
+  "presig": "0x2256cf765c65d1e8e13840cb565e162e712ea8d03a2566ebfadac66eef3f1d7f",
+  "sig": "0xf74d2b658d81309024e459df7dc4df87c9266eaa47824790cc6bcfc4d3ee960d6d0f0ef1ec268bdb7d2fc701d8a7483412e07fe47f321a532613fe6d36a36b6a1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

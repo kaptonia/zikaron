@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s035_input_with_top_level_sig.bin",
+ "note": "HARNESS: a file carrying a top-level sig is signed with it inside the preimage; no member is removed",
+ "predicted": {
+  "digest": "0xdb76a49d700ff7d388420fa1ca0ed0d557f10ff0f4a1f3e05702d491100cf012",
+  "presig": "0x7930360f33bb7274898921564f6eade8ec236fdf58d2bc8e0cff47184b27f8e0",
+  "sig": "0x68774330049d8b6211ac6d6cbd8184155cdd8f355dad348a33cf83ab43489e942d9abbfd6fb9108ed84e5605d571cfe9b253d64c22c629c6e1d4ed4544fdd4911c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

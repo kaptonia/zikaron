@@ -1,7 +1,3 @@
-//! The alerts page lists only what needs attention, and the rail counts it: every row fine gives one sentence and
-//! a count of none; the whole-machine backup never backed up or behind is not raised at all; one row that warns
-//! is the only line and counts one. Read over the window's own alerts page with given watch rows.
-
 use app::action::{apply, Applied};
 use app::lang::{t, Key};
 use app::nav::Page;
@@ -25,7 +21,6 @@ fn row(item: Item, light: Light, gap: Option<Gap>) -> Row {
     Row { item, light, n: 1, detail: String::new(), gap, rings: Vec::new() }
 }
 
-/// Every row of the recorder's watch, fine.
 fn all_fine() -> Vec<Row> {
     Item::AUTHOR.iter().map(|i| row(*i, Light::Ok, None)).collect()
 }
@@ -84,8 +79,6 @@ fn one_row_that_warns_is_the_only_line_and_counts_one() {
     assert!(!r.texts.iter().any(|s| s == t(Key::AlertsNone)));
 }
 
-/// What rings is what the alerts page lists: the backup behind with a ring of its own rings nothing; a warning
-/// row's ring rings once.
 #[test]
 fn only_what_needs_attention_rings() {
     use app::watchx::{to_ring, Episode, Ring};

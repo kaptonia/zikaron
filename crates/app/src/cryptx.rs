@@ -1,28 +1,3 @@
-//! The only app module allowed to use third-party cryptography.
-//!
-//! Allowed crates (closed list): RustCrypto's `hmac`, `pbkdf2`, `sha2`, `k256`, plus `bip39` (English word list
-//! and checksum only). scrypt, AES-128-CTR, HKDF, HMAC-SHA256 and XChaCha20-Poly1305 are the sealed layer's
-//! (`zikaron_seal::crypto`) and re-exported here.
-//! No other module imports them; a test enforces this for `bip39`. TLS lives in `zikaron_net`, and the app
-//! reaches https nodes and remote files only through it (`chainx::Https`).
-//!
-//! Provided here:
-//!
-//! 1. [`scrypt`] and [`aes128_ctr`]: the two primitives of keystore V3 (Web3 Secret Storage).
-//! 2. [`phrase_of`] and [`entropy_of`]: 16 bytes of entropy to 12 words and back (BIP-39).
-//! 3. [`derive`]: a private key from entropy (BIP-39 seed plus BIP-32 derivation). The seed never leaves
-//!    this module: it exists only within one `derive` call and is zeroed on the way out.
-//! 4. [`hkdf_sha256`], [`xchacha_seal`] and [`xchacha_open`]: the local data key derived from the master key,
-//!    and the one authenticated cipher that seals local data and the backup body (24-byte nonce, additional
-//!    data bound in).
-//!
-//! BIP-32 is computed here from `hmac` (HMAC-SHA512) and `k256` scalar arithmetic, without the `bip32` crate:
-//! master key `I = HMAC-SHA512("Bitcoin seed", seed)`; a hardened child's input is `0x00 ‖ k ‖ ser32(i)`, a
-//! normal child's is `serP(point(k)) ‖ ser32(i)`; `k_i = parse256(I_L) + k mod n`. An `I_L` outside the order
-//! or a zero child returns `None` instead of skipping to the next index: the family's path table has fixed
-//! indices, and skipping would change the key. The seed is `PBKDF2-HMAC-SHA512(phrase, "mnemonic", 2048)`
-//! with an always-empty passphrase (no 25th word).
-
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
 
@@ -30,14 +5,10 @@ use crate::family::ENTROPY_BYTES;
 
 type HmacSha512 = Hmac<Sha512>;
 
-/// Zeroes a byte range in place: the platform piece's one wipe (`zikaron_os::wipe`).
 use zikaron_os::wipe;
 
-/// The derivation counter and the primitives of keystore V3 and of sealing are the sealed layer's
-/// (`zikaron_seal::crypto`), shared with the command line; this module adds the phrase and key derivation.
 pub use zikaron_seal::crypto::{aes128_ctr, derivations, hkdf_sha256, hmac_sha256, scrypt, xchacha_open, xchacha_seal};
 
-/// PBKDF2 with HMAC-SHA256 (RFC 8018), `c` rounds, into `out`. A zero round count returns false, never panics.
 pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], c: u32, out: &mut [u8]) -> bool {
     if c == 0 {
         return false;
@@ -47,41 +18,29 @@ pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], c: u32, out: &mut [u8]) -> bo
     true
 }
 
-/// The two ways a phrase cannot be recognized.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PhraseTrouble {
-    /// The word count is not the number the family table sets.
     WordCount(usize),
-    /// A word is not in the English word list, or the checksum does not match.
     NotAPhrase,
 }
 
-/// 16 bytes of entropy read as 12 English words (separated by single spaces).
 pub fn phrase_of(entropy: &[u8; ENTROPY_BYTES]) -> String {
     match bip39::Mnemonic::from_entropy_in(bip39::Language::English, entropy) {
         Ok(m) => m.to_string(),
-        // Unreachable: 16 bytes is a valid BIP-39 length. Even so, it never yields a false phrase.
         Err(_) => String::new(),
     }
 }
 
-/// Which of the twelve cells are not words in the English list; empty cells (not filled yet) are not flagged.
-///
-/// The UI marks those cells red, so the user sees at once which word is wrong. The checksum is not checked
-/// here; it needs all twelve words.
 pub fn strangers(words: &[crate::secret::Secret; crate::family::WORDS]) -> [bool; crate::family::WORDS] {
     let list = bip39::Language::English.word_list();
     let mut out = [false; crate::family::WORDS];
     for (i, w) in words.iter().enumerate() {
-        // Compared case-insensitively instead of lowercased, so no unzeroed copy of the word is made.
         let w = w.expose().trim();
         out[i] = !w.is_empty() && !list.iter().any(|x| x.eq_ignore_ascii_case(w));
     }
     out
 }
 
-/// Read a pasted phrase back into 16 bytes of entropy. Case and extra whitespace are ignored; word count,
-/// word list and checksum are each named.
 pub fn entropy_of(words: &str) -> Result<[u8; ENTROPY_BYTES], PhraseTrouble> {
     let norm: Vec<String> = words.split_whitespace().map(|w| w.to_ascii_lowercase()).collect();
     if norm.len() != crate::family::WORDS {
@@ -105,8 +64,6 @@ fn scalar(k: &[u8; 32]) -> Option<k256::Scalar> {
     Option::<k256::Scalar>::from(k256::Scalar::from_repr((*k).into()))
 }
 
-/// Derive a private key from entropy. `path` is the per-level index with hardened bits (see `family::path`).
-/// Returns thirty-two bytes; the caller hands them to `key::Secret::take` at once.
 pub fn derive(entropy: &[u8; ENTROPY_BYTES], path: &[u32]) -> Option<[u8; 32]> {
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     let mut phrase = phrase_of(entropy);
@@ -115,7 +72,6 @@ pub fn derive(entropy: &[u8; ENTROPY_BYTES], path: &[u32]) -> Option<[u8; 32]> {
     }
     let mut seed = [0u8; 64];
     pbkdf2::pbkdf2_hmac::<Sha512>(phrase.as_bytes(), b"mnemonic", 2048, &mut seed);
-    // This copy of the phrase is zeroed once used.
     zikaron_os::wipe_string(&mut phrase);
     let out = walk(&seed, path, |k| {
         k256::SecretKey::from_slice(k).ok().map(|sk| sk.public_key().to_encoded_point(true).as_bytes().to_vec())
@@ -124,8 +80,6 @@ pub fn derive(entropy: &[u8; ENTROPY_BYTES], path: &[u32]) -> Option<[u8; 32]> {
     out
 }
 
-/// The BIP-32 part: master key plus child keys level by level. Kept separate so the specification's test
-/// vectors can feed a seed directly.
 fn walk(seed: &[u8], path: &[u32], point: impl Fn(&[u8; 32]) -> Option<Vec<u8>>) -> Option<[u8; 32]> {
     let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed").ok()?;
     mac.update(seed);
@@ -183,7 +137,6 @@ mod tests {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// BIP-32 test vector 1 (seed 000102…0f): private keys of m/0H and m/0H/1.
     #[test]
     fn bip32_vector_one() {
         use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -194,7 +147,6 @@ mod tests {
         assert_eq!(hex(&walk(&seed, &[h, 1], pt).unwrap()), "3c6cb8d0f6a264c91ea8b5030fadaa8e538b020f0a387421a12de9319dc93368");
     }
 
-    /// The first eight bytes of RFC 7914 §12's third vector (password / NaCl / 1024 / 8 / 16).
     #[test]
     fn scrypt_rfc_vector() {
         let mut dk = [0u8; 64];
@@ -203,8 +155,6 @@ mod tests {
         assert!(!scrypt(b"x", b"y", 1000, 8, 1, &mut dk[..32]));
     }
 
-    /// RFC 5869 test case 3 (SHA-256, zero-length salt and info) for HKDF; for XChaCha20-Poly1305 the
-    /// draft-irtf-cfrg-xchacha appendix A.3.1 vector's tag, and one flipped byte of aad refused.
     #[test]
     fn hkdf_and_xchacha_vectors() {
         let mut okm = [0u8; 42];
@@ -222,8 +172,6 @@ mod tests {
         assert!(xchacha_open(&key, &nonce, &bad, &ct).is_none());
     }
 
-    /// All-zero entropy reads as the well-known phrase and back to all zeros; a wrong word count and a wrong
-    /// checksum are each named.
     #[test]
     fn phrase_round_trip() {
         let p = phrase_of(&[0u8; ENTROPY_BYTES]);

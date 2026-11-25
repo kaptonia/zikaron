@@ -1,7 +1,3 @@
-//! Boundary cases: receipts that differ by block are no inclusion; a question asked of every node keeps each
-//! node's name, including a node whose worker panicked; `zka`'s `--endpoint` misuse is reported in its own
-//! words with exit 2. In-process endpoints and the built `zka` binary; never the network.
-
 use std::process::Command;
 use std::time::Duration;
 use zikaron::json::Value;
@@ -14,7 +10,6 @@ fn w(s: &str) -> W {
     wire::parse(s.as_bytes()).expect("a wire value")
 }
 
-/// A node answering every question with `answer`, under `name`.
 struct Says(&'static str, &'static str);
 
 impl Endpoint for Says {
@@ -24,13 +19,11 @@ impl Endpoint for Says {
     fn name(&self) -> String {
         self.0.into()
     }
-    /// No address: the place is the name.
     fn place(&self) -> String {
         self.name()
     }
 }
 
-/// A node whose asking panics (a worker that falls).
 struct Falls(&'static str);
 
 impl Endpoint for Falls {
@@ -40,14 +33,11 @@ impl Endpoint for Falls {
     fn name(&self) -> String {
         self.0.into()
     }
-    /// No address: the place is the name.
     fn place(&self) -> String {
         self.name()
     }
 }
 
-/// `send::confirm_each`: two nodes both give a receipt, one at block 0x5 and one at 0x6 (alike in status),
-/// with a wait of zero: receipts that differ are no reading, so this is not `Included`.
 #[test]
 fn receipts_that_differ_by_block_are_not_included() {
     let (mut a, mut b) = (
@@ -59,8 +49,6 @@ fn receipts_that_differ_by_block_are_not_included() {
     assert!(!matches!(got, Confirm::Included { .. }), "{got:?}");
 }
 
-/// `endpoints::ask_each`: a node whose worker panics is reported under its own name, in its place, with a
-/// transport trouble; the other nodes' answers stand.
 #[test]
 fn a_node_whose_worker_panics_keeps_its_name() {
     let nodes: Vec<(String, Box<dyn Endpoint + Send>)> = vec![
@@ -68,7 +56,7 @@ fn a_node_whose_worker_panics_keeps_its_name() {
         ("http://falls".into(), Box::new(Falls("http://falls"))),
         ("http://three".into(), Box::new(Says("http://three", "\"0x1\""))),
     ];
-    let got = endpoints::ask_each(nodes, "eth_chainId", &Value::Arr(Vec::new()));
+    let got = zikaron_anchor::endpoints::all_in(endpoints::ask_each(nodes, "eth_chainId", &Value::Arr(Vec::new()), zikaron_anchor::endpoints::every_answer));
     let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, vec!["http://one", "http://falls", "http://three"], "every node named, in order");
     assert!(matches!(got[1].1, Err(Trouble::Transport(_))), "{:?}", got[1].1);
@@ -77,13 +65,13 @@ fn a_node_whose_worker_panics_keeps_its_name() {
 
 const ZKA: &str = env!("CARGO_BIN_EXE_zka");
 
-/// `zka`'s `--endpoint` misuse, before any node is asked: an empty address (`31337=`) is said as the flag's
-/// shape, a chain id that is not a whole number (`x=http://h`) as that; each exit 2, nothing on stdout.
 #[test]
 fn zka_endpoint_misuse_is_said_in_its_own_words() {
+    let basis = std::env::temp_dir().join(format!("zka-basis-{}.json", std::process::id()));
+    std::fs::write(&basis, br#"{"chains":[]}"#).expect("basis");
     for (spec, said) in [("31337=", "zka: --endpoint 的形是 <链号>=<url>"), ("x=http://h", "zka: 链号不是十进制整数")] {
         let o = Command::new(ZKA)
-            .args(["kit-capture", "--endpoint", spec, "--tx", &format!("0x{}", "11".repeat(32)), "--hash", &format!("0x{}", "22".repeat(32))])
+            .args(["scan-live", "--basis", basis.to_str().expect("path"), "--endpoint", spec])
             .output()
             .expect("zka runs");
         let err = String::from_utf8_lossy(&o.stderr);

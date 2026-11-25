@@ -1,22 +1,3 @@
-//! Identities. An identity is either the two seat keys derived from twelve recovery words along the family
-//! paths, or one adopted existing key.
-//!
-//! Where things live:
-//!
-//! * keys and seeds only in the key vault, one slot per key, slot names built by `places` (the account
-//!   carries the address);
-//! * a registry in the machine directory (`places::registry_file`): kind, the two seat addresses and homes,
-//!   and whether a backup was made. It holds no key material: no byte of a private key, seed or word;
-//! * one home per seat; new identities' homes are placed by `home::identity_home`.
-//!
-//! Without a registry there is no identity: nothing signs, and the first identity (new, import, restore)
-//! writes the registry's first row.
-//!
-//! Keys first, then the registry: a new identity's keys and seed go into the vault and are read back and
-//! checked against the address before the registry row is written, so no registered identity lacks its keys.
-//! Deleting goes the other way (keys first, then the row), and neither seat's home loses a byte (records
-//! only grow).
-
 use crate::fault::{Fault, Known};
 use crate::family::ENTROPY_BYTES;
 use crate::key::{Address, Secret};
@@ -24,29 +5,20 @@ use crate::roles::Role;
 use std::path::{Path, PathBuf};
 use zikaron::json::Value;
 
-pub use zikaron_seal::identities::{Kind, NO_BACKUP_AT, NO_CREATED, NO_LABEL, SHAPE, UNSEATED};
+pub use zikaron_seal::identities::{Kind, Office, NO_BACKUP_AT, NO_CREATED, NO_LABEL, SHAPE, SHAPE_V1, UNSEATED};
 use zikaron_seal::identities::{Book, Line};
 
 fn seat_of(s: &str) -> Option<Role> {
     Role::ALL.into_iter().find(|r| r.as_str() == s)
 }
 
-/// Which seats an identity's keys occupy. Closed.
-///
-/// One key, one seat. With the same key on both seats, grantee-seat signatures would use the author's key,
-/// and a reader of the ledger could not tell an author's receipt from a grantee's entry. This type cannot
-/// express two seats sharing one address.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Keys {
-    /// Two seat keys derived from recovery words. The paths differ, so the two addresses always differ
-    /// (`parse` checks).
     Both { author: Address, grantee: Address },
-    /// An adopted existing key: only the seat chosen at import; the other stays empty.
     One { seat: Role, addr: Address },
 }
 
 impl Keys {
-    /// This seat's address; `None` for an empty seat.
     pub fn address(&self, seat: Role) -> Option<Address> {
         match (self, seat) {
             (Keys::Both { author, .. }, Role::Author) => Some(*author),
@@ -56,13 +28,10 @@ impl Keys {
         }
     }
 
-    /// Occupied seats (in [`Role::ALL`] order).
     pub fn seats(&self) -> Vec<Role> {
         Role::ALL.into_iter().filter(|r| self.address(*r).is_some()).collect()
     }
 
-    /// The kind follows the key shape; it is not stored separately, since two records of one fact eventually
-    /// disagree.
     pub fn kind(&self) -> Kind {
         match self {
             Keys::Both { .. } => Kind::Words,
@@ -71,44 +40,24 @@ impl Keys {
     }
 }
 
-/// One registry row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// The identity's name: the address of an occupied seat (`0x` plus 40 lowercase hex); the author seat's
-    /// when both are occupied.
     pub id: String,
-    /// Which seats this identity's keys occupy (kind and slot shape follow from it).
     pub keys: Keys,
-    /// The author seat's home; [`UNSEATED`] when empty.
+    pub author_office: Option<Office>,
+    pub grantee_office: Option<Office>,
     pub author_home: String,
-    /// The grantee seat's home; [`UNSEATED`] when empty.
     pub grantee_home: String,
-    /// The recovery words were confirmed, or it was imported from words.
     pub backed_words: bool,
-    /// A keystore file was exported, or it was imported from one.
     pub backed_file: bool,
-    /// Where the last exported key file was written; [`NO_BACKUP_AT`] if never. The flag records that it was
-    /// done; this records where, so the disk can be checked.
     pub backup_at: String,
-    /// The name the user gave. No decision reads it.
     pub label: String,
-    /// When this row was created (the `keystore::utc` form). No decision reads it.
     pub created: String,
-    /// The network this identity chose when it was made ([`Chosen`]: a row of `deploy::KNOWN`, or custom with
-    /// what one seat filled in). `None` when it never chose one; nothing fills one in on its behalf (a choice
-    /// is recorded only by [`choose_network`] or [`set_network`]). Both seats' homes take it
-    /// (`action::open_home_at`).
     pub network: Option<Chosen>,
-    /// The network cell as read, when this version could not read it whole (a later version's form). Written
-    /// back unchanged while the choice stands, so nothing is lost; dropped once the choice or the filled-in
-    /// values change here.
     pub unread_network: Option<String>,
+    pub reroot_of: Option<Address>,
 }
 
-/// The network an identity chose: a row of the known deployments table by name (a name from a later version's
-/// table is kept as written), or custom with what one seat filled in (`None` until complete). The type cannot
-/// hold a row with hand-filled values, and choosing another network drops the filled-in values with the old
-/// choice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Chosen {
     Row(String),
@@ -116,7 +65,6 @@ pub enum Chosen {
 }
 
 impl Chosen {
-    /// The choice a name makes: `deploy::CUSTOM` is custom, nothing filled in yet; any other name a row.
     pub fn named(name: &str) -> Chosen {
         if name == crate::deploy::CUSTOM {
             Chosen::Custom(None)
@@ -125,7 +73,6 @@ impl Chosen {
         }
     }
 
-    /// The choice's name, as the table and the network cell spell it.
     pub fn name(&self) -> &str {
         match self {
             Chosen::Row(n) => n,
@@ -133,7 +80,6 @@ impl Chosen {
         }
     }
 
-    /// What was filled in by hand, when the choice is custom and complete.
     pub fn custom(&self) -> Option<&crate::deploy::Custom> {
         match self {
             Chosen::Custom(c) => c.as_ref(),
@@ -143,22 +89,31 @@ impl Chosen {
 }
 
 impl Row {
-    /// This identity's kind (from [`Keys`], not stored separately).
     pub fn kind(&self) -> Kind {
         self.keys.kind()
     }
 
-    /// The signing address of this seat; `None` for an empty seat.
     pub fn address(&self, seat: Role) -> Option<Address> {
         self.keys.address(seat)
     }
 
-    /// The seats this row occupies (in [`Role::ALL`] order).
+    pub fn office(&self, seat: Role) -> Option<Office> {
+        let root = self.address(seat)?;
+        let written = match seat {
+            Role::Author => self.author_office.clone(),
+            Role::Grantee => self.grantee_office.clone(),
+        };
+        Some(written.unwrap_or(Office::root(root.0)))
+    }
+
+    pub fn current(&self, seat: Role) -> Option<Address> {
+        self.office(seat).map(|o| Address(o.current))
+    }
+
     pub fn seats(&self) -> Vec<Role> {
         self.keys.seats()
     }
 
-    /// This seat's home; `None` for an empty seat.
     pub fn home(&self, seat: Role) -> Option<PathBuf> {
         if self.address(seat).is_none() {
             return None;
@@ -173,13 +128,11 @@ impl Row {
         Some(PathBuf::from(h))
     }
 
-    /// Which slot this seat's key lives in; `None` for an empty seat.
     pub fn account(&self, seat: Role) -> Option<String> {
-        Some(crate::places::key_slot(&self.address(seat)?))
+        Some(crate::places::key_slot(&self.current(seat)?))
     }
 
-    /// Every slot this identity occupies (dropped one by one on delete).
-    pub fn accounts(&self) -> Vec<String> {
+    pub fn needed_accounts(&self) -> Vec<String> {
         let mut v: Vec<String> = Role::ALL.iter().filter_map(|r| self.account(*r)).collect();
         v.dedup();
         if self.kind() == Kind::Words {
@@ -188,22 +141,30 @@ impl Row {
         v
     }
 
-    /// Whether any backup was made.
+    pub fn accounts(&self) -> Vec<String> {
+        let mut v: Vec<String> = Role::ALL.iter().filter_map(|r| self.account(*r)).collect();
+        for r in Role::ALL {
+            if let Some(o) = self.office(r) {
+                for a in o.former.iter().chain(o.next.iter()) {
+                    v.push(crate::places::key_slot(&Address(*a)));
+                }
+            }
+        }
+        v.dedup();
+        if self.kind() == Kind::Words {
+            v.push(crate::places::seed_slot(&self.id));
+        }
+        v
+    }
+
     pub fn backed(&self) -> bool {
         self.backed_words || self.backed_file
     }
 
-    /// The first seat this row occupies. Entering an identity, or moving to the next one after a delete,
-    /// lands here: landing on an empty seat would put the user on a seat with no key while the screen says
-    /// "current identity".
     pub fn first_seat(&self) -> Role {
         self.keys.seats().first().copied().unwrap_or(Role::Author)
     }
 
-    /// The seat to land on when this row becomes current while `here` is the seat in use: `here` when the row
-    /// occupies it, else its first occupied seat ([`Row::first_seat`]). Creating or importing an identity,
-    /// refilling one, and switching to one all land by this one rule, so a person on the grantee seat stays on it
-    /// whenever the identity has that seat.
     pub fn seat_here_or_first(&self, here: Role) -> Role {
         if self.keys.seats().contains(&here) {
             here
@@ -212,32 +173,23 @@ impl Row {
         }
     }
 
-    /// The network this identity's homes take: its chosen row, or what was filled in by hand; `None` when it
-    /// chose none, or chose "custom" and nothing is filled in yet.
     pub fn network_now(&self) -> Option<crate::deploy::Network<'_>> {
         crate::deploy::resolve(self.network.as_ref().map(Chosen::name), self.network.as_ref().and_then(Chosen::custom))
     }
 
-    /// Which of this row's seats has its home at `root`.
     pub fn seat_at(&self, root: &Path) -> Option<Role> {
         Role::ALL.into_iter().find(|s| self.home(*s).map(|h| crate::home::same_place(&h, root)).unwrap_or(false))
     }
 }
 
-/// The identities on this machine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
-    /// The current identity and seat.
     pub current: Option<(String, Role)>,
     pub rows: Vec<Row>,
-    /// Homes a deleted identity left on disk (identity id, seat, home). They are still this machine's local
-    /// data: a new master key reseals and renames them with the rest, and importing the identity again finds
-    /// them where its homes are named.
     pub left: Vec<(String, Role, String)>,
 }
 
 impl Registry {
-    /// The current row and seat.
     pub fn now(&self) -> Option<(&Row, Role)> {
         let (id, seat) = self.current.as_ref()?;
         self.find(id).map(|r| (r, *seat))
@@ -247,14 +199,11 @@ impl Registry {
         self.rows.iter().find(|r| r.id == id)
     }
 
-    /// Canonical bytes: the register as the sealed layer writes it (`zikaron_seal::identities::Book`), each
-    /// row's network cell given as it stands.
     pub fn to_bytes(&self) -> Vec<u8> {
         let lines = self
             .rows
             .iter()
             .map(|r| {
-                // A cell this version could not read whole goes back as it came while its choice stands.
                 let raw = r.unread_network.as_deref().and_then(|t| zikaron::json::parse(t.as_bytes()).ok());
                 let network = match (&r.network, raw) {
                     (Some(n), Some(raw)) if raw.member("name").and_then(|x| x.as_str()) == Some(n.name()) && n.custom().is_none() => Some(raw),
@@ -265,6 +214,8 @@ impl Registry {
                     id: r.id.clone(),
                     author: r.address(Role::Author).map(|a| a.0),
                     grantee: r.address(Role::Grantee).map(|a| a.0),
+                    author_office: r.office(Role::Author),
+                    grantee_office: r.office(Role::Grantee),
                     author_home: r.author_home.clone(),
                     grantee_home: r.grantee_home.clone(),
                     backed_words: r.backed_words,
@@ -273,6 +224,7 @@ impl Registry {
                     label: r.label.clone(),
                     created: r.created.clone(),
                     network,
+                    reroot_of: r.reroot_of.map(|a| a.0),
                 }
             })
             .collect();
@@ -280,15 +232,18 @@ impl Registry {
             current: self.current.as_ref().map(|(id, seat)| (id.clone(), seat.as_str())),
             lines,
             left: self.left.iter().map(|(id, seat, home)| (id.clone(), seat.as_str(), home.clone())).collect(),
+            upgraded: false,
         }
         .to_bytes()
     }
 
-    /// Read back, naming the field that is wrong: the register's shape is the sealed layer's reading
-    /// (`zikaron_seal::identities::Book::parse`); here its seats become keys and roles and the network cell a
-    /// choice. Recovery-word rows read as [`Keys::Both`]; an existing key occupies one seat ([`Keys::One`]).
     pub fn parse(bytes: &[u8]) -> Result<Registry, String> {
+        Registry::parse_shaped(bytes).map(|(r, _)| r)
+    }
+
+    pub fn parse_shaped(bytes: &[u8]) -> Result<(Registry, bool), String> {
         let book = Book::parse(bytes)?;
+        let upgraded = book.upgraded;
         let role = |w: &str| seat_of(w).ok_or_else(|| w.to_string());
         let mut rows = Vec::with_capacity(book.lines.len());
         for l in book.lines {
@@ -298,10 +253,6 @@ impl Registry {
                 (None, Some(g)) => Keys::One { seat: Role::Grantee, addr: Address(g) },
                 (None, None) => return Err("author".into()),
             };
-            // The network cell is read leniently and carried. A cell whose name this build lacks (a row of a
-            // later table) keeps that name, so the row still has a choice: no network resolves from it, its
-            // homes keep what they have, nothing overwrites it, and writing the table writes the name back. A
-            // cell without a name is no choice. One cell never makes the whole table unreadable.
             let (network, unread_network) = match &l.network {
                 Some(v) => match network_of(v) {
                     Some(c) => (Some(c), None),
@@ -315,6 +266,8 @@ impl Registry {
             rows.push(Row {
                 id: l.id,
                 keys,
+                author_office: l.author_office.filter(|o| o.generation != 0 || o.next.is_some() || !o.former.is_empty()),
+                grantee_office: l.grantee_office.filter(|o| o.generation != 0 || o.next.is_some() || !o.former.is_empty()),
                 author_home: l.author_home,
                 grantee_home: l.grantee_home,
                 backed_words: l.backed_words,
@@ -324,6 +277,7 @@ impl Registry {
                 created: l.created,
                 network,
                 unread_network,
+                reroot_of: l.reroot_of.map(Address),
             });
         }
         let current = match book.current {
@@ -331,37 +285,119 @@ impl Registry {
             None => None,
         };
         let left = book.left.into_iter().map(|(id, seat, home)| Ok((id, role(seat)?, home))).collect::<Result<_, String>>()?;
-        Ok(Registry { current, rows, left })
+        Ok((Registry { current, rows, left }, upgraded))
     }
 }
 
-/// Which row and seat is current now.
-///
-/// Every path that needs the current identity asks this one function, which follows "the current row", not
-/// "the first row of the table".
-///
-/// It reads the table it is given ([`view`]: without a registry, the empty table, so no row is current).
+fn office_mut(row: &mut Row, seat: Role) -> Result<&mut Option<Office>, Fault> {
+    if row.address(seat).is_none() {
+        return Err(Fault::known(Known::SeatUnseated, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::IdSeatEmpty).to_string())));
+    }
+    Ok(match seat {
+        Role::Author => &mut row.author_office,
+        Role::Grantee => &mut row.grantee_office,
+    })
+}
+
+pub fn set_next(reg: &mut Registry, id: &str, seat: Role, next: Option<Address>) -> Result<Row, Fault> {
+    let row = reg.rows.iter_mut().find(|r| r.id.eq_ignore_ascii_case(id)).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
+    let now = row.office(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let slot = office_mut(row, seat)?;
+    let mut o = now;
+    o.next = next.map(|a| a.0);
+    *slot = if o.generation == 0 && o.next.is_none() && o.former.is_empty() { None } else { Some(o) };
+    Ok(row.clone())
+}
+
+pub fn take_office(reg: &mut Registry, id: &str, seat: Role) -> Result<Row, Fault> {
+    let row = reg.rows.iter_mut().find(|r| r.id.eq_ignore_ascii_case(id)).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
+    let root = row.address(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let now = row.office(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let next = now.next.ok_or_else(|| Fault::known(Known::NoIdentity, format!("{id} next")))?;
+    let mut former = now.former.clone();
+    if now.current != root.0 && !former.contains(&now.current) {
+        former.push(now.current);
+    }
+    *office_mut(row, seat)? = Some(Office { generation: now.generation + 1, current: next, next: None, former });
+    key_file_gone_by(row);
+    Ok(row.clone())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeatLedger {
+    Holds,
+    Unchecked,
+    None,
+}
+
+pub fn seat_ledger(row: &Row, seat: Role) -> SeatLedger {
+    let Some(home) = row.home(seat).and_then(|h| crate::home::Home::open(&h).ok()) else { return SeatLedger::None };
+    if crate::ledgerx::head(&home).ok().flatten().is_some() {
+        return SeatLedger::Holds;
+    }
+    match crate::restorex::read(&home) {
+        Ok(None) => SeatLedger::None,
+        Ok(Some(_)) | Err(_) => SeatLedger::Unchecked,
+    }
+}
+
+pub fn reroot(reg: &mut Registry, id: &str, new: Address) -> Result<Row, Fault> {
+    let row = reg.rows.iter_mut().find(|r| r.id.eq_ignore_ascii_case(id)).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
+    let Keys::Both { author, grantee } = row.keys else { return Err(Fault::known(Known::IdentitiesShape, id.to_string())) };
+    if seat_ledger(row, Role::Grantee) != SeatLedger::None {
+        return Err(Fault::known(Known::IdentitiesShape, id.to_string()));
+    }
+    row.keys = Keys::Both { author, grantee: new };
+    row.grantee_office = Some(Office { generation: 0, current: new.0, next: None, former: vec![grantee.0] });
+    Ok(row.clone())
+}
+
+fn key_file_gone_by(row: &mut Row) {
+    row.backed_file = false;
+    row.backup_at = NO_BACKUP_AT.to_string();
+}
+
+pub fn hold_former(reg: &mut Registry, id: &str, seat: Role, keys: &[Address]) -> Result<Row, Fault> {
+    let row = reg.rows.iter_mut().find(|r| r.id.eq_ignore_ascii_case(id)).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
+    let root = row.address(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let Some(mut o) = row.office(seat) else { return Ok(row.clone()) };
+    for k in keys {
+        if *k != root && k.0 != o.current && !o.former.contains(&k.0) {
+            o.former.push(k.0);
+        }
+    }
+    if o.generation != 0 || o.next.is_some() || !o.former.is_empty() {
+        *office_mut(row, seat)? = Some(o);
+    }
+    Ok(row.clone())
+}
+
+pub fn put_office(reg: &mut Registry, id: &str, seat: Role, generation: u64, current: Address) -> Result<Row, Fault> {
+    let row = reg.rows.iter_mut().find(|r| r.id.eq_ignore_ascii_case(id)).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
+    let root = row.address(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let now = row.office(seat).ok_or_else(|| Fault::known(Known::SeatUnseated, id.to_string()))?;
+    let mut former = now.former.clone();
+    if now.current != root.0 && now.current != current.0 && !former.contains(&now.current) {
+        former.push(now.current);
+    }
+    former.retain(|a| *a != current.0);
+    let generation = if current == root { 0 } else { generation.max(1) };
+    *office_mut(row, seat)? = if generation == 0 && former.is_empty() { None } else { Some(Office { generation, current: current.0, next: None, former }) };
+    if now.current != current.0 {
+        key_file_gone_by(row);
+    }
+    Ok(row.clone())
+}
+
 pub fn now_row(view: &Registry) -> Option<(Row, Role)> {
-    // Mark the trace here too, so direct calls that bypass `apply` (tests, the CLI) are traced.
     crate::trace::mark(crate::feature::Feature::H2);
     view.now().map(|(r, s)| (r.clone(), s))
 }
 
-/// Which slot signs now: the current identity's current seat's slot ([`now_row`]). `None` without a current
-/// identity, and for an empty current seat (an existing key holds one seat; the other has no key): there is
-/// no other slot to fall back to.
 pub fn account_now(view: &Registry) -> Option<String> {
     now_row(view).and_then(|(row, seat)| row.account(seat))
 }
 
-/// Which seat to land on at start. Same rule as entering or switching identities: the first seat the identity
-/// occupies (`Row::first_seat`).
-///
-/// If the registry points at an empty seat (the app was last closed there), it lands on the first occupied
-/// seat and records that in the given table; an occupied seat stays. The empty seat is reached only when the
-/// user goes there; starting on it would make the first-run wizard offer to create an identity the user
-/// already has. `listed` is the register as read (`None` without one); writing the table back is the
-/// caller's job.
 pub fn land_at_boot(listed: &mut Registry) -> Result<Option<(Row, Role)>, Fault> {
     let Some((row, seat)) = listed.now().map(|(r, s)| (r.clone(), s)) else { return Ok(None) };
     if row.address(seat).is_some() {
@@ -372,12 +408,6 @@ pub fn land_at_boot(listed: &mut Registry) -> Result<Option<(Row, Role)>, Fault>
     Ok(Some((row, landed)))
 }
 
-/// Which home to open now: the current identity's seat home when the registry has one; without a registry,
-/// the three-level resolution.
-///
-/// An empty current seat is `None`: that seat has no home, and there is no fallback to another, which would
-/// put the user into another seat's home (or the machine pointer's) for every page to read. This is the same
-/// fact `Shell::close_home` acts on, answered here once. `listed` is the register as read.
 pub fn home_now(listed: Option<&Registry>) -> Result<Option<PathBuf>, Fault> {
     if let Some((row, seat)) = listed.and_then(|r| r.now()) {
         if let Some(h) = row.home(seat) {
@@ -390,21 +420,20 @@ pub fn home_now(listed: Option<&Registry>) -> Result<Option<PathBuf>, Fault> {
     crate::home::where_is().map(Some)
 }
 
-/// The identities on this machine now: the registry if present (`listed`, as read); otherwise none.
 pub fn view(listed: Option<Registry>) -> Registry {
     listed.unwrap_or_default()
 }
 
-/// Words not yet built into an identity (memory only, until confirmed). Wiped when dropped.
 pub struct Fresh {
     entropy: [u8; ENTROPY_BYTES],
-    /// The three random cells for copy confirmation (zero-based, ascending).
     pub picks: [usize; 3],
 }
 
 impl Fresh {
-    /// A copy handed to the background task (each wiped when dropped). Not `Clone`: copying a secret must be
-    /// written out at the call site.
+    pub(crate) fn entropy(&self) -> &[u8; ENTROPY_BYTES] {
+        &self.entropy
+    }
+
     pub fn twin(&self) -> Fresh {
         Fresh { entropy: self.entropy, picks: self.picks }
     }
@@ -417,9 +446,6 @@ impl Drop for Fresh {
 }
 
 impl Fresh {
-    /// The twelve words in order, each held in the secret type (one fixed block, zeroed when cleared or
-    /// dropped), so the copy shown to the user is protected like the words themselves. The phrase they are
-    /// split from is zeroed once split.
     pub fn words(&self) -> Vec<crate::secret::Secret> {
         let mut phrase = crate::cryptx::phrase_of(&self.entropy);
         let words = phrase.split(' ').map(crate::secret::Secret::of).collect();
@@ -427,7 +453,6 @@ impl Fresh {
         words
     }
 
-    /// The address this seat will derive.
     pub fn address(&self, seat: Role) -> Option<Address> {
         crate::key::derived(&self.entropy, seat).and_then(|s| s.address())
     }
@@ -440,8 +465,6 @@ fn random(n: usize) -> Result<Vec<u8>, Fault> {
 fn picks() -> Result<[usize; 3], Fault> {
     let words = crate::family::WORDS;
     let mut got: Vec<usize> = Vec::new();
-    // Byte rejection sampling: values beyond the last full multiple of the word count are discarded so early
-    // words are not favored.
     let limit = 256 - (256 % words);
     while got.len() < 3 {
         for b in random(16)? {
@@ -458,7 +481,6 @@ fn picks() -> Result<[usize; 3], Fault> {
     Ok([got[0], got[1], got[2]])
 }
 
-/// Generate new words: 16 bytes of system entropy read as twelve English words.
 pub fn fresh() -> Result<Fresh, Fault> {
     let raw = random(ENTROPY_BYTES)?;
     let mut entropy = [0u8; ENTROPY_BYTES];
@@ -466,7 +488,6 @@ pub fn fresh() -> Result<Fresh, Fault> {
     Ok(Fresh { entropy, picks: picks()? })
 }
 
-/// Read pasted words. Word count, word list and checksum are each refused by name.
 pub fn from_words(text: &str) -> Result<Fresh, Fault> {
     match crate::cryptx::entropy_of(text) {
         Ok(entropy) => Ok(Fresh { entropy, picks: picks()? }),
@@ -475,7 +496,6 @@ pub fn from_words(text: &str) -> Result<Fresh, Fault> {
     }
 }
 
-/// Confirm the copy: the three chosen cells are compared; a mismatch names the cell.
 pub fn confirm(f: &Fresh, answers: &[(usize, crate::secret::Secret)]) -> Result<(), Fault> {
     let words = f.words();
     for p in f.picks {
@@ -487,7 +507,6 @@ pub fn confirm(f: &Fresh, answers: &[(usize, crate::secret::Secret)]) -> Result<
     Ok(())
 }
 
-/// The registry row that collides with these addresses (`None` when none).
 fn row_with(reg: &Registry, addrs: &[Address]) -> Option<Row> {
     reg.rows
         .iter()
@@ -495,18 +514,6 @@ fn row_with(reg: &Registry, addrs: &[Address]) -> Option<Row> {
         .cloned()
 }
 
-/// What making or importing an identity with these keys and this name meets in the register: the one rule
-/// both adding paths ([`add_words`], [`add_existing`]) and the import's pre-check (before a key file is
-/// written) ask.
-/// - Its keys on a row of the same kind whose slots are missing: that row, to be refilled (`Ok(Some)`).
-/// - Its keys on a row otherwise (slots complete, or another kind): refused by name, nothing written —
-///   [`Known::IdentityHereAs`] when a name was given that is not the row's (the row's name in the evidence;
-///   the row is not renamed), else [`Known::IdentityExists`].
-/// - Its keys on no row, and a name given that another row already has: refused by name
-///   ([`Known::IdentityNameTaken`]), nothing written.
-/// - Otherwise a new identity (`Ok(None)`).
-///
-/// A name is compared as written, surrounding whitespace dropped; an empty name counts as none given.
 pub fn meets(reg: &Registry, keys: &Keys, label: &str) -> Result<Option<Row>, Fault> {
     let label = label.trim();
     let addrs: Vec<Address> = match keys {
@@ -529,13 +536,8 @@ pub fn meets(reg: &Registry, keys: &Keys, label: &str) -> Result<Option<Row>, Fa
     Ok(None)
 }
 
-/// Whether every slot this row occupies is in the vault. "This identity is already on this machine" is
-/// judged by slots, not by the registry row: after a machine change, a vault reset or a test cleanup, the row
-/// can remain while the slots are gone, and the identity can no longer sign here.
 pub fn slots_present(row: &Row) -> Result<bool, Fault> {
-    for acct in row.accounts() {
-        // `present` checks slot names only (no master key), so it answers while the vault is locked or
-        // absent, as the "key not in the local vault" line and the first-run lamps need.
+    for acct in row.needed_accounts() {
         if !crate::keybox::present(&acct)? {
             return Ok(false);
         }
@@ -543,7 +545,6 @@ pub fn slots_present(row: &Row) -> Result<bool, Fault> {
     Ok(true)
 }
 
-/// Fill in each missing slot (present ones are untouched).
 fn fill_key(acct: &str, s: &Secret) -> Result<(), Fault> {
     if !crate::keybox::present(acct)? {
         crate::key::install_at(acct, s)?;
@@ -551,9 +552,6 @@ fn fill_key(acct: &str, s: &Secret) -> Result<(), Fault> {
     Ok(())
 }
 
-/// After filling slots the row stays: slots are read back and checked, backup marks only accumulate, and the
-/// current seat stays the one in use if the row occupies it, else becomes the first one it occupies
-/// ([`Row::seat_here_or_first`]).
 fn restored(reg: &mut Registry, mut row: Row, words: bool, file: bool) -> Result<Row, Fault> {
     verify_back(&row)?;
     row.backed_words |= words;
@@ -565,16 +563,13 @@ fn restored(reg: &mut Registry, mut row: Row, words: bool, file: bool) -> Result
     Ok(row)
 }
 
-/// The seat in use in this register (the current row's), the author seat when none is current.
 fn seat_in_use(reg: &Registry) -> Role {
     reg.current.as_ref().map(|(_, s)| *s).unwrap_or(Role::Author)
 }
 
-/// Reads keys back once built and compares: the system saying it stored a key is only a claim; the vault is
-/// the source of truth.
 fn verify_back(row: &Row) -> Result<(), Fault> {
     for seat in row.keys.seats() {
-        let (Some(acct), Some(want)) = (row.account(seat), row.address(seat)) else { continue };
+        let (Some(acct), Some(want)) = (row.account(seat), row.current(seat)) else { continue };
         match crate::key::load_at(&acct)? {
             Some(s) if s.address() == Some(want) => {}
             _ => return Err(Fault::known(Known::KeyNotStored, acct)),
@@ -591,7 +586,6 @@ fn verify_back(row: &Row) -> Result<(), Fault> {
 }
 
 fn enroll(reg: &mut Registry, row: Row) -> Result<Row, Fault> {
-    // Imported again: the homes it left are its homes again (the same names under the same master key).
     reg.left.retain(|(i, _, _)| !i.eq_ignore_ascii_case(&row.id));
     let here = seat_in_use(reg);
     reg.rows.push(row.clone());
@@ -599,18 +593,25 @@ fn enroll(reg: &mut Registry, row: Row) -> Result<Row, Fault> {
     Ok(row)
 }
 
-/// Builds a recovery-word identity: one seed slot and one slot per seat key, read back and checked, then the
-/// registry row in the given table (written by the caller, `register::change`); the current seat becomes its
-/// author seat. Collisions with the register are judged by [`meets`] under the given name (`label`).
 pub fn add_words(reg: &mut Registry, f: &Fresh, backed_words: bool, label: &str) -> Result<Row, Fault> {
-    let malformed = || Fault::known(Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string());
+    add_words_rooted(reg, f, backed_words, label, [None, None])
+}
+
+pub fn derived_pair(f: &Fresh) -> Option<(Address, Address)> {
+    let a = crate::key::derived(&f.entropy, Role::Author)?.address()?;
+    let g = crate::key::derived(&f.entropy, Role::Grantee)?.address()?;
+    Some((a, g))
+}
+
+pub fn add_words_rooted(reg: &mut Registry, f: &Fresh, backed_words: bool, label: &str, roots: [Option<Address>; 2]) -> Result<Row, Fault> {
+    let malformed = || Fault::known(Known::KeyMalformed, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail013).to_string()));
     let author = crate::key::derived(&f.entropy, Role::Author).ok_or_else(malformed)?;
     let grantee = crate::key::derived(&f.entropy, Role::Grantee).ok_or_else(malformed)?;
     let a = author.address().ok_or_else(malformed)?;
     let g = grantee.address().ok_or_else(malformed)?;
-    // The same words and kind with missing slots: fill the slots, keep the row. Anything else the register
-    // already has is refused by name (`meets`).
-    if let Some(had) = meets(reg, &Keys::Both { author: a, grantee: g }, label)? {
+    let (ra, rg) = (roots[0].unwrap_or(a), roots[1].unwrap_or(g));
+    let office = |root: Address, key: Address| (root != key).then(|| Office { generation: 1, current: key.0, next: None, former: Vec::new() });
+    if let Some(had) = meets(reg, &Keys::Both { author: ra, grantee: rg }, label)? {
         if !crate::keybox::present(&crate::places::seed_slot(&had.id))? {
             crate::keybox::put(&crate::places::seed_slot(&had.id), &f.entropy)?;
         }
@@ -621,12 +622,14 @@ pub fn add_words(reg: &mut Registry, f: &Fresh, backed_words: bool, label: &str)
         fill_key(&crate::places::key_slot(&g), &grantee)?;
         return restored(reg, had, backed_words, false);
     }
-    let id = a.hex();
+    let id = ra.hex();
     let row = Row {
         author_home: crate::home::identity_home(&id, Role::Author)?.display().to_string(),
         grantee_home: crate::home::identity_home(&id, Role::Grantee)?.display().to_string(),
         id,
-        keys: Keys::Both { author: a, grantee: g },
+        keys: Keys::Both { author: ra, grantee: rg },
+        author_office: office(ra, a),
+        grantee_office: office(rg, g),
         backed_words,
         backed_file: false,
         backup_at: NO_BACKUP_AT.to_string(),
@@ -634,11 +637,9 @@ pub fn add_words(reg: &mut Registry, f: &Fresh, backed_words: bool, label: &str)
         created: stamp(),
         network: None,
         unread_network: None,
+        reroot_of: None,
     };
     crate::keybox::put(&crate::places::seed_slot(&row.id), &f.entropy)?;
-    // The recovery seal: only the primary identity has one. The first identity on this machine becomes
-    // primary (after a forgotten passcode or too many failures, these words reopen the master key); every
-    // later one is secondary and gets none.
     crate::keybox::add_recovery(&row.id, crate::keybox::PrimaryKind::Words, &f.entropy)?;
     crate::key::install_at(&crate::places::key_slot(&a), &author)?;
     crate::key::install_at(&crate::places::key_slot(&g), &grantee)?;
@@ -646,38 +647,40 @@ pub fn add_words(reg: &mut Registry, f: &Fresh, backed_words: bool, label: &str)
     enroll(reg, row)
 }
 
-/// Adopts an existing key (imported private key or keystore file). One slot, only on `seat`; the other seat
-/// stays empty.
-///
-/// Writing the same key to both seats would make grantee-seat signatures use the author's key, and a reader
-/// of the ledger could not tell an author's receipt from a grantee's entry. For keys on both seats, import
-/// another key or use a recovery-word identity.
 pub fn add_existing(reg: &mut Registry, s: &Secret, seat: Role, backed_file: bool, label: &str) -> Result<Row, Fault> {
-    let a = s
+    add_existing_rooted(reg, s, seat, backed_file, label, None)
+}
+
+pub fn add_existing_rooted(reg: &mut Registry, s: &Secret, seat: Role, backed_file: bool, label: &str, root: Option<Address>) -> Result<Row, Fault> {
+    let key = s
         .address()
-        .ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::t(crate::lang::Key::Tail013).to_string()))?;
-    // The same key, same seat, slot missing: fill the slot, keep the row. Anything else is refused by name
-    // (`meets`), including the same key trying to take the other seat (one key, one seat).
+        .ok_or_else(|| Fault::known(Known::KeyMalformed, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail013).to_string())))?;
+    let a = root.unwrap_or(key);
     if let Some(had) = meets(reg, &Keys::One { seat, addr: a }, label)? {
-        fill_key(&crate::places::key_slot(&a), s)?;
+        fill_key(&crate::places::key_slot(&key), s)?;
         if !crate::keybox::has_recovery(&had.id)? {
             crate::key::seal_recovery(&had.id, s)?;
         }
         return restored(reg, had, false, backed_file);
     }
     let id = a.hex();
-    // An empty seat has no home: a home is where a seat writes, a seat without a key writes nothing, and an
-    // empty directory would suggest the seat is in use.
     let home = crate::home::identity_home(&id, seat)?.display().to_string();
     let (author_home, grantee_home) = match seat {
         Role::Author => (home, UNSEATED.to_string()),
         Role::Grantee => (UNSEATED.to_string(), home),
+    };
+    let office = (a != key).then(|| Office { generation: 1, current: key.0, next: None, former: Vec::new() });
+    let (author_office, grantee_office) = match seat {
+        Role::Author => (office, None),
+        Role::Grantee => (None, office),
     };
     let row = Row {
         author_home,
         grantee_home,
         id,
         keys: Keys::One { seat, addr: a },
+        author_office,
+        grantee_office,
         backed_words: false,
         backed_file,
         backup_at: NO_BACKUP_AT.to_string(),
@@ -685,17 +688,14 @@ pub fn add_existing(reg: &mut Registry, s: &Secret, seat: Role, backed_file: boo
         created: stamp(),
         network: None,
         unread_network: None,
+        reroot_of: None,
     };
-    crate::key::install_at(&crate::places::key_slot(&a), s)?;
-    // The recovery seal, only when this identity becomes primary (the first on this machine). An
-    // existing-key identity has no words; it recovers with its exported keystore file and password.
+    crate::key::install_at(&crate::places::key_slot(&key), s)?;
     crate::key::seal_recovery(&row.id, s)?;
     verify_back(&row)?;
     enroll(reg, row)
 }
 
-/// When this row was created, spelled by `keystore::utc`. No decision reads it; the screen uses it only to
-/// help recognize the identity.
 fn stamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -704,7 +704,6 @@ fn stamp() -> String {
     crate::keystore::utc(secs)
 }
 
-/// Renames an identity. Only the name field changes (no decision reads it).
 pub fn rename(reg: &mut Registry, id: &str, label: &str) -> Result<Row, Fault> {
     let Some(r) = reg.rows.iter_mut().find(|r| r.id == id) else {
         return Err(Fault::known(Known::NoIdentity, id.to_string()));
@@ -713,9 +712,6 @@ pub fn rename(reg: &mut Registry, id: &str, label: &str) -> Result<Row, Fault> {
     Ok(r.clone())
 }
 
-/// Records the network an identity chose (a row name, or `deploy::CUSTOM`) when it has none yet: a new row
-/// gets the choice of the sheet that made it; an identity imported again keeps its own. A name outside the
-/// choices is refused by name and nothing changes.
 pub fn choose_network(reg: &mut Registry, id: &str, name: &str) -> Result<Row, Fault> {
     if !crate::deploy::is_choice(name) {
         return Err(Fault::known(Known::IdentitiesShape, name.to_string()));
@@ -729,8 +725,6 @@ pub fn choose_network(reg: &mut Registry, id: &str, name: &str) -> Result<Row, F
     Ok(r.clone())
 }
 
-/// Sets the network an identity chose, replacing the old one (the wizard's network step, which decides the
-/// network of the identity it made). Hand-filled values go with the old choice.
 pub fn set_network(reg: &mut Registry, id: &str, name: &str) -> Result<Row, Fault> {
     if !crate::deploy::is_choice(name) {
         return Err(Fault::known(Known::IdentitiesShape, name.to_string()));
@@ -738,7 +732,6 @@ pub fn set_network(reg: &mut Registry, id: &str, name: &str) -> Result<Row, Faul
     let Some(r) = reg.rows.iter_mut().find(|r| r.id == id) else {
         return Err(Fault::known(Known::NoIdentity, id.to_string()));
     };
-    // Hand-filled values belong to the custom choice, so replacing the choice drops them.
     if r.network.as_ref().map(Chosen::name) != Some(name) {
         r.network = Some(Chosen::named(name));
         r.unread_network = None;
@@ -746,8 +739,6 @@ pub fn set_network(reg: &mut Registry, id: &str, name: &str) -> Result<Row, Faul
     Ok(r.clone())
 }
 
-/// Records what a seat filled in by hand for an identity that chose "custom" (the other seat takes it). An
-/// identity that chose a row, or none, records nothing.
 pub fn remember_custom(reg: &mut Registry, id: &str, c: crate::deploy::Custom) -> Result<bool, Fault> {
     let Some(r) = reg.rows.iter_mut().find(|r| r.id == id) else {
         return Err(Fault::known(Known::NoIdentity, id.to_string()));
@@ -762,8 +753,6 @@ pub fn remember_custom(reg: &mut Registry, id: &str, c: crate::deploy::Custom) -
     }
 }
 
-/// The registry's network cell: `{"name":…}`, plus the hand-filled values when present:
-/// `{"chainId":…,"endpoints":["chain=url",…],"fromBlock":…,"name":"custom","registry":"0x…"}`.
 fn network_value(chosen: &Chosen) -> Value {
     let mut m = vec![("name".to_string(), Value::Str(chosen.name().to_string()))];
     if let Some(c) = chosen.custom() {
@@ -775,8 +764,6 @@ fn network_value(chosen: &Chosen) -> Value {
     Value::Obj(m)
 }
 
-/// The network cell read strictly; `None` when any part of it does not read, including hand-filled values
-/// next to a row's name (a row carries none).
 fn network_of(v: &Value) -> Option<Chosen> {
     let name = match v.member("name") {
         Some(Value::Str(n)) if crate::deploy::is_choice(n) => n.clone(),
@@ -813,25 +800,19 @@ fn network_of(v: &Value) -> Option<Chosen> {
     Some(Chosen::Custom(Some(crate::deploy::Custom { chain_id, registry, from_block, endpoints })))
 }
 
-/// The registered row whose seat has its home at `root`, and that seat.
 pub fn owner_of(reg: &Registry, root: &Path) -> Option<(Row, Role)> {
     reg.rows.iter().find_map(|r| r.seat_at(root).map(|s| (r.clone(), s)))
 }
 
-/// After a home moves, the registry field that pointed at the old place follows to the new one. The registry
-/// records identity homes; moving only the pointer would reopen the old place on the next start and never
-/// write the new one (splitting the ledger in two). Returns how many fields changed (the caller writes the
-/// table when any did).
 pub fn rehome(reg: &mut Registry, old: &Path, new: &Path) -> usize {
     let to = new.display().to_string();
     let mut n = 0;
     for r in reg.rows.iter_mut() {
-        // An empty seat's home field is [`UNSEATED`], not a path: a move never touches it.
-        if r.author_home != UNSEATED && crate::home::same_place(Path::new(&r.author_home), old) {
+        if r.author_home != UNSEATED && crate::home::same_place(&crate::home::here(Path::new(&r.author_home)), old) {
             r.author_home = to.clone();
             n += 1;
         }
-        if r.grantee_home != UNSEATED && crate::home::same_place(Path::new(&r.grantee_home), old) {
+        if r.grantee_home != UNSEATED && crate::home::same_place(&crate::home::here(Path::new(&r.grantee_home)), old) {
             r.grantee_home = to.clone();
             n += 1;
         }
@@ -839,35 +820,57 @@ pub fn rehome(reg: &mut Registry, old: &Path, new: &Path) -> usize {
     n
 }
 
-/// Switches the current identity and seat to the given pair in the given table.
+pub fn seat_home_set(reg: &mut Registry, id: &str, seat: Role, to: &str) -> Option<String> {
+    let r = reg.rows.iter_mut().find(|r| r.id == id)?;
+    let h = match seat {
+        Role::Author => &mut r.author_home,
+        Role::Grantee => &mut r.grantee_home,
+    };
+    if h == UNSEATED {
+        return None;
+    }
+    Some(std::mem::replace(h, to.to_string()))
+}
+
+pub fn follow_machine(reg: &mut Registry) {
+    let Ok(m) = crate::home::machine_dir() else { return };
+    let here = |h: &str| crate::home::here_under(&m, Path::new(h)).display().to_string();
+    for r in reg.rows.iter_mut() {
+        for h in [&mut r.author_home, &mut r.grantee_home] {
+            if *h != UNSEATED && !h.is_empty() {
+                *h = here(h);
+            }
+        }
+    }
+    for (_, _, h) in reg.left.iter_mut() {
+        *h = here(h);
+    }
+}
+
 pub fn switch(reg: &mut Registry, id: &str, seat: Role) -> Result<Row, Fault> {
     let row = reg.find(id).cloned().ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
     reg.current = Some((row.id.clone(), seat));
     Ok(row)
 }
 
-/// Deletes an identity. The product checks the precondition: some backup was made, or (for the author) a
-/// handover is on record; otherwise refused. Keys first, then the row; neither seat's home loses a byte.
-/// Returns the deleted row and the current pair afterwards (if any identity remains). The row leaves the
-/// given table; writing it is the caller's job (`register::change`), after the keys are gone.
+pub fn delete_allowed(row: &Row, handed_over: bool) -> Result<(), Fault> {
+    if !row.backed() && !handed_over {
+        return Err(Fault::known(Known::DeleteUnbacked, row.id.clone()));
+    }
+    Ok(())
+}
+
 pub fn delete(reg: &mut Registry, id: &str, handed_over: bool) -> Result<(Row, Option<(Row, Role)>), Fault> {
     let row = reg.find(id).cloned().ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
-    // The primary identity recovers the passcode, so it is not deleted directly; another one is made primary
-    // first (`rekey::set_primary`). Checked before anything is touched.
     if crate::keybox::primary()?.map(|(p, _)| p.eq_ignore_ascii_case(&row.id)).unwrap_or(false) {
         return Err(Fault::known(Known::PrimaryDelete, id.to_string()));
     }
-    if !row.backed() && !handed_over {
-        return Err(Fault::known(Known::DeleteUnbacked, id.to_string()));
-    }
-    // A secondary identity opens nothing: its slots go and the master key stays.
+    delete_allowed(&row, handed_over)?;
     for acct in row.accounts() {
         crate::keybox::drop_item(&acct)?;
     }
-    // A vault written before the primary was recorded may still hold a seal for it: dropped with it.
     crate::keybox::drop_recovery(&row.id)?;
     reg.rows.retain(|r| r.id != row.id);
-    // Its homes stay on disk (they hold the ledger); the register keeps where, so they remain this machine's.
     for seat in Role::ALL {
         if let Some(h) = row.home(seat) {
             reg.left.retain(|(i, s, _)| !(i.eq_ignore_ascii_case(&row.id) && *s == seat));
@@ -881,10 +884,6 @@ pub fn delete(reg: &mut Registry, id: &str, handed_over: bool) -> Result<(Row, O
     Ok((row, next))
 }
 
-/// Records a backup: the words were confirmed, or a keystore file was exported.
-///
-/// `at` is where the key file actually landed: the flag says it was done, this says where, so whether the
-/// backup is on disk can be checked later ([`backup_seen`]).
 pub fn mark(reg: &mut Registry, id: &str, words: bool, file: bool, at: Option<&str>) -> Result<(), Fault> {
     let Some(r) = reg.rows.iter_mut().find(|r| r.id == id) else {
         return Err(Fault::known(Known::NoIdentity, id.to_string()));
@@ -897,28 +896,14 @@ pub fn mark(reg: &mut Registry, id: &str, words: bool, file: bool, at: Option<&s
     Ok(())
 }
 
-/// Whether this identity's backup file is on disk now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackupSeen {
-    /// The location the registry recorded ([`NO_BACKUP_AT`] if never).
     pub at: String,
-    /// The registry flag "a key file was exported".
     pub marked: bool,
-    /// A file actually exists at that path now.
     pub exists: bool,
-    /// The file reads back as a keystore V3 whose address is this identity's address on this seat.
     pub opens: bool,
 }
 
-/// Looks on disk for the backup file.
-///
-/// The flag remembers that a backup was done; the disk is the current fact. After a backup that did not
-/// land (disk full or read-only) or a file moved away, the flag stays true while the file is gone, and
-/// deleting the identity on the flag's word would lose the key forever. This only reads: it returns memory
-/// and fact separately and lets the caller decide.
-///
-/// `opens` checks only the file's shape and address (the keystore V3 `address` field), without the password:
-/// the address needs no decryption, and the password stays with the user.
 pub fn backup_seen(row: &Row) -> BackupSeen {
     let mut out = BackupSeen { at: row.backup_at.clone(), marked: row.backed_file, ..BackupSeen::default() };
     if row.backup_at == NO_BACKUP_AT {
@@ -928,26 +913,20 @@ pub fn backup_seen(row: &Row) -> BackupSeen {
     let Ok(bytes) = std::fs::read(p) else { return out };
     out.exists = true;
     let Ok(shape) = crate::keystore::shape(&bytes) else { return out };
-    let want: Vec<Address> = row.keys.seats().iter().filter_map(|s| row.address(*s)).collect();
+    let want: Vec<Address> = row.keys.seats().iter().filter_map(|s| row.current(*s)).collect();
     out.opens = shape.compliant().is_empty() && shape.address.map(|a| want.contains(&a)).unwrap_or(false);
     out
 }
 
-/// Recovers this machine's vault with recovery words: the words pass the word list and checksum first;
-/// entropy never leaves this module.
 pub fn recover_with_words(words: &str, new_pin: &str) -> Result<(), Fault> {
     let f = from_words(words)?;
     recover_with(&f, new_pin)
 }
 
-/// As above, with the words already parsed (the action layer checks the words in the frame and sends
-/// derivation to the background).
 pub fn recover_with(f: &Fresh, new_pin: &str) -> Result<(), Fault> {
     crate::keybox::recover(&f.entropy, new_pin)
 }
 
-/// This identity's twelve words, read from the seed slot now. An existing-key identity has no words and says
-/// so by name. Called only by the show step, which passes the local passcode gate first (`Action::pin_asked`).
 pub fn words_of(view: &Registry, id: &str) -> Result<Vec<crate::secret::Secret>, Fault> {
     let row = view.find(id).ok_or_else(|| Fault::known(Known::NoIdentity, id.to_string()))?;
     if row.kind() != Kind::Words {
@@ -980,6 +959,8 @@ mod tests {
         Row {
             id: addr.hex(),
             keys,
+            author_office: None,
+            grantee_office: None,
             author_home: format!("/x/{a}/author"),
             grantee_home: match kind {
                 Kind::Words => format!("/x/{a}/grantee"),
@@ -992,11 +973,22 @@ mod tests {
             backed_file: false,
             network: None,
             unread_network: None,
+            reroot_of: None,
         }
     }
 
-    /// Registry round trip, and its bytes contain nothing resembling a private key or words (only addresses,
-    /// paths, kinds, flags).
+    #[test]
+    fn delete_is_allowed_only_with_a_backup_or_a_handover() {
+        let bare = row(5, Kind::Existing);
+        let refused = delete_allowed(&bare, false).unwrap_err();
+        assert_eq!((refused.which(), refused.tail()), (Some(Known::DeleteUnbacked), bare.id.as_str()));
+        assert!(delete_allowed(&bare, true).is_ok(), "a handover on record");
+        let mut filed = row(6, Kind::Existing);
+        filed.backed_file = true;
+        assert!(delete_allowed(&filed, false).is_ok(), "a key file backup");
+        assert!(delete_allowed(&row(8, Kind::Words), false).is_ok(), "words written down");
+    }
+
     #[test]
     fn registry_round_trips_without_key_material() {
         let mut chose = row(9, Kind::Existing);
@@ -1012,7 +1004,6 @@ mod tests {
         }
     }
 
-    /// A malformed row is named by field; a current identity pointing outside the table is refused.
     #[test]
     fn registry_refuses_named_columns() {
         let reg = Registry { current: None, rows: vec![row(7, Kind::Words)], left: Vec::new() };
@@ -1022,8 +1013,6 @@ mod tests {
         assert_eq!(Registry::parse(bad.as_bytes()).unwrap_err(), "current");
     }
 
-    /// A network cell whose name this build lacks is carried: the row keeps the name (no network resolves
-    /// from it) and the table writes it back; a cell without a name is no choice.
     #[test]
     fn a_network_cell_this_build_lacks_is_carried() {
         let mut r = row(7, Kind::Words);
@@ -1041,8 +1030,6 @@ mod tests {
         assert_eq!(Registry::parse(nameless.as_bytes()).unwrap().rows[0].network, None);
     }
 
-    /// A custom network cell this build cannot read whole (a later version's form) is written back byte for
-    /// byte; only a change made here (a new choice, or filled-in values) replaces it.
     #[test]
     fn a_custom_cell_this_build_cannot_read_is_written_back_whole() {
         let mut r = row(7, Kind::Words);
@@ -1056,7 +1043,6 @@ mod tests {
         assert_eq!(back.rows[0].network, Some(Chosen::Custom(None)));
         assert_eq!(String::from_utf8(back.to_bytes()).unwrap(), off, "carried whole");
         let id = back.rows[0].id.clone();
-        // Values filled in here replace the carried cell too (the row still chose "custom").
         let mut filled = Registry::parse(off.as_bytes()).unwrap();
         let c = crate::deploy::Custom { chain_id: 5, registry: crate::key::Address([0x22; 20]), from_block: 3, endpoints: vec!["5=https://m.example".to_string()] };
         assert_eq!(remember_custom(&mut filled, &id, c).ok(), Some(true));
@@ -1067,10 +1053,6 @@ mod tests {
         assert!(!String::from_utf8(back.to_bytes()).unwrap().contains("0x10"), "a new choice replaces it");
     }
 
-    /// Every network cell form older or later files write reads into one choice: a row name alone; custom with
-    /// and without values; no cell; values with no name (no choice, carried); custom with unreadable values
-    /// (custom, nothing filled in, carried); values next to a row name (the row, values ignored, carried).
-    /// Choosing a row afterwards drops custom's values.
     #[test]
     fn the_network_cell_reads_into_one_choice() {
         let base = String::from_utf8(Registry { current: None, rows: vec![row(7, Kind::Words)], left: Vec::new() }.to_bytes()).unwrap();

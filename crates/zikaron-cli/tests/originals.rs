@@ -1,6 +1,3 @@
-//! `kit-verify --originals-to` on the real binary: a plain record package, one file or a folder, gives its
-//! originals out with no home and no key; the folder either holds them all or is as it was.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use zikaron::json::Value;
@@ -26,7 +23,6 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(p)
 }
 
-/// One run in `dir` (its own user home): exit code, stdout, the first two lines of stderr.
 fn run(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let o = Command::new(BIN)
         .args(args)
@@ -95,8 +91,6 @@ fn dir_content(dir: &Path) -> String {
     zikaron::hexfmt::encode(&zikaron_glue::recording::dir_content(&rows).0)
 }
 
-/// A package carrying a file original (a name in Chinese characters) and a signed directory (`Field Notes`, two
-/// files), as the desktop puts originals in.
 fn package(w: &Path, out: &Path, form: zikaron_glue::pack::Form) -> (Vec<u8>, String) {
     let file = b"report bytes".to_vec();
     let src = w.join("src").join("Field Notes");
@@ -105,13 +99,14 @@ fn package(w: &Path, out: &Path, form: zikaron_glue::pack::Form) -> (Vec<u8>, St
     std::fs::write(src.join("Day 2").join("notes.txt"), b"second day").expect("w");
     let dir = dir_content(&src);
     let mut b = zikaron_glue::pack::Bundle { entries: entries(&[hex(&file), dir.clone()]), note: String::new(), ..Default::default() };
-    let mut names = Vec::new();
-    for (name, bytes) in [("報告.pdf", file.clone()), ("Field Notes/day1.txt", b"first day".to_vec()), ("Field Notes/Day 2/notes.txt", b"second day".to_vec())] {
-        zikaron_glue::kitnames::put_original(name, bytes, &mut b, &mut names).expect("kit-legal");
-    }
-    b.files.push((zikaron_glue::kitnames::NAMES_FILE.to_string(), zikaron_glue::kitnames::names_table(&names)));
+    zikaron_glue::kitnames::put_original("報告.pdf", file.clone(), &mut b).expect("kit-legal");
+    zikaron_glue::kitnames::put_directory("Field Notes", vec![("day1.txt".to_string(), b"first day".to_vec()), ("Day 2/notes.txt".to_string(), b"second day".to_vec())], &mut b).expect("kit-legal");
     zikaron_glue::pack::export_as(out, b, form).expect("exports");
     (file, dir)
+}
+
+fn top() -> String {
+    "Field Notes".to_string()
 }
 
 fn listing(dir: &Path) -> Vec<String> {
@@ -120,8 +115,6 @@ fn listing(dir: &Path) -> Vec<String> {
     v
 }
 
-/// Both forms give out the file original under its own name with the recorded bytes and the directory whole,
-/// recomputing to its record; the answer is the records' answer (no chain read: exit 3) with `taken` and `path`.
 #[test]
 fn both_forms_give_out_file_and_directory_originals() {
     let w = scratch("forms");
@@ -132,24 +125,21 @@ fn both_forms_give_out_file_and_directory_originals() {
         std::fs::create_dir_all(&to).expect("a folder");
         let (code, out, _) = run(&w.0, &["kit-verify", "--kit", &kit.display().to_string(), "--originals-to", &to.display().to_string()]);
         assert_eq!(code, 3, "{tag}: {out}");
-        assert_eq!(texts(&member(&out, "taken")), vec!["Field Notes".to_string(), "報告.pdf".to_string()], "{tag}: {out}");
+        assert_eq!(texts(&member(&out, "taken")), vec![top(), "報告.pdf".to_string()], "{tag}: {out}");
         assert_eq!(member(&out, "path").as_str(), Some(to.display().to_string().as_str()));
         assert!(out.matches("\"original\":\"match\"").count() == 2, "both originals match: {out}");
         assert_eq!(std::fs::read(to.join("報告.pdf")).expect("there"), file);
-        assert_eq!(dir_content(&to.join("Field Notes")), dir, "{tag}");
-        assert_eq!(listing(&to), vec!["Field Notes".to_string(), "報告.pdf".to_string()], "{tag}: nothing else");
+        assert_eq!(dir_content(&to.join(top())), dir, "{tag}");
+        assert_eq!(listing(&to), vec![top(), "報告.pdf".to_string()], "{tag}: nothing else");
     }
 }
 
-/// A name already in the folder refuses the whole batch by name, zero bytes; a link there is refused and never
-/// followed; a folder that cannot be written leaves it as it was. Each answer is `E_EXTRACT` with its token.
 #[test]
 fn what_stands_in_the_way_refuses_the_whole_batch_and_writes_nothing() {
     let w = scratch("refused");
     let kit = w.0.join("k.zkit");
     package(&w.0, &kit, zikaron_glue::pack::Form::File);
     let k = kit.display().to_string();
-    // Same name.
     let to = w.0.join("same");
     std::fs::create_dir_all(&to).expect("a folder");
     std::fs::write(to.join("報告.pdf"), b"mine").expect("w");
@@ -159,21 +149,17 @@ fn what_stands_in_the_way_refuses_the_whole_batch_and_writes_nothing() {
     assert_eq!(err, zikaron_glue::extract::words::EXISTS.1, "the words from the one place");
     assert_eq!(listing(&to), vec!["報告.pdf".to_string()]);
     assert_eq!(std::fs::read(to.join("報告.pdf")).expect("there"), b"mine".to_vec(), "not written over");
-    // A link, pointing outside.
     let to = w.0.join("link");
     let outside = w.0.join("outside");
     std::fs::create_dir_all(&to).expect("a folder");
     std::fs::create_dir_all(&outside).expect("a folder");
-    // The link is made by the system's own tool (the platform calls live in the platform crate only).
-    let linked = Command::new("ln").arg("-s").arg(outside.join("Field Notes")).arg(to.join("Field Notes")).status().map(|s| s.success()).unwrap_or(false);
+    let linked = Command::new("ln").arg("-s").arg(outside.join(top())).arg(to.join(top())).status().map(|s| s.success()).unwrap_or(false);
     if linked {
         let (code, out, _) = run(&w.0, &["kit-verify", "--kit", &k, "--originals-to", &to.display().to_string()]);
         assert_eq!((code, member(&out, "token").as_str()), (1, Some("LINK")), "{out}");
         assert!(listing(&outside).is_empty(), "nothing outside the folder");
-        assert_eq!(listing(&to), vec!["Field Notes".to_string()], "the link alone");
+        assert_eq!(listing(&to), vec![top()], "the link alone");
     }
-    // A folder that cannot be written: the first write fails and nothing stays (a read-only folder keeps writes out on
-    // unix systems; on Windows the attribute does not).
     if cfg!(unix) {
         let to = w.0.join("shut");
         std::fs::create_dir_all(&to).expect("a folder");
@@ -189,8 +175,6 @@ fn what_stands_in_the_way_refuses_the_whole_batch_and_writes_nothing() {
     }
 }
 
-/// A package the kit law refuses gives nothing: a manifest naming a file by a path that is not a kit path
-/// (uppercase, kit law §7.2) is refused as the law refuses it, before anything is written.
 #[test]
 fn a_package_the_kit_law_refuses_gives_nothing() {
     let w = scratch("law");
@@ -223,4 +207,109 @@ fn a_package_the_kit_law_refuses_gives_nothing() {
     let (code, out, _) = run(&w.0, &["kit-verify", "--kit", &kit.display().to_string(), "--originals-to", &to.display().to_string()]);
     assert_eq!((code, member(&out, "reason").as_str()), (1, Some("E_KIT")), "{out}");
     assert!(member(&out, "taken") == Value::Null && listing(&to).is_empty(), "zero bytes: {out}");
+}
+
+fn seal2(kind: &str, seq: u64, prev: Option<&str>, body: Value) -> Vec<u8> {
+    let author = zikaron::hexfmt::encode(&zikaron::cryptox::address_of_privkey(&KEY).expect("a key"));
+    let sealed = zikaron_glue::book::seal::<()>(zikaron_glue::book::Law::Two, &author, kind, seq, prev, body, |pre, domain| {
+        let (_, digest) = zikaron::entry::presig_and_digest(pre, domain);
+        let (r, s, v) = zikaron::cryptox::sign_digest(&KEY, &digest).ok_or(())?;
+        let mut raw = r.to_vec();
+        raw.extend_from_slice(&s);
+        raw.push(v);
+        Ok(zikaron::hexfmt::encode(&raw))
+    });
+    match sealed {
+        zikaron_glue::book::Sealed::Done(e) => e.bytes,
+        _ => panic!("sealed"),
+    }
+}
+
+fn id_of(b: &[u8]) -> String {
+    zikaron::hexfmt::encode(&zikaron::entry::entry_id(b))
+}
+
+fn grant_ledger(work: &str, member: bool, history: bool) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let author = zikaron::hexfmt::encode(&zikaron::cryptox::address_of_privkey(&KEY).expect("a key"));
+    let st = |x: &str| Value::Str(x.to_string());
+    let genesis = seal2("genesis", 0, None, Value::Obj(vec![("statement_md".into(), st("授权之账"))]));
+    let mode = Value::Obj(vec![("mark".into(), st("v1")), ("toolchain".into(), st(&format!("0x{}", "0b".repeat(32))))]);
+    let record = seal2("history", 1, Some(&id_of(&genesis)), Value::Obj(vec![("content".into(), st(work)), ("mode".into(), mode)]));
+    let mut body = vec![("grantee".into(), st("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")), ("ledger".into(), st(&author)), ("terms".into(), st(&format!("0x{}", "71".repeat(32)))), ("work".into(), st(work))];
+    if history {
+        body.push(("history".into(), st(&id_of(&record))));
+    }
+    if member {
+        body.push(("revocation".into(), Value::Obj(vec![("at".into(), st(&format!("0x{}", "ab".repeat(20)))), ("chain".into(), Value::Int(11_155_111))])));
+    }
+    let grant = seal2("grant", 2, Some(&id_of(&record)), Value::Obj(body));
+    (vec![genesis, record, grant.clone()], grant)
+}
+
+fn grant_package(at: &Path, ledger: Vec<Vec<u8>>, grant: Vec<u8>, original: zikaron_glue::grantfile::Original, unjudged: bool) {
+    let parts = zikaron_glue::grantfile::Parts {
+        root: zikaron_glue::grantfile::first_root(std::slice::from_ref(&grant), &ledger),
+        code: zikaron_kit::v2::doc::badge_encode(std::slice::from_ref(&grant)).expect("a code"),
+        hops: vec![grant],
+        ledger,
+        original: Some(original),
+        ..Default::default()
+    };
+    let bytes = if unjudged {
+        let (pairs, _) = zikaron_glue::pack::enumerate(zikaron_glue::grantfile::build(parts).expect("built")).expect("a kit");
+        zikaron_glue::container::encode(&pairs)
+    } else {
+        zikaron_glue::grantfile::lay(parts).expect("a package").0
+    };
+    std::fs::write(at, bytes).expect("written");
+}
+
+#[test]
+fn a_grant_package_gives_out_its_work_whatever_the_grant_names() {
+    use zikaron_glue::grantfile::Original;
+    let w = scratch("grant");
+    let file = "授权的作品".as_bytes().to_vec();
+    let inside = vec![("甲.txt".to_string(), b"first".to_vec()), ("子/乙.txt".to_string(), b"second".to_vec())];
+    let src = w.0.join("src").join("资料");
+    std::fs::create_dir_all(src.join("子")).expect("a tree");
+    for (n, b) in &inside {
+        std::fs::write(src.join(n), b).expect("w");
+    }
+    let dir = dir_content(&src);
+    let file_original = || Original::File("作品.txt".into(), file.clone());
+    let forms: Vec<(&str, Vec<Vec<u8>>, Vec<u8>, Original, bool, &str)> = {
+        let (wl, wg) = grant_ledger(&hex(&file), true, false);
+        let (hl, hg) = grant_ledger(&hex(&file), true, true);
+        let (pl, pg) = grant_ledger(&hex(&file), false, false);
+        let (dl, dg) = grant_ledger(&dir, true, false);
+        let (ol, og) = grant_ledger(&hex(&file), true, false);
+        vec![
+            ("work-alone", wl, wg, file_original(), false, "作品.txt"),
+            ("history", hl, hg, file_original(), false, "作品.txt"),
+            ("no-member", pl, pg, file_original(), false, "作品.txt"),
+            ("folder", dl, dg, Original::Dir("资料".into(), inside.clone()), false, "资料"),
+            ("another-work", ol, og, Original::File("其他.txt".into(), b"not the work".to_vec()), true, ""),
+        ]
+    };
+    for (tag, ledger, grant, original, unjudged, name) in forms {
+        let p = w.0.join(format!("{tag}.zkgrant"));
+        grant_package(&p, ledger, grant, original, unjudged);
+        let to = w.0.join(format!("out-{tag}"));
+        std::fs::create_dir_all(&to).expect("a folder");
+        let (code, out, _) = run(&w.0, &["grant-package", "--package", &p.display().to_string(), "--originals-to", &to.display().to_string()]);
+        let plan = zikaron_glue::extract::plan_at(&p).expect("a plan");
+        if name.is_empty() {
+            assert_eq!((code, member(&out, "reason").as_str(), member(&out, "token").as_str()), (1, Some("E_GRANT_FILE"), Some("E_GP_CONTENT")), "{tag}: {out}");
+            assert!(listing(&to).is_empty() && plan.take.is_empty(), "{tag}: nothing taken");
+            continue;
+        }
+        assert_eq!(texts(&member(&out, "taken")), vec![name.to_string()], "{tag}: {out}");
+        assert_eq!(plan.take.iter().map(|o| o.landing_name().to_string()).collect::<Vec<_>>(), vec![name.to_string()], "{tag}: the desktop's plan");
+        assert_eq!(listing(&to), vec![name.to_string()], "{tag}: nothing else");
+        if tag == "folder" {
+            assert_eq!(dir_content(&to.join(name)), dir, "{tag}: the folder whole");
+        } else {
+            assert_eq!(std::fs::read(to.join(name)).expect("there"), file, "{tag}: the work's bytes");
+        }
+    }
 }

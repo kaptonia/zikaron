@@ -1,0 +1,1 @@
+sec 7.4: in the second of its handing off the root anchors its own seq-1 entry whose prev is its seq-3 twin; the entry sits at or before the retiring seq and is timely, a twin of the history at 1 and a fork there, while the seq-3 twin on its line stays RETIRED.

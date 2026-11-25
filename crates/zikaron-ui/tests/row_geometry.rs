@@ -1,19 +1,11 @@
-//! Where things land in a row, read in headless egui frames: a widget put in a row of `width::then` sits on the
-//! row's middle line as the key at its end does (GALEED's probe, 2026-10-16: `states::okline` hung 9 points low,
-//! its top on the row's middle), every widget of the library that stands in rows likewise; and a
-//! table's lit row keeps one gap to the card's edge around it, with the card's corner less the gap there, and meets
-//! a line square, its edge on the line's middle under the line drawn over it (in a table, a form card and a menu).
-
 use zikaron_ui::egui::{self, Pos2, Rect};
 use zikaron_ui::{button, card, mark, pin, states, table, width};
 
 const SCREEN: egui::Vec2 = egui::Vec2 { x: 1180.0, y: 800.0 };
 
 fn frame(ctx: &egui::Context, events: Vec<egui::Event>, mut add: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
-    // A tenth of a second a frame, so what eases in (a row's hover ground) gets there.
     let t = ctx.input(|i| i.time) + 0.1;
     let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(t), events, ..Default::default() };
-    // Two pixels a point, as the window has on the screens it ships to (layout rounds to pixels).
     input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
     ctx.run_ui(input, |root| {
         egui::CentralPanel::default().show_inside(root, |ui| add(ui));
@@ -26,8 +18,6 @@ fn dressed() -> egui::Context {
     ctx
 }
 
-/// The middle line of what `lead` draws in a `width::then` row with a key at its end, and of the key, after two
-/// frames (the second laid out with what the first measured).
 fn centers(lead: impl Fn(&mut egui::Ui) -> Rect) -> (f32, f32) {
     let ctx = dressed();
     let mut got = (0.0, 0.0);
@@ -63,8 +53,6 @@ fn every_widget_that_stands_in_rows_sits_on_the_rows_middle_line() {
     }
 }
 
-/// Two lines where a row's words go (a name over its kind, beside a key): in a row as tall as they are, their middle
-/// is the key's.
 #[test]
 fn two_lines_in_a_row_as_tall_as_they_are_sit_on_the_keys_middle_line() {
     use zikaron_ui::tokens::Type;
@@ -83,12 +71,10 @@ fn two_lines_in_a_row_as_tall_as_they_are_sit_on_the_keys_middle_line() {
     assert!((got.0 - got.1).abs() < 0.5, "the lines' middle {} against the key's {}", got.0, got.1);
 }
 
-/// The ground of a row under a table's head: the rectangle painted with the hover fill, and its corners.
 fn hovered_ground(row: usize, head: bool) -> egui::CornerRadius {
     let ctx = dressed();
     let rows: Vec<table::Row> = (0..3).map(|i| table::Row { cells: vec![table::Cell::Text(format!("第 {i} 行"))], click: true, ..Default::default() }).collect();
     let cols = [table::col("名", table::Col::Fr(1.0))];
-    // Where the rows are, from a first frame; then the pointer rests on the one asked for until its ground is lit.
     let mut at = Rect::NOTHING;
     frame(&ctx, Vec::new(), |ui| {
         let top = ui.cursor().min;
@@ -104,7 +90,6 @@ fn hovered_ground(row: usize, head: bool) -> egui::CornerRadius {
         }));
     }
     let out = out.expect("a frame");
-    // The row's ground is the one filled rectangle a row high under the pointer (the card's surface is the whole table).
     out.shapes
         .iter()
         .find_map(|cs| match &cs.shape {
@@ -115,33 +100,30 @@ fn hovered_ground(row: usize, head: bool) -> egui::CornerRadius {
 }
 
 #[test]
-fn a_tables_lit_row_is_round_on_every_corner() {
-    let round = egui::CornerRadius::same((zikaron_ui::tokens::Radius::Card.px() - zikaron_ui::band::GAP) as u8);
-    assert_eq!(hovered_ground(0, true), round, "under the head's rule and over a line");
-    assert_eq!(hovered_ground(1, true), round, "between two lines");
-    assert_eq!(hovered_ground(2, true), round, "the last row, at the card's foot");
-    assert_eq!(hovered_ground(0, false), round, "with no head, the first row, at the card's top");
+fn a_tables_lit_row_is_square_only_under_its_head_rule() {
+    let r = (zikaron_ui::tokens::Radius::Card.px() - zikaron_ui::band::GAP) as u8;
+    let cr = |t: u8, b: u8| egui::CornerRadius { nw: t, ne: t, sw: b, se: b };
+    assert_eq!(hovered_ground(0, true), cr(0, r), "under the head's rule, over a line");
+    assert_eq!(hovered_ground(1, true), cr(r, r), "between two lines");
+    assert_eq!(hovered_ground(2, true), cr(r, r), "the last row, at the card's foot");
+    assert_eq!(hovered_ground(0, false), cr(r, r), "with no head, the first row, at the card's top");
 }
 
-/// A lit block keeps one gap to the card's edge on every side that faces it; where it meets a line its edge lies on
-/// the line's middle (the slot's boundary); a side that reaches the next row keeps no gap. Every corner is the
-/// card's corner less the gap.
 #[test]
 fn a_lit_block_keeps_the_gap_to_the_card_and_meets_the_lines() {
     use zikaron_ui::band::{block, Bound, GAP};
     let slot = egui::Rect::from_min_max(egui::pos2(100.0, 200.0), egui::pos2(600.0, 256.0));
     let r = 16.0;
-    let want = egui::CornerRadius::same((r - GAP) as u8);
+    let round = (r - GAP) as u8;
+    let top_of = |s: Bound| if s == Bound::Rule { 0 } else { round };
     let gap = |s: Bound| if s == Bound::Edge { GAP } else { 0.0 };
-    for (top, bottom) in [(Bound::Edge, Bound::Line), (Bound::Line, Bound::Line), (Bound::Line, Bound::Edge), (Bound::Edge, Bound::Edge), (Bound::Row, Bound::Row)] {
+    for (top, bottom) in [(Bound::Edge, Bound::Line), (Bound::Line, Bound::Line), (Bound::Line, Bound::Edge), (Bound::Edge, Bound::Edge), (Bound::Row, Bound::Row), (Bound::Rule, Bound::Line), (Bound::Rule, Bound::Edge)] {
         let (b, c) = block(slot, r, top, bottom);
         assert_eq!((b.left() - slot.left(), slot.right() - b.right(), b.top() - slot.top(), slot.bottom() - b.bottom()), (GAP, GAP, gap(top), gap(bottom)), "{top:?} {bottom:?}");
-        assert_eq!(c, want, "{top:?} {bottom:?}");
+        assert_eq!(c, egui::CornerRadius { nw: top_of(top), ne: top_of(top), sw: round, se: round }, "{top:?} {bottom:?}");
     }
 }
 
-/// Chosen rows that touch are lit as one block (one rounded rectangle over them all, no line between them); a
-/// chosen row alone is its own block.
 #[test]
 fn chosen_rows_that_touch_are_one_block() {
     let ctx = dressed();
@@ -160,14 +142,14 @@ fn chosen_rows_that_touch_are_one_block() {
     assert_eq!(blocks.len(), 2, "rows 1 and 2 are one block, row 4 another: {blocks:?}");
     let row_h = zikaron_ui::tokens::ROW_H;
     assert!((blocks[0].rect.height() - 2.0 * row_h).abs() < 0.5, "the first block spans two rows: {:?}", blocks[0].rect);
-    let round = egui::CornerRadius::same((zikaron_ui::tokens::Radius::Card.px() - zikaron_ui::band::GAP) as u8);
-    assert!(blocks.iter().all(|b| b.corner_radius == round), "every corner of each block round: {blocks:?}");
+    let r = (zikaron_ui::tokens::Radius::Card.px() - zikaron_ui::band::GAP) as u8;
+    assert_eq!(blocks[0].corner_radius, egui::CornerRadius::same(r), "rows 1 and 2, between two lines below the first row: round");
+    assert_eq!(blocks[1].corner_radius, egui::CornerRadius::same(r), "row 4, under a line and at the card's foot: round");
     let joint = blocks[0].rect.center().y;
     let crossed = all.iter().any(|s| matches!(s, egui::Shape::LineSegment { points: [a, b], .. } if (a.y - b.y).abs() < 0.01 && (a.y - joint).abs() < 0.5));
     assert!(!crossed, "no line where the two chosen rows meet");
 }
 
-/// A fold in a card is not a list's row: under the pointer it lights no block.
 #[test]
 fn a_fold_lights_no_block() {
     let ctx = dressed();
@@ -188,7 +170,6 @@ fn a_fold_lights_no_block() {
     assert!(!lit, "the fold's head lights nothing under the pointer");
 }
 
-/// Every shape of a frame in the order it is painted.
 fn painted(out: &egui::FullOutput) -> Vec<egui::Shape> {
     fn flat(s: &egui::Shape, all: &mut Vec<egui::Shape>) {
         match s {
@@ -201,8 +182,6 @@ fn painted(out: &egui::FullOutput) -> Vec<egui::Shape> {
     all
 }
 
-/// The lit block under `pointer` after the pointer has rested there, and how many lines it meets: each line across
-/// one of its edges has that edge on its middle and is painted after it (over it).
 fn lit_meets_lines(ctx: &egui::Context, pointer: Pos2, mut add: impl FnMut(&mut egui::Ui)) -> usize {
     let mut out = None;
     for _ in 0..30 {
@@ -237,7 +216,6 @@ fn lit_meets_lines(ctx: &egui::Context, pointer: Pos2, mut add: impl FnMut(&mut 
 
 #[test]
 fn a_lit_blocks_edge_lies_under_the_line_it_meets() {
-    // A table under its head: the middle row meets the line above and the one below.
     let ctx = dressed();
     let rows: Vec<table::Row> = (0..3).map(|i| table::Row { cells: vec![table::Cell::Text(format!("第 {i} 行"))], click: true, ..Default::default() }).collect();
     let cols = [table::col("名", table::Col::Fr(1.0))];
@@ -250,7 +228,6 @@ fn a_lit_blocks_edge_lies_under_the_line_it_meets() {
         });
         assert_eq!(met, lines, "table row {row}");
     }
-    // A form card of rows that open something: the middle row meets two lines, the last one.
     let ctx = dressed();
     let draw = |ui: &mut egui::Ui| {
         card::form(ui, |ui, f| {
@@ -272,7 +249,6 @@ fn a_lit_blocks_edge_lies_under_the_line_it_meets() {
     assert_eq!(rows_at.len(), 2, "two lines between three rows: {rows_at:?}");
     assert_eq!(lit_meets_lines(&ctx, egui::pos2(400.0, (rows_at[0] + rows_at[1]) / 2.0), draw), 2, "the form's middle row");
     assert_eq!(lit_meets_lines(&ctx, egui::pos2(400.0, rows_at[1] + 20.0), draw), 1, "the form's last row");
-    // A menu: the rows on either side of its separator each meet it.
     use zikaron_ui::menu;
     let ctx = dressed();
     let id = egui::Id::new("m");
@@ -286,7 +262,6 @@ fn a_lit_blocks_edge_lies_under_the_line_it_meets() {
     for _ in 0..30 {
         let out = frame(&ctx, Vec::new(), show);
         sep = painted(&out).into_iter().find_map(|s| match s {
-            // The separator, below the card's first row (the card's own top light is a line too).
             egui::Shape::LineSegment { points: [a, b], .. } if (a.y - b.y).abs() < 0.01 && a.y > anchor.bottom() + 30.0 => Some(a.y),
             _ => None,
         });
@@ -297,8 +272,6 @@ fn a_lit_blocks_edge_lies_under_the_line_it_meets() {
     assert_eq!(lit_meets_lines(&ctx, egui::pos2(x, sep + 20.0), show), 1, "the menu row under the separator");
 }
 
-/// A details value with line breaks is drawn a line each, the row as tall as its lines, whatever its kind (a figure
-/// as much as a machine value or words).
 #[test]
 fn a_value_with_line_breaks_is_drawn_a_line_each_whatever_its_kind() {
     use zikaron_ui::card::Detail;
@@ -322,10 +295,6 @@ fn a_value_with_line_breaks_is_drawn_a_line_each_whatever_its_kind() {
     }
 }
 
-/// A menu row takes the pointer over the very block it lights: between a row and the separator under it, where its
-/// block reaches the line, the row is lit; and while a sheet comes in (scaled about where it opens), any block lit
-/// is under the pointer as the frame draws it (a sheet lights nothing until it is all but in: the next test reads
-/// the rule under a scaled layer itself).
 #[test]
 fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
     use zikaron_ui::menu;
@@ -336,7 +305,6 @@ fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
         let _ = menu::show(ui.ctx(), id, anchor, true, 200.0, &items);
     };
     let hover = zikaron_ui::palette::c(zikaron_ui::palette::C::Hover);
-    // Settled: the separator's line, and the pointer 3 above it (past the row, inside its block).
     let ctx = dressed();
     menu::set(&ctx, id, true);
     let mut sep = 0.0;
@@ -356,8 +324,6 @@ fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
         lit = painted(&out).into_iter().filter_map(|s| match s { egui::Shape::Rect(r) if r.fill == hover => Some(r.rect), _ => None }).collect();
     }
     assert!(lit.len() == 1 && lit[0].contains(at), "the row above the separator is lit with the pointer in its block by the line: {lit:?}");
-    // Coming in: a sheet of rows that open something, scaled as it comes; the pointer resting near a row's edge.
-    // Every frame of the entrance, a block lit covers the pointer as the frame draws it.
     use zikaron_ui::{card, sheet};
     let ctx = dressed();
     let draw = |ctx: &egui::Context| {
@@ -370,7 +336,6 @@ fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
             });
         }, |_, _| ());
     };
-    // Where the rows stand once in: the third row's top edge.
     let mut edges = Vec::new();
     for _ in 0..40 {
         let out = frame(&ctx, Vec::new(), |ui| draw(ui.ctx()));
@@ -382,11 +347,9 @@ fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
     edges.sort_by(|a, b| a.1.total_cmp(&b.1));
     assert!(edges.len() >= 2, "{edges:?}");
     let rest = egui::pos2(edges[1].0 + 120.0, edges[1].1 + 12.0);
-    // The same sheet opened afresh with the pointer resting there.
     let ctx = dressed();
     let mut seen = 0;
     for k in 0..60 {
-        // A sixtieth of a second a frame, to catch the entrance on its way.
         let t = ctx.input(|i| i.time) + 1.0 / 60.0;
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(t), events: vec![egui::Event::PointerMoved(rest)], ..Default::default() };
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
@@ -401,13 +364,10 @@ fn a_menu_rows_lit_block_is_where_it_takes_the_pointer() {
     assert!(seen > 0, "a row lights under the pointer at all");
 }
 
-/// Under a layer drawn scaled (as a sheet or a menu is while it comes in), the row lit is the one drawn under the
-/// pointer, not the one that would be there unscaled.
 #[test]
 fn under_a_scaled_layer_the_row_drawn_under_the_pointer_is_the_one_lit() {
     let ctx = dressed();
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("scaled"));
-    // Laid out at (100, 100)–(150, 150); drawn at half size about the origin, at (50, 50)–(75, 75).
     let laid = Rect::from_min_max(egui::pos2(100.0, 100.0), egui::pos2(150.0, 150.0));
     let mut on = Vec::new();
     for at in [egui::pos2(60.0, 60.0), egui::pos2(120.0, 120.0)] {
@@ -427,4 +387,143 @@ fn under_a_scaled_layer_the_row_drawn_under_the_pointer_is_the_one_lit() {
         on.push(lit);
     }
     assert_eq!(on, vec![true, false], "lit where drawn (60, 60), not where it would be unscaled (120, 120)");
+}
+
+#[test]
+fn a_small_inputs_figures_start_where_its_hint_starts() {
+    use zikaron_ui::fields;
+    let left_of_text = |typed: &str| {
+        let ctx = dressed();
+        let mut field = Rect::NOTHING;
+        let mut out = None;
+        for _ in 0..3 {
+            out = Some(frame(&ctx, Vec::new(), |ui| {
+                let mut t = typed.to_string();
+                field = fields::small(ui, &mut t, "60 秒", 120.0, false).rect;
+            }));
+        }
+        let xs: Vec<f32> = painted(&out.expect("a frame"))
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) if !t.galley.text().is_empty() => Some(t.pos.x + t.galley.rect.left()),
+                _ => None,
+            })
+            .collect();
+        (xs.into_iter().fold(f32::INFINITY, f32::min), field)
+    };
+    let (hint_x, field) = left_of_text("");
+    let (typed_x, _) = left_of_text("300");
+    assert!((hint_x - typed_x).abs() < 1.0, "the hint at {hint_x}, the figures at {typed_x}");
+    assert!(typed_x < field.center().x, "from the left half of the field {field:?}: {typed_x}");
+}
+
+#[test]
+fn each_face_of_an_amount_shows_it_whole_on_hover_where_it_is_cut() {
+    use zikaron_ui::layer::Amount;
+    use zikaron_ui::{card, fields, kv};
+    let cut = |n: usize| Amount::new(format!("0.{n}123 ETH"), format!("0.{n}12345678901234567 ETH"));
+    let plain = |n: usize| Amount::new(format!("{n} ETH"), format!("{n} ETH"));
+    assert!(cut(1).cut() && !plain(1).cut(), "the one judgement");
+    let ctx = dressed();
+    let mut wholes = Vec::new();
+    for _ in 0..3 {
+        frame(&ctx, Vec::new(), |ui| {
+            zikaron_ui::probe::begin(ui.ctx());
+            let cols = [table::col("额", table::Col::Fr(1.0))];
+            let rows = vec![table::Row { cells: vec![table::Cell::Amount(cut(1))], ..Default::default() }, table::Row { cells: vec![table::Cell::Amount(plain(1))], ..Default::default() }];
+            let _ = table::table(ui, "amounts", &cols, true, &rows, "");
+            let (c2, p2) = (cut(2), plain(2));
+            card::form(ui, |ui, f| f.facts(ui, &[("甲", card::Fact::Amount(&c2)), ("乙", card::Fact::Amount(&p2))]));
+            kv::kv(ui, &[("丙", kv::Val::Amount(cut(3))), ("丁", kv::Val::Amount(plain(3)))]);
+            let (c4, p4) = (cut(4), plain(4));
+            fields::rows(ui, |ui, f| {
+                let _ = f.info(ui, "戊", card::Show::MarkAmount(zikaron_ui::mark::Mark::Ok, &c4));
+                let _ = f.info(ui, "己", card::Show::MarkAmount(zikaron_ui::mark::Mark::Ok, &p4));
+            });
+            wholes = zikaron_ui::probe::wholes_on_hover(ui.ctx());
+        });
+    }
+    for n in 1..=4 {
+        assert!(wholes.contains(&cut(n).whole), "the cut amount {n} is given whole on hover: {wholes:?}");
+        assert!(!wholes.contains(&plain(n).whole), "the whole amount {n} gives nothing on hover: {wholes:?}");
+    }
+}
+
+#[test]
+fn a_form_rows_words_take_their_width_before_its_trail() {
+    let ctx = dressed();
+    let font = egui::FontId::new(15.0, egui::FontFamily::Proportional);
+    for (title, long) in [("保留时长", false), ("一个很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长的标题", true), ("", false)] {
+        let mut got = (Rect::NOTHING, Rect::NOTHING, 0.0_f32);
+        for _ in 0..2 {
+            frame(&ctx, Vec::new(), |ui| {
+                card::form(ui, |ui, f| {
+                    let mut vals = vec![String::from("1"), String::from("2"), String::from("3")];
+                    let (row, boxed) = f.line(ui, None, title, "", false, false, zikaron_ui::palette::c(zikaron_ui::palette::C::Ink), |ui| {
+                        let _ = zikaron_ui::lasts::boxed(ui, "c15", &mut vals, &["天", "时", "分"], "", &[false, false, false], true);
+                        ui.min_rect()
+                    });
+                    got = (row.rect, boxed, zikaron_ui::width::width_in(ui, title, font.clone()));
+                });
+            });
+        }
+        let (row, boxed, words) = got;
+        let words_left = row.left() + 16.0;
+        if title.is_empty() {
+            assert!(boxed.left() <= row.left() + 24.0, "no words: the trail takes the row from the padding: {boxed:?} in {row:?}");
+        } else if long {
+            assert!(boxed.width() >= 96.0 - 1.0, "long words leave the trail its floor: {boxed:?}");
+            assert!(boxed.left() >= words_left + 40.0, "the long words still keep their room: {boxed:?}");
+        } else {
+            assert!(boxed.left() >= words_left + words * 0.8 + 16.0 - 1.0, "the trail starts after the words: {boxed:?}, words {words}");
+        }
+    }
+}
+
+fn after_the_box(layout: egui::Layout, joined: bool) -> (Rect, Rect) {
+    use zikaron_ui::fields;
+    let ctx = dressed();
+    let mut got = (Rect::NOTHING, Rect::NOTHING);
+    for _ in 0..2 {
+        frame(&ctx, Vec::new(), |ui| {
+            ui.with_layout(layout, |ui| {
+                let start = ui.cursor();
+                let mut t = String::from("300");
+                let w = 120.0;
+                let h = if joined {
+                    let _ = fields::line(ui, &mut t, "an address", w, fields::Look::default());
+                    zikaron_ui::tokens::INPUT_H
+                } else {
+                    let _ = fields::small(ui, &mut t, "60 秒", w, false);
+                    zikaron_ui::tokens::KEY_H
+                };
+                let boxed = match layout.main_dir {
+                    egui::Direction::RightToLeft => Rect::from_min_size(egui::pos2(start.max.x - w, start.min.y), egui::vec2(w, h)),
+                    _ => Rect::from_min_size(start.min, egui::vec2(w, h)),
+                };
+                let (next, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                got = (boxed, next);
+            });
+        });
+    }
+    got
+}
+
+#[test]
+fn what_follows_a_small_or_a_joined_field_starts_outside_its_box() {
+    let mut inside = Vec::new();
+    for joined in [false, true] {
+        for (name, layout) in [("left to right", egui::Layout::left_to_right(egui::Align::Center)), ("right to left", egui::Layout::right_to_left(egui::Align::Center)), ("top down", egui::Layout::top_down(egui::Align::Min))] {
+            let (boxed, next) = after_the_box(layout, joined);
+            let outside = match layout.main_dir {
+                egui::Direction::LeftToRight => next.left() >= boxed.right() - 0.5,
+                egui::Direction::RightToLeft => next.right() <= boxed.left() + 0.5,
+                _ => next.top() >= boxed.bottom() - 0.5,
+            };
+            if !outside {
+                inside.push(format!("{} {name}: the box {boxed:?}, what follows {next:?}", if joined { "joined" } else { "small" }));
+            }
+        }
+    }
+    assert!(inside.is_empty(), "{inside:#?}");
 }

@@ -1,8 +1,3 @@
-//! App gaps, each through the narrowest public path: the check's start block when a registry is typed, a
-//! keystore's `p` of the wrong kind, the grant-file entry's id shape, a small-file write whose directory sync
-//! fails, and a badge past the QR code's capacity. The machine directory is a temporary one of this process;
-//! nodes are fakes on 127.0.0.1 in this process.
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use super::vault_open;
@@ -14,8 +9,6 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-/// A JSON-RPC node in this process on 127.0.0.1: answers each method by `answer` (`None`: closes without an
-/// answer) and keeps every request body it was sent in `log`.
 fn node(answer: fn(&str) -> Option<String>, log: Arc<Mutex<Vec<String>>>) -> String {
     use std::io::{Read, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -52,7 +45,6 @@ fn node(answer: fn(&str) -> Option<String>, log: Arc<Mutex<Vec<String>>>) -> Str
     url
 }
 
-/// A chain 31337 at height 100 with no logs.
 fn quiet_chain(m: &str) -> Option<String> {
     Some(match m {
         "eth_chainId" => "\"0x7a69\"".into(),
@@ -62,7 +54,6 @@ fn quiet_chain(m: &str) -> Option<String> {
     })
 }
 
-/// The `fromBlock` of every `eth_getLogs` the node was asked.
 fn from_blocks(log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     log.lock()
         .expect("log")
@@ -81,8 +72,6 @@ fn settled(shell: &mut app::shell::Shell, k: app::task::Kind) {
     shell.drain();
 }
 
-/// `n` grants by one key, each the upstream of the next, from a genesis; returns the genesis bytes and the
-/// grants' (id, bytes) from the root.
 fn grants(seed: u8, n: usize) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
     let secret = app::key::Secret::take([seed; 32]).expect("a key");
     let genesis = app::entryx::genesis(&secret, "b10m").expect("genesis");
@@ -101,9 +90,6 @@ fn grants(seed: u8, n: usize) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
     (genesis.bytes, out)
 }
 
-/// With a registry typed on the check page and the start block left empty, the check scans from block 0, not
-/// from the home's start block; with nothing typed it uses the home's registry and start block. Checked both in
-/// the basis the check returns and in the `fromBlock` the node was asked.
 #[test]
 fn b3_a_typed_registry_with_the_start_block_empty_checks_from_block_zero() {
     if super::alone_in(module_path!(), "b3_a_typed_registry_with_the_start_block_empty_checks_from_block_zero") {
@@ -113,11 +99,10 @@ fn b3_a_typed_registry_with_the_start_block_empty_checks_from_block_zero() {
     vault_open();
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    // The home's own basis: another registry, a start block of 7.
     shell.settings.registry = Some(app::key::Address([0x22; 20]));
     shell.settings.from_block = 7;
     let (_, gs) = grants(0x51, 1);
-    let payload = zikaron_kit::badge::encode(&[gs[0].1.clone()]).expect("a code");
+    let payload = zikaron_kit::v2::doc::badge_encode(&[gs[0].1.clone()]).expect("a code");
     let typed_reg = format!("0x{}", "11".repeat(20));
     for (registry, want, form) in [(typed_reg.as_str(), 0u64, "a registry typed, the start block empty"), ("", 7u64, "nothing typed: the home's registry and start block")] {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -166,8 +151,6 @@ fn with_member(v: &zikaron::json::Value, path: &[&str], to: Option<zikaron::json
     Value::Obj(m)
 }
 
-/// A keystore whose `crypto.kdfparams.p` is text or a fraction is refused as a shape error before any work (as
-/// `r` as text is); the file as written opens.
 #[test]
 fn a_keystore_whose_p_is_text_or_a_fraction_is_said_as_its_shape() {
     if super::alone_in(module_path!(), "a_keystore_whose_p_is_text_or_a_fraction_is_said_as_its_shape") {
@@ -180,7 +163,6 @@ fn a_keystore_whose_p_is_text_or_a_fraction_is_said_as_its_shape() {
     let open = |v: &Value| app::keystore::decrypt(&zikaron::json::canon_bytes(v), "pw-probe").err().map(|f| f.said().split(':').next().unwrap_or("").to_string());
     assert_eq!(open(&v), None, "the file as written opens");
     assert_eq!(open(&with_member(&v, &["crypto", "kdfparams", "p"], Some(Value::Str("1".into())))).as_deref(), Some("KEYSTORE_SHAPE"), "p as text");
-    // The value domain has no fractions: the file is written as text with `p` a fraction.
     let text = String::from_utf8(zikaron::json::canon_bytes(&v)).expect("text");
     let at = text.find("\"p\":").expect("p is written") + 4;
     let end = at + text[at..].find(|c: char| !c.is_ascii_digit()).expect("p ends");
@@ -190,9 +172,6 @@ fn a_keystore_whose_p_is_text_or_a_fraction_is_said_as_its_shape() {
     assert_eq!(said.as_deref(), Some("KEYSTORE_SHAPE"), "p a fraction");
 }
 
-/// The grant-file entry checks the grant id by the same shape rule as the copied code and the badge
-/// (`badgex::chain_for`): a malformed id is a content-shape refusal naming the id, given before any home is
-/// asked for, the same refusal `chain_for` and `code_for` give.
 #[test]
 fn the_grant_file_entry_refuses_an_id_of_the_wrong_shape_as_the_code_does() {
     if super::alone_in(module_path!(), "the_grant_file_entry_refuses_an_id_of_the_wrong_shape_as_the_code_does") {
@@ -207,7 +186,7 @@ fn the_grant_file_entry_refuses_an_id_of_the_wrong_shape_as_the_code_does() {
     let wrong = format!("0x{}", &gs[0].0.trim_start_matches("0x")[..63]);
     let by_code = app::badgex::chain_for(&pool, &wrong).expect_err("the code refuses it");
     assert!(by_code.said().starts_with("CONTENT_SHAPE"), "{}", by_code.said());
-    match apply(&mut shell, Action::ExportGrantFile { id: wrong.clone(), to: String::new() }) {
+    match apply(&mut shell, Action::ExportGrantFile { id: wrong.clone(), to: String::new(), original: String::new(), seal_to: String::new(), key: None }) {
         Applied::Trouble(f) => {
             assert_eq!(f.which(), by_code.which(), "the same member: {}", f.said());
             assert_eq!(f.said(), by_code.said(), "the same words");
@@ -217,9 +196,6 @@ fn the_grant_file_entry_refuses_an_id_of_the_wrong_shape_as_the_code_does() {
     }
 }
 
-/// When the directory sync after the rename fails, the write is reported as not done, yet the rename has
-/// happened: `put_at` leaves the file with the new bytes, and `rename_over` leaves the target with the staged
-/// bytes (the staged name gone).
 #[test]
 fn a_write_whose_directory_sync_fails_has_still_renamed_the_file_into_place() {
     if super::alone_in(module_path!(), "a_write_whose_directory_sync_fails_has_still_renamed_the_file_into_place") {
@@ -239,9 +215,6 @@ fn a_write_whose_directory_sync_fails_has_still_renamed_the_file_into_place() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A badge whose chain exceeds the code's capacity is refused by name and nothing is written; one within it is
-/// made. The refusal comes from the kit crate's cap (`E_BADGE_CAP`), which equals the QR code's capacity at
-/// version 40, so the drawing's own "too long" (`Key::Tail088`) is reachable only through `qr::make` itself.
 #[test]
 fn a_badge_past_the_codes_capacity_is_refused_and_nothing_is_written() {
     if super::alone_in(module_path!(), "a_badge_past_the_codes_capacity_is_refused_and_nothing_is_written") {
@@ -269,7 +242,7 @@ fn a_badge_past_the_codes_capacity_is_refused_and_nothing_is_written() {
     app::vaultx::store(&home, &short[0].1).expect("held");
     shell.home = Some(home);
     let chain: Vec<Vec<u8>> = long.iter().map(|(_, b)| b.clone()).collect();
-    assert!(zikaron_kit::badge::encode(&chain).is_err(), "eight hops are past the cap");
+    assert!(zikaron_kit::v2::doc::badge_encode(&chain).is_err(), "eight hops are past the cap");
     for (grant, past) in [(short[0].0.clone(), false), (long.last().expect("a grant").0.clone(), true)] {
         let out = dir.join(if past { "out-past" } else { "out-within" });
         let before = shell.faults.len();

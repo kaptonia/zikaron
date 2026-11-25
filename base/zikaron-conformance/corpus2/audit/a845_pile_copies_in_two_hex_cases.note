@@ -1,0 +1,1 @@
+sec 8.1 with HARNESS2's pile encoding: one entry spelled twice, in lowercase digits and in uppercase. The pile is a multiset of byte strings and the digits' case is transport: byte-identical copies collapse to one whatever spelled them, the entry count is five, and the report is the clean ledger's.

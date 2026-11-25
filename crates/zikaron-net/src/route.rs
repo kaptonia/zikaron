@@ -1,38 +1,14 @@
-//! Proxy routing for new connections: direct to the node, or through a proxy (HTTP CONNECT, HTTPS CONNECT,
-//! SOCKS5, SOCKS4), and the tunnel itself.
-//!
-//! The route is chosen per new connection from one of three settings: follow the system (platform proxy
-//! settings, read when the connection opens, so a system change applies to the next connection without a
-//! restart), none, or one manually entered proxy. Loopback hosts always go direct; under a manual proxy,
-//! private, link-local and `.local` hosts do too. Following the system, a configuration script at the address it
-//! names comes first ([`crate::pac`]), then the explicit proxies; a script names a list of ways, tried in order
-//! until one opens. Automatic discovery (WPAD) is not followed.
-//!
-//! Through a proxy, the proxy resolves the host name (CONNECT names it, SOCKS5 sends the domain form, SOCKS4
-//! the 4a domain tail); the leg to the proxy is dialed like any connection (every address, one deadline); to an
-//! HTTPS proxy it is TLS, verified against the proxy's name; TLS stays end to end with the node, verified
-//! against the node's name. A proxy that asks for credentials gets the ones written with it (HTTP Basic,
-//! SOCKS5 user name and password, the SOCKS4 user id); the password is wiped once written. A proxy that asks for
-//! credentials when none are written, or refuses the ones written, is its own failure
-//! ([`crate::Fail::ProxyCredentials`]); any other unreachable or refusing proxy is a connection failure naming the
-//! proxy and its answer.
-
 use crate::{dial, keep, Clock, Fail, Scheme, Sock, Target};
 use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-/// The proxy kinds. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Kind {
-    /// HTTP, tunnelled with CONNECT.
     Http,
-    /// HTTPS: TLS to the proxy (its certificate verified), then CONNECT inside it.
     Https,
-    /// SOCKS version 5.
     Socks5,
-    /// SOCKS version 4; a host name is sent in the 4a form, for the proxy to resolve.
     Socks4,
 }
 
@@ -47,7 +23,6 @@ impl Kind {
     }
 }
 
-/// A proxy password: never printed, wiped when dropped.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Secret(String);
 
@@ -56,7 +31,6 @@ impl Secret {
         Secret(s)
     }
 
-    /// The password, to be written to the proxy that asks for it.
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -74,14 +48,12 @@ impl Drop for Secret {
     }
 }
 
-/// Credentials for a proxy: a user name and, except for SOCKS4, a password.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Auth {
     pub user: String,
     pub pass: Option<Secret>,
 }
 
-/// One proxy: its kind, host, port and the credentials written with it.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Proxy {
     pub kind: Kind,
@@ -91,13 +63,10 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// The proxy's canonical spelling, without credentials: `http://host:port`, `https://…`, `socks5://…` or
-    /// `socks4://…`.
     pub fn spelled(&self) -> String {
         format!("{}://{}:{}", self.kind.scheme(), self.host, self.port)
     }
 
-    /// The spelling with the user name when there is one (`socks5://user@host:port`), never the password.
     pub fn shown(&self) -> String {
         match &self.auth {
             Some(a) => format!("{}://{}@{}:{}", self.kind.scheme(), a.user, self.host, self.port),
@@ -105,8 +74,6 @@ impl Proxy {
         }
     }
 
-    /// The spelling that keeps the credentials (percent-encoded), for the sealed settings that store it; never
-    /// shown.
     pub fn written(&self) -> String {
         let enc = |s: &str| -> String {
             s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
@@ -120,7 +87,6 @@ impl Proxy {
         }
     }
 
-    /// Whether a password is written with it.
     pub fn has_password(&self) -> bool {
         self.auth.as_ref().is_some_and(|a| a.pass.is_some())
     }
@@ -130,17 +96,12 @@ impl Proxy {
     }
 }
 
-/// Why a manually entered proxy address is rejected. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NotAProxy {
-    /// Not `scheme://host:port` with a proxy scheme (another scheme, no port, a path, an empty host).
     Shape,
-    /// Credentials that do not read: an empty user name, one or a password longer than 255 bytes, or a
-    /// password for SOCKS4 (which carries a user id only).
     Credentials,
 }
 
-/// `%XX` decoded; a malformed escape stays as written.
 fn unpercent(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -159,7 +120,6 @@ fn unpercent(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Credentials as written before `@` (`user` or `user:pass`, percent-encoded), for a proxy of `kind`.
 fn auth_of(written: &str, kind: Kind) -> Result<Auth, NotAProxy> {
     let (user, pass) = match written.split_once(':') {
         Some((u, p)) => (unpercent(u), Some(unpercent(p))),
@@ -171,9 +131,6 @@ fn auth_of(written: &str, kind: Kind) -> Result<Auth, NotAProxy> {
     Ok(Auth { user, pass: pass.map(Secret) })
 }
 
-/// Parse a manually entered proxy address: `scheme://[user[:pass]@]host:port[/]` with the scheme `http`,
-/// `https`, `socks5` (or `socks5h`), `socks4` (or `socks4a`); scheme and host case-insensitive, port required;
-/// a bracketed IPv6 literal host is accepted; the credentials percent-decoded. Anything else is refused by name.
 pub fn proxy_of(typed: &str) -> Result<Proxy, NotAProxy> {
     let (scheme, rest) = typed.trim().split_once("://").ok_or(NotAProxy::Shape)?;
     let kind = match scheme.to_ascii_lowercase().as_str() {
@@ -191,7 +148,6 @@ pub fn proxy_of(typed: &str) -> Result<Proxy, NotAProxy> {
     if authority.is_empty() || authority.contains('/') || authority.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(NotAProxy::Shape);
     }
-    // The address parser handles host and port; the port must be explicit.
     let t = crate::parse(&format!("http://{authority}/")).ok_or(NotAProxy::Shape)?;
     let (_, port) = authority.rsplit_once(':').ok_or(NotAProxy::Shape)?;
     if port.is_empty() || port.ends_with(']') || t.port == 0 {
@@ -204,9 +160,6 @@ pub fn proxy_of(typed: &str) -> Result<Proxy, NotAProxy> {
     Ok(Proxy { kind, host: t.host, port: t.port, auth })
 }
 
-/// A typed proxy address as it may be shown: its password left out (`http://user@host:port`), whether or not
-/// the rest reads; and whether a password was written. Any text before the last `@` after `scheme://` is
-/// credentials.
 pub fn proxy_text_shown(typed: &str) -> (String, bool) {
     let t = typed.trim();
     let (head, rest) = match t.split_once("://") {
@@ -222,8 +175,6 @@ pub fn proxy_text_shown(typed: &str) -> (String, bool) {
     }
 }
 
-/// The system proxy settings in the transport's form: the https proxy, the http proxy, a SOCKS proxy, the
-/// exception list and the configuration script's address.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct SystemProxies {
     pub https: Option<Proxy>,
@@ -234,25 +185,18 @@ pub struct SystemProxies {
 }
 
 impl SystemProxies {
-    /// Whether the system names automatic settings (a configuration script).
     pub fn automatic(&self) -> bool {
         self.pac_url.is_some()
     }
 }
 
-/// The three proxy settings. Closed set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Choice {
-    /// Follow the system's proxy settings (the default).
     System,
-    /// No proxy: every connection goes direct.
     Off,
-    /// This one proxy for every node (except this machine and the local networks).
     Manual(Proxy),
 }
 
-/// Where the setting comes from: fixed (the default "follow the system", or the CLI's `--proxy`), or read
-/// whenever a connection opens (the app's machine settings, so a saved change applies to the next connection).
 #[derive(Clone, Copy)]
 enum Source {
     Fixed,
@@ -264,39 +208,22 @@ struct Routes {
     fixed: Choice,
 }
 
-/// This process's proxy setting. A process that sets nothing follows the system settings, read through the
-/// platform ([`SYSTEM`]).
 static ROUTES: RwLock<Routes> = RwLock::new(Routes { source: Source::Fixed, fixed: Choice::System });
 
-/// Fix the setting for this process (the CLI's `--proxy`).
 pub fn set_choice(choice: Choice) {
     let mut r = ROUTES.write().unwrap_or_else(|e| e.into_inner());
     *r = Routes { source: Source::Fixed, fixed: choice };
 }
 
-/// Read the setting anew for each new connection through `choice` (the app's machine settings).
 pub fn read_choice(choice: fn() -> Choice) {
     let mut r = ROUTES.write().unwrap_or_else(|e| e.into_inner());
     *r = Routes { source: Source::Read(choice), fixed: Choice::System };
 }
 
-// ───────────────────────── The system's settings ─────────────────────────
-
-/// How long a read of the system settings stays fresh; every new connection checks, so a system change is
-/// picked up within this time.
 pub const SYSTEM_FRESH: Duration = Duration::from_secs(1);
 
-/// The longest a new connection waits for the system settings (never past its exchange's deadline). If the
-/// read takes longer, that connection goes as if the system gave no proxy and reports it
-/// ([`Reading::system_unread`]); the result is still stored for the next connection.
 pub const SYSTEM_READ_CAP: Duration = Duration::from_secs(2);
 
-/// The platform's system proxy settings (`zikaron_os::system_proxies`) in the transport's form (`None`: they
-/// could not be read).
-
-/// One proxy the platform names, in the transport's form. In the https and http slots an `https` scheme is an
-/// HTTPS proxy and any other a CONNECT proxy; in the SOCKS slot `socks4`/`socks4a` is SOCKS4 and any other
-/// SOCKS5. Credentials written with it are kept; credentials that do not read drop the proxy.
 fn system_proxy(p: &zikaron_os::ProxyPlace, socks: bool) -> Option<Proxy> {
     let kind = match (socks, p.scheme.as_str()) {
         (true, "socks4" | "socks4a") => Kind::Socks4,
@@ -313,7 +240,6 @@ fn system_proxy(p: &zikaron_os::ProxyPlace, socks: bool) -> Option<Proxy> {
 }
 
 impl SystemProxies {
-    /// The platform's reading in the transport's form.
     pub fn from_platform(p: &zikaron_os::Proxies) -> SystemProxies {
         SystemProxies {
             https: p.https.as_ref().and_then(|x| system_proxy(x, false)),
@@ -325,21 +251,14 @@ impl SystemProxies {
     }
 }
 
-/// The platform's system proxy settings (`zikaron_os::system_proxies`) in the transport's form (`None`: they
-/// could not be read).
 fn platform() -> Option<SystemProxies> {
     zikaron_os::system_proxies().map(|p| SystemProxies::from_platform(&p))
 }
 
-/// The system settings as last read, and the read in flight. One read at a time: a new connection that finds
-/// no fresh result starts one (or joins the one in flight) and waits only up to its own bound; the lock is
-/// never held while the system is being read.
 struct System {
     reader: fn() -> Option<SystemProxies>,
-    /// Which reader the reads belong to (a result from a replaced reader is discarded).
     epoch: u64,
     last: Option<(Instant, SystemProxies)>,
-    /// How many reads have completed and been stored.
     landed: u64,
     reading: bool,
 }
@@ -347,15 +266,10 @@ struct System {
 static SYSTEM: Mutex<System> = Mutex::new(System { reader: platform, epoch: 0, last: None, landed: 0, reading: false });
 static SYSTEM_LANDED: Condvar = Condvar::new();
 
-/// Follow the system the way a command line does from now on: the terminal's proxy variables when any is set,
-/// else the system's settings (`zikaron_os::proxy::for_the_terminal`, the same on every system). The desktop
-/// follows the system's settings alone.
 pub fn follow_the_terminal() {
     read_system_with(terminal);
 }
 
-/// Follow the system the way the desktop does from now on: the system's proxy settings alone, never a terminal's
-/// proxy variables (undoes [`follow_the_terminal`]).
 pub fn follow_the_system() {
     read_system_with(platform);
 }
@@ -364,28 +278,20 @@ fn terminal() -> Option<SystemProxies> {
     zikaron_os::proxy::for_the_terminal().map(|p| SystemProxies::from_platform(&p))
 }
 
-/// Read the system settings through `read` from now on instead of the platform (for tests and test harnesses;
-/// `None`: the settings could not be read).
 pub fn read_system_with(read: fn() -> Option<SystemProxies>) {
     let mut s = SYSTEM.lock().unwrap_or_else(|e| e.into_inner());
     *s = System { reader: read, epoch: s.epoch + 1, last: None, landed: s.landed, reading: false };
 }
 
-/// Wake every connection waiting for the system settings (on shutdown).
 pub(crate) fn wake() {
     SYSTEM_LANDED.notify_all();
 }
 
-/// The result of waiting for the system settings.
 enum Sys {
     Read(SystemProxies),
-    /// Not read within the bound (or the read failed).
     Unread,
 }
 
-/// The system settings for a new connection: a read at most [`SYSTEM_FRESH`] old, else a new read waited for at
-/// most `wait` (`stale_ok`: any previous read will do while a fresh one runs in the background; for display
-/// only, never for connecting).
 fn system_now(wait: Duration, stale_ok: bool) -> Sys {
     let mut s = SYSTEM.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, p)) = &s.last {
@@ -434,58 +340,37 @@ fn system_now(wait: Duration, stale_ok: bool) -> Sys {
     }
 }
 
-
-// ───────────────────────── The way ─────────────────────────
-
-/// One route a new connection to a target can take.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Way {
     Direct,
     Through(Proxy),
 }
 
-/// What the system's automatic settings did for a route. Closed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Script {
-    /// None in force: no script named, or the setting is not to follow the system.
     None,
-    /// The configuration script named the ways.
     Used,
-    /// For display: the system names automatic settings whose answer for this node is not known yet (it is
-    /// asked when a connection opens).
     Pending,
-    /// The system names a script that could not be used (why): the route is the one without it.
     Trouble(crate::pac::PacTrouble),
 }
 
-/// A route decision for display and logging: the way a new connection goes, the ways tried after it when it
-/// cannot be opened, and why it goes as it does when the reason is not the setting itself.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reading {
     pub way: Way,
-    /// The ways tried, in order, when `way` cannot be opened (a configuration script's list).
     pub then: Vec<Way>,
     pub choice: Choice,
-    /// The node is this machine: always reached directly.
     pub loopback: bool,
-    /// Under a manual proxy, the node is on a local network (private, link-local or `.local`): reached
-    /// directly.
     pub local: bool,
-    /// The system was followed but its settings were not read in time (or could not be read): this connection
-    /// went as if there were no proxy.
     pub system_unread: bool,
-    /// What the system's automatic settings did.
     pub script: Script,
 }
 
 impl Reading {
-    /// Every way, in the order tried.
     pub fn ways(&self) -> Vec<Way> {
         std::iter::once(self.way.clone()).chain(self.then.iter().cloned()).collect()
     }
 }
 
-/// A host normalized for comparison: no brackets, lower case, without a single trailing dot.
 fn host_form(host: &str) -> String {
     let h = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     match h.strip_suffix('.') {
@@ -494,7 +379,6 @@ fn host_form(host: &str) -> String {
     }
 }
 
-/// A host's IP when it is an address literal; an IPv4-mapped IPv6 address yields its IPv4 address.
 fn address_of(host: &str) -> Option<IpAddr> {
     match host.parse::<IpAddr>().ok()? {
         IpAddr::V6(v6) => Some(v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6))),
@@ -502,9 +386,6 @@ fn address_of(host: &str) -> Option<IpAddr> {
     }
 }
 
-/// Whether a host is this machine: `localhost` and its subdomains (with or without the trailing dot), a
-/// loopback address (`127.0.0.0/8`, `::1`, and their IPv4-mapped forms) or the unspecified address
-/// (`0.0.0.0`, `::`). Always reached directly.
 pub fn is_loopback(host: &str) -> bool {
     let h = host_form(host);
     if h == "localhost" || h.ends_with(".localhost") {
@@ -516,8 +397,6 @@ pub fn is_loopback(host: &str) -> bool {
     }
 }
 
-/// An address range: `a.b.c.d/n` or `v6/n`, plus macOS's short form with octets omitted (`169.254/16`,
-/// `10/8`: missing octets are zero). A prefix wider than the address does not parse.
 fn range_of(text: &str) -> Option<(IpAddr, u32)> {
     let (addr, bits) = text.split_once('/')?;
     let bits: u32 = bits.parse().ok()?;
@@ -548,7 +427,6 @@ fn in_range(ip: IpAddr, (net, bits): (IpAddr, u32)) -> bool {
     }
 }
 
-/// Whether `pattern` (with `*` standing for any run of characters, dots included) covers all of `text`.
 fn glob(pattern: &str, text: &str) -> bool {
     let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
     let (mut pi, mut ti, mut star, mut mark) = (0usize, 0usize, None::<usize>, 0usize);
@@ -571,8 +449,6 @@ fn glob(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|c| *c == '*')
 }
 
-/// An entry's port, if any: `name:port`, `a.b.c.d:port`, `[v6]:port`. A bare IPv6 address or a range has
-/// none. `Err` when the port does not parse (the entry is skipped).
 fn split_port(entry: &str) -> Result<(&str, Option<u16>), ()> {
     if let Some(rest) = entry.strip_prefix('[') {
         let (addr, after) = rest.split_once(']').ok_or(())?;
@@ -588,21 +464,6 @@ fn split_port(entry: &str) -> Result<(&str, Option<u16>), ()> {
     port.parse().map(|p| (body, Some(p))).map_err(|_| ())
 }
 
-/// Whether one entry of the system's exception list covers a target. Entry forms:
-/// - `*`: every host.
-/// - `<local>`: a plain name without a dot (never an address).
-/// - `name`: that name and its subdomains; `*.name` and `.name`: the same (subdomains and the bare name).
-/// - a pattern with `*` elsewhere (Windows's `10.*`, `192.168.*`, `*.corp.*`): matched over the whole host as
-///   written (an IPv4-mapped address as its IPv4 form), `*` standing for any run of characters.
-/// - an address (`192.168.1.5`, `::1`, `[::1]`): that address (IPv4-mapped forms are the IPv4 address).
-/// - a range (`10.0.0.0/8`, `fe80::/10`, macOS's `169.254/16`): an address host inside it; a name is never
-///   resolved to be compared.
-/// - with a port (`name:8080`, `[::1]:8545`): as above, and only for that port.
-/// - with a scheme (`http://…`, `https://…`): as above, and only for that scheme.
-///
-/// Skipped: an empty entry, one with whitespace or a control character, another scheme, a path, an unparsable
-/// port or range, `<-loopback>` and any other `<…>` (loopback always goes direct anyway). A name entry never
-/// covers an address host, nor an address entry a name.
 fn entry_covers(raw: &str, t: &Target, host: &str, ip: Option<IpAddr>) -> bool {
     let mut e = raw.trim().to_ascii_lowercase();
     if e.is_empty() || e.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -658,15 +519,12 @@ fn entry_covers(raw: &str, t: &Target, host: &str, ip: Option<IpAddr>) -> bool {
     suffix(body.trim_end_matches('.'))
 }
 
-/// Whether the system's exception list covers a target (each entry interpreted by [`entry_covers`]).
 pub fn excepted(t: &Target, exceptions: &[String]) -> bool {
     let host = host_form(&t.host);
     let ip = address_of(&host);
     exceptions.iter().any(|e| entry_covers(e, t, &host, ip))
 }
 
-/// A system-provided proxy host in canonical form: an IPv6 address in brackets (`[::1]`, never `::1`), names
-/// in lower case.
 fn proxy_host(host: &str) -> String {
     let h = host.trim().to_ascii_lowercase();
     match h.parse::<std::net::Ipv6Addr>() {
@@ -675,10 +533,6 @@ fn proxy_host(host: &str) -> String {
     }
 }
 
-/// Whether a host is on a local network, reached directly under a manual proxy: a private IPv4 address
-/// (RFC 1918: `10/8`, `172.16/12`, `192.168/16`), a link-local address (`169.254/16`, `fe80::/10`), their
-/// IPv4-mapped forms, or a name under `.local` (with or without the trailing dot). A name is never resolved to
-/// be judged.
 pub fn is_local(host: &str) -> bool {
     let h = host_form(host);
     match address_of(&h) {
@@ -688,8 +542,6 @@ pub fn is_local(host: &str) -> bool {
     }
 }
 
-/// The system's explicit proxies for a target: an excepted host goes direct; https uses the https proxy, else
-/// SOCKS; http uses the http proxy, else SOCKS.
 fn explicit(t: &Target, s: &SystemProxies) -> Way {
     if excepted(t, &s.exceptions) {
         return Way::Direct;
@@ -701,10 +553,6 @@ fn explicit(t: &Target, s: &SystemProxies) -> Way {
     pick.cloned().map_or(Way::Direct, Way::Through)
 }
 
-/// The route for a target under a setting, the system settings and what their automatic settings give (pure;
-/// [`way_for`] uses the current ones; `system` is `None` when not read in time). Loopback always goes direct;
-/// under a manual proxy so does a local network ([`is_local`]); following the system, a script's ways come
-/// first, else (none, or one that could not be used) the explicit proxies and their exceptions.
 pub fn way_under(t: &Target, choice: &Choice, system: Option<&SystemProxies>, auto: &crate::pac::Auto) -> Reading {
     use crate::pac::Auto;
     let reading = |way: Way| Reading { way, then: Vec::new(), choice: choice.clone(), loopback: false, local: false, system_unread: false, script: Script::None };
@@ -728,7 +576,6 @@ pub fn way_under(t: &Target, choice: &Choice, system: Option<&SystemProxies>, au
     }
 }
 
-/// The current setting.
 fn choice_now() -> Choice {
     let (source, fixed) = {
         let r = ROUTES.read().unwrap_or_else(|e| e.into_inner());
@@ -740,9 +587,6 @@ fn choice_now() -> Choice {
     }
 }
 
-/// The route a new connection to this target takes now: the current setting and, when following the system,
-/// the system settings (waited for at most [`SYSTEM_READ_CAP`]) and their automatic settings (the script
-/// fetched and asked), all within `wait`.
 pub fn way_for(t: &Target, wait: Duration) -> Reading {
     let until = Instant::now() + wait;
     let choice = choice_now();
@@ -762,10 +606,6 @@ pub fn way_for(t: &Target, wait: Duration) -> Reading {
     r
 }
 
-/// What the system's configuration script did for the latest connections, by the node's place (scheme, host,
-/// port): its trouble when a connection following the system went without it and did not reach the node; nothing
-/// when it was used, none is named, the system is not followed, or the connection was made ([`note_reached`]).
-/// The latest connection's comes first.
 static SCRIPT_SEEN: Mutex<Vec<(String, Option<crate::pac::PacTrouble>)>> = Mutex::new(Vec::new());
 
 fn place_of(t: &Target) -> String {
@@ -784,7 +624,6 @@ fn note_script(t: &Target, r: &Reading) {
     seen.truncate(64);
 }
 
-/// A connection to this target was made: whatever its script did, there is nothing to say about it.
 pub(crate) fn note_reached(t: &Target) {
     let place = place_of(t);
     let mut seen = SCRIPT_SEEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -793,29 +632,20 @@ pub(crate) fn note_reached(t: &Target) {
     }
 }
 
-/// Why the latest connection to `url` went without the configuration script, when it then could not be made
-/// (`None` when the script was used, none is named, the system is not followed, the connection was made, or none
-/// was tried).
 pub fn script_trouble_for(url: &str) -> Option<crate::pac::PacTrouble> {
     let t = crate::parse(url)?;
     let place = place_of(&t);
     SCRIPT_SEEN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, _)| *p == place).and_then(|(_, x)| *x)
 }
 
-/// The same for the latest connection of this process, to any node (a command line makes its few connections and
-/// says how the last one failed).
 pub fn script_trouble_last() -> Option<crate::pac::PacTrouble> {
     SCRIPT_SEEN.lock().unwrap_or_else(|e| e.into_inner()).first().and_then(|(_, x)| *x)
 }
 
-/// How a new connection to this target would go, for display: never waits, fetches or runs a script (the last
-/// system read and the answers already known will do); `system_unread` when none has been read yet, and
-/// [`Script::Pending`] when the script's answer for this node is not known yet.
 pub fn way_shown(t: &Target) -> Reading {
     way_shown_under(t, &choice_now())
 }
 
-/// [`way_shown`] under a given setting (a settings page shows the one in hand, without reading it again).
 pub fn way_shown_under(t: &Target, choice: &Choice) -> Reading {
     let choice = choice.clone();
     let sys = match &choice {
@@ -832,8 +662,6 @@ pub fn way_shown_under(t: &Target, choice: &Choice) -> Reading {
     way_under(t, &choice, sys.as_ref(), &auto)
 }
 
-/// A failure on the proxy leg, reported as the proxy's ([`Fail::Proxy`], the proxy named): the node was never
-/// reached, a proxy that does not answer within the deadline included. Only shutdown passes through unchanged.
 fn through(p: &Proxy, f: Fail) -> Fail {
     match f {
         Fail::Closed => f,
@@ -846,18 +674,12 @@ fn through(p: &Proxy, f: Fail) -> Fail {
     }
 }
 
-/// Maximum proxy response head size (a CONNECT response is a few lines).
 const MAX_PROXY_HEAD: usize = 16 << 10;
 
-/// Open a tunnel to the target through a proxy: connect to the proxy (every address, one deadline), track the
-/// socket for shutdown, TLS to an HTTPS proxy (its certificate verified against its name), then send CONNECT
-/// or the SOCKS request. The tunnel is a byte stream to the target's port; TLS for https targets is the
-/// caller's job.
 pub(crate) fn tunnel(t: &Target, p: &Proxy, clock: &Clock) -> Result<(Sock, keep::Ticket), Fail> {
     let tcp = dial::connect(&p.target(), clock).map_err(|f| through(p, f))?;
     let ticket = keep::ticket(&tcp)?;
     let opened = open_tunnel(Sock::Tcp(tcp), t, p, clock);
-    // Shut down meanwhile: closed, counted once (a wait inside that found the flag already counted its cut).
     if keep::closing() {
         return Err(match opened {
             Err(Fail::Closed) => Fail::Closed,
@@ -868,7 +690,6 @@ pub(crate) fn tunnel(t: &Target, p: &Proxy, clock: &Clock) -> Result<(Sock, keep
     Ok((sock, ticket))
 }
 
-/// The proxy leg after connecting: TLS for an HTTPS proxy, then the tunnel request of its kind.
 fn open_tunnel(sock: Sock, t: &Target, p: &Proxy, clock: &Clock) -> Result<Sock, Fail> {
     let mut sock = match p.kind {
         Kind::Https => Sock::Tls(Box::new(crate::tls_connect(p.target().dial_host(), sock, clock)?)),
@@ -891,7 +712,6 @@ fn io(e: std::io::Error, clock: &Clock) -> Fail {
     Fail::Stream(e.to_string())
 }
 
-/// Read exactly `buf.len()` bytes within the time left; shutting down cuts it within a slice.
 fn read_exact(sock: &mut Sock, buf: &mut [u8], clock: &Clock) -> Result<(), Fail> {
     let mut at = 0;
     while at < buf.len() {
@@ -913,14 +733,12 @@ fn read_exact(sock: &mut Sock, buf: &mut [u8], clock: &Clock) -> Result<(), Fail
     Ok(())
 }
 
-/// Write it all within the time left, then wipe it (it may hold a password).
 fn send_wiped(sock: &mut Sock, mut bytes: Vec<u8>, clock: &Clock) -> Result<(), Fail> {
     let sent = clock.bound(sock.tcp()).and_then(|_| sock.write_all(&bytes).and_then(|_| sock.flush()).map_err(|e| io(e, clock)));
     zikaron_os::wipe(&mut bytes);
     sent
 }
 
-/// Standard base64 (RFC 4648 §4, padded), into a buffer the caller wipes.
 fn base64(input: &[u8]) -> Vec<u8> {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
@@ -934,9 +752,6 @@ fn base64(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// HTTP CONNECT: send `CONNECT host:port` (with `Proxy-Authorization: Basic …` when credentials are written
-/// with the proxy) and read the response head; a 2xx opens the tunnel, anything else is the proxy's refusal
-/// with its status line.
 fn connect_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Clock) -> Result<(), Fail> {
     let place = format!("{}:{}", t.host, t.port);
     let mut lines = Vec::new();
@@ -950,12 +765,10 @@ fn connect_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Cloc
         zikaron_os::wipe(&mut coded);
     }
     let mut ask = crate::request_head("CONNECT", &place, &place, "").into_bytes();
-    // The caller's lines go before the blank line that ends the head.
     let end = ask.len() - 2;
     ask.splice(end..end, lines.iter().copied());
     zikaron_os::wipe(&mut lines);
     send_wiped(sock, ask, clock)?;
-    // Read byte by byte to the end of the head, so no tunnel data is consumed.
     let mut head: Vec<u8> = Vec::new();
     let mut one = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -967,7 +780,6 @@ fn connect_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Cloc
     }
     let text = String::from_utf8_lossy(&head);
     let line = text.lines().next().unwrap_or("").trim().to_string();
-    // An HTTP status line (`HTTP/1.x NNN …`); anything else is an unreadable response.
     let status: Option<u16> = match line.split_whitespace().collect::<Vec<_>>()[..] {
         [v, code, ..] if v.starts_with("HTTP/1.") && code.len() == 3 => code.parse().ok(),
         _ => None,
@@ -980,7 +792,6 @@ fn connect_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Cloc
     }
 }
 
-/// What a SOCKS5 reply code means (RFC 1928 §6).
 fn socks_said(code: u8) -> &'static str {
     match code {
         1 => "general failure",
@@ -995,10 +806,6 @@ fn socks_said(code: u8) -> &'static str {
     }
 }
 
-/// SOCKS5: the greeting (no authentication, and user name and password when credentials are written with the
-/// proxy), the RFC 1929 exchange when the proxy picks it, then CONNECT to the host by name (an address literal
-/// in its own address type), then read the full reply; anything but success is the proxy's refusal with its
-/// code.
 fn socks_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Clock) -> Result<(), Fail> {
     clock.bound(sock.tcp())?;
     let greeting: &[u8] = if auth.is_some() { &[5, 2, 0, 2] } else { &[5, 1, 0] };
@@ -1009,8 +816,6 @@ fn socks_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Clock)
         ([5, 0], _) => {}
         ([5, 2], Some(a)) => {
             let pass = a.pass.as_ref().map(Secret::expose).unwrap_or("");
-            // Each field carries its length in one byte (RFC 1929): longer credentials, wherever they came from,
-            // are refused by name here rather than sent cut.
             let (Ok(ulen), Ok(plen)) = (u8::try_from(a.user.len()), u8::try_from(pass.len())) else {
                 return Err(Fail::Stream("the user name or password written with this proxy is longer than SOCKS5 carries (255 bytes)".into()));
             };
@@ -1078,9 +883,6 @@ fn socks_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Clock)
     read_exact(sock, &mut bound, clock)
 }
 
-/// SOCKS4: CONNECT with the user id written with the proxy (empty when none); a host name goes in the 4a form
-/// (address `0.0.0.1`, the name after the user id) for the proxy to resolve; an IPv4 literal as itself; an
-/// IPv6 literal cannot be carried. The 8-byte reply's code 90 opens the tunnel.
 fn socks4_tunnel(sock: &mut Sock, t: &Target, auth: Option<&Auth>, clock: &Clock) -> Result<(), Fail> {
     let host = t.dial_host();
     let mut ask = vec![4u8, 1];
@@ -1129,9 +931,6 @@ mod tests {
         Proxy { kind, host: host.into(), port, auth: None }
     }
 
-    /// A manual proxy is `scheme://[user[:pass]@]host:port` with an HTTP, HTTPS, SOCKS5 or SOCKS4 scheme; other
-    /// schemes, a missing port, a path and an empty host are refused by name, and so are credentials that do
-    /// not read. The password is never spelled, shown or printed.
     #[test]
     fn a_typed_proxy_is_read_or_refused_by_name() {
         assert_eq!(proxy_of("http://127.0.0.1:7890"), Ok(px(Kind::Http, "127.0.0.1", 7890)));
@@ -1159,8 +958,6 @@ mod tests {
         crate::pac::Auto::None
     }
 
-    /// Loopback always goes direct; following the system uses its https, http and SOCKS proxies by target
-    /// scheme and honours its exceptions; a manual proxy is not used for local networks.
     #[test]
     fn the_way_follows_the_choice_and_the_system() {
         let manual = Choice::Manual(px(Kind::Socks5, "p", 1));
@@ -1189,8 +986,6 @@ mod tests {
         assert_eq!((r.way, r.system_unread), (Way::Direct, true));
     }
 
-    /// Following the system, a script's ways come first and the rest are tried after; a script that could not
-    /// be used leaves the explicit proxies, and says why; an answer not known yet is said as such.
     #[test]
     fn a_scripts_ways_come_first_and_its_trouble_leaves_the_explicit_proxies() {
         use crate::pac::{Auto, PacTrouble};
@@ -1208,8 +1003,6 @@ mod tests {
         assert_eq!((r.way, r.loopback), (Way::Direct, true), "loopback stays direct whatever the script says");
     }
 
-    /// Under a manual proxy, private, link-local and `.local` hosts go direct and say so; public ones go
-    /// through it; a name is never resolved to be judged.
     #[test]
     fn a_local_network_goes_straight_under_a_manual_proxy() {
         let manual = Choice::Manual(px(Kind::Http, "p", 1));
@@ -1227,21 +1020,17 @@ mod tests {
         excepted(&t(url), &[entry.to_string()])
     }
 
-    /// `*`: every host, names and addresses.
     #[test]
     fn an_exception_star_covers_every_host() {
         assert!(covers("https://node.example/", "*") && covers("https://10.1.2.3/", "*") && covers("https://[2001:db8::1]/", "*"));
     }
 
-    /// `<local>`: a plain name without a dot; never a dotted name, never an address.
     #[test]
     fn an_exception_local_covers_plain_names_only() {
         assert!(covers("https://intranet/", "<local>"));
         assert!(!covers("https://node.example/", "<local>") && !covers("https://10.1.2.3/", "<local>") && !covers("https://[::2]/", "<local>"));
     }
 
-    /// A name: itself and its subdomains, ignoring case and a trailing dot; not a longer name with the same
-    /// suffix; never an address.
     #[test]
     fn an_exception_name_covers_itself_and_its_subdomains() {
         assert!(covers("https://corp.example/", "corp.example") && covers("https://a.b.corp.example/", "Corp.Example."));
@@ -1250,7 +1039,6 @@ mod tests {
         assert!(!covers("https://192.168.1.5/", "1.5"), "a name entry never covers an address by its tail");
     }
 
-    /// `*.name` and `.name`: the subdomains and the bare name.
     #[test]
     fn an_exception_suffix_covers_the_subdomains_and_the_bare_name() {
         for e in ["*.corp.example", ".corp.example"] {
@@ -1259,7 +1047,6 @@ mod tests {
         }
     }
 
-    /// A pattern with `*` elsewhere (including Windows address wildcards): matched over the whole host.
     #[test]
     fn an_exception_wildcard_pattern_covers_by_the_whole_host() {
         assert!(covers("https://10.1.2.3/", "10.*") && covers("https://192.168.0.7/", "192.168.*"));
@@ -1268,7 +1055,6 @@ mod tests {
         assert!(covers("https://[::ffff:10.1.2.3]/", "10.*"), "an IPv4-mapped host is its IPv4 form");
     }
 
-    /// An address: that address (IPv6 with or without brackets, IPv4-mapped forms as IPv4); never a name.
     #[test]
     fn an_exception_address_covers_that_address() {
         assert!(covers("https://192.168.1.5/", "192.168.1.5") && !covers("https://192.168.1.50/", "192.168.1.5"));
@@ -1277,7 +1063,6 @@ mod tests {
         assert!(!covers("https://node.example/", "192.168.1.5"));
     }
 
-    /// A range: an address inside it; macOS's short form with octets left off; a name is not resolved.
     #[test]
     fn an_exception_range_covers_the_addresses_inside_it() {
         assert!(covers("https://10.200.0.1/", "10.0.0.0/8") && !covers("https://11.0.0.1/", "10.0.0.0/8"));
@@ -1289,7 +1074,6 @@ mod tests {
         assert!(!covers("https://10.0.0.1/", "10.0.0.0/8x") && !covers("https://10.0.0.1/", "10.0.0.0/33") && !covers("https://10.0.0.1/", "10.0.0.0/") && !covers("https://10.0.0.1/", "1.2.3.4.5/8"), "a range that does not read is passed over");
     }
 
-    /// With a port: as without it, and only for that port; an unparsable port is skipped.
     #[test]
     fn an_exception_with_a_port_covers_that_port_only() {
         assert!(covers("https://node.example:8545/", "node.example:8545") && !covers("https://node.example/", "node.example:8545"));
@@ -1297,7 +1081,6 @@ mod tests {
         assert!(!covers("https://node.example/", "node.example:x") && !covers("https://node.example/", "node.example:"));
     }
 
-    /// With a scheme: as without it, and only for that scheme; another scheme or a path is skipped.
     #[test]
     fn an_exception_with_a_scheme_covers_that_scheme_only() {
         assert!(covers("http://node.example/", "http://node.example") && !covers("https://node.example/", "http://node.example"));
@@ -1305,7 +1088,6 @@ mod tests {
         assert!(!covers("https://node.example/", "ftp://node.example") && !covers("https://node.example/", "https://node.example/x"));
     }
 
-    /// Skipped: empty, whitespace, control characters, `<-loopback>` and other `<…>` entries.
     #[test]
     fn an_exception_that_does_not_read_is_passed_over() {
         for e in ["", "   ", "a b", "node\t.example", "<-loopback>", "<anything>"] {
@@ -1314,9 +1096,6 @@ mod tests {
         assert!(excepted(&t("https://intranet/"), &["".into(), "<local>".into()]), "one entry passed over, the next still read");
     }
 
-    /// This machine in every form goes direct: `localhost` in any case with or without the trailing dot, its
-    /// subdomains, loopback addresses and their IPv4-mapped forms, the unspecified address. Names merely
-    /// containing the word, and other addresses, do not.
     #[test]
     fn this_machine_in_every_form_is_loopback() {
         for h in ["localhost", "LOCALHOST", "localhost.", "a.localhost", "a.localhost.", "127.0.0.1", "127.9.9.9", "[::1]", "::1", "[::ffff:127.0.0.1]", "0.0.0.0", "[::]"] {
@@ -1330,8 +1109,6 @@ mod tests {
         assert_eq!((r.way, r.loopback), (Way::Direct, true));
     }
 
-    /// A system proxy given as a bare IPv6 address is bracketed when spelled and unbracketed when dialed; its
-    /// kind follows its slot and scheme, and its credentials are kept.
     #[test]
     fn a_system_proxy_takes_its_kind_and_credentials_and_brackets() {
         let place = |scheme: &str, host: &str, user: Option<&str>, pass: Option<&str>| zikaron_os::ProxyPlace { scheme: scheme.into(), host: host.into(), port: 7890, user: user.map(Into::into), pass: pass.map(Into::into) };

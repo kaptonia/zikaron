@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s003_grant.bin",
+ "note": "sec 5.1: B6 of a grant carrying both ends of the integer universe",
+ "predicted": {
+  "digest": "0x999040eb7f68043356100a7c1fbdd4f08240cad418114fc1e7e40c9df5e2d6ca",
+  "presig": "0xbde609a186ae8f3a76c90adb36245121e227608a2393169481d26b44edf1cff5",
+  "sig": "0x1776596a3ec0c3f13cdaa33a762df0b3e707b86fe50377a70734f32b99a720a7488f9d06b43bf0ca27040a34e0eef7216cbaf6f6f49baf524caf392adf5f9af71c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

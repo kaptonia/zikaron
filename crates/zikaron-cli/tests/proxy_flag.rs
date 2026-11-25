@@ -1,8 +1,3 @@
-//! `--proxy` on the verbs that contact nodes, on the real binary against an in-process node, HTTP CONNECT stub
-//! and SOCKS5 stub (no network: only the stubs resolve the node's name). Cases: a proxy address is used, its
-//! credentials too; `none` resolves locally; `system` and no flag follow the terminal's proxy variables; anything
-//! else is misuse (exit 2, nothing on stdout, the flag named).
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -10,7 +5,6 @@ use std::sync::{Arc, Mutex};
 
 const BIN: &str = env!("CARGO_BIN_EXE_zikaron");
 
-/// A node answering every JSON-RPC request by method, one request per connection.
 fn node() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -64,8 +58,6 @@ fn pipe(a: TcpStream, b: TcpStream) {
     let _ = a.shutdown(std::net::Shutdown::Write);
 }
 
-/// A stub proxy (`socks`: SOCKS5, else HTTP CONNECT) that routes every target to local port `to` and records
-/// the targets requested.
 fn stub(socks: bool, to: u16) -> (u16, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -125,7 +117,7 @@ fn scan(dir: &std::path::Path, node: u16, proxy: Option<&str>, env: &[(&str, Str
     let basis = dir.join("basis.json");
     std::fs::write(
         &basis,
-        br#"{"adoptionChains":[],"bareTx":[],"chains":[{"chainId":31337,"fromBlock":0,"registries":["0x5fbdb2315678afecb367f032d93f642f64180aa3"],"senders":["0x70997970c51812dc3a010c7d01b50e0d17dc79c8"],"toBlock":2}]}"#,
+        br#"{"chains":[{"chainId":31337,"fromBlock":0,"registries":["0x5fbdb2315678afecb367f032d93f642f64180aa3"],"senders":["0x70997970c51812dc3a010c7d01b50e0d17dc79c8"],"toBlock":2}]}"#,
     )
     .expect("basis");
     let endpoint = format!("31337=http://node.invalid:{node}");
@@ -142,8 +134,6 @@ fn scan(dir: &std::path::Path, node: u16, proxy: Option<&str>, env: &[(&str, Str
     Ran { code: o.status.code().unwrap_or(-1), out: o.stdout, err: String::from_utf8_lossy(&o.stderr).to_string() }
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
@@ -156,7 +146,6 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     p
 }
 
-/// A proxy address is used, with credentials written into it too; the proxy resolves the node's name.
 #[test]
 fn a_proxy_address_is_gone_through() {
     let dir = scratch("through");
@@ -175,7 +164,6 @@ fn a_proxy_address_is_gone_through() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `none` resolves the name locally (`.invalid` never resolves): the scan is unanswered, exit 4.
 #[test]
 fn none_goes_straight() {
     let dir = scratch("none");
@@ -185,8 +173,6 @@ fn none_goes_straight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `system` and no flag follow the terminal's proxy variables when one is set, on every system, as terminal
-/// programs do; the system's own settings are read only when none is set.
 #[test]
 fn system_and_no_flag_follow_the_system() {
     let dir = scratch("system");
@@ -201,7 +187,6 @@ fn system_and_no_flag_follow_the_system() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Anything else is misuse: exit 2, nothing on stdout, the flag named on stderr's first line; no node contacted.
 #[test]
 fn any_other_proxy_is_misuse() {
     let dir = scratch("misuse");
@@ -211,7 +196,7 @@ fn any_other_proxy_is_misuse() {
         assert_eq!((r.code, r.out.is_empty()), (2, true), "{bad:?}: {}", r.err);
         assert!(r.err.lines().next().unwrap_or("").contains("--proxy"), "{bad:?}: {}", r.err);
     }
-    let r = Command::new(BIN).args(["anchor", "--endpoint", "31337=http://127.0.0.1:1", "--key", "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", "--form", "bare", "--hash", &format!("0x{}", "11".repeat(32)), "--proxy", "proxy.example:8080"]).current_dir(&dir).env(zikaron_os::HOME_VAR, own_home()).output().expect("zikaron runs");
+    let r = Command::new(BIN).args(["anchor", "--endpoint", "31337=http://127.0.0.1:1", "--key", "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &format!("0x{}", "11".repeat(32)), "--proxy", "proxy.example:8080"]).current_dir(&dir).env(zikaron_os::HOME_VAR, own_home()).output().expect("zikaron runs");
     assert_eq!((r.status.code(), r.stdout.is_empty()), (Some(2), true), "anchor takes the same flag");
     let _ = std::fs::remove_dir_all(&dir);
 }

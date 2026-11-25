@@ -1,28 +1,11 @@
-//! Message format for the desktop's local IPC endpoint (the "door"), shared by both sides: the CLI asks, the
-//! desktop answers.
-//!
-//! The CLI parses its arguments and rejects misuse as usual, then sends the verb and parsed flags as one
-//! [`Request`]. The desktop runs it through its own action layer and returns one [`Reply`] of facts, never the
-//! CLI's answer (the CLI builds its answer from them where it builds every answer). Each message is one frame:
-//! a 4-byte big-endian length, then that many bytes of `zikaron/1` canonical JSON. Frames over [`CAP`] are not
-//! read.
-//!
-//! The endpoint's location ([`place`]) depends on the machine directory and the open home, so each home has its
-//! own endpoint: the CLI names the home (`--home`), and a home the desktop does not have open has none.
-
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// Protocol identifier carried in every frame; a frame with another value is not read.
 pub const FORM: &str = "zikaron-door/1";
 
-/// Maximum frame body size in bytes.
 pub const CAP: usize = 1 << 20;
 
-/// The endpoint for `home` under machine directory `machine`, named by the first eight bytes of the sha256 of
-/// both canonicalized paths (so links such as `/tmp` vs `/private/tmp` resolve alike). Both sides derive the
-/// same name, and the name never reveals the paths.
 pub fn place(machine: &Path, home: &Path) -> PathBuf {
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let mut bytes = real(machine).into_os_string().into_encoded_bytes();
@@ -32,7 +15,6 @@ pub fn place(machine: &Path, home: &Path) -> PathBuf {
     zikaron_os::door::place(machine, &zikaron::hexfmt::encode(&digest[..8]))
 }
 
-/// Member names of a frame (closed set, spelled only here).
 mod member {
     pub const FORM: &str = "form";
     pub const VERB: &str = "verb";
@@ -64,15 +46,35 @@ mod member {
     pub const RECORDS: &str = "records";
     pub const CONTENT: &str = "content";
     pub const ORIGINAL: &str = "original";
+    pub const DELETED: &str = "deleted";
     pub const ANCHORED: &str = "anchored";
     pub const FIRST_AT: &str = "firstAt";
     pub const TAKEN: &str = "taken";
+    pub const UNANSWERED: &str = "unanswered";
     pub const VERDICT: &str = "verdict";
     pub const SUBJECT: &str = "subject";
+    pub const DONE: &str = "done";
+    pub const REMOVED: &str = "removed";
+    pub const KEPT: &str = "kept";
+    pub const KIND: &str = "kind";
+    pub const LINK: &str = "link";
+    pub const WHY: &str = "why";
+    pub const SEALED: &str = "sealed";
+    pub const RULE: &str = "rule";
+    pub const OWN: &str = "own";
+    pub const TOKEN: &str = "token";
+    pub const NOTICE: &str = "notice";
+    pub const WITHDRAWN: &str = "withdrawn";
+    pub const TABLE: &str = "table";
+    pub const MOMENT: &str = "moment";
+    pub const OMITTED: &str = "omitted";
+    pub const JOINED: &str = "joined";
+    pub const READ_TO: &str = "readTo";
+    pub const ROOT_OF: &str = "root";
 }
 
-/// A CLI request: the verb, the named home, and each parsed flag with its value in the order given (a repeated
-/// flag appears more than once).
+pub use crate::doorrules::{desk_reason, Own, Rule, DESK, RETRACT_NOT_AUDITED, TIP_NOT_MOVED};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub verb: String,
@@ -81,12 +83,10 @@ pub struct Request {
 }
 
 impl Request {
-    /// The value of a single-use flag (the CLI has already rejected repeats); `None` when absent.
     pub fn one(&self, flag: &str) -> Option<&str> {
         self.args.iter().find(|(k, _)| k == flag).map(|(_, v)| v.as_str())
     }
 
-    /// Every value of a flag, in order.
     pub fn many(&self, flag: &str) -> Vec<&str> {
         self.args.iter().filter(|(k, _)| k == flag).map(|(_, v)| v.as_str()).collect()
     }
@@ -101,7 +101,6 @@ impl Request {
         ]))
     }
 
-    /// Parse a request; `None` when the bytes are not a request of this form.
     pub fn of_bytes(b: &[u8]) -> Option<Request> {
         let v = form_of(b)?;
         let mut args = Vec::new();
@@ -115,57 +114,54 @@ impl Request {
     }
 }
 
-/// The outcome of a request, as facts. Closed set: the CLI maps each to its documented answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// An entry was written: its id, the ledger folder it went into, its sequence number.
     Wrote { entry_id: String, ledger: String, seq: u64 },
-    /// The batch was sent and included with status 1 at this block.
+    Noticed { entry_id: String, ledger: String, tx: String, notice: String, withdrawn: bool },
     Anchored { tx: String, block: u64 },
-    /// Included, with another status (the chain said the call failed).
     Reverted { tx: String, status: u64 },
-    /// Sent but not seen in a block within the desktop's wait (the desktop keeps waiting).
     NotYet { tx: String, waited: u64 },
-    /// Sent, but no node answered the receipt query within the wait; `detail` is what was heard (the desktop
-    /// keeps waiting).
     Unheard { tx: String, detail: String },
-    /// Sent and void: no node knows it and its nonce was used by another transaction, so it will never be
-    /// included; its entries return to the queue (the batch's last transaction).
     Voided { tx: String },
-    /// Nothing was sent: the chain already holds anchors of these hashes from this key (`names`), the earliest in
-    /// transaction `tx` at block `block`.
     OnChain { names: Vec<String>, tx: String, block: u64 },
-    /// A record package was written: the package paths of the originals that went in, and the places of the chosen
-    /// records' originals that did not (no longer the bytes recorded, or not there to read).
     Kit { kit_id: String, path: String, entries: u64, files: u64, dropped: Vec<String>, originals: Vec<String>, left_out: Vec<String> },
-    /// A record package was verified and the kit law passed it: its id, how many entries it carries, each record's
-    /// facts (`crate::recordcheck`, the one judge), and the originals taken out when that was asked.
-    Verified { kit_id: String, entries: u64, records: Vec<Record>, taken: Option<Taken> },
-    /// A record package the kit law refuses: its verdict token, and its subject when there is one. Nothing is taken
-    /// out of it.
+    Verified { kit_id: String, entries: u64, records: Vec<Record>, taken: Option<Taken>, unanswered: Vec<String> },
     KitRefused { verdict: String, subject: Option<String> },
-    /// Nothing was sent: the entries wait in the queue for the user to send them from the desktop.
     Queued { count: u64 },
-    /// The action needs the passcode, so it is done on the desktop, never over IPC.
     OnDesktop,
-    /// The desktop's action layer refused: its code, the evidence, whether it is a network failure (no answer
-    /// rather than a negative one), and the message in both languages.
-    Refused { code: String, tail: String, network: bool, zh: String, en: String },
-    /// The desktop locked, closed the home or quit before the request was answered: a request not yet begun was
-    /// not done; one begun may have been (the desktop shows what it did).
+    Refused { code: String, tail: String, network: bool, zh: String, en: String, own: Option<Own> },
+    RuleRefused { rule: Rule, token: Option<String>, entry_id: Option<String>, names: Option<Vec<String>>, zh: String, en: String },
     Closed,
+    GrantPackage { path: String, kit_id: String, files: u64, originals: Vec<String>, left_out: Vec<String>, sealed: bool },
+    Cleaned { done: bool, removed: Vec<Cleared>, kept: Vec<Cleared> },
+    Face { table: String, moment: u64, omitted: Vec<String> },
+    Joined { joined: bool, read: Vec<ReadOf> },
 }
 
-/// One record's facts in a verified package: its entry, its `content`, its original, its anchoring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadOf {
+    pub root: String,
+    pub moment: u64,
+    pub omitted: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cleared {
+    pub kind: String,
+    pub path: String,
+    pub link: Option<String>,
+    pub why: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub entry_id: String,
     pub content: String,
     pub original: crate::recordcheck::Original,
     pub chain: crate::recordcheck::OnChain,
+    pub deleted: Option<String>,
 }
 
-/// The originals taken out of a verified package: the folder and the names they were placed under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Taken {
     pub path: String,
@@ -174,6 +170,7 @@ pub struct Taken {
 
 mod kind {
     pub const WROTE: &str = "wrote";
+    pub const NOTICED: &str = "noticed";
     pub const ANCHORED: &str = "anchored";
     pub const REVERTED: &str = "reverted";
     pub const NOT_YET: &str = "notYet";
@@ -186,7 +183,12 @@ mod kind {
     pub const QUEUED: &str = "queued";
     pub const ON_DESKTOP: &str = "onDesktop";
     pub const REFUSED: &str = "refused";
+    pub const RULE_REFUSED: &str = "ruleRefused";
     pub const CLOSED: &str = "closed";
+    pub const CLEANED: &str = "cleaned";
+    pub const GRANT_PACKAGE: &str = "grantPackage";
+    pub const FACE: &str = "face";
+    pub const JOINED: &str = "joined";
 }
 
 impl Reply {
@@ -200,6 +202,14 @@ impl Reply {
                 put(member::ENTRY_ID, s(entry_id));
                 put(member::LEDGER, s(ledger));
                 put(member::SEQ, Value::Int(*seq));
+            }
+            Reply::Noticed { entry_id, ledger, tx, notice, withdrawn } => {
+                put(member::REPLY, s(kind::NOTICED));
+                put(member::ENTRY_ID, s(entry_id));
+                put(member::LEDGER, s(ledger));
+                put(member::TX, s(tx));
+                put(member::NOTICE, s(notice));
+                put(member::WITHDRAWN, Value::Bool(*withdrawn));
             }
             Reply::Anchored { tx, block } => {
                 put(member::REPLY, s(kind::ANCHORED));
@@ -241,7 +251,7 @@ impl Reply {
                 put(member::ORIGINALS, Value::Arr(originals.iter().map(|x| s(x)).collect()));
                 put(member::LEFT_OUT, Value::Arr(left_out.iter().map(|x| s(x)).collect()));
             }
-            Reply::Verified { kit_id, entries, records, taken } => {
+            Reply::Verified { kit_id, entries, records, taken, unanswered } => {
                 put(member::REPLY, s(kind::VERIFIED));
                 put(member::KIT_ID, s(kit_id));
                 put(member::ENTRIES, Value::Int(*entries));
@@ -255,12 +265,16 @@ impl Reply {
                         m.push((member::FIRST_AT.to_string(), Value::Int(t)));
                     }
                     m.push((member::ORIGINAL.to_string(), s(r.original.word())));
+                    if let Some(by) = &r.deleted {
+                        m.push((member::DELETED.to_string(), s(by)));
+                    }
                     Value::Obj(m)
                 };
                 put(member::RECORDS, Value::Arr(records.iter().map(row).collect()));
                 if let Some(t) = taken {
                     put(member::TAKEN, Value::Obj(vec![(member::NAMES.to_string(), Value::Arr(t.names.iter().map(|x| s(x)).collect())), (member::PATH.to_string(), s(&t.path))]));
                 }
+                put(member::UNANSWERED, Value::Arr(unanswered.iter().map(|x| s(x)).collect()));
             }
             Reply::KitRefused { verdict, subject } => {
                 put(member::REPLY, s(kind::KIT_REFUSED));
@@ -274,21 +288,82 @@ impl Reply {
                 put(member::COUNT, Value::Int(*count));
             }
             Reply::OnDesktop => put(member::REPLY, s(kind::ON_DESKTOP)),
-            Reply::Refused { code, tail, network, zh, en } => {
+            Reply::Refused { code, tail, network, zh, en, own } => {
                 put(member::REPLY, s(kind::REFUSED));
                 put(member::CODE, s(code));
                 put(member::TAIL, s(tail));
                 put(member::NETWORK, Value::Bool(*network));
                 put(member::ZH, s(zh));
                 put(member::EN, s(en));
+                if let Some(o) = own {
+                    put(member::OWN, s(o.as_str()));
+                }
+            }
+            Reply::RuleRefused { rule, token, entry_id, names, zh, en } => {
+                put(member::REPLY, s(kind::RULE_REFUSED));
+                put(member::RULE, s(rule.as_str()));
+                if let Some(t) = token {
+                    put(member::TOKEN, s(t));
+                }
+                if let Some(e) = entry_id {
+                    put(member::ENTRY_ID, s(e));
+                }
+                if let Some(ns) = names {
+                    put(member::NAMES, Value::Arr(ns.iter().map(|x| s(x)).collect()));
+                }
+                put(member::ZH, s(zh));
+                put(member::EN, s(en));
             }
             Reply::Closed => put(member::REPLY, s(kind::CLOSED)),
+            Reply::GrantPackage { path, kit_id, files, originals, left_out, sealed } => {
+                put(member::REPLY, s(kind::GRANT_PACKAGE));
+                put(member::FILES, Value::Int(*files));
+                put(member::KIT_ID, s(kit_id));
+                put(member::ORIGINALS, Value::Arr(originals.iter().map(|x| s(x)).collect()));
+                put(member::LEFT_OUT, Value::Arr(left_out.iter().map(|x| s(x)).collect()));
+                put(member::PATH, s(path));
+                put(member::SEALED, Value::Bool(*sealed));
+            }
+            Reply::Face { table, moment, omitted } => {
+                put(member::REPLY, s(kind::FACE));
+                put(member::TABLE, s(table));
+                put(member::MOMENT, Value::Int(*moment));
+                put(member::OMITTED, Value::Arr(omitted.iter().map(|x| s(x)).collect()));
+            }
+            Reply::Joined { joined, read } => {
+                put(member::REPLY, s(kind::JOINED));
+                put(member::JOINED, Value::Bool(*joined));
+                let one = |r: &ReadOf| {
+                    Value::Obj(vec![
+                        (member::MOMENT.to_string(), Value::Int(r.moment)),
+                        (member::OMITTED.to_string(), Value::Arr(r.omitted.iter().map(|x| s(x)).collect())),
+                        (member::ROOT_OF.to_string(), s(&r.root)),
+                    ])
+                };
+                put(member::READ_TO, Value::Arr(read.iter().map(one).collect()));
+            }
+            Reply::Cleaned { done, removed, kept } => {
+                let row = |c: &Cleared| {
+                    let mut m = vec![(member::KIND.to_string(), s(&c.kind))];
+                    if let Some(l) = &c.link {
+                        m.push((member::LINK.to_string(), s(l)));
+                    }
+                    m.push((member::PATH.to_string(), s(&c.path)));
+                    if let Some(w) = &c.why {
+                        m.push((member::WHY.to_string(), s(w)));
+                    }
+                    Value::Obj(m)
+                };
+                put(member::REPLY, s(kind::CLEANED));
+                put(member::DONE, Value::Bool(*done));
+                put(member::KEPT, Value::Arr(kept.iter().map(row).collect()));
+                put(member::REMOVED, Value::Arr(removed.iter().map(row).collect()));
+            }
         }
         ms.sort_by(|a, b| a.0.cmp(&b.0));
         json::canon_bytes(&Value::Obj(ms))
     }
 
-    /// Read a reply; `None` when the bytes are not one in this form.
     pub fn of_bytes(b: &[u8]) -> Option<Reply> {
         let v = form_of(b)?;
         let s = |k: &str| v.member(k).and_then(|x| x.as_str()).map(str::to_string);
@@ -298,6 +373,16 @@ impl Reply {
         };
         Some(match v.member(member::REPLY)?.as_str()? {
             kind::WROTE => Reply::Wrote { entry_id: s(member::ENTRY_ID)?, ledger: s(member::LEDGER)?, seq: n(member::SEQ)? },
+            kind::NOTICED => Reply::Noticed {
+                entry_id: s(member::ENTRY_ID)?,
+                ledger: s(member::LEDGER)?,
+                tx: s(member::TX)?,
+                notice: s(member::NOTICE)?,
+                withdrawn: match v.member(member::WITHDRAWN)? {
+                    Value::Bool(b) => *b,
+                    _ => return None,
+                },
+            },
             kind::ANCHORED => Reply::Anchored { tx: s(member::TX)?, block: n(member::BLOCK)? },
             kind::REVERTED => Reply::Reverted { tx: s(member::TX)?, status: n(member::STATUS)? },
             kind::NOT_YET => Reply::NotYet { tx: s(member::TX)?, waited: n(member::WAITED)? },
@@ -326,11 +411,17 @@ impl Reply {
                         Some(Value::Int(x)) => Some(*x),
                         Some(_) => return None,
                     };
+                    let deleted = match r.member(member::DELETED) {
+                        None => None,
+                        Some(Value::Str(by)) => Some(by.clone()),
+                        Some(_) => return None,
+                    };
                     Some(Record {
                         entry_id: t(member::ENTRY_ID)?,
                         content: t(member::CONTENT)?,
                         original: crate::recordcheck::Original::of_word(&t(member::ORIGINAL)?)?,
                         chain: crate::recordcheck::OnChain::of_word(&t(member::ANCHORED)?, first)?,
+                        deleted,
                     })
                 };
                 let taken = match v.member(member::TAKEN) {
@@ -342,6 +433,7 @@ impl Reply {
                     entries: n(member::ENTRIES)?,
                     records: v.member(member::RECORDS)?.as_arr()?.iter().map(record).collect::<Option<Vec<_>>>()?,
                     taken,
+                    unanswered: strs(v.member(member::UNANSWERED)?)?,
                 }
             }
             kind::KIT_REFUSED => Reply::KitRefused { verdict: s(member::VERDICT)?, subject: s(member::SUBJECT) },
@@ -356,31 +448,92 @@ impl Reply {
                 },
                 zh: s(member::ZH)?,
                 en: s(member::EN)?,
+                own: match s(member::OWN) {
+                    None => None,
+                    Some(o) => Some(Own::of_str(&o)?),
+                },
+            },
+            kind::RULE_REFUSED => Reply::RuleRefused {
+                rule: Rule::of_str(&s(member::RULE)?)?,
+                token: s(member::TOKEN),
+                entry_id: s(member::ENTRY_ID),
+                names: match v.member(member::NAMES) {
+                    None => None,
+                    Some(x) => Some(x.as_arr()?.iter().map(|y| y.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?),
+                },
+                zh: s(member::ZH)?,
+                en: s(member::EN)?,
             },
             kind::CLOSED => Reply::Closed,
+            kind::GRANT_PACKAGE => {
+                let b = |k: &str| match v.member(k) {
+                    Some(Value::Bool(x)) => Some(*x),
+                    _ => None,
+                };
+                Reply::GrantPackage {
+                    path: s(member::PATH)?,
+                    kit_id: s(member::KIT_ID)?,
+                    files: n(member::FILES)?,
+                    originals: v.member(member::ORIGINALS)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                    left_out: v.member(member::LEFT_OUT)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                    sealed: b(member::SEALED)?,
+                }
+            }
+            kind::FACE => Reply::Face {
+                table: s(member::TABLE)?,
+                moment: n(member::MOMENT)?,
+                omitted: v.member(member::OMITTED)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+            },
+            kind::JOINED => Reply::Joined {
+                joined: match v.member(member::JOINED)? {
+                    Value::Bool(b) => *b,
+                    _ => return None,
+                },
+                read: v
+                    .member(member::READ_TO)?
+                    .as_arr()?
+                    .iter()
+                    .map(|r| {
+                        Some(ReadOf {
+                            root: r.member(member::ROOT_OF)?.as_str()?.to_string(),
+                            moment: r.member(member::MOMENT)?.as_int()?,
+                            omitted: r.member(member::OMITTED)?.as_arr()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            kind::CLEANED => {
+                let row = |r: &Value| -> Option<Cleared> {
+                    let t = |k: &str| r.member(k).and_then(|x| x.as_str()).map(str::to_string);
+                    Some(Cleared { kind: t(member::KIND)?, path: t(member::PATH)?, link: t(member::LINK), why: t(member::WHY) })
+                };
+                let rows = |k: &str| v.member(k)?.as_arr()?.iter().map(row).collect::<Option<Vec<_>>>();
+                Reply::Cleaned {
+                    done: match v.member(member::DONE)? {
+                        Value::Bool(b) => *b,
+                        _ => return None,
+                    },
+                    removed: rows(member::REMOVED)?,
+                    kept: rows(member::KEPT)?,
+                }
+            }
             _ => return None,
         })
     }
 }
 
-/// Parse bytes as a value of this form (the `zikaron/1` JSON reader, then the form member).
 fn form_of(b: &[u8]) -> Option<Value> {
     let v = json::parse(b).ok()?;
     (v.member(member::FORM)?.as_str()? == FORM).then_some(v)
 }
 
-/// Why a frame was not read. Closed set.
 #[derive(Debug)]
 pub enum Unread {
-    /// The peer closed before a whole frame arrived (or sent nothing).
     Short,
-    /// The declared length exceeds [`CAP`].
     TooLarge(usize),
-    /// An I/O error (including a read timeout).
     Io(std::io::Error),
 }
 
-/// Write one frame.
 pub fn put(w: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
     let n = u32::try_from(bytes.len()).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "a frame over four gigabytes"))?;
     w.write_all(&n.to_be_bytes())?;
@@ -388,7 +541,6 @@ pub fn put(w: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
     w.flush()
 }
 
-/// Read one frame of at most [`CAP`] bytes.
 pub fn take(r: &mut impl Read) -> Result<Vec<u8>, Unread> {
     let mut head = [0u8; 4];
     read_all(r, &mut head)?;
@@ -413,7 +565,6 @@ fn read_all(r: &mut impl Read, buf: &mut [u8]) -> Result<(), Unread> {
 mod tests {
     use super::*;
 
-    /// Every reply and a request round-trip; another form or non-JSON does not parse.
     #[test]
     fn requests_and_replies_read_back_as_written() {
         let q = Request { verb: "annotate".into(), home: "/h".into(), args: vec![("subject".into(), "ab".into()), ("note".into(), "x y\n".into()), ("note".into(), "again".into())] };
@@ -422,6 +573,7 @@ mod tests {
         assert_eq!(q.many("note"), vec!["x y\n", "again"]);
         let all = [
             Reply::Wrote { entry_id: "e".into(), ledger: "/l".into(), seq: 3 },
+            Reply::Noticed { entry_id: "e".into(), ledger: "/l".into(), tx: "0x1".into(), notice: "n".into(), withdrawn: true },
             Reply::Anchored { tx: "t".into(), block: 9 },
             Reply::Reverted { tx: "t".into(), status: 0 },
             Reply::NotYet { tx: "t".into(), waited: 30 },
@@ -433,18 +585,36 @@ mod tests {
                 kit_id: "k".into(),
                 entries: 3,
                 records: vec![
-                    Record { entry_id: "e1".into(), content: "c1".into(), original: crate::recordcheck::Original::Match, chain: crate::recordcheck::OnChain::Anchored { first_at: 9 } },
-                    Record { entry_id: "e2".into(), content: "c2".into(), original: crate::recordcheck::Original::Missing, chain: crate::recordcheck::OnChain::Unread },
+                    Record { entry_id: "e1".into(), content: "c1".into(), original: crate::recordcheck::Original::Match, chain: crate::recordcheck::OnChain::Anchored { first_at: 9 }, deleted: None },
+                    Record { entry_id: "e2".into(), content: "c2".into(), original: crate::recordcheck::Original::Missing, chain: crate::recordcheck::OnChain::Unread, deleted: Some("0xd".into()) },
                 ],
                 taken: Some(Taken { path: "/t".into(), names: vec!["a 原件.pdf".into()] }),
+                unanswered: vec!["eth_getLogs · 节点 a 答:范围过宽".into()],
             },
-            Reply::Verified { kit_id: "k".into(), entries: 0, records: Vec::new(), taken: None },
+            Reply::Verified { kit_id: "k".into(), entries: 0, records: Vec::new(), taken: None, unanswered: Vec::new() },
             Reply::KitRefused { verdict: "v1".into(), subject: Some("a".into()) },
             Reply::KitRefused { verdict: "v2".into(), subject: None },
             Reply::Queued { count: 4 },
+            Reply::GrantPackage { path: "/o/grant-1.zkgrant".into(), kit_id: "0x1".into(), files: 3, originals: vec!["work.txt".into()], left_out: vec!["/gone/work.txt".into()], sealed: false },
+            Reply::Cleaned {
+                done: true,
+                removed: vec![Cleared { kind: "kit".into(), path: "/a".into(), link: Some("https://x/a".into()), why: None }],
+                kept: vec![Cleared { kind: "mirror".into(), path: "/m".into(), link: None, why: Some("changed".into()) }],
+            },
             Reply::OnDesktop,
-            Reply::Refused { code: "LOCKED".into(), tail: "t".into(), network: true, zh: "锁".into(), en: "locked".into() },
+            Reply::Refused { code: "LOCKED".into(), tail: "t".into(), network: true, zh: "锁".into(), en: "locked".into(), own: None },
+            Reply::Refused { code: "BOOK_CODE".into(), tail: "11155111".into(), network: false, zh: "簿".into(), en: "book".into(), own: Some(Own::IssueRefused) },
+            Reply::Refused { code: "LEDGER_NOT_FETCHED".into(), tail: String::new(), network: false, zh: "未取".into(), en: "unfetched".into(), own: Some(Own::ReadOnly) },
+            Reply::Refused { code: "HANDED_OFF".into(), tail: "0xab".into(), network: false, zh: "交".into(), en: "handed".into(), own: Some(Own::HandedOff) },
+            Reply::Refused { code: "UNREACHABLE".into(), tail: "n".into(), network: true, zh: "达".into(), en: "reach".into(), own: Some(Own::SendRefused) },
+            Reply::RuleRefused { rule: Rule::Retraction, token: Some("E_RETRACT_REPEATED".into()), entry_id: None, names: None, zh: "删过".into(), en: "deleted".into() },
+            Reply::RuleRefused { rule: Rule::Withheld, token: Some("E_GRANT_WORK_DELETED".into()), entry_id: None, names: Some(Vec::new()), zh: "删".into(), en: "gone".into() },
+            Reply::RuleRefused { rule: Rule::WouldBreak, token: None, entry_id: Some("0xe".into()), names: Some(vec!["GAP".into()]), zh: "断".into(), en: "break".into() },
             Reply::Closed,
+            Reply::Face { table: "{\"root\":\"0x11\"}".into(), moment: 1_800_000_000, omitted: vec!["10 NO_BOOK".into()] },
+            Reply::Joined { joined: true, read: vec![ReadOf { root: "0x11".into(), moment: 9, omitted: Vec::new() }, ReadOf { root: "0x22".into(), moment: 8, omitted: vec!["10 NO_BOOK".into()] }] },
+            Reply::Refused { code: "DISAGREE".into(), tail: "2 differ".into(), network: true, zh: "异".into(), en: "differ".into(), own: Some(Own::ChainUnread) },
+            Reply::Refused { code: "FACE_ROW".into(), tail: "bound account x a".into(), network: false, zh: "行".into(), en: "row".into(), own: Some(Own::Face) },
         ];
         for r in all {
             assert_eq!(Reply::of_bytes(&r.to_bytes()), Some(r.clone()), "{r:?}");
@@ -456,7 +626,30 @@ mod tests {
         assert_eq!(Request::of_bytes(br#"{"args":[["a"]],"form":"zikaron-door/1","home":"/h","verb":"v"}"#), None, "an argument is a pair");
     }
 
-    /// A frame reads back; one cut short, or empty, is `Short`; one longer than the cap is not read.
+    #[test]
+    fn every_own_reason_reads_back_by_its_word() {
+        for o in Own::ALL {
+            assert_eq!(Own::of_str(o.as_str()), Some(o));
+            let back = Reply::Refused { code: "C".into(), tail: "t".into(), network: false, zh: "z".into(), en: "e".into(), own: Some(o) };
+            assert_eq!(Reply::of_bytes(&back.to_bytes()), Some(back.clone()));
+        }
+        let words: std::collections::BTreeSet<&str> = Own::ALL.iter().map(|o| o.as_str()).collect();
+        assert_eq!(words.len(), Own::ALL.len());
+        assert_eq!(Reply::of_bytes(br#"{"code":"C","en":"e","form":"zikaron-door/1","network":false,"own":"other","reply":"refused","tail":"t","zh":"z"}"#), None, "a reason this version does not know");
+    }
+
+    #[test]
+    fn every_rule_reads_back_by_its_word() {
+        for r in Rule::ALL {
+            assert_eq!(Rule::of_str(r.as_str()), Some(r));
+            let back = Reply::RuleRefused { rule: r, token: None, entry_id: None, names: None, zh: "z".into(), en: "e".into() };
+            assert_eq!(Reply::of_bytes(&back.to_bytes()), Some(back.clone()));
+        }
+        let words: std::collections::BTreeSet<&str> = Rule::ALL.iter().map(|r| r.as_str()).collect();
+        assert_eq!(words.len(), Rule::ALL.len());
+        assert_eq!(Rule::of_str("ledger"), None);
+    }
+
     #[test]
     fn a_frame_reads_whole_or_not_at_all() {
         let mut buf = Vec::new();
@@ -470,7 +663,6 @@ mod tests {
         assert!(matches!(take(&mut &at[..]), Err(Unread::Short)), "the cap itself is taken (here cut short)");
     }
 
-    /// The same location however spelled gives the same endpoint; another home gives another.
     #[test]
     fn a_door_is_named_by_its_places_as_the_system_resolves_them() {
         let d = std::env::temp_dir().join(format!("zkg-door-{}", std::process::id()));

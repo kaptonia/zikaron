@@ -1,13 +1,3 @@
-//! **Pickers**: every "open it and choose a row from a list" is one floating card with a search field on top
-//! (and, for lists whose rows carry a time, "start date · end date" under it), then the rows in a scrolling
-//! column. The card is a menu's card ([`crate::menu`]): the floating surface, grown from its anchor's corner
-//! from 0.97 over 120 ms and played backwards when it leaves; a press outside it ([`crate::layer::under`]),
-//! Esc, or picking a row closes it. Rows are a menu's rows ([`crate::menu::Row`], [`crate::menu::Who`]),
-//! drawn by the same functions; rows that cannot be picked stay grey.
-//!
-//! **This control only draws and picks.** Which rows match the words typed and the days set is the caller's:
-//! it is asked once per row through `keep`, with the row's index, the words and the two days.
-
 use crate::datepick;
 use crate::menu::{self, Item};
 
@@ -15,7 +5,6 @@ use crate::palette::{c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// The date fields of a picker whose rows carry a time.
 pub struct Dates<'a> {
     pub words: &'a datepick::Words<'a>,
     pub today: datepick::Day,
@@ -23,38 +12,28 @@ pub struct Dates<'a> {
     pub to_hint: &'a str,
 }
 
-/// What a picker says and how wide it is.
 pub struct Spec<'a> {
-    /// The search field's hint.
     pub hint: &'a str,
-    /// What the card says when no row matches.
     pub empty: &'a str,
-    /// The card's width (a record picker is wider: three columns).
     pub w: f32,
     pub dates: Option<Dates<'a>>,
 }
 
-/// What a row filter is asked: the row's index, the words typed, the start day and the end day
-/// (`YYYY-MM-DD` or empty).
 pub type Keep<'k> = &'k dyn Fn(usize, &str, &str, &str) -> bool;
 
 const PAD: f32 = crate::band::GAP;
 const INSET: f32 = 10.0;
-/// The rows' column at most this high; more rows scroll.
 const LIST_MAX_H: f32 = 336.0;
 const DATE_W: f32 = 136.0;
 
-/// The words typed and the two days of an open picker.
 #[derive(Clone, Default)]
 struct Typed {
     query: String,
     from: String,
     to: String,
-    /// The `opened` count these were typed under (a new opening starts empty).
     opened: u64,
 }
 
-/// A key that opens a picker (a secondary key, with a caret when `caret`); returns the row picked.
 pub fn key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, caret: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
     let id = ui.id().with(("zikaron-pick", id_salt));
     let mut k = crate::button::Key::new(label, crate::button::Role::Secondary).enabled(enabled);
@@ -70,21 +49,16 @@ pub fn key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, caret: 
     picked
 }
 
-/// Draw an open picker under `anchor` (aligned to its left edge when `left`, its right edge otherwise), inside
-/// the window (an anchor drawn on no ui of its own). Returns the picked row's index (into `items`).
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
     show_from(ctx, None, id, anchor, ctx.content_rect(), left, spec, items, keep)
 }
 
-/// As [`show`], for a picker whose anchor lies in `parent` (an overlay it then hangs above; see
-/// [`crate::layer::under`]), inside `bounds` (the anchor's ui clip: [`crate::layer::drop_card`]).
 #[allow(clippy::too_many_arguments)]
 pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, left: bool, spec: &Spec, items: &[Item], keep: Keep) -> Option<usize> {
     if !menu::is_open(ctx, id) {
         return None;
     }
     let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
-    // What was typed belongs to this opening only.
     let opened = ctx.data(|d| d.get_temp::<u64>(id.with("opened"))).unwrap_or(0);
     let mut typed = ctx.data(|d| d.get_temp::<Typed>(id.with("typed"))).filter(|t| t.opened == opened).unwrap_or(Typed { opened, ..Default::default() });
     let fresh = ctx.data(|d| d.get_temp::<u64>(id.with("focused"))) != Some(opened);
@@ -107,8 +81,6 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
     let mut guarded = false;
     let mut picked = None;
     crate::layer::over(ctx, layer).show(ctx, |ui| {
-        // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
-        // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
         guarded = crate::layer::under(ui, crate::layer::Under::Guard);
         crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
@@ -130,7 +102,6 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             });
         }
         let top = inner.top() + head_h + INSET;
-        // The head's line goes on after the rows: the first row's lit edge lies under it.
         let line = egui::Shape::hline((rect.left() + 11.0)..=(rect.right() - 11.0), top - PAD - crate::band::LINE_HALF, egui::Stroke::new(1.0_f32, c(C::Line2)));
         let list = Rect::from_min_max(pos2(rect.left() + PAD, top), pos2(rect.right() - PAD, top + list_h));
         let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -144,9 +115,8 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             for (n, i) in kept.iter().enumerate() {
                 let it = &items[*i];
                 let (rr, _) = ui.allocate_exact_size(vec2(list.width(), row_h(it)), egui::Sense::hover());
-                // Under the head's line, the rows one after another, the last at the card's foot.
                 let below = if n + 1 == kept.len() { crate::band::Bound::Edge } else { crate::band::Bound::Row };
-                let above = if n == 0 { crate::band::Bound::Line } else { crate::band::Bound::Row };
+                let above = if n == 0 { crate::band::Bound::Rule } else { crate::band::Bound::Row };
                 let resp = match it {
                     Item::Row(r) => menu::draw_row(ui, id.with(("row", *i)), rr, r, (above, below)),
                     Item::Who(wr) => menu::draw_who(ui, id.with(("who", *i)), rr, wr),

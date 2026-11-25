@@ -1,10 +1,5 @@
-//! The sender carries no window and no third-party crate of its own: its whole dependency closure, as the lock
-//! file records it, is the anchoring crate's and the sealed layer's, so the command line that depends on it stays
-//! a command line.
-
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Each package of the lock file and the names of the packages it depends on.
 fn lock() -> BTreeMap<String, Vec<String>> {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock")).expect("the lock file");
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -38,8 +33,6 @@ fn closure(of: &str) -> BTreeSet<String> {
     seen
 }
 
-/// The sender's closure is the anchoring crate's and the sealed layer's together, nothing more; neither it nor
-/// the command line's holds a window.
 #[test]
 fn the_senders_closure_is_the_anchoring_crates_and_the_sealed_layers() {
     let sender = closure("zikaron-send");
@@ -55,7 +48,6 @@ fn the_senders_closure_is_the_anchoring_crates_and_the_sealed_layers() {
     }
 }
 
-/// The sender names no third-party crate in its manifest: only the workspace's own, by path.
 #[test]
 fn the_sender_depends_on_no_third_party_crate() {
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).expect("the manifest");

@@ -1,7 +1,3 @@
-//! The lock's and the first-run wizard's motion, read frame by frame in windowless frames: each part is drawn at
-//! set times and what it drew (sizes, places, opacities, layer transforms) is read back against the design's
-//! times and curves. `--nocapture` prints the readings.
-
 use zikaron_ui::egui::{self, pos2, vec2, Rect};
 use zikaron_ui::{covers, motion, sheetparts};
 
@@ -18,7 +14,6 @@ fn ctx() -> egui::Context {
     ctx
 }
 
-/// Every circle drawn (centre, radius, filled), nested ones too.
 fn circles(out: &egui::FullOutput) -> Vec<(egui::Pos2, f32, bool)> {
     fn walk(s: &egui::Shape, out: &mut Vec<(egui::Pos2, f32, bool)>) {
         match s {
@@ -34,7 +29,6 @@ fn circles(out: &egui::FullOutput) -> Vec<(egui::Pos2, f32, bool)> {
     v
 }
 
-/// Every text drawn: its words, where, and its colour's opacity.
 fn texts(out: &egui::FullOutput) -> Vec<(String, Rect, u8)> {
     fn walk(s: &egui::Shape, out: &mut Vec<(String, Rect, u8)>) {
         match s {
@@ -58,8 +52,6 @@ fn close(a: f32, b: f32, tol: f32) -> bool {
     (a - b).abs() <= tol
 }
 
-/// The cover comes in over 0.3 s, settling from 1.004 to its size over 0.4 s; under reduced motion it does not
-/// scale.
 #[test]
 fn a_cover_fades_in_and_settles_from_1004() {
     let c = ctx();
@@ -90,7 +82,6 @@ fn a_cover_fades_in_and_settles_from_1004() {
     assert!(close(r.layer_transform_to_global(layer).map(|x| x.scaling).unwrap_or(1.0), 1.0, 1e-4), "reduced motion: no scale");
 }
 
-/// Once the lock goes, the window comes back from half its opacity and 0.993 to the whole over 0.45 s.
 #[test]
 fn the_window_comes_back_from_half_and_0993_over_045() {
     let c = ctx();
@@ -109,8 +100,6 @@ fn the_window_comes_back_from_half_and_0993_over_045() {
     assert!(seen[10].1.is_none(), "whole again by 0.5 s");
 }
 
-/// A passcode dot pops in from half its size on the spring over 0.35 s; a refused row shakes 8, 7, 5, 3 over 0.42 s;
-/// both at the kit's pace (read at those shares of the paced times).
 #[test]
 fn a_dot_pops_and_a_refused_row_shakes() {
     let c = ctx();
@@ -141,8 +130,6 @@ fn a_dot_pops_and_a_refused_row_shakes() {
     }
 }
 
-/// The wizard's steps: a step that becomes done pops from 0.85 on the spring over 0.5 s; the ring and fill turn
-/// over 0.35 s.
 #[test]
 fn a_step_that_becomes_done_pops_and_turns() {
     let c = ctx();
@@ -158,17 +145,14 @@ fn a_step_that_becomes_done_pops_and_turns() {
     for k in 0..=12 {
         let t = 2.0 + k as f64 * 0.05;
         let out = frame(&c, t, draw(true));
-        // The first step's filled circle (the ok colour behind its check).
         let r = circles(&out).iter().filter(|x| x.2 && x.0.y < 20.0).map(|x| x.1).fold(0.0, f32::max);
         seen.push((k as f32 * 0.05, r));
     }
     eprintln!("done step's fill radius by time: {seen:?}");
-    // The fill fades in with the turn (0.35 s): its first drawn frame is already under way from 0.85.
     assert!(seen[1].1 > 8.5 && seen[1].1 < 9.7, "from 0.85 of 10");
     assert!(close(seen[12].1, 10.0, 0.02), "whole by 0.6 s");
 }
 
-/// The way out fades in over 0.3 s rising 4 over 0.4 s; hidden, it keeps its room and is not seen.
 #[test]
 fn the_way_out_fades_in_rising_4() {
     let c = ctx();
@@ -190,8 +174,6 @@ fn the_way_out_fades_in_rising_4() {
     assert!(close(seen[8].1, rest, 0.05), "risen by 0.4 s");
 }
 
-/// A step's card comes in from 12 on the side it is reached from on the spring over 0.38 s; the card it
-/// replaces leaves toward the side it is left on.
 #[test]
 fn a_steps_card_slides_in_and_the_old_one_leaves_the_other_way() {
     let c = ctx();
@@ -211,7 +193,6 @@ fn a_steps_card_slides_in_and_the_old_one_leaves_the_other_way() {
     for k in 0..=8 {
         let t = 2.0 + k as f64 * 0.05;
         let _ = frame(&c, t, draw(1, 1.0));
-        // A layer at rest carries no transform.
         let x_new = c.layer_transform_to_global(new).map(|x| x.translation.x).unwrap_or(0.0);
         let x_old = c.layer_transform_to_global(old_ghost).map(|x| x.translation.x).unwrap_or(0.0);
         seen.push((k as f32 * 0.05, x_new, x_old));
@@ -222,7 +203,6 @@ fn a_steps_card_slides_in_and_the_old_one_leaves_the_other_way() {
     assert!(seen[2].2 < -1.0, "the old card leaves to the left going forward");
 }
 
-/// The done mark pops from 0.85 on the spring over 0.6 s; its check is drawn from 0.15 s in, over 0.5 s.
 #[test]
 fn the_done_mark_pops_and_draws_its_check() {
     let c = ctx();
@@ -246,7 +226,6 @@ fn the_done_mark_pops_and_draws_its_check() {
     assert!(seen[6].2 > 1.0 && seen[6].2 < seen[14].2, "the check is being drawn at 0.3 s");
 }
 
-/// A chosen radio's dot pops from half its size over 0.3 s.
 #[test]
 fn a_chosen_radio_dot_pops() {
     let c = ctx();
@@ -261,7 +240,6 @@ fn a_chosen_radio_dot_pops() {
     assert!(close(seen[0].1, 2.25, 0.05) && close(seen[7].1, 4.5, 0.02), "{seen:?}");
 }
 
-/// The words' veil clears over 0.3 s once they are opened.
 #[test]
 fn the_words_veil_clears_over_03() {
     let c = ctx();
@@ -285,8 +263,6 @@ fn the_words_veil_clears_over_03() {
     let _ = vec2(0.0, 0.0);
 }
 
-/// A cover that has gone (`covers::gone`) takes itself and its step card away in the frame it goes: nothing of
-/// either is played back over the window it uncovers. A cover left to its leaving would show both for a while.
 #[test]
 fn a_cover_that_has_gone_leaves_no_copy_over_the_window() {
     let drawn = |gone: bool| {

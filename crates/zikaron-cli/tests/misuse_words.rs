@@ -1,7 +1,3 @@
-//! Misuse wording: flag combinations are checked before any node is contacted; a run over recorded fixtures
-//! accepts no flag it would ignore; human-readable lines follow the system language, and arbitrary user words
-//! are never echoed. Real-binary runs against local listeners that count connections.
-
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -28,14 +24,11 @@ fn run(args: &[&str], env: &[(&str, &str)]) -> Ran {
     Ran { code: o.status.code().unwrap_or(-1), out: o.stdout, err: String::from_utf8_lossy(&o.stderr).to_string() }
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
 }
 
-/// A listener that counts connections and answers none.
 fn counting_node() -> (String, Arc<AtomicUsize>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", l.local_addr().expect("addr"));
@@ -54,27 +47,20 @@ fn first_line(r: &Ran) -> &str {
     r.err.lines().next().unwrap_or("")
 }
 
-/// `--form registry` without `--registry`, and `--registry` with `--form bare`, are misuse naming `--registry`,
-/// refused before any node is contacted (no connection, nothing on stdout).
 #[test]
 fn the_registry_flag_goes_with_the_registry_form_and_is_judged_before_any_node() {
     let (url, asked) = counting_node();
     let ep = format!("31337={url}");
     let hash = format!("0x{}", "11".repeat(32));
-    for (form, extra) in [("registry", vec![]), ("bare", vec!["--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3"])] {
-        let mut args = vec!["anchor", "--endpoint", &ep, "--key", KEY, "--form", form, "--hash", &hash, "--wait-secs", "1"];
-        args.extend(extra.iter());
-        let r = run(&args, &[]);
-        assert_eq!((r.code, r.out.is_empty(), first_line(&r)), (2, true, "E_ARGS --registry"), "{form}: {}", r.err);
-    }
+    let r = run(&["anchor", "--endpoint", &ep, "--key", KEY, "--form", "registry", "--hash", &hash, "--wait-secs", "1"], &[]);
+    assert_eq!((r.code, r.out.is_empty(), first_line(&r)), (2, true, "E_ARGS --registry"), "{}", r.err);
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(asked.load(Ordering::SeqCst), 0, "no node asked");
 }
 
-/// With `--fixture`, `--basis`, `--adoptions` and `--proxy` are misuse, once or repeated, each named.
 #[test]
 fn a_run_over_recordings_takes_no_flag_it_would_not_read() {
-    for (flag, value) in [("--basis", "b.json"), ("--adoptions", "a.json"), ("--proxy", "none")] {
+    for (flag, value) in [("--basis", "b.json"), ("--proxy", "none")] {
         for times in [1, 2] {
             let mut args = vec!["scan", "--fixture", "rec.json"];
             for _ in 0..times {
@@ -86,8 +72,6 @@ fn a_run_over_recordings_takes_no_flag_it_would_not_read() {
     }
 }
 
-/// The second line follows the locale (first set of `LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`): Chinese for
-/// `zh…`, English otherwise or when none is set; the first line and the exit code do not change.
 #[test]
 fn the_lines_for_people_follow_the_systems_language() {
     let args = ["scan", "--fixture", "rec.json", "--basis", "b.json"];
@@ -109,8 +93,6 @@ fn the_lines_for_people_follow_the_systems_language() {
     }
 }
 
-/// A word where a flag belongs, an unknown verb and a non-UTF-8 argument are reported by position and length,
-/// never echoed.
 #[test]
 fn a_word_that_may_be_anything_is_never_echoed() {
     let secret = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
@@ -133,21 +115,16 @@ fn a_word_that_may_be_anything_is_never_echoed() {
     }
 }
 
-/// `--endpoint` uses the shared parser: outer whitespace is accepted; inner whitespace, an empty address and a
-/// chain id that is not a u64 are misuse (exit 2), reported by position and length, never echoed (the chain id
-/// only when it parses).
 #[test]
 fn the_endpoint_flag_is_read_by_the_one_reader() {
     let hash = format!("0x{}", "11".repeat(32));
-    let anchor = |ep: &str| run(&["anchor", "--endpoint", ep, "--key", KEY, "--form", "bare", "--hash", &hash, "--wait-secs", "1"], &[]);
+    let anchor = |ep: &str| run(&["anchor", "--endpoint", ep, "--key", KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &hash, "--wait-secs", "1"], &[]);
     let r = anchor("31337=");
     assert_eq!((r.code, first_line(&r)), (2, "E_ARGS #3 (31337= + 0 bytes)"));
     let r = anchor(" x =http://127.0.0.1:1");
     assert_eq!((r.code, first_line(&r)), (2, "E_ARGS #3 (22 bytes)"));
     let r = anchor("31337");
     assert_eq!((r.code, first_line(&r)), (2, "E_ARGS #3 (5 bytes)"));
-    // Outer whitespace is accepted (the absent node leaves it unanswered); whitespace around the `=` is inside
-    // the value, so misuse.
     let closed = { let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind"); format!("http://{}", l.local_addr().expect("addr")) };
     let r = anchor(&format!(" 31337={closed} "));
     assert_eq!(r.code, 4, "{}", r.err);
@@ -156,9 +133,6 @@ fn the_endpoint_flag_is_read_by_the_one_reader() {
     assert_eq!((r.code, first_line(&r)), (2, format!("E_ARGS #3 ({} bytes)", inside.len()).as_str()));
 }
 
-/// An effective time or window end past the spec's integer ceiling (within 64 bits or beyond) is misuse naming
-/// the flag and the ceiling; a node address whose port is not a 16-bit number is misuse about the port, not the
-/// scheme.
 #[test]
 fn a_number_past_the_ceiling_and_a_bad_port_are_said_as_that() {
     let dir = std::env::temp_dir().join(format!("zk-cli-e-{}", std::process::id()));
@@ -169,24 +143,20 @@ fn a_number_past_the_ceiling_and_a_bad_port_are_said_as_that() {
     assert_eq!(run(&["init", "--ledger", l, "--key", KEY, "--statement", "s"], &[]).code, 0);
     let en = [("LANG", "en_US.UTF-8")];
     for value in ["9007199254740992", "18446744073709551615", "18446744073709551616"] {
-        let r = run(&["succeed", "--ledger", l, "--key", KEY, "--to", "0x8888888888888888888888888888888888888888", "--kind", "rotation", "--effective", value, "--statement", "x"], &en);
+        let r = run(&["migrate", "--ledger", l, "--key", KEY, "--effective", value], &en);
         assert_eq!((r.code, first_line(&r), r.err.lines().nth(1).unwrap_or("")), (2, "E_ARGS --effective", "past the whole-number ceiling 9007199254740991"), "{value}");
         let r = run(&["grant", "--ledger", l, "--key", KEY, "--grantee", "0x3333333333333333333333333333333333333333", "--work", &format!("0x{}", "11".repeat(32)), "--terms", &format!("0x{}", "22".repeat(32)), "--window-from", "0", "--window-to", value], &en);
         assert_eq!((r.code, first_line(&r)), (2, "E_ARGS --window-to"), "{value}");
     }
-    let r = run(&["succeed", "--ledger", l, "--key", KEY, "--to", "0x8888888888888888888888888888888888888888", "--kind", "rotation", "--effective", "-1", "--statement", "x"], &en);
+    let r = run(&["migrate", "--ledger", l, "--key", KEY, "--effective", "-1"], &en);
     assert_eq!((r.code, r.err.lines().nth(1).unwrap_or("")), (2, "not an integer"), "not a number: its own words");
     for (url, said) in [("https://h:65536", "an endpoint's port must be a whole number from 0 to 65535"), ("https://h:", "an endpoint's port must be a whole number from 0 to 65535"), ("wss://h", "an endpoint is an http:// or https:// address")] {
-        let r = run(&["anchor", "--endpoint", &format!("31337={url}"), "--key", KEY, "--form", "bare", "--hash", &format!("0x{}", "11".repeat(32))], &en);
+        let r = run(&["anchor", "--endpoint", &format!("31337={url}"), "--key", KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &format!("0x{}", "11".repeat(32))], &en);
         assert_eq!((r.code, r.err.lines().nth(1).unwrap_or("")), (2, said), "{url}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A misuse's first line never contains user-typed text: known flags by name, anything else by position and
-/// length. Cases: `--key=…` where a flag is expected, alone and followed by a value; an unknown flag in both
-/// spellings; unparsable values (`--hash`, `--form`, `--entry`); an unreadable path; a word where a flag belongs;
-/// an unknown verb. The key, value and path appear on no stderr line.
 #[test]
 fn no_misuse_line_echoes_a_word_the_person_typed() {
     let secret = &KEY[2..];
@@ -202,8 +172,8 @@ fn no_misuse_line_echoes_a_word_the_person_typed() {
         (vec!["annotate", &nosuch_eq, "x"], format!("E_ARGS #2 ({} bytes)", nosuch_eq.len()), "not among this verb's flags"),
         (vec!["annotate", "--nosuch", KEY], "E_ARGS #2 (8 bytes)".to_string(), "not among this verb's flags"),
         (vec!["contract", "--key", KEY], "E_ARGS --key".to_string(), "not among this verb's flags"),
-        (vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", KEY, "--form", secret, "--hash", "0x00"], format!("E_ARGS #7 ({} bytes)", secret.len()), "--form takes registry or bare"),
-        (vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", KEY, "--form", "bare", "--hash", &hash_bad], format!("E_ARGS #9 ({} bytes)", hash_bad.len()), "not hex"),
+        (vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", KEY, "--form", secret, "--hash", "0x00"], format!("E_ARGS #7 ({} bytes)", secret.len()), "--form takes registry"),
+        (vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &hash_bad], format!("E_ARGS #11 ({} bytes)", hash_bad.len()), "not hex"),
         (vec!["show", "--entry", &entry_bad, "--ledger", "x"], format!("E_ARGS #3 ({} bytes)", entry_bad.len()), "not 64 lowercase hex digits"),
         (vec!["badge", "--decode", &path], format!("E_UNREADABLE #3 ({} bytes)", path.len()), "cannot be read"),
         (vec!["annotate", secret], format!("E_ARGS #2 ({} bytes)", secret.len()), "not in the form --name"),

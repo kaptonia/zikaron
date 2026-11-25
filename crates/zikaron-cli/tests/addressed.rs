@@ -1,18 +1,9 @@
-//! A record package addressed to one key on the real binary, the direct road: `kit-export --to-key` seals a
-//! plain ledger folder's package to a key given, `--to` looks for an address's key on the networks `--endpoint`
-//! gives; `kit-verify --key-file` opens it, verifies it and takes its originals out; anything else is refused by
-//! name, the misuse forms with zero bytes on stdout and nothing at `--out`.
-//! Victims: the sender (a package anyone could open, or one sealed to no one), the recipient (a package refused for
-//! the wrong reason, or bytes not those sealed), whoever scripts the command line (an exit that does not say whether
-//! the chain answered).
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use zikaron::json::Value;
 
 const BIN: &str = env!("CARGO_BIN_EXE_zikaron");
-/// The ledger's key, and the recipient's (the key file opens the package).
 const WRITER: [u8; 32] = [0x21; 32];
 const RECIPIENT: [u8; 32] = [0x2a; 32];
 const STRANGER: [u8; 32] = [0x3b; 32];
@@ -32,7 +23,6 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(p)
 }
 
-/// One run in `dir` (its own user home): exit code, stdout, the first two lines of stderr.
 fn run(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let o = Command::new(BIN)
         .args(args)
@@ -57,7 +47,6 @@ fn reason_token(out: &str) -> (Option<String>, Option<String>) {
     (member(out, "reason").as_str().map(str::to_string), member(out, "token").as_str().map(str::to_string))
 }
 
-/// A key file, created owner only through `zikaron_os` (the platform calls live in the platform crate).
 fn key_file(dir: &Path, name: &str, key: &[u8; 32]) -> String {
     let p = dir.join(name);
     let mut o = zikaron_os::Options::new();
@@ -70,7 +59,6 @@ fn public(key: &[u8; 32]) -> [u8; 33] {
     zikaron_seal::crypto::public_of(key).expect("a key")
 }
 
-/// A plain ledger folder with a genesis and one record of `orig`, written by the command line itself.
 fn ledger(dir: &Path, orig: &Path) -> String {
     let l = dir.join("ledger").display().to_string();
     let k = key_file(dir, "writer.key", &WRITER);
@@ -81,8 +69,6 @@ fn ledger(dir: &Path, orig: &Path) -> String {
     l
 }
 
-/// The tests that count the opened folders left in the system's temporary place take turns, so one test's open
-/// package is not counted as another's leftover.
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn turn() -> std::sync::MutexGuard<'static, ()> {
@@ -93,9 +79,6 @@ fn opened_rooms() -> usize {
     std::fs::read_dir(std::env::temp_dir()).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("zikaron-opened-")).count()).unwrap_or(0)
 }
 
-/// Sealed to a key given, the package holds the format's mark and none of the recipient's bytes; the recipient's key
-/// file opens it, verifies its records and takes the original out, the very bytes recorded; the answer is the plain
-/// package's (exit 3 with no chain read).
 #[test]
 fn a_package_sealed_to_a_key_given_opens_with_that_key_alone() {
     let _turn = turn();
@@ -116,10 +99,8 @@ fn a_package_sealed_to_a_key_given_opens_with_that_key_alone() {
     for needle in [&addr[..], &public(&RECIPIENT)[..], &full[1..]] {
         assert!(!bytes.windows(needle.len()).any(|x| x == needle), "no recipient bytes in the package");
     }
-    // The uncompressed form of the same key seals too.
     let (c, o, e) = run(&w.0, &["kit-export", "--ledger", &l, "--out", &w.0.join("full.zkit").display().to_string(), "--to-key", &zikaron::hexfmt::encode(&full)]);
     assert_eq!(c, 0, "{o} {e}");
-    // Opened with the recipient's key file, its original taken out.
     let mine = key_file(&w.0, "recipient.key", &RECIPIENT);
     let to = w.0.join("taken");
     std::fs::create_dir_all(&to).expect("a folder");
@@ -129,14 +110,10 @@ fn a_package_sealed_to_a_key_given_opens_with_that_key_alone() {
     assert!(o.contains("\"original\":\"match\""), "{o}");
     assert_eq!(std::fs::read(to.join("for-them.txt")).expect("taken"), std::fs::read(&orig).expect("there"), "the very bytes recorded");
     assert_eq!(opened_rooms(), rooms, "nothing opened is left behind");
-    // The same package verified without taking: the same records' answer.
     let (c2, o2, _) = run(&w.0, &["kit-verify", "--kit", &out.display().to_string(), "--key-file", &mine]);
     assert_eq!((c2, member(&o2, "records")), (3, member(&o, "records")));
 }
 
-/// No key offered opens it: a stranger's key is refused `E_ADDRESSED` (`ADDRESSED_NOT_RECIPIENT`, exit 1) in the one
-/// table's words, naming no recipient; a segment changed after the first is `ADDRESSED_BROKEN`; no key given at all is
-/// misuse (exit 2, zero bytes); a reading verb meets it by name (`ADDRESSED_ELSEWHERE`). Nothing opened stays.
 #[test]
 fn whoever_is_not_the_recipient_is_refused_by_name_and_nothing_stays() {
     let _turn = turn();
@@ -153,8 +130,7 @@ fn whoever_is_not_the_recipient_is_refused_by_name_and_nothing_stays() {
     let stranger = key_file(&w.0, "stranger.key", &STRANGER);
     let (c, o, e) = run(&w.0, &["kit-verify", "--kit", &s, "--key-file", &stranger]);
     assert_eq!((c, reason_token(&o)), (1, (Some("E_ADDRESSED".into()), Some("ADDRESSED_NOT_RECIPIENT".into()))), "{o}");
-    assert_eq!(e, zikaron_seal::addressed::words::NOT_RECIPIENT.1, "the one table's words");
-    // The last segment changed.
+    assert_eq!(e, zikaron_cli::verbs::KEY_NOT_RECIPIENT.1, "the given key's words");
     let mut bytes = std::fs::read(&out).expect("there");
     let n = bytes.len();
     bytes[n - 3] ^= 1;
@@ -164,22 +140,19 @@ fn whoever_is_not_the_recipient_is_refused_by_name_and_nothing_stays() {
     let (c, o, _) = run(&w.0, &["kit-verify", "--kit", &broken.display().to_string(), "--key-file", &mine]);
     assert_eq!((c, reason_token(&o)), (1, (Some("E_ADDRESSED".into()), Some("ADDRESSED_BROKEN".into()))), "{o}");
     assert_eq!(opened_rooms(), rooms, "no plaintext left behind");
-    // No key at all.
     let (c, o, e) = run(&w.0, &["kit-verify", "--kit", &s]);
     assert_eq!((c, o.as_str()), (2, ""), "misuse writes nothing");
     assert!(e.starts_with("E_ARGS --key --ledger --home"), "{e}");
-    // A reading verb.
     let (c, o, _) = run(&w.0, &["audit", "--ledger", &s]);
     assert_eq!((c, reason_token(&o)), (1, (Some("E_ADDRESSED".into()), Some("ADDRESSED_ELSEWHERE".into()))), "{o}");
-    // `--ledger` that is no home's.
+    let (c, o, e) = run(&w.0, &["check-grant", "--grant", &s]);
+    assert_eq!((c, reason_token(&o)), (1, (Some("E_ADDRESSED".into()), Some("ADDRESSED_ELSEWHERE".into()))), "{o}");
+    assert_eq!(e, "This is an encrypted package; a grant package is opened and checked with grant-package --package", "the line for people");
     let (c, o, e) = run(&w.0, &["kit-verify", "--kit", &s, "--ledger", &l]);
     assert_eq!((c, o.as_str()), (2, ""), "{e}");
     assert!(e.starts_with("E_ARGS --ledger"), "{e}");
 }
 
-/// Misuse, judged before anything is read or asked: both ways to name the recipient, either with `--as folder`, a key
-/// off the curve, an address not in its form, `--to` with no `--endpoint`, a chain the known deployments do not name,
-/// `--endpoint` or `--proxy` without `--to`. Each exits 2 with zero bytes on stdout and nothing at `--out`.
 #[test]
 fn misuse_of_the_recipient_writes_nothing() {
     let w = scratch("misuse");
@@ -210,13 +183,10 @@ fn misuse_of_the_recipient_writes_nothing() {
         assert!(e.starts_with(first), "{more:?}: {e}");
         assert!(!out.exists(), "{more:?}: nothing at --out");
     }
-    // Both ways: the words of the addressed package's one table.
     let (_, _, e) = run(&w.0, &["kit-export", "--ledger", &l, "--out", &o, "--to", &addr, "--to-key", &pubk]);
     assert!(e.ends_with(zikaron_seal::addressed::words::BOTH.1), "{e}");
 }
 
-/// An address's key looked for on a network whose nodes do not answer: the chain was not read, which is no answer
-/// (`E_ADDRESSED` `ADDRESS_CHAIN_UNREAD`, exit 4), never "not anchored"; zero bytes at `--out`.
 #[test]
 fn a_chain_not_read_is_no_answer_and_nothing_is_written() {
     let w = scratch("unread");
@@ -229,4 +199,26 @@ fn a_chain_not_read_is_no_answer_and_nothing_is_written() {
     assert_eq!((c, reason_token(&o)), (4, (Some("E_ADDRESSED".into()), Some("ADDRESS_CHAIN_UNREAD".into()))), "{o} {e}");
     assert_eq!(e, zikaron_seal::addressed::words::CHAIN_UNREAD.1);
     assert!(!out.exists(), "zero bytes");
+}
+
+#[test]
+fn a_plain_package_still_judges_what_is_given_beside_it() {
+    let _turn = turn();
+    let w = scratch("plain-key");
+    let orig = w.0.join("plain.txt");
+    std::fs::write(&orig, "明文").expect("w");
+    let l = ledger(&w.0, &orig);
+    let out = w.0.join("plain.zkit").display().to_string();
+    let (c, o, e) = run(&w.0, &["kit-export", "--ledger", &l, "--out", &out]);
+    assert_eq!(c, 0, "{o} {e}");
+    let mine = key_file(&w.0, "recipient.key", &RECIPIENT);
+    let (c, o, e) = run(&w.0, &["kit-verify", "--kit", &out, "--key-file", &mine]);
+    assert_ne!(c, 2, "a good key beside a plain package is read and not used: {o} {e}");
+    for (flags, first) in [(vec!["--key", "not-a-key"], "E_KEY --key"), (vec!["--ledger", l.as_str()], "E_ARGS --ledger"), (vec!["--key-file", mine.as_str(), "--ledger", l.as_str()], "E_ARGS --key --key-file")] {
+        let mut argv = vec!["kit-verify", "--kit", out.as_str()];
+        argv.extend(flags.iter().copied());
+        let (c, o, e) = run(&w.0, &argv);
+        assert_eq!((c, o.as_str()), (2, ""), "{argv:?} {e}");
+        assert_eq!(e.lines().next(), Some(first), "{argv:?}");
+    }
 }

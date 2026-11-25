@@ -1,0 +1,60 @@
+pub const BARRED: [(u32, u32); 37] = [
+    (0x0000, 0x0020),
+    (0x007F, 0x00A0),
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x115F, 0x1160),
+    (0x1680, 0x1680),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2000, 0x200F),
+    (0x2028, 0x202F),
+    (0x205F, 0x206F),
+    (0x2800, 0x2800),
+    (0x3000, 0x3000),
+    (0x3164, 0x3164),
+    (0xE000, 0xF8FF),
+    (0xFDD0, 0xFDEF),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFF),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x13441, 0x13442),
+    (0x16FE4, 0x16FE4),
+    (0x1BC9D, 0x1BC9D),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D159, 0x1D159),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+    (0xF0000, 0x10FFFF),
+];
+
+pub fn barred(c: char) -> bool {
+    let o = c as u32;
+    o & 0xFFFE == 0xFFFE || BARRED.iter().any(|&(lo, hi)| lo <= o && o <= hi)
+}
+
+pub fn is_label(s: &str) -> bool {
+    (1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+pub fn is_handle(s: &str) -> bool {
+    (1..=128).contains(&s.chars().count()) && !s.starts_with(' ') && !s.ends_with(' ')
+}
+
+pub fn first_barred(s: &str) -> Option<char> {
+    s.chars().find(|&c| barred(c))
+}
+
+pub fn is_name(s: &str) -> bool {
+    (1..=32).contains(&s.chars().count()) && first_barred(s).is_none()
+}

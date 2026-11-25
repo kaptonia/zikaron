@@ -1,10 +1,5 @@
-//! The sealed layer carries no window: its whole dependency closure, as the lock file records it, holds none of
-//! the window family, so the command line that depends on it stays a command line. Its third-party
-//! dependencies are the closed eight of its manifest (`k256` for the key agreement of an addressed record package).
-
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Each package of the lock file and the names of the packages it depends on.
 fn lock() -> BTreeMap<String, Vec<String>> {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock")).expect("the lock file");
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();

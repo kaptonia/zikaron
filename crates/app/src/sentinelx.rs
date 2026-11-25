@@ -1,23 +1,8 @@
-//! Revocation sentinel: watches the issuer ledger of every vault item. A revocation raises an alarm; a
-//! succession adds a yellow note.
-//!
-//! The sentinel runs no scan of its own. The vault's periodic re-check scans through the anchoring crate and
-//! gets the core's report and the kit crate's six checks for every item; this layer only reads the resulting
-//! cards. `REVOKED` among the failures raises a revocation alarm, and a succession in the upstream ledger adds
-//! the "ledger changed hands" note. The meaning is read on the holder's side (the issuer only writes
-//! entries); judging stays with the core and kit crates.
-//!
-//! Each event for a grant alerts once: alerted keys are stored in settings (`alarmed`), so restarting the app
-//! does not alert again. The red and yellow notes on cards still show (they are state, not notifications).
-
 use crate::vaultx::Card;
 
-/// The two kinds of alarm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A revocation referencing a grant I hold has appeared.
     Revoked,
-    /// The issuer's ledger changed hands (succession).
     Handed,
 }
 
@@ -30,21 +15,15 @@ impl Kind {
     }
 }
 
-/// One alarm.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alarm {
     pub grant: String,
     pub author: String,
     pub kind: Kind,
-    /// For a change of hands: the new holder.
     pub to: Option<String>,
-    /// Chain time at the pass that found it.
     pub at: Option<u64>,
 }
 
-/// Deduplication key: each event for a grant alerts once. For a change of hands the key includes the
-/// recipient, so the same ledger changing hands again alerts again (without it, a second handover would never
-/// alert).
 pub fn key_of(a: &Alarm) -> String {
     match &a.to {
         Some(to) => format!("{}:{}:{}", a.kind.as_str(), a.grant.to_ascii_lowercase(), to.to_ascii_lowercase()),
@@ -52,15 +31,12 @@ pub fn key_of(a: &Alarm) -> String {
     }
 }
 
-/// Whom the upstream ledger was handed to by the latest succession after this grant (seq `after`), if any.
-/// Reads only entries the core accepted (via `diligx::successions`). Grants signed after a succession were
-/// signed by the new key, so that handover gets no note for them.
-pub fn handed_after(upstream: &[Vec<u8>], after: u64) -> Option<String> {
-    crate::diligx::successions(upstream).iter().filter(|x| x.seq > after).last().map(|x| x.to.clone())
+pub fn handed_after(upstream: &[Vec<u8>], grant: &str) -> Option<String> {
+    let read = zikaron_glue::book::read(upstream, &zikaron_glue::book::empty_fragment()).ok()?;
+    let at = read.position(grant)?;
+    read.entries[at + 1..].iter().filter(|e| e.hands_off()).last().and_then(|e| e.to().map(str::to_string))
 }
 
-/// What to alert after a re-check pass. Looks only at cards; keys already alerted are skipped. Returns (new
-/// alarms, their keys).
 pub fn alarms(cards: &[Card], already: &[String], now: Option<u64>) -> (Vec<Alarm>, Vec<String>) {
     crate::trace::mark(crate::feature::Feature::D7);
     let mut out: Vec<Alarm> = Vec::new();
@@ -83,4 +59,39 @@ pub fn alarms(cards: &[Card], already: &[String], now: Option<u64>) -> (Vec<Alar
         }
     }
     (out, keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: char, author: &str, revoked: bool, handed: Option<&str>) -> Card {
+        let h = crate::vaultx::Held {
+            id: format!("0x{}", id.to_string().repeat(64)),
+            bytes: b"not a grant".to_vec(),
+            author: author.to_string(),
+            grantee: String::new(),
+            work: String::new(),
+            terms: String::new(),
+            window: None,
+            upstream: None,
+            seq: 1,
+        };
+        let mut c = crate::vaultx::review(&h, &[], &crate::auditx::empty_fragment(), None, 0);
+        c.failed = if revoked { vec![zikaron_kit::tokens::Check::Revoked.as_str().to_string()] } else { Vec::new() };
+        c.handed = handed.map(str::to_string);
+        c
+    }
+
+    #[test]
+    fn every_held_grant_of_every_issuer_is_watched() {
+        let (a, b) = (format!("0x{}", "aa".repeat(20)), format!("0x{}", "bb".repeat(20)));
+        let to = format!("0x{}", "cc".repeat(20));
+        let cards = vec![card('1', &a, true, None), card('2', &b, false, None), card('3', &b, true, Some(&to)), card('4', &a, false, None)];
+        let (fresh, keys) = alarms(&cards, &[], Some(9));
+        let seen: Vec<(String, Kind)> = fresh.iter().map(|x| (x.author.clone(), x.kind)).collect();
+        assert_eq!(seen, vec![(a.clone(), Kind::Revoked), (b.clone(), Kind::Revoked), (b.clone(), Kind::Handed)]);
+        assert_eq!(keys.len(), 3);
+        assert!(alarms(&cards, &keys, Some(10)).0.is_empty(), "each once");
+    }
 }

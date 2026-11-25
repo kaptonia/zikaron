@@ -1,7 +1,3 @@
-//! Command-line checks: the real binary for behavior (exit codes, stdout bytes, trace marks) and source scans
-//! for discipline (no third-party crates, no direct ledger writes, a closed flag list, spec literals in one
-//! place). Runs use `CARGO_BIN_EXE_zikaron`, the binary cargo builds for this package.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,7 +26,6 @@ fn sources() -> Vec<(String, String)> {
     out
 }
 
-/// A per-test temporary directory, removed on drop whether the test passes or fails.
 struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -83,28 +78,24 @@ fn run_in(dir: &Path, args: &[&str]) -> Ran {
     }
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
 }
 
 
-const A_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+#[path = "support/old_grant.rs"]
+mod old_grant;
 
-// Behavior: real binaries.
+const A_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 #[test]
 fn a_misuse_writes_not_one_byte_to_stdout() {
     let w = scratch("misuse");
-    // Misuse (see `HARNESS.md`): exit 2 and zero bytes on stdout, so callers can tell misuse from an answer
-    // without parsing.
     for args in [
         vec!["conjure"],
         vec!["keygen", "--seed", "1"],
         vec!["badge", "--decode", "/nowhere/at/all"],
-        vec!["depth", "--ledger", "book"],
     ] {
         let r = run_in(&w, &args);
         assert_eq!(r.code, 2, "{args:?} 该退 2");
@@ -122,7 +113,6 @@ fn a_misuse_names_its_subject_on_the_first_line_of_stderr() {
         .expect("起不动");
     let err = String::from_utf8_lossy(&o.stderr);
     let first = err.lines().next().unwrap_or_default();
-    // The path is user input: reported by argument position (the verb is #1) and length, never echoed.
     assert_eq!(first, "E_UNREADABLE #3 (15 bytes)");
 }
 
@@ -132,7 +122,6 @@ fn an_answer_carries_no_trailing_newline() {
     let r = run_in(&w, &["keygen"]);
     assert_eq!(r.code, 0);
     assert!(!r.out.is_empty());
-    // One value per call; a newline is not a separator.
     assert_ne!(*r.out.last().expect("空答"), b'\n');
 }
 
@@ -156,8 +145,6 @@ fn an_answer_is_canonical_json_with_members_in_byte_order() {
 #[test]
 fn the_law_refuses_what_the_shell_hands_it_and_the_token_comes_back_verbatim() {
     let w = scratch("token");
-    // `mode` is required by the spec. The CLI does not check it: with both flags missing the body lacks the
-    // member and the core returns `E_BODY_FIELD`.
     let r = run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]);
     assert_eq!(r.code, 0, "建档该绿");
     let r = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--content", &format!("0x{}", "aa".repeat(32))]);
@@ -174,34 +161,40 @@ fn partial_gets_its_own_exit_code_and_is_never_folded_into_green() {
         run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code,
         0
     );
-    let g = run_in(
-        &w,
-        &[
-            "grant", "--ledger", "b", "--key", A_KEY,
-            "--grantee", "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-            "--work", &format!("0x{}", "c1".repeat(32)),
-            "--terms", &format!("0x{}", "71".repeat(32)),
-        ],
-    );
-    assert_eq!(g.code, 0);
-    let id = String::from_utf8_lossy(&g.out)
-        .split("\"entryId\":\"")
-        .nth(1)
-        .and_then(|x| x.split('"').next())
-        .expect("答里没有 entryId")
-        .to_string();
+    let id = old_grant::old_grant(&w.0.join("b"), A_KEY, "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc", &format!("0x{}", "c1".repeat(32)), &format!("0x{}", "71".repeat(32)));
     let file = format!("b/{}.entry", id.trim_start_matches("0x"));
-    // An unanchored grant: check four UNKNOWN, verdict PARTIAL, exit 3 rather than 0 so it is never read as a
-    // pass.
     let c = run_in(&w, &["check-grant", "--grant", &file, "--ledger", "b"]);
     assert_eq!(c.code, 3, "PARTIAL 该有自己那一格");
     assert!(String::from_utf8_lossy(&c.out).contains("\"verdict\":\"PARTIAL\""));
 }
 
 #[test]
+fn a_grant_missing_a_member_is_told_by_its_shape_before_any_chain() {
+    let w = scratch("grant-no-terms");
+    assert_eq!(run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code, 0);
+    let before = std::fs::read_dir(w.0.join("b")).expect("the ledger").count();
+    let g = run_in(&w, &["grant", "--ledger", "b", "--key", A_KEY, "--grantee", "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc", "--work", &format!("0x{}", "c1".repeat(32))]);
+    let said = String::from_utf8_lossy(&g.out).to_string();
+    assert_eq!(g.code, 1, "{said}");
+    assert!(said.contains("\"reason\":\"E_ENTRY\"") && said.contains("\"token\":\"E_BODY_FIELD\""), "{said}");
+    assert_eq!(std::fs::read_dir(w.0.join("b")).expect("the ledger").count(), before, "nothing written");
+}
+
+#[test]
+fn a_grant_with_no_node_to_check_on_is_refused_unwritten() {
+    let w = scratch("grant-no-node");
+    assert_eq!(run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code, 0);
+    let before = std::fs::read_dir(w.0.join("b")).expect("the ledger").count();
+    let g = run_in(&w, &["grant", "--ledger", "b", "--key", A_KEY, "--grantee", "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc", "--work", &format!("0x{}", "c1".repeat(32)), "--terms", &format!("0x{}", "71".repeat(32))]);
+    let said = String::from_utf8_lossy(&g.out).to_string();
+    assert_eq!(g.code, 4, "{said}");
+    assert!(said.contains("\"reason\":\"E_ISSUE_REFUSED\"") && said.contains("\"token\":\"NO_ENDPOINT\""), "{said}");
+    assert_eq!(std::fs::read_dir(w.0.join("b")).expect("the ledger").count(), before, "nothing written");
+}
+
+#[test]
 fn a_world_that_cannot_answer_is_not_a_world_that_answers_no() {
     let w = scratch("unanswered");
-    // `zikaron/1` §9.4: a scan failure is the absence of an answer. No endpoint exits 4, not 1.
     let port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("绑不到端口");
         let p = l.local_addr().expect("读不出端口").port();
@@ -212,7 +205,7 @@ fn a_world_that_cannot_answer_is_not_a_world_that_answers_no() {
     let r = run_in(
         &w,
         &[
-            "anchor", "--endpoint", &ep, "--key", A_KEY, "--form", "bare",
+            "anchor", "--endpoint", &ep, "--key", A_KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3",
             "--hash", &format!("0x{}", "11".repeat(32)), "--wait-secs", "2",
         ],
     );
@@ -231,8 +224,6 @@ fn every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_thei
         .expect("起不动");
     assert_eq!(o.status.code(), Some(0));
     let marks = std::fs::read_to_string(&trace).unwrap_or_default();
-    // Trace marks show the run passed through the CLI, the core (canonical form and audit) and storage
-    // (append).
     for id in ["V1", "K1", "A1"] {
         assert!(marks.lines().any(|l| l.trim() == id), "痕迹里没有 {id}:{marks}");
     }
@@ -249,12 +240,10 @@ fn the_kit_never_lands_unless_the_kit_law_says_it_is_a_kit() {
     assert_eq!(r.code, 0);
     assert!(String::from_utf8_lossy(&r.out).contains("\"state\":\"KIT_OK\""));
     assert!(w.join("pack/manifest.json").is_file());
-    // The target already exists: nothing is overwritten and not one byte is written to that path.
     let before = std::fs::read(w.join("pack/manifest.json")).expect("读不出清单");
     let again = run_in(&w, &["kit-export", "--ledger", "b", "--out", "pack", "--note", "第二趟"]);
     assert_eq!(again.code, 1);
     assert_eq!(before, std::fs::read(w.join("pack/manifest.json")).expect("读不出清单"));
-    // A half-laid staging area does not stay on disk.
     let leftovers: Vec<String> = std::fs::read_dir(&w)
         .expect("列不动")
         .filter_map(|x| x.ok())
@@ -263,8 +252,6 @@ fn the_kit_never_lands_unless_the_kit_law_says_it_is_a_kit() {
         .collect();
     assert!(leftovers.is_empty(), "临时地没清干净:{leftovers:?}");
 }
-
-// Discipline: source scans.
 
 #[test]
 fn the_crate_leans_on_nothing_but_the_four_bases() {
@@ -278,21 +265,18 @@ fn the_crate_leans_on_nothing_but_the_four_bases() {
         .expect("没有 [dependencies]");
     for line in deps.lines() {
         let line = line.trim();
-        // Stop at the next section header: `[[bin]]` also has a `name =` that would read as a dependency.
         if line.starts_with('[') {
             break;
         }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // No third-party crates: every dependency must be a path dependency.
         assert!(line.contains("path ="), "第三方依赖:{line}");
     }
 }
 
 #[test]
 fn the_ledger_is_never_touched_by_hand() {
-    // Ledger disk access goes through the storage crate only: `ledger.rs` uses no std disk operation.
     let text = src("ledger.rs");
     for forbidden in ["std::fs::", "File::", "read_dir", "create_dir", "remove_"] {
         assert!(!text.contains(forbidden), "ledger.rs 里出现了 {forbidden}");
@@ -301,21 +285,15 @@ fn the_ledger_is_never_touched_by_hand() {
 
 #[test]
 fn no_law_literal_lives_outside_the_bases() {
-    // Spec bytes (spec id, type names, signing domains, KIT_OK / BADGE_OK) come from core and kit constants;
-    // none is repeated here.
     let forbidden = [
         "\"zikaron/1\"",
         "\"zikaron.kit/1\"",
-        "\"zikaron.fpm/1\"",
-        "\"zikaron.ack/1\"",
-        "\"zikaron/1-adoption\"",
         "\"KIT_OK\"",
         "\"BADGE_OK\"",
         "\"genesis\"",
         "\"revocation\"",
         "\"succession\"",
         "\"annotation\"",
-        // The retraction type literal lives in `zikaron_glue::retraction` only.
         "\"retraction\"",
     ];
     for (name, text) in sources() {
@@ -327,7 +305,6 @@ fn no_law_literal_lives_outside_the_bases() {
 
 #[test]
 fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
-    // Flag names are a closed set (`ALL_FLAGS` plus `MORE_FLAGS`); any other flag is misuse at `close`.
     let text = src("verbs.rs");
     let mut asked: Vec<String> = Vec::new();
     for call in ["a.one(\"", "a.need(\"", "a.many(\"", "a.u64_of(\"", "a.key(\""] {
@@ -351,15 +328,15 @@ fn every_flag_a_verb_asks_for_lives_in_the_flag_table() {
 #[test]
 fn the_verbs_are_counted_and_each_one_answers() {
     let names = zikaron_cli::verbs::VERBS;
-    assert_eq!(names.len(), 26);
-    let text = src("verbs.rs");
+    assert_eq!(names.len(), 32);
+    let text = src("verbs_own.rs");
     for v in names {
         assert!(text.contains(&format!("\"{v}\" =>")), "{v} 没有分发的落点");
     }
     let mut sorted = names.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(sorted.len(), 26, "二十六个名字里有重的");
+    assert_eq!(sorted.len(), 32, "三十二个名字里有重的");
 }
 
 #[test]
@@ -389,68 +366,15 @@ fn the_output_key_table_and_the_reason_table_have_no_twin_spellings() {
 #[test]
 fn the_entropy_well_is_read_by_length_and_has_no_fallback() {
     let text = src("entropy.rs");
-    // System entropy is read only through `zikaron_os`, which reads exactly the requested length (the source
-    // never ends, so reading to end would hang).
     assert!(text.contains("zikaron_os::fill_random("), "熵只经 zikaron_os 那一处取");
     assert!(!text.contains("fs::read("), "整档读一个无尽的档会挂住");
-    // Unavailable entropy is reported: no second source and no fallback.
     assert!(!text.to_lowercase().contains("fallback"));
     let os = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zikaron-os/src/lib.rs")).expect("zikaron-os");
     assert!(os.contains("imp::fill_random(buf)"), "取熵在 zikaron-os 里每个系统一份实现");
 }
 
 #[test]
-fn the_cli_schema_and_the_key_table_agree_cell_by_cell() {
-    // `CLI-SCHEMA.md` section 7 must match `codes::Key` cell by cell.
-    use zikaron_cli::codes::Key;
-    let doc = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md"),
-    )
-    .expect("读不出 CLI-SCHEMA.md");
-    let section = doc
-        .split("## 7 · Closed table of output keys")
-        .nth(1)
-        .expect("CLI-SCHEMA.md has no section 7")
-        .trim_start()
-        // Only the first paragraph of section 7: that is the key table itself.
-        .split("\n\n")
-        .next()
-        .expect("第七节读不完");
-    let mut listed: Vec<String> = section
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .map(|x| x.trim().to_string())
-        .filter(|x| !x.is_empty() && x != "codes::Key")
-        .collect();
-    listed.sort();
-    listed.dedup();
-    let mut real: Vec<String> = Key::ALL.iter().map(|k| k.as_str().to_string()).collect();
-    real.sort();
-    assert_eq!(listed, real, "the key table in CLI-SCHEMA.md does not match codes::Key");
-}
-
-#[test]
-fn the_cli_schema_carries_the_whole_exit_table_and_every_reason() {
-    use zikaron_cli::codes::{Exit, Reason};
-    let doc = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md"),
-    )
-    .expect("读不出 CLI-SCHEMA.md");
-    for e in Exit::ALL {
-        assert!(doc.contains(&format!("| {} |", e.code())), "CLI-SCHEMA.md lacks exit code {}", e.code());
-    }
-    for r in Reason::ALL {
-        assert!(doc.contains(r.as_str()), "CLI-SCHEMA.md lacks refusal reason {}", r.as_str());
-    }
-    for v in zikaron_cli::verbs::VERBS {
-        assert!(doc.contains(&format!("`{v}`")), "CLI-SCHEMA.md lacks verb {v}");
-    }
-}
-
-#[test]
 fn not_one_of_the_twenty_verbs_passes_without_marking_the_trace() {
-    // Every verb emits its trace mark at dispatch; each runs once (most stop at missing-flag misuse).
     for verb in zikaron_cli::verbs::VERBS {
         let w = scratch(&format!("mark-{verb}"));
         let trace = w.join("trace.log");
@@ -476,14 +400,12 @@ fn a_selector_that_matched_nothing_is_a_refusal_not_an_empty_green_bundle() {
         run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code,
         0
     );
-    // A named id that is not found must not exit 0 with KIT_OK: that would seal an empty kit.
     let bogus = format!("0x{}", "99".repeat(32));
     let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "pack", "--entry", &bogus, "--note", ""]);
     assert_eq!(r.code, 1, "{}", String::from_utf8_lossy(&r.out));
     assert!(!w.join("pack").exists());
-    // Bare 64 hex and `0x`-prefixed are the same id in every verb.
     let g = run_in(&w, &["show", "--ledger", "b", "--entry", &{
-        let listing = std::fs::read_dir(w.join("b")).expect("列不动");
+        let listing = std::fs::read_dir(w.0.join("b")).expect("列不动");
         let name = listing
             .filter_map(|x| x.ok())
             .map(|x| x.file_name().to_string_lossy().into_owned())
@@ -507,35 +429,16 @@ fn a_selector_that_matched_nothing_is_a_refusal_not_an_empty_green_bundle() {
 }
 
 #[test]
-fn a_document_the_law_refused_never_reaches_the_out_path() {
-    let w = scratch("no-land");
-    // An acknowledgement that does not pair with its manifest (the signer has no row): exit 1 and nothing at
-    // the `--out` path.
-    let rows = format!(
-        "[{{\"recipient\":\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"variant\":\"0x{}\"}}]",
-        "e1".repeat(32)
-    );
-    std::fs::write(w.join("rows.json"), rows).expect("写不下");
-    let f = run_in(&w, &["fpm-sign", "--key", A_KEY, "--work", &format!("0x{}", "c1".repeat(32)), "--rows", "rows.json", "--note", "", "--out", "fpm.json"]);
-    assert_eq!(f.code, 0);
-    assert!(w.join("fpm.json").is_file(), "肯定的答该落盘");
-    let r = run_in(&w, &["ack-sign", "--key", A_KEY, "--fpm-doc", "fpm.json", "--variant", &format!("0x{}", "e1".repeat(32)), "--note", "", "--out", "ack.json"]);
-    assert_eq!(r.code, 1, "{}", String::from_utf8_lossy(&r.out));
-    assert!(String::from_utf8_lossy(&r.out).contains("ACK_NO_ROW"));
-    assert!(!w.join("ack.json").exists(), "配不上的那一份不该躺在盘上");
-}
-
-#[test]
 fn anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use() {
     let w = scratch("one-chain");
     let r = run_in(
         &w,
         &[
             "anchor", "--endpoint", "1=http://127.0.0.1:1", "--endpoint", "2=http://127.0.0.1:2",
-            "--key", A_KEY, "--form", "bare", "--hash", &format!("0x{}", "11".repeat(32)),
+            "--key", A_KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &format!("0x{}", "11".repeat(32)),
         ],
     );
-    assert_eq!(r.code, 2, "多给端点该是误用");
+    assert_eq!(r.code, 2, "两条链的端点该是误用(同一条链的是它的节点表)");
     assert!(r.out.is_empty());
 }
 
@@ -546,25 +449,21 @@ fn a_refused_kit_export_answers_in_the_shape_the_cli_schema_names() {
         run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code,
         0
     );
-    // When the kit core judges a kit invalid, `state` is its verdict, not a shell refusal.
     let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "p1", "--root", "notahex", "--note", ""]);
     assert_eq!(r.code, 1);
     let t = String::from_utf8_lossy(&r.out).into_owned();
     assert!(t.contains("\"reason\":\"E_KIT\""), "{t}");
     assert!(t.contains("\"state\":\"E_KIT_"), "state 该载 kit 法的 verdict:{t}");
-    // A disk failure carries `path`.
     assert_eq!(run_in(&w, &["kit-export", "--ledger", "b", "--out", "p2", "--note", ""]).code, 0);
     let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "p2", "--note", ""]);
     assert_eq!(r.code, 1);
     let t = String::from_utf8_lossy(&r.out).into_owned();
     assert!(t.contains("\"reason\":\"E_LEDGER\"") && t.contains("\"path\":\"p2\""), "{t}");
-    // A named id not found has its own refusal, not the empty-lineage one.
     let bogus = format!("0x{}", "99".repeat(32));
     let r = run_in(&w, &["kit-export", "--ledger", "b", "--out", "p3", "--entry", &bogus, "--note", ""]);
     assert_eq!(r.code, 1);
     let t = String::from_utf8_lossy(&r.out).into_owned();
     assert!(t.contains("\"reason\":\"E_ENTRY_ABSENT\"") && t.contains(&bogus), "{t}");
-    // A malformed id is misuse, in both verbs.
     let up = format!("0x{}", "AB".repeat(32));
     for verb in [
         vec!["kit-export", "--ledger", "b", "--out", "p4", "--entry", &up, "--note", ""],
@@ -579,32 +478,17 @@ fn a_refused_kit_export_answers_in_the_shape_the_cli_schema_names() {
 #[test]
 fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
     let w = scratch("landing");
-    let rows = format!(
-        "[{{\"recipient\":\"0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"variant\":\"0x{}\"}}]",
-        "e1".repeat(32)
-    );
-    std::fs::write(w.join("rows.json"), rows).expect("写不下");
-    let work = format!("0x{}", "c1".repeat(32));
-    let sign = |out: &str| -> Ran {
-        run_in(
-            &w,
-            &["fpm-sign", "--key", A_KEY, "--work", &work, "--rows", "rows.json", "--note", "", "--out", out],
-        )
-    };
+    assert_eq!(run_in(&w, &["init", "--ledger", "book", "--key", A_KEY, "--statement", "开端"]).code, 0);
+    let sign = |out: &str| -> Ran { run_in(&w, &["audit", "--ledger", "book", "--out", out]) };
 
-    // Success: the written file equals the answer's document byte for byte.
     let r = sign("fpm.json");
     assert_eq!(r.code, 0, "{}", String::from_utf8_lossy(&r.out));
-    let answered = String::from_utf8_lossy(&r.out)
-        .split("\"doc\":\"")
-        .nth(1)
-        .and_then(|x| x.split("\",\"").next())
-        .expect("答里没有 doc")
-        .replace("\\\"", "\"");
-    let landed = std::fs::read_to_string(w.join("fpm.json")).expect("落下去的档读不出");
-    assert_eq!(landed, answered, "落下去的与答的不是同一份");
+    let landed = std::fs::read(w.join("fpm.json")).expect("落下去的档读不出");
+    let v = zikaron::json::parse(&landed).expect("落下去的不是一枚 JSON");
+    for k in ["anchors", "basis", "pile", "root"] {
+        assert!(v.member(k).is_some(), "落下去的输入少了 {k}");
+    }
 
-    // Refusal one: the path is taken; refused by name, and the existing bytes are unchanged.
     let before = std::fs::read(w.join("fpm.json")).expect("读不出");
     let again = sign("fpm.json");
     assert_eq!(again.code, 1);
@@ -612,8 +496,6 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
     assert!(t.contains("E_OCCUPIED") && t.contains("fpm.json"), "{t}");
     assert_eq!(before, std::fs::read(w.join("fpm.json")).expect("读不出"), "原有的档被动了");
 
-    // Refusal two (unix only: the folder is made unwritable with unix permission bits): a landing that fails
-    // leaves nothing at the target.
     #[cfg(unix)]
     {
     use std::os::unix::fs::PermissionsExt;
@@ -637,8 +519,6 @@ fn landing_a_document_never_clobbers_and_never_leaves_a_short_one() {
 
 #[test]
 fn the_shell_holds_no_bare_write_to_a_path_the_caller_gave() {
-    // One landing path (`zikaron_glue::landing`): a plain `fs::write` in the shell would be a second exit,
-    // and a second exit is the one that overwrites.
     for (name, text) in sources() {
         let code: String = text
             .lines()
@@ -653,9 +533,6 @@ fn the_shell_holds_no_bare_write_to_a_path_the_caller_gave() {
 
 #[test]
 fn stdout_has_one_writer_and_that_writer_never_returns() {
-    // "Misuse writes zero bytes to stdout" holds by control flow: `emit` is the only writer and never returns,
-    // so nothing can print and then refuse. The one exception is `mcp` (CLI-SCHEMA §1 rule 7): its writer
-    // `frame` returns and its end `finish` writes nothing; no other file calls either.
     for (name, text) in sources() {
         let code: String = text
             .lines()
@@ -670,11 +547,9 @@ fn stdout_has_one_writer_and_that_writer_never_returns() {
         }
     }
     let out_rs = src("out.rs");
-    // The writer never returns.
     assert!(out_rs.contains("pub fn emit(a: Answer) -> !"), "emit 不再是不返回的:两个出口就不互斥了");
     assert!(out_rs.contains("pub fn misuse(reason: Reason, subject: Subject, said: Said) -> !"));
     assert!(out_rs.contains("pub fn frame(v: &Value)") && out_rs.contains("pub fn finish() -> !"), "mcp 的分帧写口与收尾");
-    // Exactly three exits: an answer, misuse, and the end of an `mcp` session.
     assert_eq!(out_rs.matches("std::process::exit").count(), 3, "out.rs 里的退出口不是三处");
     for (name, text) in sources() {
         if name == "out.rs" || name == "mcp.rs" {
@@ -682,7 +557,6 @@ fn stdout_has_one_writer_and_that_writer_never_returns() {
         }
         assert!(!text.contains("out::frame") && !text.contains("out::finish"), "{name} 调了只许 mcp 调的写口");
     }
-    // `Exit::Misuse` appears only in out.rs and codes.rs, so no answer can claim to be misuse.
     for (name, text) in sources() {
         if name == "out.rs" || name == "codes.rs" {
             continue;
@@ -702,7 +576,6 @@ fn not_one_path_that_exits_two_writes_a_byte_to_stdout() {
     let h20 = format!("0x{}", "11".repeat(20));
     let bad_key = "0xzz";
     let out_of_range = format!("0x{}", "00".repeat(32));
-    // At least one misuse path per verb; all three private-key cases (malformed, out of range, missing).
     let cases: Vec<Vec<&str>> = vec![
         vec!["conjure"],
         vec!["keygen", "--seed", "1"],
@@ -717,14 +590,13 @@ fn not_one_path_that_exits_two_writes_a_byte_to_stdout() {
         vec!["adopt", "--ledger", "b", "--key", A_KEY, "--anchors", "/nowhere"],
         vec!["attest", "--key", bad_key, "--author", &h20, "--anchors", "x", "--prev", &h32],
         vec!["attest", "--key", A_KEY, "--author", &h20, "--anchors", "/nowhere", "--prev", &h32],
-        vec!["succeed", "--ledger", "b", "--key", bad_key],
         vec!["annotate", "--ledger", "b", "--key", A_KEY, "--seq", "1"],
         vec!["retract", "--ledger", "b", "--key", A_KEY, "--seq", "1"],
         vec!["retract", "--ledger", "b", "--key", A_KEY, "--subject", "0x12", "--prev", "0x12"],
-        vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", bad_key, "--form", "bare", "--hash", &h32],
+        vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", bad_key, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &h32],
         vec!["anchor", "--endpoint", "1=http://127.0.0.1:1", "--key", A_KEY, "--form", "gossip", "--hash", &h32],
-        vec!["anchor", "--endpoint", "nonsense", "--key", A_KEY, "--form", "bare", "--hash", &h32],
-        vec!["anchor", "--endpoint", "1=http://a", "--endpoint", "2=http://b", "--key", A_KEY, "--form", "bare", "--hash", &h32],
+        vec!["anchor", "--endpoint", "nonsense", "--key", A_KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &h32],
+        vec!["anchor", "--endpoint", "1=http://a", "--endpoint", "2=http://b", "--key", A_KEY, "--form", "registry", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3", "--hash", &h32],
         vec!["scan", "--basis", "x"],
         vec!["scan", "--fixture", "/nowhere", "--endpoint", "1=http://127.0.0.1:1"],
         vec!["audit"],
@@ -756,21 +628,7 @@ fn not_one_path_that_exits_two_writes_a_byte_to_stdout() {
 }
 
 #[test]
-fn the_cli_schema_lists_every_flag_the_code_knows() {
-    // Section 8 of `CLI-SCHEMA.md` (flag names) must match the code; one row off fails.
-    let doc = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md"))
-        .expect("读不出 CLI-SCHEMA.md");
-    let section = doc.split("## 8 · Flags").nth(1).expect("CLI-SCHEMA.md has no section 8");
-    let mut listed: Vec<String> = section
-        .lines()
-        .filter_map(|l| l.strip_prefix("| `--"))
-        .filter_map(|l| l.split('`').next())
-        .map(str::to_string)
-        .collect();
-    let n = listed.len();
-    listed.sort();
-    listed.dedup();
-    assert_eq!(listed.len(), n, "§八 里有重名的旗");
+fn the_flag_names_the_code_knows_are_each_named_once() {
     let mut real: Vec<String> = zikaron_cli::verbs::all_flag_names()
         .into_iter()
         .map(str::to_string)
@@ -779,13 +637,8 @@ fn the_cli_schema_lists_every_flag_the_code_knows() {
     real.sort();
     real.dedup();
     assert_eq!(real.len(), m, "码里的旗名闭表有重名");
-    assert_eq!(listed, real, "§八 与旗名闭表对不上");
-    assert_eq!(listed.len(), 62, "the flag count changed; update the flag count stated in CLI-SCHEMA.md");
 }
 
-// init: one ledger, one root.
-
-/// Name and bytes of every file in a directory, by name; compared before and after a refusal.
 fn files_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
     let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
         .map(|d| {
@@ -819,7 +672,6 @@ fn a_second_init_on_a_rooted_ledger_is_refused_and_not_one_byte_moves() {
     assert_eq!(first.code, 0, "空目录上建档该绿:{}", String::from_utf8_lossy(&first.out));
     let before = files_of(&w.join("b"));
     assert_eq!(before.len(), 1, "建档落一枚");
-    // Same key, another statement: a second seq 0 would give different bytes.
     let second = run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "x"]);
     assert_eq!(second.code, 1, "二次创世该拒:{}", String::from_utf8_lossy(&second.out));
     assert_eq!(reason_of(&second), "E_ALREADY_ROOTED");
@@ -827,12 +679,10 @@ fn a_second_init_on_a_rooted_ledger_is_refused_and_not_one_byte_moves() {
     assert!(matches!(member_of(&second, "author"), Some(zikaron::json::Value::Str(ref a)) if a.starts_with("0x") && a.len() == 42), "拒因带根的作者");
     assert!(matches!(member_of(&second, "count"), Some(zikaron::json::Value::Int(1))), "目录里一件");
     assert_eq!(files_of(&w.join("b")), before, "拒之后目录的档名集与字节都该与拒之前相同");
-    // Same key, same statement: identical bytes, still refused (one ledger, one root).
     let same = run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]);
     assert_eq!(same.code, 1);
     assert_eq!(reason_of(&same), "E_ALREADY_ROOTED");
     assert_eq!(files_of(&w.join("b")), before);
-    // Another key too: the root belongs to the ledger, not the key.
     let other = "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba";
     let third = run_in(&w, &["init", "--ledger", "b", "--key", other, "--statement", "另一个开端"]);
     assert_eq!(third.code, 1);
@@ -842,7 +692,6 @@ fn a_second_init_on_a_rooted_ledger_is_refused_and_not_one_byte_moves() {
 
 #[test]
 fn init_on_a_ledger_holding_bytes_it_cannot_read_as_a_root_is_refused() {
-    // Case one: a stray file with a non-entry name (the store cannot read it; it is skipped).
     let w = scratch("init-stray");
     std::fs::create_dir_all(w.join("b")).expect("建目录");
     std::fs::write(w.join("b").join("notes.txt"), b"not an entry").expect("写散档");
@@ -854,9 +703,6 @@ fn init_on_a_ledger_holding_bytes_it_cannot_read_as_a_root_is_refused() {
     assert!(matches!(member_of(&r, "count"), Some(zikaron::json::Value::Int(1))));
     assert_eq!(files_of(&w.join("b")), before, "零条目落地");
 
-    // Case two: an entry-named file with broken bytes (the store reads it into the pile; the core refuses
-    // it). Counting only recognized seq 0 entries would miss this case and write a second root; asking "is it
-    // empty" stops it.
     let w2 = scratch("init-torn");
     std::fs::create_dir_all(w2.join("b")).expect("建目录");
     std::fs::write(w2.join("b").join(format!("{}.entry", "ab".repeat(32))), b"{\"torn\":").expect("写坏条目档");
@@ -869,7 +715,6 @@ fn init_on_a_ledger_holding_bytes_it_cannot_read_as_a_root_is_refused() {
 
 #[test]
 fn init_on_an_empty_directory_still_writes_the_root() {
-    // An empty directory and a missing one both still get one genesis.
     let w = scratch("init-empty");
     std::fs::create_dir_all(w.join("b")).expect("建空目录");
     let r = run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]);
@@ -883,8 +728,6 @@ fn init_on_an_empty_directory_still_writes_the_root() {
 
 #[test]
 fn init_on_a_ledger_that_already_holds_two_roots_names_the_fork() {
-    // Two genesis entries, same key, different statements: each written into its own empty directory, then
-    // both copied into one. Ids are counted, not authors, so two roots: `E_TIP_FORKED`.
     let w = scratch("init-fork");
     assert_eq!(run_in(&w, &["init", "--ledger", "one", "--key", A_KEY, "--statement", "开端"]).code, 0);
     assert_eq!(run_in(&w, &["init", "--ledger", "two", "--key", A_KEY, "--statement", "x"]).code, 0);
@@ -906,9 +749,6 @@ fn init_on_a_ledger_that_already_holds_two_roots_names_the_fork() {
 
 #[test]
 fn a_write_by_hand_into_a_ledger_that_already_holds_two_roots_is_refused() {
-    // The write gate audits under one root; a pile that already holds two (two keys each wrote a genesis)
-    // cannot be audited, so the gate refuses the write, even with `--seq` and `--prev` given by hand (no tip
-    // lookup).
     let w = scratch("write-fork");
     let other_key = format!("0x{}", "17".repeat(32));
     let one = run_in(&w, &["init", "--ledger", "one", "--key", A_KEY, "--statement", "开端"]);
@@ -927,17 +767,13 @@ fn a_write_by_hand_into_a_ledger_that_already_holds_two_roots_is_refused() {
     assert_eq!(r.code, 1, "两个根的账本该拒:{}", String::from_utf8_lossy(&r.out));
     assert_eq!(reason_of(&r), "E_TIP_FORKED");
     assert_eq!(files_of(&w.join("b")), before, "零条目落地");
-    // Naming the root (`--root`) picks a line in such a ledger: the gate audits under that root (the same one
-    // the tip is looked up under), and a write by the key that holds it succeeds.
-    let author = files_of(&w.join("one")).into_iter().find_map(|(_, b)| zikaron::entry::check(&b).ok()).map(|e| e.author).expect("创世作者");
+    let author = files_of(&w.join("one")).into_iter().find_map(|(_, b)| zikaron_glue::book::check(&b).ok()).map(|e| e.author).expect("创世作者");
     let named = run_in(&w, &["history", "--ledger", "b", "--key", A_KEY, "--root", &author, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
     assert_eq!(named.code, 0, "点名根之后照写:{}", String::from_utf8_lossy(&named.out));
 }
 
 #[test]
 fn one_genesis_stored_under_two_names_is_still_one_root() {
-    // One genesis copied under two file names (identical bytes): one id, merged by the core, so still one
-    // root: `E_ALREADY_ROOTED`, not `E_TIP_FORKED`.
     let w = scratch("init-dup");
     assert_eq!(run_in(&w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]).code, 0);
     let (name, bytes) = files_of(&w.join("b")).into_iter().next().expect("一枚");
@@ -953,8 +789,6 @@ fn one_genesis_stored_under_two_names_is_still_one_root() {
     assert_eq!(files_of(&w.join("b")), before, "零条目落地");
 }
 
-// retract: the writing side of the retraction convention.
-
 fn text_of(r: &Ran, key: &str) -> String {
     match member_of(r, key) {
         Some(zikaron::json::Value::Str(x)) => x,
@@ -962,7 +796,6 @@ fn text_of(r: &Ran, key: &str) -> String {
     }
 }
 
-/// A ledger with a genesis and one history; returns (genesis id, history id).
 fn a_book_with_one_work(w: &Path) -> (String, String) {
     let g = run_in(w, &["init", "--ledger", "b", "--key", A_KEY, "--statement", "开端"]);
     assert_eq!(g.code, 0);
@@ -985,8 +818,13 @@ fn a_retraction_lands_in_the_convention_shape_and_the_audit_lists_it_without_mov
     let after = run_in(&w, &["audit", "--ledger", "b"]);
     assert_eq!(after.code, before.code, "删掉一条存证不改审计的码");
     assert_eq!(member_of(&after, "label"), member_of(&before, "label"), "标签不因约定条目而变");
+    let count = |r: &Ran| match member_of(r, "entries") {
+        Some(zikaron::json::Value::Int(n)) => n,
+        other => panic!("entries is a count: {other:?}"),
+    };
+    assert_eq!(count(&after), count(&before) + 1, "审计数得到这一条");
     let unknown = format!("{:?}", member_of(&after, "unknown_type"));
-    assert!(unknown.contains(id.trim_start_matches("0x")), "审计的 unknown_type 里列得出这一条:{unknown}");
+    assert!(!unknown.contains(id.trim_start_matches("0x")), "法内类型不入 unknown_type:{unknown}");
     let _ = std::fs::remove_dir_all(&w);
 }
 
@@ -1015,8 +853,6 @@ fn a_retraction_the_convention_forbids_is_refused_by_name_and_not_one_byte_moves
     let _ = std::fs::remove_dir_all(&w);
 }
 
-/// A failed storage disk operation answers `detail` as its code followed by `: ` and the system's message
-/// (operation, path, OS text); kit output disk failures do the same.
 #[cfg(unix)]
 #[test]
 fn a_disk_failure_says_the_systems_words_in_detail() {
@@ -1039,8 +875,6 @@ fn a_disk_failure_says_the_systems_words_in_detail() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
 }
 
-/// The line for people when the core refuses an entry's body is in the system's language throughout, the flags
-/// that give the member included: an English system shows no Chinese in it, a Chinese one shows the Chinese words.
 #[test]
 fn a_refused_body_is_said_in_the_systems_language_flags_and_all() {
     let w = scratch("bodyline");
@@ -1067,13 +901,10 @@ fn a_refused_body_is_said_in_the_systems_language_flags_and_all() {
     assert_eq!(zh, "mode: 缺或不成形,由 --mark 与 --toolchain(或 --file) 给");
 }
 
-/// Every flag a verb reads more than once (`Args::many` / `many_at` in `verbs.rs` and `desk.rs`) is in the table that
-/// says so (`verbs::REPEATED`), and every flag the table names is read that way somewhere: the readings that need to
-/// know whether a flag repeats (`mcp`'s tool parameters) read the table, not the call sites.
 #[test]
 fn the_repeated_flags_are_the_ones_read_many_times() {
     let mut read: Vec<String> = Vec::new();
-    for text in [src("verbs.rs"), src("desk.rs")] {
+    for text in [src("verbs.rs"), src("desk.rs"), src("hopin.rs")] {
         for head in ["many(\"", "many_at(\""] {
             for piece in text.split(head).skip(1) {
                 if let Some(name) = piece.split('"').next() {
@@ -1087,6 +918,307 @@ fn the_repeated_flags_are_the_ones_read_many_times() {
     let mut table: Vec<String> = zikaron_cli::verbs::REPEATED.iter().map(|(_, f)| f.to_string()).collect();
     table.sort();
     table.dedup();
-    // `desk.rs` reads a home row's flags generically (`many(flag)`): `kit-export`'s `entry`, already in the table.
     assert_eq!(read, table, "flags read many times against the table of repeated flags");
+}
+
+fn an_old_ledger(dir: &Path, closed: bool) -> Vec<String> {
+    use zikaron_glue::book::{self, Law};
+    let key = zikaron::hexfmt::scalar32(A_KEY).expect("a key");
+    let author = zikaron_cli::entry::address(&key).expect("an address");
+    std::fs::create_dir_all(dir).expect("建目录");
+    let o = |m: Vec<(&str, zikaron::json::Value)>| zikaron::json::Value::Obj(m.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let st = |x: &str| zikaron::json::Value::Str(x.to_string());
+    let h32 = |b: &str| format!("0x{}", b.repeat(32));
+    let mut ids: Vec<String> = Vec::new();
+    let mut lay = |kind: &str, body: zikaron::json::Value| {
+        let seq = ids.len() as u64;
+        let e = zikaron_cli::entry::seal_under(Law::One, &author, kind, seq, ids.last().map(String::as_str), body, &key).expect("sealed");
+        std::fs::write(dir.join(format!("{}.entry", e.entry.id_hex().trim_start_matches("0x"))), &e.bytes).expect("laid");
+        ids.push(e.entry.id_hex());
+    };
+    lay("genesis", o(vec![("statement_md", st("旧法的开端"))]));
+    lay("history", o(vec![("content", st(&h32("0a"))), ("mode", o(vec![("mark", st("v1")), ("toolchain", st(&h32("0b")))]))]));
+    if closed {
+        lay("succession", book::closing_body(&author, 1, "迁至新法"));
+    }
+    ids
+}
+
+#[test]
+fn an_old_ledger_given_as_an_input_is_read_by_that_law() {
+    let w = scratch("old-input");
+    let ids = an_old_ledger(&w.join("old"), false);
+    let by_folder = run_in(&w, &["audit", "--ledger", "old", "--out", "in.json"]);
+    let by_input = run_in(&w, &["audit", "--input", "in.json"]);
+    let said = String::from_utf8_lossy(&by_input.out).to_string();
+    assert_eq!(by_input.out, by_folder.out, "{said}");
+    assert_eq!(by_input.code, by_folder.code, "{said}");
+    assert!(said.contains(ids.last().expect("a tip")), "{said}");
+    std::fs::write(w.join("bad.json"), r#"{"anchors":[],"basis":{"chains":[]},"evidence":[1]}"#).expect("w");
+    let r = run_in(&w, &["audit", "--ledger", "old", "--fragment", "bad.json"]);
+    let said = String::from_utf8_lossy(&r.out).to_string();
+    assert_eq!(r.code, 1, "{said}");
+    assert!(said.contains("NO_LABEL"), "{said}");
+}
+
+#[test]
+fn an_original_asked_for_and_not_listed_is_named() {
+    let w = scratch("gp-plain-original");
+    let h32 = |b: &str| format!("0x{}", b.repeat(32));
+    let (work, terms) = (h32("0a"), h32("0b"));
+    assert_eq!(run_in(&w, &["init", "--ledger", "l", "--key", A_KEY, "--statement", "x"]).code, 0);
+    let id = old_grant::old_grant(&w.0.join("l"), A_KEY, &format!("0x{}", "33".repeat(20)), &work, &terms);
+    let asked = run_in(&w, &["grant-package", "--ledger", "l", "--grant", &id, "--out", "with", "--originals", "all"]);
+    let said = String::from_utf8_lossy(&asked.out).to_string();
+    assert_eq!(asked.code, 0, "{said}");
+    assert!(said.contains(&format!("\"leftOut\":[\"{work}\"]")), "{said}");
+    let none = run_in(&w, &["grant-package", "--ledger", "l", "--grant", &id, "--out", "without"]);
+    let said = String::from_utf8_lossy(&none.out).to_string();
+    assert!(said.contains("\"leftOut\":[]"), "not asked, nothing left out: {said}");
+}
+
+#[test]
+fn a_strangers_new_genesis_leaves_an_old_ledger_old() {
+    let w = scratch("old-stranger");
+    let ids = an_old_ledger(&w.join("old"), false);
+    let key = zikaron::hexfmt::scalar32(A_KEY).expect("a key");
+    let root = zikaron_cli::entry::address(&key).expect("an address");
+    let stranger = format!("0x{}", "7".repeat(64));
+    for (dir, by) in [("stranger", stranger.as_str()), ("own", A_KEY)] {
+        let r = run_in(&w, &["init", "--ledger", dir, "--key", by, "--statement", "x"]);
+        assert_eq!(r.code, 0, "{}", String::from_utf8_lossy(&r.out));
+    }
+    let copy_in = |from: &str, to: &str| {
+        std::fs::create_dir_all(w.join(to)).expect("a folder");
+        for e in std::fs::read_dir(w.join(from)).expect("reads").filter_map(Result::ok) {
+            std::fs::copy(e.path(), w.join(to).join(e.file_name())).expect("copied");
+        }
+    };
+    copy_in("old", "old-and-stranger");
+    copy_in("stranger", "old-and-stranger");
+    let mixed = run_in(&w, &["audit", "--ledger", "old-and-stranger", "--root", &root]);
+    let alone = run_in(&w, &["audit", "--ledger", "old", "--root", &root]);
+    let said = String::from_utf8_lossy(&mixed.out).to_string();
+    assert_eq!(mixed.code, alone.code, "{said}");
+    assert!(said.contains(&format!("\"entries\":{}", ids.len())), "the old ledger's entries read: {said}");
+    assert!(said.contains(&format!("\"label\":\"{}\"", label_of(&alone.out))), "{said}");
+    copy_in("old", "old-and-own");
+    copy_in("own", "old-and-own");
+    let own = run_in(&w, &["audit", "--ledger", "old-and-own", "--root", &root]);
+    let said = String::from_utf8_lossy(&own.out).to_string();
+    assert!(said.contains("\"entries\":1"), "its own new genesis is the new law's: {said}");
+}
+
+fn label_of(report: &[u8]) -> String {
+    let v = zikaron::json::parse(report).expect("a report");
+    v.member("label").and_then(zikaron::json::Value::as_str).expect("a label").to_string()
+}
+
+#[test]
+fn an_old_reading_of_an_old_ledger_is_read_by_that_law() {
+    let w = scratch("old-reading");
+    let ids = an_old_ledger(&w.join("old"), false);
+    let key = zikaron::hexfmt::scalar32(A_KEY).expect("a key");
+    let author = zikaron_cli::entry::address(&key).expect("an address");
+    let (tip, registry) = (ids.last().expect("a tip").clone(), format!("0x{}", "12".repeat(20)));
+    let reading = |extra: &str| {
+        format!(
+            r#"{{"anchors":[{{"blockNumber":5,"blockTimestamp":1000,"chainId":31337,"hash":"{tip}","sender":"{author}","tx":"0x{tx}","verdict":"counted"}}],"basis":{{"adoptionChains":[],"bareTx":[],"chains":[{{"chainId":31337,"fromBlock":0,"registries":["{registry}"],"senders":["{author}"],"toBlock":10}}]{extra}}},"evidence":[]}}"#,
+            tx = "ab".repeat(32)
+        )
+    };
+    std::fs::write(w.join("old.json"), reading("")).expect("w");
+    let r = run_in(&w, &["audit", "--ledger", "old", "--fragment", "old.json"]);
+    let said = String::from_utf8_lossy(&r.out).to_string();
+    assert_eq!(r.code, 0, "{said}");
+    assert!(said.contains("\"label\":\"COMPLETE\"") && said.contains(&tip), "{said}");
+    std::fs::write(w.join("bad.json"), reading(r#","stray":[]"#)).expect("w");
+    let r = run_in(&w, &["audit", "--ledger", "old", "--fragment", "bad.json"]);
+    assert_eq!(r.code, 1, "{}", String::from_utf8_lossy(&r.out));
+    assert!(String::from_utf8_lossy(&r.out).contains("NO_LABEL"), "{}", String::from_utf8_lossy(&r.out));
+    assert_eq!(run_in(&w, &["init", "--ledger", "new", "--key", A_KEY, "--statement", "s"]).code, 0);
+    let r = run_in(&w, &["audit", "--ledger", "new", "--fragment", "old.json"]);
+    assert_eq!(r.code, 1, "{}", String::from_utf8_lossy(&r.out));
+    assert!(String::from_utf8_lossy(&r.out).contains("NO_LABEL"), "{}", String::from_utf8_lossy(&r.out));
+}
+
+#[test]
+fn an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once() {
+    let w = scratch("migrate");
+    let ids = an_old_ledger(&w.join("old"), false);
+    let h32 = format!("0x{}", "ab".repeat(32));
+    let before = files_of(&w.join("old"));
+    let r = run_in(&w, &["history", "--ledger", "old", "--key", A_KEY, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
+    assert_eq!((r.code, reason_of(&r)), (1, "E_NOT_MOVED".to_string()), "{}", String::from_utf8_lossy(&r.out));
+    assert_eq!(files_of(&w.join("old")), before, "零条目落地");
+    let m = run_in(&w, &["migrate", "--ledger", "old", "--key", A_KEY, "--effective", "1"]);
+    assert_eq!(m.code, 0, "{}", String::from_utf8_lossy(&m.out));
+    assert_eq!(files_of(&w.join("old")).len(), ids.len() + 2);
+    let closing = text_of(&m, "closing");
+    let continuing = text_of(&m, "continuing");
+    let shown = run_in(&w, &["show", "--ledger", "old", "--entry", continuing.trim_start_matches("0x")]);
+    let body = String::from_utf8_lossy(&shown.out).into_owned();
+    assert!(body.contains(&closing) && body.contains("continues"), "the genesis continues the closing succession: {body}");
+    let again = run_in(&w, &["migrate", "--ledger", "old", "--key", A_KEY]);
+    assert_eq!((again.code, reason_of(&again)), (1, "E_ALREADY_MOVED".to_string()));
+    let after = run_in(&w, &["history", "--ledger", "old", "--key", A_KEY, "--content", &h32, "--mark", "v1", "--toolchain", &h32]);
+    assert_eq!(after.code, 0, "{}", String::from_utf8_lossy(&after.out));
+    assert!(matches!(member_of(&after, "seq"), Some(zikaron::json::Value::Int(1))));
+}
+
+#[test]
+fn a_move_cut_after_its_closing_succession_writes_the_genesis_alone() {
+    let w = scratch("migrate-resume");
+    let ids = an_old_ledger(&w.join("old"), true);
+    let m = run_in(&w, &["migrate", "--ledger", "old", "--key", A_KEY, "--effective", "1"]);
+    assert_eq!(m.code, 0, "{}", String::from_utf8_lossy(&m.out));
+    assert_eq!(text_of(&m, "closing"), ids[2], "the closing succession already there is the one continued");
+    assert_eq!(files_of(&w.join("old")).len(), ids.len() + 1, "one entry more: the genesis");
+}
+
+#[test]
+fn an_old_archive_is_audited_by_the_law_it_was_written_in() {
+    let w = scratch("audit-old-kit");
+    let ids = an_old_ledger(&w.join("old"), true);
+    let entries: Vec<Vec<u8>> = ids.iter().map(|id| std::fs::read(w.join("old").join(format!("{}.entry", id.trim_start_matches("0x")))).expect("an entry")).collect();
+    let kit = zikaron_glue::pack::companion_bytes(&zikaron_glue::pack::Bundle { entries, ..Default::default() }).expect("a kit/1 package");
+    std::fs::write(w.join("old.zkit"), kit).expect("the package");
+    for place in ["old.zkit", "old"] {
+        let r = run_in(&w, &["audit", "--ledger", place]);
+        assert_eq!(r.code, 0, "{place}: {}", String::from_utf8_lossy(&r.out));
+        assert!(matches!(member_of(&r, "entries"), Some(zikaron::json::Value::Int(3))), "{place}: three entries read: {}", String::from_utf8_lossy(&r.out));
+        assert!(matches!(member_of(&r, "malformed"), Some(zikaron::json::Value::Arr(m)) if m.is_empty()), "{place}: none malformed");
+        assert!(member_of(&r, "continues").is_none(), "{place}: the old law's report, which has no continuation");
+        assert_eq!(text_of(&r, "label"), "COMPLETE");
+    }
+}
+
+#[test]
+fn init_on_a_continued_ledger_names_its_one_root() {
+    let w = scratch("init-continued");
+    an_old_ledger(&w.join("old"), false);
+    let m = run_in(&w, &["migrate", "--ledger", "old", "--key", A_KEY, "--effective", "1"]);
+    assert_eq!(m.code, 0, "{}", String::from_utf8_lossy(&m.out));
+    let before = files_of(&w.join("old"));
+    let r = run_in(&w, &["init", "--ledger", "old", "--key", A_KEY, "--statement", "再开一次"]);
+    assert_eq!((r.code, reason_of(&r)), (1, "E_ALREADY_ROOTED".to_string()), "{}", String::from_utf8_lossy(&r.out));
+    let author = zikaron_cli::entry::address(&zikaron::hexfmt::scalar32(A_KEY).expect("a key")).expect("an address");
+    assert_eq!(text_of(&r, "author"), author);
+    assert_eq!(files_of(&w.join("old")), before, "零条目落地");
+    let other = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+    assert_eq!(run_in(&w, &["init", "--ledger", "stranger", "--key", other, "--statement", "别人的开端"]).code, 0);
+    for (name, bytes) in files_of(&w.join("stranger")) {
+        std::fs::write(w.join("old").join(name), bytes).expect("拷条目档");
+    }
+    let before = files_of(&w.join("old"));
+    let r = run_in(&w, &["init", "--ledger", "old", "--key", A_KEY, "--statement", "再开一次"]);
+    assert_eq!((r.code, reason_of(&r)), (1, "E_TIP_FORKED".to_string()), "{}", String::from_utf8_lossy(&r.out));
+    assert_eq!(files_of(&w.join("old")), before, "零条目落地");
+}
+
+#[test]
+fn an_old_chain_is_checked_by_the_law_it_was_written_in() {
+    use zikaron_glue::book::Law;
+    let w = scratch("chain-old");
+    let o = |m: Vec<(&str, zikaron::json::Value)>| zikaron::json::Value::Obj(m.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let st = |x: &str| zikaron::json::Value::Str(x.to_string());
+    let h32 = |b: &str| format!("0x{}", b.repeat(32));
+    let lay = |dir: &Path, key: &str, entries: Vec<(&str, zikaron::json::Value)>| -> Vec<String> {
+        let k = zikaron::hexfmt::scalar32(key).expect("a key");
+        let author = zikaron_cli::entry::address(&k).expect("an address");
+        std::fs::create_dir_all(dir).expect("建目录");
+        let mut ids: Vec<String> = Vec::new();
+        for (kind, body) in entries {
+            let e = zikaron_cli::entry::seal_under(Law::One, &author, kind, ids.len() as u64, ids.last().map(String::as_str), body, &k).expect("sealed");
+            std::fs::write(dir.join(format!("{}.entry", e.entry.id_hex().trim_start_matches("0x"))), &e.bytes).expect("laid");
+            ids.push(e.entry.id_hex());
+        }
+        ids
+    };
+    let b_key = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+    let b_addr = zikaron_cli::entry::address(&zikaron::hexfmt::scalar32(b_key).expect("a key")).expect("an address");
+    let genesis = || ("genesis", o(vec![("statement_md", st("旧法的开端"))]));
+    let a = lay(&w.join("a"), A_KEY, vec![genesis(), ("grant", o(vec![("grantee", st(&b_addr)), ("terms", st(&h32("71"))), ("work", st(&h32("44")))]))]);
+    let b = lay(&w.join("b"), b_key, vec![genesis(), ("grant", o(vec![("grantee", st(&h32("cc")[..42])), ("terms", st(&h32("72"))), ("upstream", st(&a[1])), ("work", st(&h32("44")))]))]);
+    let grant_file = |dir: &str, id: &str| {
+        let p = w.join(format!("{dir}-grant.entry"));
+        std::fs::copy(w.join(dir).join(format!("{}.entry", id.trim_start_matches("0x"))), &p).expect("the grant");
+        p
+    };
+    let (ga, gb) = (grant_file("a", &a[1]), grant_file("b", &b[1]));
+    std::fs::create_dir_all(w.join("a-revoked")).expect("建目录");
+    for (name, bytes) in files_of(&w.join("a")) {
+        std::fs::write(w.join("a-revoked").join(name), bytes).expect("拷条目档");
+    }
+    let k = zikaron::hexfmt::scalar32(A_KEY).expect("a key");
+    let author = zikaron_cli::entry::address(&k).expect("an address");
+    let rev = zikaron_cli::entry::seal_under(Law::One, &author, "revocation", 2, Some(&a[1]), o(vec![("grant", st(&a[1]))]), &k).expect("sealed");
+    std::fs::write(w.join("a-revoked").join(format!("{}.entry", rev.entry.id_hex().trim_start_matches("0x"))), &rev.bytes).expect("laid");
+    let input = |ledger: &str, name: &str| {
+        let r = run_in(&w, &["audit", "--ledger", ledger, "--out", name]);
+        assert!(w.join(name).is_file(), "{ledger}: {}", String::from_utf8_lossy(&r.out));
+        name.to_string()
+    };
+    let (ia, ir, ib) = (input("a", "a.json"), input("a-revoked", "a-revoked.json"), input("b", "b.json"));
+    let hop = |g: &Path, i: &str| format!("{}={}", g.display(), w.join(i).display());
+    let r = run_in(&w, &["chain-check", "--hop", &hop(&ga, &ia), "--hop", &hop(&gb, &ib), "--now", "150"]);
+    assert_ne!(text_of(&r, "verdict"), "FAIL", "{}", String::from_utf8_lossy(&r.out));
+    let r = run_in(&w, &["chain-check", "--hop", &hop(&ga, &ir), "--hop", &hop(&gb, &ib), "--now", "150"]);
+    assert_eq!((r.code, text_of(&r, "verdict")), (1, "FAIL".to_string()), "{}", String::from_utf8_lossy(&r.out));
+    let failing = member_of(&r, "failing").expect("a failing point");
+    assert_eq!(failing.member("kind").and_then(|x| x.as_str()), Some("hop"), "{}", String::from_utf8_lossy(&r.out));
+    assert!(matches!(failing.member("index"), Some(zikaron::json::Value::Int(0))), "{}", String::from_utf8_lossy(&r.out));
+}
+
+#[test]
+fn a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back() {
+    let w = scratch("rest-keys");
+    let key = "SECRET-REST-KEY-5d1e";
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
+    let basis = w.0.join("basis.json");
+    std::fs::write(&basis, format!("{{\"chains\":[{{\"chainId\":31337,\"fromBlock\":0,\"registries\":[\"0x{}\"],\"senders\":[\"0x{}\"],\"toBlock\":16}}]}}", "11".repeat(20), "22".repeat(20))).expect("a basis");
+    let node = format!("31337=http://127.0.0.1:{dead}");
+    let run = |keys: &Path| {
+        let args = ["scan", "--endpoint", node.as_str(), "--basis", basis.to_str().expect("a path"), "--rest-keys", keys.to_str().expect("a path")];
+        let o = Command::new(BIN).args(args).current_dir(&w.0).env(zikaron_os::HOME_VAR, own_home()).output().expect("起不动 zikaron");
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let bad = w.0.join("bad.keys");
+    std::fs::write(&bad, format!("etherscan {key} more\n")).expect("a file");
+    let (code, out, err) = run(&bad);
+    assert_eq!(code, 2, "a line of another shape is misuse: {err}");
+    assert!(out.is_empty(), "misuse writes nothing to stdout");
+    assert!(err.lines().next().unwrap_or_default().contains("--rest-keys"), "named by its flag: {err}");
+    assert!(!err.contains(key) && !err.contains("etherscan"), "the file's text is not said back: {err}");
+    let good = w.0.join("good.keys");
+    std::fs::write(&good, format!("# keys\n\netherscan {key}\n")).expect("a file");
+    let (code, out, err) = run(&good);
+    assert_ne!(code, 2, "a file that reads is taken: {err}");
+    assert!(!out.contains(key) && !err.contains(key), "the key is never said back: {out} {err}");
+}
+
+#[test]
+fn the_face_verbs_misuse_is_judged_before_anything_is_asked() {
+    let w = scratch("face-misuse");
+    let folder = w.join("plain");
+    let r = run_in(&w, &["init", "--ledger", folder.to_str().unwrap_or_default(), "--key", A_KEY, "--statement", "s"]);
+    assert_eq!(r.code, 0, "a plain folder");
+    let f = folder.to_str().unwrap_or_default();
+    let root = format!("0x{}", "11".repeat(20));
+    for args in [
+        vec!["face-table"],
+        vec!["face-table", "--root", &root, "--ledger", f],
+        vec!["face-table", "--root", "0x12"],
+        vec!["face-table", "--root", &root],
+        vec!["face-table", "--root", &root, "--endpoint", "999=http://127.0.0.1:9"],
+        vec!["face-table", "--ledger", f],
+        vec!["face-home", "--ledger", f, "--key", A_KEY, "--chain", "eleven", "--endpoint", "11155111=http://127.0.0.1:9"],
+        vec!["face-home", "--ledger", f, "--key", A_KEY, "--chain", "9007199254740992", "--endpoint", "11155111=http://127.0.0.1:9"],
+        vec!["face-name", "--ledger", f, "--key", A_KEY, "--name", "名字"],
+        vec!["face-key", "--ledger", f, "--address", &root, "--role", "payout", "--endpoint", "11155111=http://127.0.0.1:9"],
+    ] {
+        let r = run_in(&w, &args);
+        assert_eq!(r.code, 2, "{args:?} is misuse");
+        assert!(r.out.is_empty(), "{args:?}: misuse writes nothing to stdout");
+    }
 }

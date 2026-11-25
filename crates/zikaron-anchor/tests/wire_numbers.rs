@@ -1,7 +1,3 @@
-//! A number in a node's answer is read by JSON's own grammar (RFC 8259): an integer part of `0` or one that
-//! starts with 1 to 9. A leading zero (`-032005`, `03`) is not a number, so the answer does not read (never a
-//! code read as another); the fraction and the exponent keep their own digits.
-
 #[test]
 fn a_number_with_a_leading_zero_is_not_a_number() {
     use zikaron_anchor::wire::parse;

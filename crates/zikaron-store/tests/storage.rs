@@ -1,15 +1,8 @@
-//! Library tests of the storage crate.
-//!
-//! End-to-end behavior (real processes, cut writes, concurrency, copy equivalence) is exercised through the
-//! driver binary; these tests check the library's own decisions.
-
 use std::path::{Path, PathBuf};
 use zikaron_store::codes::{Code, Why};
 use zikaron_store::layout::{self, EntryName, Kind};
 use zikaron_store::ledger::{self, LedgerDir, Stored, ENTRY_MAX};
 
-/// A test's own temporary directory, removed when the test lets go of it (passing or failing), so no run
-/// leaves anything in the temporary directory.
 struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -58,8 +51,6 @@ fn file_of(dir: &Path, n: &EntryName) -> PathBuf {
     dir.join(layout::entry_file_name(n))
 }
 
-// Names and layout.
-
 #[test]
 fn an_entry_name_is_sixty_four_lowercase_hex_and_nothing_else() {
     assert!(EntryName::parse(&"ab".repeat(32)).is_some());
@@ -94,8 +85,6 @@ fn only_a_regular_file_of_the_exact_tmp_shape_is_ours_to_sweep() {
     assert!(!layout::is_tmp_file(".zks-tmp-0123456789abcdef", false), "同名的目录不是我们的");
     assert!(!layout::is_tmp_file("tmp-0123456789abcdef", true));
 }
-
-// Append.
 
 #[test]
 fn an_append_lands_the_bytes_and_leaves_no_residue() {
@@ -154,12 +143,10 @@ fn a_write_cut_at_any_of_its_three_steps_leaves_a_legal_archive() {
     let d = scratch("segments");
     let led = LedgerDir::open(&d).unwrap();
     let n = name("a1");
-    // Cut during the write: the temporary file exists, the strict read is unchanged.
     let staged = led.stage(&n, b"alpha").unwrap();
     let tmp = staged.tmp_path().to_path_buf();
     assert!(tmp.is_file());
     assert_eq!(led.pile().unwrap().items.len(), 0, "没落定的写不入堆");
-    // Cut after the write: the entry exists, the temporary file too.
     let linked = staged.link().unwrap();
     assert_eq!(led.pile().unwrap().items, vec![b"alpha".to_vec()]);
     assert!(tmp.is_file(), "封口之前临时档还在");
@@ -175,8 +162,6 @@ fn an_abandoned_write_leaves_the_archive_as_it_was() {
     assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
 }
 
-// Two reads.
-
 #[test]
 fn the_strict_read_is_the_pile_and_refuses_rather_than_shorten() {
     let d = scratch("strict");
@@ -190,7 +175,6 @@ fn the_strict_read_is_the_pile_and_refuses_rather_than_shorten() {
     assert_eq!(t.names, vec!["README.txt".to_string()]);
 }
 
-// Unix only: the link is made the unix way (on Windows a link is another kind of file).
 #[cfg(unix)]
 #[test]
 fn a_symlink_wearing_an_entry_name_is_not_an_entry() {
@@ -252,7 +236,6 @@ fn a_named_file_is_read_as_it_lies_whatever_its_name() {
     assert_eq!(led.read_named("../x").unwrap_err().code, Code::BadName);
 }
 
-// Unix only: a name that is not UTF-8 is made from raw bytes, the unix way.
 #[cfg(unix)]
 #[test]
 fn a_name_that_is_not_utf8_is_named_not_dropped() {
@@ -260,14 +243,12 @@ fn a_name_that_is_not_utf8_is_named_not_dropped() {
     let d = scratch("nonutf8");
     let raw = std::ffi::OsStr::from_bytes(b"\xff\xfe");
     if std::fs::write(d.join(raw), b"x").is_err() {
-        return;  // This file system cannot create such a name (APFS cannot).
+        return;
     }
     let led = LedgerDir::open(&d).unwrap();
     assert_eq!(led.pile().unwrap_err().code, Code::Unaccounted);
     assert!(led.survey().unwrap().skipped.iter().any(|k| k.why == Why::NonUtf8Name));
 }
-
-// Archive and sweep.
 
 #[test]
 fn any_directory_is_a_legal_archive() {
@@ -275,7 +256,6 @@ fn any_directory_is_a_legal_archive() {
     std::fs::write(d.join("README.txt"), b"hello").unwrap();
     let led = LedgerDir::open(&d).unwrap();
     assert_eq!(led.layout().unwrap().foreign, 1);
-    // Opening changed nothing: the directory still holds one file.
     assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
     assert_eq!(LedgerDir::open(d.join("README.txt")).unwrap_err().code, Code::NotADirectory);
     assert_eq!(LedgerDir::open(d.join("absent")).unwrap_err().code, Code::Absent);
@@ -349,7 +329,6 @@ fn concurrent_appends_of_the_same_name_settle_on_one_answer() {
     assert_eq!(pile.items[0], settled.unwrap());
 }
 
-// Unix only: the directory is made unlistable with unix permission bits.
 #[cfg(unix)]
 #[test]
 fn a_directory_that_cannot_be_listed_is_named_by_every_reader() {
@@ -361,7 +340,7 @@ fn a_directory_that_cannot_be_listed_is_named_by_every_reader() {
     let (pile, survey, sweep, layout) = (led.pile(), led.survey(), led.sweep(), led.layout());
     std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
     if pile.is_ok() {
-        return;  // A root-like identity can read it; the assertion does not hold there.
+        return;
     }
     for code in [
         pile.err().map(|t| t.code),
@@ -375,18 +354,14 @@ fn a_directory_that_cannot_be_listed_is_named_by_every_reader() {
 
 #[test]
 fn the_binary_holds_no_verb_that_deletes() {
-    // The driver binary keeps no deleting verb; the test scans its source.
     let shell = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/zks.rs")).unwrap();
     for banned in ["remove_dir_all", "remove_file", "remove_dir"] {
         assert!(!shell.contains(banned), "壳里出现了删除路径:{banned}");
     }
-    // The library sweep removes only this crate's exact temporary shape.
     let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger.rs")).unwrap();
     assert!(lib.contains("remove_file"), "库侧的扫场还在");
 }
 
-/// An entry is written owner-only from the moment its temporary file is created, and the landed entry is that
-/// file (linked or moved), so it keeps the mode: no moment when another account on the machine could read it.
 #[test]
 fn an_entry_is_owner_only_from_its_temporary_to_its_place() {
     let dir = scratch("owner-only");

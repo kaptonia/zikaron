@@ -1,10 +1,3 @@
-//! RLP, Ethereum's byte layer (no third-party chain crates).
-//!
-//! It encodes values (anchoring and transaction-hash recomputation need it) and decodes bytes (headers and
-//! MPT proof nodes need it). It has no meaning beyond length prefixes: addresses, quantities and lists are
-//! byte strings here.
-
-/// One decoded RLP value.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Item {
     Bytes(Vec<u8>),
@@ -24,7 +17,6 @@ impl Item {
             Item::Bytes(_) => None,
         }
     }
-    /// A quantity: a big-endian byte string without leading zeros read as u64; over eight bytes gives `None`.
     pub fn u64(&self) -> Option<u64> {
         let b = self.bytes()?;
         if b.len() > 8 || (b.len() > 1 && b[0] == 0) {
@@ -38,7 +30,6 @@ impl Item {
     }
 }
 
-/// RLP encoding of a byte string.
 pub fn bytes(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len() + 9);
     if b.len() == 1 && b[0] < 0x80 {
@@ -55,7 +46,6 @@ pub fn bytes(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// RLP list of already encoded items.
 pub fn list(items: &[Vec<u8>]) -> Vec<u8> {
     let n: usize = items.iter().map(|x| x.len()).sum();
     let mut out = Vec::with_capacity(n + 9);
@@ -72,12 +62,10 @@ pub fn list(items: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// RLP encoding of a quantity: big-endian, no leading zeros, zero as the empty string.
 pub fn quantity(x: u64) -> Vec<u8> {
     bytes(&be(x))
 }
 
-/// RLP encoding of a big number already given as big-endian bytes without leading zeros.
 pub fn scalar(b: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i < b.len() && b[i] == 0 {
@@ -98,12 +86,8 @@ fn be(x: u64) -> Vec<u8> {
     b[i..].to_vec()
 }
 
-/// Nesting bound. RLP bytes come from others (kits, recordings, node answers) and decoding is mutually
-/// recursive: without a bound, fifty thousand nested empty lists would overflow the offline verifier's stack.
-/// 128 levels hold everything this grammar reads (the deepest is the receipt log list, four levels).
 pub const MAX_DEPTH: usize = 128;
 
-/// Decode one RLP value and the number of bytes it used.
 pub fn decode(b: &[u8]) -> Option<(Item, usize)> {
     decode_at(b, 0)
 }
@@ -118,7 +102,6 @@ fn decode_at(b: &[u8], depth: usize) -> Option<(Item, usize)> {
         0x80..=0xb7 => {
             let n = (first - 0x80) as usize;
             let body = b.get(1..1 + n)?;
-            // A single byte below 0x80 is its own canonical encoding, without a prefix.
             if n == 1 && body[0] < 0x80 {
                 return None;
             }
@@ -150,7 +133,6 @@ fn decode_at(b: &[u8], depth: usize) -> Option<(Item, usize)> {
     }
 }
 
-/// Decode one RLP value that must use the whole input.
 pub fn decode_all(b: &[u8]) -> Option<Item> {
     let (v, n) = decode(b)?;
     if n == b.len() {

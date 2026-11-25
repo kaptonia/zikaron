@@ -1,35 +1,7 @@
-//! Printing and exiting: stdout carries one canonical JSON value with no trailing newline; exit codes follow
-//! the table.
-//!
-//! Canonical bytes come only from the core's `json::canon_bytes` (member order, integer spelling, string
-//! escapes), so two implementations handing the same `Value` to it produce identical bytes.
-//!
-//! The process has exactly two exits and they exclude each other:
-//!
-//! - [`emit`] is the only place that writes stdout, and it never returns: it writes, flushes and exits.
-//! Nothing runs after it, so "print, then refuse" is unreachable.
-//! - [`misuse`] writes stderr only and exits.
-//!
-//! So every run ends either through `misuse` with exit 2 and zero bytes on stdout, or through `emit` with
-//! exactly one canonical value and the table's exit code. One verb is the exception (CLI-SCHEMA §1 rule 7):
-//! `mcp` writes one message per line through [`frame`], which returns so the next can follow, and ends through
-//! [`finish`] when its input closes; no other verb calls either. An answer may carry one line for people
-//! ([`Answer::told`]), which `emit` writes to stderr before stdout; it is not part of the contract, and stdout and
-//! the exit code are the same with or without it. The tests also scan that stdout is written only in
-//! this file and that `Exit::Misuse` appears only here and in `codes.rs`.
-//!
-//! Misuse (as in HARNESS) exits 2 with zero bytes on stdout, which is how downstream tells an answer from
-//! misuse without parsing. The subject is named on the first stderr line as `<REASON> <subject>`, the subject
-//! running to the end of the line (spaces included): the subject alone, never a sentence, and never a word the
-//! person typed ([`Subject`]: a flag of the closed table by its name, anything else by its place and length).
-//! What it means for people is the second line, worded in one table ([`Said`]); later lines are not part of the
-//! contract.
-
 use crate::codes::{Exit, Key, Reason};
 use std::io::Write;
 use zikaron::json::{self, Value};
 
-/// One answer: an exit code and a value to print, and at most one line for people on stderr.
 pub struct Answer {
     pub exit: Exit,
     pub value: Value,
@@ -37,12 +9,10 @@ pub struct Answer {
 }
 
 impl Answer {
-    /// The same answer with one line for people (stderr; never part of the contract).
     pub fn telling(self, line: String) -> Answer {
         Answer { told: Some(line), ..self }
     }
 
-    /// The same answer with these members added to its object (the printed form orders members by itself).
     pub fn with(self, members: Vec<(Key, Value)>) -> Answer {
         let value = match self.value {
             Value::Obj(mut ms) => {
@@ -55,7 +25,7 @@ impl Answer {
     }
 }
 
-fn obj(members: Vec<(Key, Value)>) -> Value {
+pub(crate) fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(
         members
             .into_iter()
@@ -64,12 +34,10 @@ fn obj(members: Vec<(Key, Value)>) -> Value {
     )
 }
 
-/// A string value (free bytes other than key names go through here).
 pub fn s(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
-/// An affirmative answer: `ok` true, exit 0.
 pub fn affirmed(members: Vec<(Key, Value)>) -> Answer {
     let mut ms = vec![(Key::Ok, Value::Bool(true))];
     ms.extend(members);
@@ -80,29 +48,14 @@ pub fn affirmed(members: Vec<(Key, Value)>) -> Answer {
     }
 }
 
-/// A negative answer: the subject fails. Exit 1, with a reason.
 pub fn denied(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
     at(Exit::Denied, reason, members)
 }
 
-/// A neither answer: PARTIAL / GAPS / UNAVAILABLE. Exit 3.
-///
-/// `ok` is false here because it asks whether the answer is affirmative. That does not make it red: red is 1,
-/// this is 3, and neither folds into the other.
 pub fn partial(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
     at(Exit::Partial, reason, members)
 }
 
-/// No answer: unreachable endpoint, disagreeing readings, declined scan. Exit 4 (law §9.4).
-///
-/// An endpoint not reached because its proxy required authentication (`detail` carries the transport's message,
-/// `zikaron_anchor::rpc::proxy_credentials`) is handled here for every verb: the stderr line says how `--proxy`
-/// carries credentials, and an `E_UNREACHABLE` answer gains `token` `PROXY_CREDENTIALS_MISSING` (none given) or
-/// `PROXY_CREDENTIALS_REFUSED` (the ones given were refused); a reason with a `token` of its own (`E_SCAN`) keeps it.
-///
-/// An endpoint not reached after the connection went ahead without the system's proxy auto-configuration (PAC)
-/// script (`zikaron_anchor::rpc::script_trouble_last`) gets a stderr line naming the script's problem and the way
-/// out.
 pub fn unanswered(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
     let asked = members.iter().find_map(|(k, v)| match (k, v) {
         (Key::Detail, Value::Str(d)) => zikaron_anchor::rpc::proxy_credentials_of(d),
@@ -124,8 +77,11 @@ pub fn unanswered(reason: Reason, members: Vec<(Key, Value)>) -> Answer {
     }
 }
 
-/// The stderr line for a connection that went ahead without the system's PAC script (`x`, what went wrong with
-/// it) and failed.
+pub fn over_asks_line() -> String {
+    let (what, next) = (zikaron_glue::book::OVER_ASKS_WORDS, zikaron_glue::book::OVER_ASKS_NEXT_WORDS);
+    format!("{} {}", say(what.0, what.1), say(next.0, next.1))
+}
+
 fn script_line(x: zikaron_anchor::rpc::PacTrouble) -> String {
     match x {
         zikaron_anchor::rpc::PacTrouble::RemoteHttp => Said::PacRemoteHttp.text().to_string(),
@@ -147,21 +103,10 @@ fn at(exit: Exit, reason: Reason, members: Vec<(Key, Value)>) -> Answer {
     }
 }
 
-/// Pass the value from below as the answer (audit report, grant check verdict, depth reading): no wrapping,
-/// no renamed keys.
 pub fn verbatim(exit: Exit, value: Value) -> Answer {
     Answer { exit, value, told: None }
 }
 
-/// Print an answer, flush, exit by the table. No trailing newline: one value per call, and a newline is not a
-/// separator.
-///
-/// It never returns. That is what keeps stdout empty on misuse: after printing there is no next step, so no
-/// path can reach [`misuse`]. `process::exit` runs no destructors and does not flush Rust's buffers, so this
-/// flushes first.
-///
-/// Nothing in this crate may rely on `Drop` for cleanup: temporary places are cleared explicitly by `landing`
-/// and `pack`, and a `Drop`-based cleanup on the way to `run` would be cut off silently here.
 pub fn emit(a: Answer) -> ! {
     if let Some(line) = &a.told {
         eprintln!("{line}");
@@ -175,12 +120,6 @@ pub fn emit(a: Answer) -> ! {
     std::process::exit(code as i32)
 }
 
-/// One message of `mcp` (CLI-SCHEMA §1 rule 7, §13): one canonical value and a line end, flushed. It returns, so
-/// the next message can follow. Only `mcp` calls it.
-///
-/// JSON-RPC's error codes are negative and the law's integers are not: a message's error code is written with its
-/// sign here, the one byte of a message outside the law's form. Canonical members are in order, so an error's
-/// code is the first member of the first member (`error`).
 pub fn frame(v: &Value) {
     let mut bytes = json::canon_bytes(v);
     const ERROR_CODE: &[u8] = b"{\"error\":{\"code\":";
@@ -193,25 +132,17 @@ pub fn frame(v: &Value) {
     let _ = out.flush();
 }
 
-/// The end of an `mcp` session, its input closed: every message went out through [`frame`]; nothing more is
-/// written, exit 0. Only `mcp` calls it.
 pub fn finish() -> ! {
     let _ = std::io::stdout().lock().flush();
     std::process::exit(Exit::Affirmed.code() as i32)
 }
 
-/// The language of the lines for people (stderr's second line, the line an answer tells): the system's, as the
-/// environment's locale says it (the first of `LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE` that is set and not
-/// empty; `LANGUAGE`'s first entry): Chinese when it is `zh…`, English for any other, and English when none
-/// is set (it renders on every console). What machines read (stdout, the exit code, the reason, the first
-/// stderr line) is the same in both.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
     Zh,
     En,
 }
 
-/// [`Lang`] from any source of the four names (the environment, or a test's table).
 pub fn lang_of(var: impl Fn(&str) -> Option<String>) -> Lang {
     let set = ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"].iter().find_map(|k| var(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()));
     match set {
@@ -220,13 +151,11 @@ pub fn lang_of(var: impl Fn(&str) -> Option<String>) -> Lang {
     }
 }
 
-/// This process's language for people, read once.
 pub fn lang() -> Lang {
     static L: std::sync::OnceLock<Lang> = std::sync::OnceLock::new();
     *L.get_or_init(|| lang_of(|k| std::env::var(k).ok()))
 }
 
-/// Of two sentences given in both languages (a refusal the desktop words), the one in this process's language.
 pub fn pick(zh: String, en: String) -> String {
     match lang() {
         Lang::Zh => zh,
@@ -234,7 +163,6 @@ pub fn pick(zh: String, en: String) -> String {
     }
 }
 
-/// The words for people in this process's language.
 pub fn say(zh: &'static str, en: &'static str) -> &'static str {
     match lang() {
         Lang::Zh => zh,
@@ -242,8 +170,6 @@ pub fn say(zh: &'static str, en: &'static str) -> &'static str {
     }
 }
 
-/// What a node address that does not read is told, by why (`zikaron_net::read_address`): its scheme, its
-/// port, or the rest of its shape.
 pub fn address_said(url: &str) -> Said {
     match zikaron_anchor::rpc::read_address(url) {
         Err(zikaron_anchor::rpc::NotAnAddress::Port) => Said::EndpointPort,
@@ -252,33 +178,20 @@ pub fn address_said(url: &str) -> Said {
     }
 }
 
-/// What a misuse's first stderr line names (`<REASON> <subject>`). Closed, and nothing the person typed can be
-/// in it: a name from the command line's own tables (the program, a flag of the closed flag table) is said as
-/// it is; any other word (a value, a path, a word where a flag belongs, a flag not in the table, a verb not in
-/// the table, an argument that is not text) is named by its place among the arguments (the verb is #1) and its
-/// length, so a secret given in any spelling (`--key=…` included) never lands in a terminal or a log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Subject {
-    /// The program itself (no verb given).
     Program,
-    /// Flags of the closed flag table (`verbs::flag_named`), said as `--name`, one or more.
     Flags(Vec<&'static str>),
-    /// A word the person typed: its place and length, as `#3 (12 bytes)`.
     Placed { at: usize, bytes: usize },
-    /// An `--endpoint` value whose half before the first `=` reads as a chain id: that chain id and the length
-    /// after the `=`, as `#3 (1= + 29 bytes)` (a half that is not a chain id may be part of the address).
     Endpoint { at: usize, chain: u64, bytes: usize },
-    /// A word that is not among the arguments (read from a file the person named): its length alone.
     Unplaced { bytes: usize },
 }
 
 impl Subject {
-    /// One flag of the closed table.
     pub fn flag(name: &'static str) -> Subject {
         Subject::Flags(vec![name])
     }
 
-    /// The first line's subject, spelled.
     pub fn spelled(&self) -> String {
         match self {
             Subject::Program => "zikaron".to_string(),
@@ -290,22 +203,15 @@ impl Subject {
     }
 }
 
-/// This run's arguments, the verb first (kept by `args::Args::read` before anything is judged), so that a word
-/// at fault is named by its place.
 static ARGUMENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// Keep this run's arguments (the verb first); a later reading of arguments in the same process replaces them.
 pub fn keep_arguments(args: Vec<String>) {
     *ARGUMENTS.lock().unwrap_or_else(|e| e.into_inner()) = args;
 }
 
-/// A word the person gave, as a misuse names it: the place of the argument it is or is a `=`-piece of (or, for
-/// a path read under a folder the person named, the place of that folder's argument) and that argument's
-/// length; a word that is not among the arguments (it came from a file) by its length alone. Never the word.
 pub fn typed(word: &str) -> Subject {
     let kept = ARGUMENTS.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let args = kept.as_slice();
-    // The argument itself, or one piece of it between `=` (`--file <kit path>=<disk path>`, `--hop <g>=<i>`).
     if let Some(i) = args.iter().position(|a| a == word || a.split('=').any(|piece| piece == word)) {
         return Subject::Placed { at: i + 1, bytes: args[i].len() };
     }
@@ -319,15 +225,10 @@ pub fn typed(word: &str) -> Subject {
     }
 }
 
-/// How an `--endpoint` value that does not read is named on the first stderr line: its address is never
-/// echoed (it may carry a key), only its place and length. When the half before the first `=` reads as a chain
-/// id (`rpc::endpoint_spec`'s reading), that chain id is said with the length after the `=`
-/// ([`Subject::Endpoint`]).
 pub fn unechoed_endpoint(at: usize, spec: &str) -> Subject {
     use zikaron_anchor::rpc::{endpoint_spec, NotAnEndpoint};
     let chain = match endpoint_spec(spec) {
         Ok((c, _)) => Some(c),
-        // Read by the one reader already (else it would be `ChainNotInt`); only the address after it is empty.
         Err(NotAnEndpoint::NoAddress) => spec.split_once('=').and_then(|(c, _)| c.trim().parse::<u64>().ok()),
         Err(_) => None,
     };
@@ -337,10 +238,6 @@ pub fn unechoed_endpoint(at: usize, spec: &str) -> Subject {
     }
 }
 
-/// What a misuse says to people: the second stderr line; and the one line an answer through the desktop
-/// (`--home`) tells people ([`Answer::told`]). Closed; every word the command line says on stderr is in this one
-/// table, in both languages ([`lang`]; the subject on the first line is the machine's part), except a refusal
-/// the desktop words itself (it sends its sentence in both languages, [`pick`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Said {
     Usage,
@@ -351,6 +248,7 @@ pub enum Said {
     Repeated,
     Missing,
     OneOf,
+    AnyOf,
     NotInt,
     KeyNotHex,
     KeyOutOfRange,
@@ -365,7 +263,6 @@ pub enum Said {
     NeedEndpoint,
     OneEndpoint,
     ChainIdNotInt,
-    AdoptionShape,
     NotHex,
     Not32,
     Not20,
@@ -373,13 +270,14 @@ pub enum Said {
     FormWord,
     NeedHashOrCalldata,
     FileShape,
-    ProofShape,
     EntryNotId,
     SeqPrevPair,
-    RegistryOnlyWithRegistryForm,
+    OneChainNodes,
     NotWithFixture,
     EndpointPort,
     EndpointAddress,
+    RestRowChain,
+    RestRowBase,
     PastIntCeiling,
     KeyFileOpen,
     NotWithHome,
@@ -401,6 +299,8 @@ pub enum Said {
     Adopted,
     AsWord,
     OriginalsWord,
+    PackageOriginalsWord,
+    YesWord,
     OriginalsHomeOnly,
     NotAHome,
     HandedOff,
@@ -415,21 +315,16 @@ pub enum Said {
     PacRemoteHttp,
     PacUnfetched,
     PacFailed,
-    AnchorNotAHome,
+    AnchorFolderSays,
     HomeSettingsSay,
     SendRefused,
     ReadOnly,
-    ScanTooWide,
-    /// `mcp` refusing a tool's parameter itself, before any process is started.
     McpAbsolute,
     McpNotAParameter,
     McpNotText,
     McpNotTexts,
     McpNoProgram,
-    /// `mcp` refusing a parameter the way through the desktop does not take.
     McpNotThroughDesktop,
-    /// A record package addressed to one key: the two ways to name the recipient, a folder, a key off the curve (the
-    /// words the addressed package's one table gives, `zikaron_seal::addressed::words`).
     AddressedBoth,
     AddressedFolder,
     AddressedKeyShape,
@@ -437,11 +332,19 @@ pub enum Said {
     ChainNotDeployed,
     AddressedNeedsKey,
     AddressedElsewhere,
+    AddressedGrantElsewhere,
     LedgerNotHome,
+    NoticesUnread,
+    AnchorsUnread,
+    NoticesTwice,
+    FaceRefused,
+    FaceChains,
+    CredentialPassMissing,
+    CredentialPassUnknown,
 }
 
 impl Said {
-    pub const ALL: [Said; 91] = [
+    pub const ALL: [Said; 101] = [
         Said::Usage,
         Said::NotAVerb,
         Said::NotAFlag,
@@ -450,6 +353,7 @@ impl Said {
         Said::Repeated,
         Said::Missing,
         Said::OneOf,
+        Said::AnyOf,
         Said::NotInt,
         Said::KeyNotHex,
         Said::KeyOutOfRange,
@@ -464,7 +368,6 @@ impl Said {
         Said::NeedEndpoint,
         Said::OneEndpoint,
         Said::ChainIdNotInt,
-        Said::AdoptionShape,
         Said::NotHex,
         Said::Not32,
         Said::Not20,
@@ -472,13 +375,14 @@ impl Said {
         Said::FormWord,
         Said::NeedHashOrCalldata,
         Said::FileShape,
-        Said::ProofShape,
         Said::EntryNotId,
         Said::SeqPrevPair,
-        Said::RegistryOnlyWithRegistryForm,
+        Said::OneChainNodes,
         Said::NotWithFixture,
         Said::EndpointPort,
         Said::EndpointAddress,
+        Said::RestRowChain,
+        Said::RestRowBase,
         Said::PastIntCeiling,
         Said::KeyFileOpen,
         Said::NotWithHome,
@@ -500,6 +404,8 @@ impl Said {
         Said::Adopted,
         Said::AsWord,
         Said::OriginalsWord,
+        Said::PackageOriginalsWord,
+        Said::YesWord,
         Said::OriginalsHomeOnly,
         Said::NotAHome,
         Said::HandedOff,
@@ -514,11 +420,10 @@ impl Said {
         Said::PacRemoteHttp,
         Said::PacUnfetched,
         Said::PacFailed,
-        Said::AnchorNotAHome,
+        Said::AnchorFolderSays,
         Said::HomeSettingsSay,
         Said::SendRefused,
         Said::ReadOnly,
-        Said::ScanTooWide,
         Said::McpAbsolute,
         Said::McpNotAParameter,
         Said::McpNotText,
@@ -532,13 +437,20 @@ impl Said {
         Said::ChainNotDeployed,
         Said::AddressedNeedsKey,
         Said::AddressedElsewhere,
+        Said::AddressedGrantElsewhere,
         Said::LedgerNotHome,
+        Said::NoticesUnread,
+        Said::AnchorsUnread,
+        Said::NoticesTwice,
+        Said::FaceRefused,
+        Said::FaceChains,
+        Said::CredentialPassMissing,
+        Said::CredentialPassUnknown,
     ];
 
-    /// The words, one table: Chinese and English.
     pub fn words(self) -> (&'static str, &'static str) {
         match self {
-            Said::Usage => (crate::args::USAGE, crate::args::USAGE),
+            Said::Usage => (crate::args::usage(), crate::args::usage()),
             Said::NotAVerb => ("不是一个动词", "not a verb"),
             Said::NotAFlag => ("不是 --名字 的形", "not in the form --name"),
             Said::NeedsValue => ("这一旗要一个值", "this flag needs a value"),
@@ -546,6 +458,7 @@ impl Said {
             Said::Repeated => ("给了不止一次", "given more than once"),
             Said::Missing => ("缺这一旗", "this flag is missing"),
             Said::OneOf => ("这几旗之中恰要一面", "exactly one of these flags is wanted"),
+            Said::AnyOf => ("这几旗之中至少要一面", "at least one of these flags is wanted"),
             Said::NotInt => ("不是一个整数", "not an integer"),
             Said::KeyNotHex => ("不是六十四位十六进制", "not 64 hex digits"),
             Said::KeyOutOfRange => ("不在曲线的范围里", "not within the curve's range"),
@@ -558,27 +471,27 @@ impl Said {
             Said::EndpointScheme => ("端点只认 http:// 或 https:// 地址", "an endpoint is an http:// or https:// address"),
             Said::ProxyShape => ("--proxy 取 system、none 或代理地址", "--proxy takes system, none or a proxy address"),
             Said::NeedEndpoint => ("至少要一个 --endpoint <链号>=<url>", "at least one --endpoint <chain id>=<url> is wanted"),
-            Said::OneEndpoint => ("anchor 只往一条链上发,只收一个 --endpoint", "anchor sends to one chain and takes one --endpoint"),
+            Said::OneEndpoint => ("anchor 只往一条链上发,各 --endpoint 要同一链号", "anchor sends to one chain: every --endpoint names the same chain"),
             Said::ChainIdNotInt => ("链号不是十进制整数", "the chain id is not a decimal integer"),
-            Said::AdoptionShape => ("导入元素要 {chainId, tx}", "an adoption is {chainId, tx}"),
             Said::NotHex => ("不是十六进制", "not hex"),
             Said::Not32 => ("不是三十二字节", "not 32 bytes"),
             Said::Not20 => ("不是二十字节", "not 20 bytes"),
             Said::RpcNotObject => ("录制的 rpc 不是对象", "the recording's rpc is not an object"),
-            Said::FormWord => ("--form 只认 registry 或 bare", "--form takes registry or bare"),
+            Said::FormWord => ("--form 只认 registry", "--form takes registry"),
             Said::NeedHashOrCalldata => ("至少要一个 --hash,或一段 --calldata", "at least one --hash, or a --calldata, is wanted"),
             Said::FileShape => ("--file 的形是 <包内路径>=<盘上的路>", "--file is <path in the bundle>=<path on disk>"),
-            Said::ProofShape => ("--proof 的形是 <包内路径>=<tx>=<盘上的路>", "--proof is <path in the bundle>=<tx>=<path on disk>"),
             Said::EntryNotId => ("不是六十四位小写十六进制", "not 64 lowercase hex digits"),
             Said::SeqPrevPair => ("--seq 与 --prev 要么都给,要么都不给", "--seq and --prev go together or not at all"),
-            Said::RegistryOnlyWithRegistryForm => ("--registry 只配 --form registry", "--registry goes with --form registry only"),
+            Said::OneChainNodes => ("所给节点要同属一条链", "the nodes given must all serve one chain"),
             Said::NotWithFixture => ("读录制那一路不用这一旗", "a run over recordings does not take this flag"),
             Said::EndpointPort => ("端点地址的端口要是 0 到 65535 之间的整数", "an endpoint's port must be a whole number from 0 to 65535"),
             Said::EndpointAddress => ("不是一处端点地址(主机缺、方括号里不是 IPv6 地址，或带了用户名或空白)", "not an endpoint address (no host, a bracket that is not an IPv6 address, or a user name or white space in it)"),
+            Said::RestRowChain => ("REST 行 #rest= 后的链号与 <链号>= 不同", "a REST row's chain after #rest= is not the <chain id>= it is given for"),
+            Said::RestRowBase => ("REST 行的 Base URL 只认 https://，不带查询与片段", "a REST row's Base URL is https:// with no query or fragment"),
             Said::PastIntCeiling => ("过了整数上界 9007199254740991", "past the whole-number ceiling 9007199254740991"),
             Said::KeyFileOpen => ("这份密钥档别的账户也读得到(只许本人可读)", "other accounts can read this key file (it must be readable by its owner only)"),
             Said::NotWithHome => ("带 --home 时不收这一旗(桌面那一侧用它自己的身份与账本)", "not taken together with --home (the desktop uses its own identity and ledger)"),
-            Said::DesktopLocked => ("桌面锁着或没有打开", "The desktop is locked or not open"),
+            Said::DesktopLocked => ("桌面锁着、没有运行,或开着的不是这个数据目录(停在另一个角色或身份上);在桌面上切到它所属的身份与角色,或把 --home 改成「设置 > 本机数据」里的数据目录", "The desktop is locked, not running, or has another data folder open (another role or identity); switch to this folder's identity and role on the desktop, or give --home the data folder in Settings > Local data"),
             Said::DoorAlone => ("纯命令行写入开着,桌面不收 --home;去掉 --home 直写", "Writing alone is on, so the desktop takes no --home; write without --home"),
             Said::DesktopClosed => ("桌面在答之前锁上、关了这处数据或退出了", "The desktop locked, closed this data folder or quit before it answered"),
             Said::DoorPathLong => ("本机数据所在文件夹的路径太长,连不到桌面", "The path of this machine's data folder is too long to reach the desktop"),
@@ -590,12 +503,14 @@ impl Said {
             Said::SealedNoKey => ("封存数据不收 --key 或 --key-file", "sealed data does not take --key or --key-file"),
             Said::CredentialExpired => ("命令行凭据已过期;到桌面重新打开纯命令行写入", "The command-line credential has expired; turn writing alone on again on the desktop"),
             Said::CredentialMissing => ("本机没有命令行凭据;到桌面打开纯命令行写入", "This machine has no command-line credential; turn writing alone on in the desktop"),
-            Said::CredentialShape => ("命令行凭据无效;到桌面关掉再打开纯命令行写入", "The command-line credential is not valid; turn writing alone off and on again on the desktop"),
+            Said::CredentialShape => ("命令行凭据无效;到桌面重新打开纯命令行写入并添程序钥", "The command-line credential is not valid; turn writing alone on again on the desktop and add a program key"),
             Said::HomeHeld => ("桌面正在写入,未写;稍后再试", "The desktop is writing; nothing was written. Try again shortly"),
             Said::HomeOtherMachine => ("这份数据由另一台机器写入,未写", "Another machine writes this data; nothing was written"),
             Said::Adopted => ("这本账已被 ZIKARON Desk 采用,原目录不再写", "ZIKARON Desk has adopted this ledger; its folder is no longer written"),
             Said::AsWord => ("--as 只认 file 或 folder", "--as takes file or folder"),
             Said::OriginalsWord => ("--originals 只认 none", "--originals takes none"),
+            Said::PackageOriginalsWord => ("--originals 只认 all 或 none", "--originals takes all or none"),
+            Said::YesWord => ("--yes 只认 yes", "--yes takes yes"),
             Said::OriginalsHomeOnly => ("--originals 只对桌面所管之家生效;普通账本文件夹的原件以 --file 逐个给", "--originals applies only to a home the desktop keeps; give a plain ledger folder's originals one by one with --file"),
             Said::NotAHome => ("这不是桌面所管之家的账本,没有底账设置;给 --basis", "this is not the ledger of a home the desktop keeps and has no basis settings; give --basis"),
             Said::HandedOff => ("这本账已交接到另一处;收下交回的交接件之前不在这里写", "This ledger was handed off to another place; it is not written here until its handoff comes back"),
@@ -616,7 +531,7 @@ impl Said {
             Said::PacFailed => ("代理脚本出错({0}):请用 --proxy 指定代理", "Proxy script failed ({0}): give a proxy with --proxy"),
             Said::OnChain => ("链上已有这一条(别处已上链),没有再发", "The chain already holds this anchor (put on chain elsewhere); nothing was sent"),
             Said::RecordsNotAll => ("不是每一条记录都成立:看各条的 original 与 anchored", "Not every record holds: see each one's original and anchored"),
-            Said::AnchorNotAHome => ("--ledger 要桌面所管之家的账本;直发给 --key 与 --endpoint", "--ledger takes the ledger of a home the desktop keeps; to send directly give --key and --endpoint"),
+            Said::AnchorFolderSays => ("明文账本文件夹发什么、经哪本合约,由它的条目与已知部署表定,不收这一旗", "a plain ledger folder's entries and the known deployments table say what it sends and through which contract; this flag is not taken"),
             Said::HomeSettingsSay => ("这处数据的链、合约、节点与代理由设置给,不收这一旗", "this home's chain, registry, nodes and proxy come from its settings; this flag is not taken"),
             Said::SendRefused => ("什么也没发出:看 token 与 detail", "Nothing was sent: see token and detail"),
             Said::ReadOnly => ("这一处数据只读,未写:看 token 与 detail", "This home is read-only; nothing was written: see token and detail"),
@@ -633,15 +548,18 @@ impl Said {
             Said::ChainNotDeployed => ("这条链不在已知部署表内", "this chain is not in the known deployments table"),
             Said::AddressedNeedsKey => ("这是加密记录包:以 --key-file、--ledger 或 --home 打开", "This is an encrypted record package: open it with --key-file, --ledger or --home"),
             Said::AddressedElsewhere => ("这是加密记录包,用 kit-verify 打开", "This is an encrypted record package; open it with kit-verify"),
+            Said::AddressedGrantElsewhere => ("这是加密包,授权包用 grant-package --package 打开并核验", "This is an encrypted package; a grant package is opened and checked with grant-package --package"),
+            Said::NoticesUnread => ("告示输入未读,第 3、4、6 项未定:链", "notice input not read, checks 3, 4 and 6 undecided: chain"),
+            Said::AnchorsUnread => ("锚未读:链", "anchors not read: chain"),
+            Said::NoticesTwice => ("同一链与撤销合约给了两份告示输入", "two notice inputs given for one chain and revocation contract"),
             Said::LedgerNotHome => ("--ledger 要桌面所管之家的账本", "--ledger takes the ledger of a home the desktop keeps"),
-            Said::ScanTooWide => (
-                "这一扇窗按节点收得下的跨度问不完:把起始区块往前挪,或换一处收得下更宽窗的节点",
-                "This window cannot be read at the span the node takes: move the start block forward, or use a node that takes wider windows",
-            ),
+            Said::FaceRefused => ("没有写:看 token 与 detail", "Nothing was written: see token and detail"),
+            Said::FaceChains => ("要给 --endpoint,其链须在部署表里", "--endpoint is wanted, of chains the deployments table names"),
+            Said::CredentialPassMissing => ("没有带程序钥:把钥放进 ZIKARON_CLI_PASS", "No program key brought: put it in ZIKARON_CLI_PASS"),
+            Said::CredentialPassUnknown => ("这把程序钥开不了凭据:到桌面添一把新钥", "This program key opens nothing: add a new one on the desktop"),
         }
     }
 
-    /// The words in this process's language ([`lang`]).
     pub fn text(self) -> &'static str {
         let (zh, en) = self.words();
         match lang() {
@@ -651,8 +569,6 @@ impl Said {
     }
 }
 
-/// The line for people when the law refuses an entry's body (`E_BODY_FIELD`): which member, and which flags
-/// give it.
 pub fn body_line(member: &str, (zh, en): (&str, &str)) -> String {
     match lang() {
         Lang::Zh => format!("{member}: 缺或不成形,由 {zh} 给"),
@@ -660,8 +576,6 @@ pub fn body_line(member: &str, (zh, en): (&str, &str)) -> String {
     }
 }
 
-/// Misuse: the subject alone on the first stderr line (`<REASON> <subject>`, [`Subject`]), what it means for
-/// people on the second ([`Said`]), nothing on stdout, exit 2.
 pub fn misuse(reason: Reason, subject: Subject, said: Said) -> ! {
     eprintln!("{} {}", reason.as_str(), subject.spelled());
     eprintln!("{}", said.text());

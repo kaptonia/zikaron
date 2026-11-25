@@ -1,6 +1,3 @@
-//! Record packages in one file, `kit-verify`, and handing a ledger between two places, on the real binary. Each
-//! place is its own user home (its own machine folder), as two machines are.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -22,7 +19,6 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(p)
 }
 
-/// One run: exit code, stdout, the first line of stderr. `home` is the user home (the place's machine).
 fn run(dir: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
     let o = Command::new(BIN)
         .args(args)
@@ -48,7 +44,6 @@ fn member(out: &str, k: &str) -> String {
     }
 }
 
-/// A ledger at `dir/name` with its root and one record.
 fn a_ledger(dir: &Path, home: &Path, name: &str) {
     assert_eq!(run(dir, home, &["init", "--ledger", name, "--key", KEY, "--statement", "start"]).0, 0);
     std::fs::write(dir.join("w.txt"), b"a work").expect("a work");
@@ -59,8 +54,6 @@ fn write(dir: &Path, home: &Path, name: &str, note: &str) -> (i32, String, Strin
     run(dir, home, &["annotate", "--ledger", name, "--key", KEY, "--note", note])
 }
 
-/// The pen goes with the ledger: a place that handed it off does not write; the other place takes only a follow-on
-/// and then writes; the first takes back only the handoff after its own; handing off again makes the same handoff.
 #[test]
 fn a_ledger_goes_to_the_other_place_and_back_one_writer_at_a_time() {
     let w = scratch("pen");
@@ -71,12 +64,10 @@ fn a_ledger_goes_to_the_other_place_and_back_one_writer_at_a_time() {
     let h1 = member(&out, "handoff");
     assert_eq!(member(&out, "entries"), "2");
     assert!(zikaron_glue::container::is_container_at(&w.0.join("h1.zkhand")), "one file");
-    // Handed: this place does not write; handing off again is the same handoff.
     let (code, out, err) = write(&w.0, &ha, "a", "after handing");
     assert_eq!((code, member(&out, "reason"), member(&out, "handoff")), (1, "E_HANDED_OFF".into(), h1.clone()), "{err}");
     let (code, out, _) = run(&w.0, &ha, &["hand-over", "--ledger", "a", "--out", "h1-again.zkhand"]);
     assert_eq!((code, member(&out, "handoff")), (0, h1.clone()), "the same handoff");
-    // The other place (another machine) takes it: a folder not there yet is made, every entry written.
     let (code, out, _) = run(&w.0, &hb, &["take-over", "--ledger", "b", "--handoff", "h1.zkhand"]);
     assert_eq!((code, member(&out, "count"), member(&out, "handoff")), (0, "2".into(), h1.clone()), "{out}");
     assert_eq!(write(&w.0, &hb, "b", "on b").0, 0, "the pen is at b");
@@ -84,7 +75,6 @@ fn a_ledger_goes_to_the_other_place_and_back_one_writer_at_a_time() {
     assert_eq!(code, 0, "{out}");
     let h2 = member(&out, "handoff");
     assert_ne!(h1, h2);
-    // a takes back only the handoff made after its own; its own handoff fed back is refused.
     let (code, out, _) = run(&w.0, &ha, &["take-over", "--ledger", "a", "--handoff", "h1.zkhand"]);
     assert_eq!((code, member(&out, "reason"), member(&out, "token"), member(&out, "handoff")), (1, "E_HANDOFF".into(), "NOT_BACK".into(), h1.clone()));
     let before = std::fs::read_dir(w.0.join("a")).expect("a").count();
@@ -92,17 +82,13 @@ fn a_ledger_goes_to_the_other_place_and_back_one_writer_at_a_time() {
     assert_eq!((code, member(&out, "count")), (0, "1".into()), "{out}");
     assert_eq!(std::fs::read_dir(w.0.join("a")).expect("a").count(), before + 1, "the one entry a lacked");
     assert_eq!(write(&w.0, &ha, "a", "back at a").0, 0, "a writes again");
-    // b handed it: b does not write, and its own handoff is not taken back by b.
     assert_eq!(member(&write(&w.0, &hb, "b", "b again").1, "reason"), "E_HANDED_OFF");
     assert_eq!(member(&run(&w.0, &hb, &["take-over", "--ledger", "b", "--handoff", "h2.zkhand"]).1, "token"), "NOT_BACK");
-    // a, holding an entry h2 lacks, does not take h2 again: it would lose that entry.
     let (code, out, _) = run(&w.0, &ha, &["take-over", "--ledger", "a", "--handoff", "h2.zkhand"]);
     assert_eq!((code, member(&out, "token")), (1, "AHEAD".into()), "{out}");
     assert!(!member(&out, "entryId").is_empty(), "names the entry");
 }
 
-/// What does not read as a handoff, and a handoff whose ledger is not one line, are refused by name; nothing is
-/// written.
 #[test]
 fn a_file_that_is_no_handoff_or_not_one_line_is_refused_by_name() {
     let w = scratch("refused");
@@ -111,19 +97,17 @@ fn a_file_that_is_no_handoff_or_not_one_line_is_refused_by_name() {
     std::fs::write(w.0.join("plain.txt"), b"not a handoff").expect("a file");
     let (code, out, _) = run(&w.0, &h, &["take-over", "--ledger", "a", "--handoff", "plain.txt"]);
     assert_eq!((code, member(&out, "reason"), member(&out, "token")), (1, "E_HANDOFF".into(), "E_FILE_MAGIC".into()));
-    // A record package in one file, but no handoff note in it.
     let (code, _, _) = run(&w.0, &h, &["kit-export", "--ledger", "a", "--out", "kit.zkit", "--note", ""]);
     assert_eq!(code, 0);
     let (code, out, _) = run(&w.0, &h, &["take-over", "--ledger", "a", "--handoff", "kit.zkit"]);
     assert_eq!((code, member(&out, "token")), (1, "E_HANDOFF_NOTE".into()));
-    // Two entries at the same position: written into two folders by hand, laid into one handoff file.
     std::fs::create_dir_all(w.0.join("y")).expect("y");
     let pile = |d: &str| -> Vec<Vec<u8>> {
         let mut v: Vec<Vec<u8>> = std::fs::read_dir(w.0.join(d)).expect("dir").filter_map(|e| e.ok()).map(|e| std::fs::read(e.path()).expect("entry")).collect();
         v.sort();
         v
     };
-    let genesis = pile("a").into_iter().find(|b| zikaron::entry::check(b).map(|e| e.seq == 0).unwrap_or(false)).expect("genesis");
+    let genesis = pile("a").into_iter().find(|b| zikaron_glue::book::check(b).map(|e| e.seq == 0).unwrap_or(false)).expect("genesis");
     let gid = zikaron::hexfmt::encode(&zikaron::entry::entry_id(&genesis));
     std::fs::write(w.0.join("y").join(format!("{}.entry", gid.trim_start_matches("0x"))), &genesis).expect("genesis copied");
     assert_eq!(run(&w.0, &h, &["annotate", "--ledger", "y", "--key", KEY, "--note", "other one"]).0, 0);
@@ -138,7 +122,6 @@ fn a_file_that_is_no_handoff_or_not_one_line_is_refused_by_name() {
     let (code, out, _) = run(&w.0, &h, &["take-over", "--ledger", "a", "--handoff", "fork.zkhand"]);
     assert_eq!((code, member(&out, "token")), (1, "NOT_ONE_LINE".into()), "{out}");
     assert_eq!(std::fs::read_dir(w.0.join("a")).expect("a").count(), before, "nothing written");
-    // A folder holding the fork is not handed off either.
     std::fs::create_dir_all(w.0.join("z")).expect("z");
     for d in ["a", "y"] {
         for e in std::fs::read_dir(w.0.join(d)).expect("dir").filter_map(|e| e.ok()) {
@@ -150,8 +133,53 @@ fn a_file_that_is_no_handoff_or_not_one_line_is_refused_by_name() {
     assert!(!w.0.join("z.zkhand").exists());
 }
 
-/// `kit-export` writes one file unless a folder is asked for; the readers take both; `kit-verify` answers each
-/// record (its original, its anchoring) and refuses what the kit law refuses.
+fn an_old_ledger(dir: &Path) -> String {
+    use zikaron_glue::book::Law;
+    let key = zikaron::hexfmt::scalar32(KEY).expect("a key");
+    let author = zikaron_cli::entry::address(&key).expect("an address");
+    std::fs::create_dir_all(dir).expect("a folder");
+    let o = |m: Vec<(&str, zikaron::json::Value)>| zikaron::json::Value::Obj(m.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let st = |x: &str| zikaron::json::Value::Str(x.to_string());
+    let h32 = |b: &str| format!("0x{}", b.repeat(32));
+    let g = zikaron_cli::entry::seal_under(Law::One, &author, "genesis", 0, None, o(vec![("statement_md", st("旧法的开端"))]), &key).expect("sealed");
+    let mode = o(vec![("mark", st("v1")), ("toolchain", st(&h32("0b")))]);
+    let h = zikaron_cli::entry::seal_under(Law::One, &author, "history", 1, Some(&g.entry.id_hex()), o(vec![("content", st(&h32("0a"))), ("mode", mode)]), &key).expect("sealed");
+    for e in [&g, &h] {
+        std::fs::write(dir.join(format!("{}.entry", e.entry.id_hex().trim_start_matches("0x"))), &e.bytes).expect("laid");
+    }
+    g.entry.id_hex()
+}
+
+#[test]
+fn a_continued_ledger_is_one_line_and_keeps_its_key_across_the_move() {
+    let w = scratch("moved");
+    let (ha, hb) = (w.0.join("home-a"), w.0.join("home-b"));
+    let root = an_old_ledger(&w.0.join("a"));
+    let (code, out, _) = run(&w.0, &ha, &["hand-over", "--ledger", "a", "--out", "h1.zkhand"]);
+    assert_eq!(code, 0, "an old ledger is one line: {out}");
+    assert_eq!(run(&w.0, &hb, &["take-over", "--ledger", "b", "--handoff", "h1.zkhand"]).0, 0);
+    let (code, out, _) = run(&w.0, &hb, &["migrate", "--ledger", "b", "--key", KEY]);
+    assert_eq!(code, 0, "{out}");
+    let genesis = member(&out, "continuing");
+    let (code, out, _) = run(&w.0, &hb, &["hand-over", "--ledger", "b", "--out", "h2.zkhand"]);
+    assert_eq!((code, member(&out, "entries")), (0, "4".into()), "two segments, one line: {out}");
+    let (code, out, _) = run(&w.0, &ha, &["take-over", "--ledger", "a", "--handoff", "h2.zkhand"]);
+    assert_eq!((code, member(&out, "count")), (0, "2".into()), "the closing succession and the genesis: {out}");
+    let (code, out, _) = write(&w.0, &ha, "a", "after the move");
+    assert_eq!(code, 0, "the pen is back at a: {out}");
+    assert_eq!(member(&out, "seq"), "1", "after the continuing genesis {genesis}");
+    let _ = root;
+    let key = zikaron::hexfmt::scalar32(KEY).expect("a key");
+    let author = zikaron_cli::entry::address(&key).expect("an address");
+    std::fs::create_dir_all(w.0.join("c")).expect("c");
+    an_old_ledger(&w.0.join("c"));
+    let stray = format!("0x{}", "ee".repeat(32));
+    let g = zikaron_cli::entry::seal_under(zikaron_glue::book::Law::Two, &author, "genesis", 0, None, zikaron_glue::book::genesis_body("新法", Some((&author, &stray))), &key).expect("sealed");
+    std::fs::write(w.0.join("c").join(format!("{}.entry", g.entry.id_hex().trim_start_matches("0x"))), &g.bytes).expect("laid");
+    let (code, out, _) = run(&w.0, &ha, &["hand-over", "--ledger", "c", "--out", "c.zkhand"]);
+    assert_eq!((code, member(&out, "reason")), (1, "E_TIP_FORKED".into()), "{out}");
+}
+
 #[test]
 fn a_record_package_is_one_file_unless_a_folder_is_asked_and_both_read_back() {
     let w = scratch("kit");
@@ -165,17 +193,14 @@ fn a_record_package_is_one_file_unless_a_folder_is_asked_and_both_read_back() {
     assert!(w.0.join("k-dir").join(zikaron_glue::names::MANIFEST).is_file(), "a folder");
     let (code, _, err) = run(&w.0, &h, &["kit-export", "--ledger", "a", "--out", "k2", "--note", "", "--as", "box"]);
     assert_eq!((code, err.as_str()), (2, "E_ARGS --as"));
-    // The readers take the file: the audit, an entry shown from it.
     let (code, out, _) = run(&w.0, &h, &["audit", "--ledger", "k.zkit"]);
     assert!(code == 0 || code == 3, "{code} {out}");
-    // `kit-verify`: the record's original is the one recorded; no chain read, so not anchored is never said.
     let (code, out, _) = run(&w.0, &h, &["kit-verify", "--kit", "k.zkit"]);
     assert_eq!((code, member(&out, "reason")), (3, "E_RECORDS".into()), "{out}");
     assert!(out.contains("\"original\":\"match\"") && out.contains("\"anchored\":\"unread\""), "{out}");
     let (code, out, _) = run(&w.0, &h, &["kit-verify", "--kit", "k-dir"]);
     assert_eq!(code, 3);
     assert!(out.contains("\"original\":\"missing\""), "the folder carries no original: {out}");
-    // A file cut short, and a folder that is no kit: refused by name.
     let raw = std::fs::read(w.0.join("k.zkit")).expect("read");
     std::fs::write(w.0.join("cut.zkit"), &raw[..raw.len() - 4]).expect("cut");
     let (code, out, _) = run(&w.0, &h, &["kit-verify", "--kit", "cut.zkit"]);
@@ -184,8 +209,6 @@ fn a_record_package_is_one_file_unless_a_folder_is_asked_and_both_read_back() {
     assert_eq!((code, member(&out, "reason")), (1, "E_KIT".into()), "{out}");
 }
 
-/// `scan --ledger` takes a home's ledger only: a plain folder has no settings to declare a basis from; `--basis`
-/// and `--ledger` together, or neither, is misuse.
 #[test]
 fn scan_takes_its_basis_from_a_home_or_a_file_never_both() {
     let w = scratch("scan");
@@ -200,9 +223,6 @@ fn scan_takes_its_basis_from_a_home_or_a_file_never_both() {
     assert_eq!((code, err.as_str()), (2, "E_ARGS --basis --ledger"));
 }
 
-/// `scan --ledger <a home's ledger>` with neither `--endpoint` nor `--fixture` takes the home's own nodes, opening the
-/// home with the credential as a send does: without the credential it is refused by the credential's reason, never
-/// misuse. A plain folder with neither is misuse, and so is `--fixture` beside `--ledger`.
 #[test]
 fn a_scan_of_a_home_with_neither_takes_its_nodes_through_the_credential() {
     let w = scratch("scan-home");

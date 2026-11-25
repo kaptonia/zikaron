@@ -1,0 +1,1 @@
+HARNESS2: a byte order mark is not whitespace under RFC 8259's JSON-text production, so the file is unreadable, as it is for an entry.

@@ -1,14 +1,8 @@
-//! Full-window covers: the passcode gate and the first-run wizard. The cover lies on the page ground over
-//! the whole window, fades in over 200 ms, and its content settles up from 10 below over 300 ms; when it
-//! goes it fades out over 200 ms. No icon, no mark: words and cells only.
-
 use crate::motion::{self, Curve};
 use crate::palette::{c, C};
 use crate::tokens;
 use egui::{pos2, vec2, Rect};
 
-/// Draw a cover, a strip of `side` at its left on the rail's ground (0: none). `add` gets a child the size of
-/// the window; the value it returns comes back.
 pub fn cover<R>(ctx: &egui::Context, id_salt: &str, side: f32, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
     let id = egui::Id::new(("zikaron-cover", id_salt));
     let screen = ctx.content_rect();
@@ -21,8 +15,6 @@ pub fn cover<R>(ctx: &egui::Context, id_salt: &str, side: f32, add: impl FnOnce(
     let layer = egui::LayerId::new(egui::Order::Middle, id);
     crate::layer::place(ctx, layer, None);
     let r = crate::layer::over(ctx, layer).show(ctx, |ui| {
-        // The ground: the page colour over the window in the cover's own layer, taking every press and drag so
-        // nothing under it reacts; a strip of `side` at the left takes the rail's ground (the steps' column).
         if side > 0.0 {
             crate::layer::under(ui, crate::layer::Under::Ground(egui::Color32::TRANSPARENT));
             let (strip, rest) = screen.split_left_right_at_x(screen.left() + side);
@@ -40,21 +32,15 @@ pub fn cover<R>(ctx: &egui::Context, id_salt: &str, side: f32, add: impl FnOnce(
     r.inner
 }
 
-/// The column width [`centered`] gives in `rect` for a wanted `width`.
 pub fn centered_w(rect: Rect, width: f32) -> f32 {
     width.min(rect.width() - 32.0).max(0.0)
 }
 
-/// The room right of a scrolling column its bar lies in: the bars float over what scrolls and take no width
-/// (`skin`), so a column flush with its scroll area's edge would have its right edge under the bar.
 pub fn bar_room(ui: &egui::Ui) -> f32 {
     let s = &ui.spacing().scroll;
     s.bar_width + s.bar_inner_margin + s.bar_outer_margin
 }
 
-/// A column of `width` centered in `rect` (vertically too, by the height it had last frame), `drop` points
-/// lower while it settles. Taller than the room, it scrolls, its bar in the room right of the column
-/// ([`bar_room`]), never over it.
 pub fn centered<R>(ui: &mut egui::Ui, id_salt: &str, rect: Rect, width: f32, drop: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let id = egui::Id::new(("zikaron-centered", id_salt));
     let h = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
@@ -75,24 +61,18 @@ pub fn centered<R>(ui: &mut egui::Ui, id_salt: &str, rect: Rect, width: f32, dro
     let (inner, got) = out.inner;
     if (got - h).abs() > 0.5 {
         ui.ctx().data_mut(|d| d.insert_temp(id, got));
-        // Laid out again at once with the new size, so no frame is shown placed by the old one.
         ui.ctx().request_discard("centered column height changed");
     }
     inner
 }
 
-/// One step in the wizard's left column.
 pub struct Step<'a> {
     pub label: &'a str,
     pub done: bool,
-    /// A step that can be done later: its circle is dashed.
     pub later: bool,
-    /// Done steps and those before the current one can be clicked.
     pub reachable: bool,
 }
 
-/// The wizard's steps: a circle per step (its number; a check once done), joined by a line; the current
-/// one in the first ink and the accent. Returns a clicked reachable step.
 pub fn steps(ui: &mut egui::Ui, steps: &[Step], current: usize) -> Option<usize> {
     let id = ui.id().with("zikaron-wizard-steps");
     let w = ui.available_width();
@@ -145,17 +125,12 @@ pub fn steps(ui: &mut egui::Ui, steps: &[Step], current: usize) -> Option<usize>
     hit
 }
 
-/// A choice with a radio (the wizard's networks): a title, an optional pill, a line under it; the chosen
-/// one on the selection ground with an accent edge, its dot popping in.
 pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: Option<&str>, sub: &str) -> egui::Response {
     let w = ui.available_width();
-    // The line under the title wraps inside the row (the row grows by its lines), never past the row's edge.
     let text_x = 14.0 + 8.0 + 8.0 + 10.0;
     let mut job = egui::text::LayoutJob::single_section(sub.to_string(), egui::TextFormat { font_id: crate::tokens::Type::Small.font(), color: c(C::Ink2), line_height: Some(crate::tokens::Type::Small.line()), ..Default::default() });
     job.wrap.max_width = (w - text_x - 14.0).max(1.0);
     let sub_g = ui.fonts_mut(|f| f.layout_job(job));
-    // The row's height and the title's place follow the lines there are: with no line under it, one line,
-    // centred; otherwise the title and the line's own rows.
     let two = !sub.is_empty();
     let lines_h = crate::tokens::Type::Strong.line() + if two { 2.0 + sub_g.size().y.max(crate::tokens::Type::Small.line()) } else { 0.0 };
     let h = 12.0 + lines_h + 12.0;
@@ -163,7 +138,6 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     let lit = motion::flag(ui.ctx(), id.with("on"), on, tokens::FAST);
     let dot = motion::to(ui.ctx(), id.with("dot"), if on { 1.0 } else { 0.0 }, tokens::FAST, Curve::Spring);
     let p = ui.painter().clone();
-    // A grey tone at rest; chosen, the selection ground with a blue edge and the soft blue ring.
     let fill = crate::palette::mix(c(C::Tone), c(C::Sel), lit);
     let round = crate::tokens::Radius::Menu;
     if lit > 0.0 {
@@ -178,7 +152,6 @@ pub fn radio_row(ui: &mut egui::Ui, id: egui::Id, on: bool, title: &str, pill: O
     }
     let x = rect.left() + text_x;
     let ty = rect.center().y - lines_h / 2.0;
-    // The title centred in its line, whatever the face's own height (Latin and Chinese faces differ).
     let tr = p.text(pos2(x, ty + crate::tokens::Type::Strong.line() / 2.0), egui::Align2::LEFT_CENTER, title, crate::tokens::Type::Strong.font(), c(C::Ink));
     if let Some(s) = pill {
         let pw = crate::mark::pill_w(ui, s, false);

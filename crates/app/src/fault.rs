@@ -1,246 +1,119 @@
-//! Errors in three parts: known ones are translated, unknown ones pass through, and the evidence tail is
-//! always kept.
-//!
-//! 1. Known errors live in one closed table, [`Known`], with plain words from [`translate`] only. An error
-//!    outside the table is never guessed into it: [`classify`] recognizes only what it knows, and everything
-//!    else goes to the unknown branch.
-//! 2. Unknown errors pass through unchanged: the sentence on screen equals the underlying one byte for byte.
-//! 3. Evidence tail: both branches carry `tail`, and both constructors of [`Fault`] require it, so the
-//!    original error text cannot be lost.
-
-
-/// The closed table of known errors. It grows together with its plain words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Known {
-    /// The system lacks this font face.
     FontMissing,
-    /// The file is not on disk.
     FileMissing,
-    /// No permission.
     Denied,
-    /// The system says a place on the way is not a folder (a file stands where a folder is expected).
     NotAFolder,
-    /// The local key vault does not hold this key.
     KeychainMissing,
-    /// The system's entropy gave no usable key.
     Entropy,
-    /// The key read back has the wrong shape.
     KeyMalformed,
-    /// Could not sign.
     SignFailed,
-    /// Keystore scrypt parameters are malformed.
     KeystoreParams,
-    /// The keystore does not have the V3 shape.
     KeystoreShape,
-    /// Wrong password (the MAC does not match).
     BadPassword,
-    /// Trouble on the ledger directory side (the storage verdict carried in the evidence tail).
     Ledger,
-    /// The environment has no home directory.
     NoHomeDir,
-    /// The settings file has the wrong shape.
     SettingsShape,
-    /// This string is not an address.
     AddressShape,
-    /// The address in the keystore file does not match the decrypted key.
     AddressMismatch,
-    /// Something is already at that path.
     Occupied,
-    /// Copied files do not match byte for byte.
     CopyMismatch,
-    /// Landing a file failed (with the storage or kit output verdict unchanged).
     Landing,
-    /// This instance is a reader and does not write.
     ReadOnly,
-    /// The mirror bundle has the wrong shape.
     MirrorShape,
-    /// An entry in the mirror bundle fails re-verification.
     MirrorEntry,
-    /// That place holds a backup of another ledger.
     MirrorOther,
-    /// The key vault is locked.
     Locked,
-    /// Too many failures; only recovery by words or key file remains.
     LockedOut,
-    /// Wrong passcode (the tail carries tries left).
     PinWrong,
-    /// The passcode breaks the rules (the tail says which).
     PinShape,
-    /// A passcode is already set on this machine.
     PinSet,
-    /// This machine has no key vault yet.
     KeyboxMissing,
-    /// The key vault file has the wrong shape.
     KeyboxShape,
-    /// A vault slot does not match the master key.
     KeyboxSlot,
-    /// The vault still holds something (a slot or recovery seal), so it is not reset.
     KeyboxNotEmpty,
-    /// The vault file's lock could not be taken (the kernel refused).
     KeyboxLocked,
-    /// The key vault file records key-derivation parameters below this binary's floor.
     KdfBelowFloor,
-    /// The machine settings file has the wrong shape (`machine.rs`).
     MachineShape,
-    /// The balance does not cover fee cap times gas (the pre-send check, or the node at broadcast).
     InsufficientFunds,
-    /// The node says the nonce is used.
     NonceUsed,
-    /// The node says the same transaction is already pending.
     AlreadyPending,
-    /// The node says the price is too low.
     Underpriced,
-    /// The node says gas is too low.
     GasTooLow,
-    /// The contract refused (execution reverted).
     ContractRefused,
-    /// The node is rate-limiting.
     RateLimited,
-    /// The node does not provide this method.
     MethodMissing,
-    /// The node requires credentials.
     NodeAuth,
-    /// Wrong chain id.
+    ServiceUnserved,
+    ServiceKeyMissing,
     WrongChain,
-    /// The node refused and the reason is not recognized; its words are in the evidence tail.
     NodeRefused,
-    /// One of the four TLS layers failed (the layer is in the evidence tail).
     NodeTls,
-    /// The leg to the proxy failed (not reached, refused the tunnel): the node was never reached (the proxy and
-    /// its failure are in the evidence tail).
     ProxyUnreachable,
-    /// The proxy asks for a user name and password and none were given (HTTP 407, SOCKS5 asking for them, a
-    /// SOCKS4 user id not confirmed): the node was never reached.
     ProxyCredentialsMissing,
-    /// The proxy refused the user name and password (or SOCKS4 user id) given: the node was never reached.
     ProxyCredentialsRefused,
-    /// This call's total deadline passed.
     NodeTimeout,
-    /// The node's answer passed its end.
     AnswerTooLong,
-    /// The node's answer is not JSON.
     AnswerNotJson,
-    /// The current seat has no key: this identity's key is not in this seat (one key per seat).
     SeatUnseated,
-    /// This domain is not signed by the current seat (per the seat × domain table).
     SeatDomain,
-    /// The backup key file did not land on disk (read back after writing, it does not match).
     BackupNotLanded,
-    /// The given words or key file do not open this machine's vault.
     RecoveryNoMatch,
-    /// A location (backup, moving a home) is empty or relative.
     PathRelative,
-    /// No endpoint at all.
     NoEndpoint,
-    /// No endpoint reachable.
     Unreachable,
-    /// Endpoints disagree (no green without agreement).
     Disagree,
-    /// The chain returned the wrong shape.
     ChainShape,
-    /// This ledger holds the pen: after a restore, one anchor reconciliation must report COMPLETE.
-    PenHeld,
-    /// A restored identity whose ledger is not fetched yet: writes are refused until the full ledger is
-    /// fetched and its tail checked.
     LedgerNotFetched,
-    /// The fetched ledger does not match this identity's anchors on chain: newer entries exist elsewhere.
     NewerElsewhere,
-    /// The core rejected this entry (spec token in the evidence tail).
     EntryRefused,
-    /// This ledger has no genesis entry.
     NoGenesis,
-    /// This ledger has more than one root.
     ForkedRoot,
-    /// The audit input cannot be assembled.
     AuditInput,
-    /// This directory cannot be adopted (entries unreadable or failing the core).
     NotAdoptable,
-    /// This ledger already has a genesis entry.
     AlreadyRooted,
-    /// The restore landed only partly; which entries landed is named in the evidence tail.
     RestorePartial,
-    /// This home could not be created (nothing landed on disk).
     CannotLay,
-    /// The folder chosen as the data folder is neither a data folder nor empty (named in the evidence tail).
     NotAHome,
-    /// No home is open yet.
     NoHome,
-    /// The key vault accepted the key but cannot return the same one.
     KeyNotStored,
-    /// Git bytes cannot be read (a broken index, an undecodable object, an unappliable delta).
     GitShape,
-    /// This is not a git repository.
     NotARepo,
-    /// The repository has no such reference.
     RefMissing,
-    /// The object store lacks this object (loose or packed).
     ObjectMissing,
-    /// The audit reports BROKEN_CHAIN: writes are locked and the whole app is read-only.
     Broken,
-    /// The content hash is malformed (law §6.2 requires hex32).
+    WouldBreak,
     ContentShape,
-    /// The anchor queue file has the wrong shape.
     QueueShape,
-    /// Nothing in the queue was chosen.
     QueueEmpty,
-    /// No registry contract address configured yet.
     NoRegistry,
-    /// No chain id configured yet.
     NoChainId,
-    /// The node refused at gas estimation: sending would revert.
     GasRefused,
-    /// Gas was not estimated for this batch, or was estimated for another count.
     GasNotShown,
-    /// Sent, and the receipt says it did not succeed (law §9.1: a status other than 1 is no anchor).
     SendFailed,
-    /// No anchor audit has run yet; this field has no reading.
     NotAudited,
-    /// The entry an annotation points to is not in this ledger (the subject of law §6.8).
+    CleanWord,
+    SeatUnhomed,
+    AuditBehind,
     SubjectMissing,
-    /// This directory holds no file: no manifest hash can be computed.
     DirEmpty,
-    /// The anchoring crate says this scan did not read everything (its refusal carried in the evidence tail).
     ScanRefused,
-    /// A required form field is empty.
     FieldMissing,
-    /// A checklist step was skipped (steps cannot be skipped).
-    StepSkipped,
-    /// Kit output was refused by the kit output crate or the kit core; the refusal is in the evidence tail.
     KitRefused,
-    /// The double-sale guard hit: same record, overlapping windows, and an existing grant with the local
-    /// exclusive flag.
     Conflict,
-    /// The cosignature failed verification (law §6.6; the core's token in the evidence tail).
-    CosignRefused,
-    /// A succession is anchored: this desk handed the ledger over and is read-only (law §7.3).
     HandedOver,
-    /// Anchors seen, bytes not: this side cannot get that ledger's bytes.
     NoBytes,
-    /// A background task crashed (thread panic). A crash still gets a sentence: otherwise that kind would
-    /// stay "in flight" and the screen would keep saying it never ran.
     WorkerPanicked,
-    /// A background run finished and its outcome never reached the frame (named, never waited on forever).
     OutcomeLost,
-    /// These bytes are not the named person's ledger (the genesis author does not match).
     NotHisBook,
-    /// Material was read at a level of the audit input, and it is not the ledger that holds this grant
-    /// (another issuer's): not used, and said by name.
+    BookNotWhole,
     NotThisLedger,
-    /// The bytes pass the core check but are not a grant (the vault holds grants only).
     NotAGrant,
-    /// This grant is already in the vault.
     AlreadyHeld,
-    /// A note was given for a grant that is not in the vault (its id in the evidence tail).
     GrantNotHeld,
-    /// The folder chosen for "import grant folder" holds no file at all (only the system's side files, or
-    /// nothing).
     GrantDirEmpty,
-    /// This entry is already on chain (queueing it again would only pay gas again).
     AlreadyAnchored,
-    /// The kit core does not accept this payload (the kit law §6 token in the evidence tail).
     PayloadRefused,
-    /// The upstream chain does not reach a root: the tail names the grant found neither in the vault nor in
-    /// this seat's ledger.
     ChainIncomplete,
     IdentityExists,
     IdentityHereAs,
@@ -256,180 +129,124 @@ pub enum Known {
     PasswordShort,
     PasswordLong,
     IdentitiesShape,
-    /// Checking publication needs a local kit to compare with.
     PublishNoKit,
-    /// Checked at signing: the kept copy is the one signed into the grant.
     TermsMismatch,
-    /// Unpacked, it is an enumeration handed to the same kit verification.
     GrantFileKit,
-    /// The single-file container has the wrong shape (magic, truncation, order, bounds).
     GrantFileBad,
-    /// A record package in one file that does not read as one (the layout's code in the evidence).
     KitFileBad,
-    /// A record package asked for in a form that is not one of the two (`file`, `folder`; the word in the evidence).
     KitFormWord,
-    /// A record package's originals asked for with a word that is not `none` (the word in the evidence).
     KitOriginalsWord,
-    /// Taking originals out: the package does not pass the kit law, or a single file does not read as one, when it is read
-    /// again to take them out (the verdict or the layout's code in the evidence).
     ExtractKit,
-    /// Taking originals out: a path in the package is not a kit path (kit law §7.2).
     ExtractPath,
-    /// Taking originals out: the package holds no original that matches its record.
     ExtractNothing,
-    /// Taking originals out: two originals would take one name (the names in the evidence).
     ExtractClash,
-    /// Taking originals out: what was chosen is not a folder.
+    ExtractName,
     ExtractNotFolder,
-    /// Taking originals out: the chosen folder holds items with these names already (in the evidence); nothing written.
     ExtractExists,
-    /// Taking originals out: a link stands at a name in the chosen folder; never followed, nothing written.
     ExtractLink,
-    /// Taking originals out: an original laid out does not match its record (the package changed meanwhile).
     ExtractChanged,
-    /// Taking originals out: writing to disk failed, and what was placed was taken back.
     ExtractLanding,
-    /// A record package addressed to one key: no identity on this machine opens it (none is its recipient); nothing opened is kept.
     AddressedNotRecipient,
-    /// A record package addressed to one key: a segment after the first does not pass (changed, cut short, reordered, bytes added); nothing opened is kept (the segment in the evidence).
     AddressedBroken,
-    /// A record package addressed to one key whose head does not read (cut short, a version not read here, a one-time key off the curve).
     AddressedHead,
-    /// A record package addressed to one key, met where record packages are read for someone else's material: it is opened on the verify page only.
     AddressedElsewhere,
-    /// The recipient's public key given is not a point of the curve (33 bytes compressed or 65 uncompressed); nothing exported.
     AddressedKeyShape,
-    /// A record package addressed both to an address and to a public key: one is given, not both; nothing exported.
     AddressedBoth,
-    /// A record package addressed to one key asked for as a folder: only the one-file form is sealed; nothing exported.
     AddressedFolder,
-    /// Every network read through by every node, and no anchor this address signed: its key is not on chain; nothing exported.
     AddressNotAnchored,
-    /// No key found for this address, and some network was not read through (each node's words in the evidence); nothing exported.
     AddressChainUnread,
-    /// Fetched file by file from the manifest and handed to the same kit verification.
+    AddressKeyUnproven,
     RemoteKit,
-    /// The remote answered a status other than 200.
     RemoteStatus,
-    /// Redirects are allowed only to the same https origin.
     RemoteRedirect,
-    /// A single file or the total passed the cap.
     RemoteTooLarge,
-    /// The remote fetch's total deadline passed.
     RemoteTimeout,
-    /// Host resolution, connection or handshake failed.
     RemoteUnreachable,
-    /// The certificate chain or host name does not match; always verified, with no way to skip.
     RemoteCert,
-    /// Remote fetch and publication addresses are https only.
     RemoteNotHttps,
-    /// The attachment's digest is not among the chosen records' contents: a kit takes only the originals of
-    /// the chosen records.
     NotAnOriginal,
-    /// The trace file reached its byte cap; writing stops.
     TraceFull,
-    /// The pasted claim text cannot be read (header, hex, three members, canonical form).
-    ClaimShape,
-    /// A sealed local file does not open with this machine's local data key (sealed under another master
-    /// key, or altered).
     LocalSeal,
-    /// The recovery secret belongs to a secondary identity: only the primary identity recovers the passcode.
     RecoveryNotPrimary,
-    /// The primary identity cannot be deleted directly.
     PrimaryDelete,
-    /// An imported-key identity must have exported its key file before it becomes primary.
     PrimaryNoKeyFile,
-    /// The identity is already the primary identity.
     PrimaryAlready,
-    /// The backup password does not open this backup (not counted as a passcode failure).
     BackupPassword,
-    /// The file is not a ZIKARON Desk backup.
     BackupNotOurs,
-    /// The backup's format version is newer than this app reads.
     BackupTooNew,
-    /// The backup opened but its contents are not in the shape this version writes.
     BackupShape,
-    /// Resealing under a new master key is in progress; no other action is taken meanwhile.
     Rekeying,
-    /// The backup does not hold the identity asked for.
     BackupNoIdentity,
-    /// A data folder the register names is not where it was (e.g. a disk not attached): a change that must
-    /// reseal every local file refuses rather than leave that folder behind.
     HomeUnreachable,
-    /// Another background task is still running: changing the master key or restoring waits for it to land,
-    /// so nothing is written under the key being replaced.
     BusyForRekey,
-    /// The system file dialog could not open on this machine (on Linux: the desktop portal and its zenity
-    /// fallback both failed, as the dialog reports), reported instead of being read as a cancel.
     DialogUnavailable,
-    /// Local files sealed under a master key that is gone (the key store was reset or lost) were moved aside,
-    /// byte for byte, before a new passcode made a new master key; reported once.
     LocalSetAside,
-    /// A place was read but none of the wanted material could be taken from it, and some files there could
-    /// not be read as entries: reported with the place, the count and the first reason, never dropped
-    /// silently.
     EntriesUnreadable,
-    /// A read-only network with the same chain and registry contract is already in the table (or is the main
-    /// network): refused by name, the table unchanged.
     NetworkListed,
-    /// The new place of a move is this home's root or lies under it (real paths, links resolved): refused before
-    /// one byte is copied, the old home unwritten.
     InsideHome,
-    /// The command line's door could not open on this side (a path too long for the system, or the system
-    /// refused): the command line cannot work through the desktop now.
     DoorShut,
-    /// A request received at the door could not be read (not this version's form, or over its size
-    /// cap): nothing was done.
     DoorUnread,
-    /// The same kind of background work is running: a request through the door did not start another.
     InFlight,
-    /// "Enable command line": something else is at the command line's place (another install's copy, a link to
-    /// another program, a plain file): never overwritten or removed.
     CliPathTaken,
-    /// "Enable command line": the system's administrator dialog was cancelled; nothing changed.
     CliPathCancelled,
-    /// "Enable command line": the system did not allow it (no permission, a wrong password at its dialog, a place
-    /// that cannot be written, a path too long to keep).
     CliPathNotAllowed,
-    /// "Enable command line": this way of running the app cannot be put on the path (opened inside its disk image,
-    /// an AppImage, no command line beside the app).
     CliPathUnsupported,
-    /// A sent batch is void: none of its transactions was included, no node holds any of them, and its nonce
-    /// was used on chain by another transaction. Its entries are back in the queue.
     BatchVoided,
-    /// The command line's credential has expired (it is removed on the way out).
     CredentialExpired,
-    /// No command-line credential on this machine (the switch is off, or it was removed).
     CredentialMissing,
-    /// A credential file not in its shape, or one that does not open.
     CredentialShape,
-    /// The desktop holds this home's writer lock: the command line does not write beside it.
     HomeHeld,
-    /// Another program holds a lock inside the machine directory: not set aside.
     MachineHeld,
-    /// Writing alone is on: the switch for writing through the desktop does not flip until it is off.
     CliAloneOn,
-    /// A new master key took effect: the command line's credential no longer opens anything, so it was removed
-    /// and writing alone turned off (said once, after the change).
     CliAloneDropped,
-    /// The home's writer mark names another machine (or does not read): the command line does not write it.
     HomeOtherMachine,
-    /// The command line holds the home's writer lock while writing alone: this desktop write is not done.
     CliWriting,
-    /// This ledger was handed off to another place (a ledger handoff, `zikaron_seal::pens`) and no handoff after it
-    /// has come back: it is not written here.
+    ReadsUnkept,
     HandedOff,
-    /// The chain already holds anchors of this batch from this key: nothing was signed or sent (the sender asks
-    /// before signing, `zikaron_send::batch::on_chain`).
     OnChain,
+    TooEarly,
+    UpgradeHanded,
+    NotMoved,
+    NotATarget,
+    NotIncluded,
+    BookCode,
+    RotateOwed,
+    RotateBookless,
+    OfficeNotInWords,
+    ChainInBasis,
+    NoNoticeVenue,
+    NoticeContract,
+    RootNotInBook,
+    NotAcceded,
+    OfficeElsewhere,
+    OfficeIsContract,
+    RootKeyAbsent,
+    FaceUnread,
+    FaceNoHome,
+    FaceRotating,
+    FaceUnwritable,
+    ConsentRefused,
+    FaceRow,
+    FaceHomeChain,
+    RegistryCode,
+    RotateUnseated,
+    RotateUnentered,
+    BookClosed,
+    CredentialPassMissing,
+    CredentialPassUnknown,
+    CredentialNote,
+    CredentialFull,
+    CredentialRowGone,
+    CredentialReclaimed,
+    FaceSealed,
 }
 
 impl Known {
-    /// The network kind's members, listed only here. The status line sorts by it: members go to the status
-    /// line, not notices. It covers the transport families `chainx::said_fault` dispatches and the node
-    /// refusals a read can meet; a member added to that dispatch but not here would be missed by the status
-    /// line.
-    pub const NETWORK: [Known; 17] = [
+    pub fn of_str(code: &str) -> Option<Known> {
+        Known::ALL.iter().copied().find(|k| k.as_str() == code)
+    }
+
+    pub const NETWORK: [Known; 19] = [
         Known::Unreachable,
         Known::NoEndpoint,
         Known::Disagree,
@@ -445,19 +262,16 @@ impl Known {
         Known::RateLimited,
         Known::MethodMissing,
         Known::NodeAuth,
+        Known::ServiceUnserved,
+        Known::ServiceKeyMissing,
         Known::WrongChain,
         Known::NodeRefused,
     ];
 
-    /// Whether a refusal is the absence of an answer rather than a negative one (`zikaron/1` §9.4): the network kind
-    /// ([`Known::NETWORK`]), and an addressed package's chain not read through (`Why::unanswered`). The door marks
-    /// it so (the command line exits 4), whatever line of the window shows it: the status line takes the network
-    /// kind only, and a chain not read for sealing is said by a notice.
     pub fn unanswered(self) -> bool {
         Known::NETWORK.contains(&self) || self.addressed().is_some_and(zikaron_seal::addressed::Why::unanswered)
     }
 
-    /// The addressed package's refusal this member is, in its one table.
     pub fn addressed(self) -> Option<zikaron_seal::addressed::Why> {
         use zikaron_seal::addressed::Why;
         Some(match self {
@@ -470,11 +284,11 @@ impl Known {
             Known::AddressedFolder => Why::Folder,
             Known::AddressNotAnchored => Why::NotAnchored,
             Known::AddressChainUnread => Why::ChainUnread,
+            Known::AddressKeyUnproven => Why::Unproven,
             _ => return None,
         })
     }
 
-    /// The member an addressed package's refusal is.
     pub fn of_addressed(why: zikaron_seal::addressed::Why) -> Known {
         use zikaron_seal::addressed::Why;
         match why {
@@ -487,10 +301,11 @@ impl Known {
             Why::Folder => Known::AddressedFolder,
             Why::NotAnchored => Known::AddressNotAnchored,
             Why::ChainUnread => Known::AddressChainUnread,
+            Why::Unproven => Known::AddressKeyUnproven,
         }
     }
 
-    pub const ALL: [Known; 198] = [
+    pub const ALL: [Known; 239] = [
         Known::FontMissing,
         Known::FileMissing,
         Known::Denied,
@@ -535,6 +350,8 @@ impl Known {
         Known::RateLimited,
         Known::MethodMissing,
         Known::NodeAuth,
+        Known::ServiceUnserved,
+        Known::ServiceKeyMissing,
         Known::WrongChain,
         Known::NodeRefused,
         Known::NodeTls,
@@ -553,7 +370,6 @@ impl Known {
         Known::Unreachable,
         Known::Disagree,
         Known::ChainShape,
-        Known::PenHeld,
         Known::LedgerNotFetched,
         Known::NewerElsewhere,
         Known::EntryRefused,
@@ -572,6 +388,7 @@ impl Known {
         Known::RefMissing,
         Known::ObjectMissing,
         Known::Broken,
+        Known::WouldBreak,
         Known::ContentShape,
         Known::QueueShape,
         Known::QueueEmpty,
@@ -581,19 +398,21 @@ impl Known {
         Known::GasNotShown,
         Known::SendFailed,
         Known::NotAudited,
+        Known::CleanWord,
+        Known::SeatUnhomed,
+        Known::AuditBehind,
         Known::SubjectMissing,
         Known::DirEmpty,
         Known::ScanRefused,
         Known::FieldMissing,
-        Known::StepSkipped,
         Known::KitRefused,
         Known::Conflict,
-        Known::CosignRefused,
         Known::HandedOver,
         Known::NoBytes,
         Known::WorkerPanicked,
         Known::OutcomeLost,
         Known::NotHisBook,
+        Known::BookNotWhole,
         Known::NotThisLedger,
         Known::NotAGrant,
         Known::AlreadyHeld,
@@ -627,6 +446,7 @@ impl Known {
         Known::ExtractPath,
         Known::ExtractNothing,
         Known::ExtractClash,
+        Known::ExtractName,
         Known::ExtractNotFolder,
         Known::ExtractExists,
         Known::ExtractLink,
@@ -641,6 +461,7 @@ impl Known {
         Known::AddressedFolder,
         Known::AddressNotAnchored,
         Known::AddressChainUnread,
+        Known::AddressKeyUnproven,
         Known::RemoteKit,
         Known::RemoteStatus,
         Known::RemoteRedirect,
@@ -651,7 +472,6 @@ impl Known {
         Known::RemoteNotHttps,
         Known::NotAnOriginal,
         Known::TraceFull,
-        Known::ClaimShape,
         Known::LocalSeal,
         Known::RecoveryNotPrimary,
         Known::PrimaryDelete,
@@ -687,8 +507,44 @@ impl Known {
         Known::CliAloneDropped,
         Known::HomeOtherMachine,
         Known::CliWriting,
+        Known::ReadsUnkept,
         Known::HandedOff,
         Known::OnChain,
+        Known::TooEarly,
+        Known::UpgradeHanded,
+        Known::NotMoved,
+        Known::NotATarget,
+        Known::NotIncluded,
+        Known::BookCode,
+        Known::RotateOwed,
+        Known::RotateBookless,
+        Known::OfficeNotInWords,
+        Known::ChainInBasis,
+        Known::NoNoticeVenue,
+        Known::NoticeContract,
+        Known::RootNotInBook,
+        Known::NotAcceded,
+        Known::OfficeElsewhere,
+        Known::OfficeIsContract,
+        Known::RootKeyAbsent,
+        Known::FaceUnread,
+        Known::FaceNoHome,
+        Known::FaceRotating,
+        Known::FaceUnwritable,
+        Known::ConsentRefused,
+        Known::FaceRow,
+        Known::FaceHomeChain,
+        Known::RegistryCode,
+        Known::RotateUnseated,
+        Known::RotateUnentered,
+        Known::BookClosed,
+        Known::CredentialPassMissing,
+        Known::CredentialPassUnknown,
+        Known::CredentialNote,
+        Known::CredentialFull,
+        Known::CredentialRowGone,
+        Known::CredentialReclaimed,
+        Known::FaceSealed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -737,6 +593,8 @@ impl Known {
             Known::RateLimited => "RATE_LIMITED",
             Known::MethodMissing => "METHOD_MISSING",
             Known::NodeAuth => "NODE_AUTH",
+            Known::ServiceUnserved => "SERVICE_UNSERVED",
+            Known::ServiceKeyMissing => "SERVICE_KEY_MISSING",
             Known::WrongChain => "WRONG_CHAIN",
             Known::NodeRefused => "NODE_REFUSED",
             Known::NodeTls => "NODE_TLS",
@@ -755,7 +613,6 @@ impl Known {
             Known::Unreachable => "UNREACHABLE",
             Known::Disagree => "DISAGREE",
             Known::ChainShape => "CHAIN_SHAPE",
-            Known::PenHeld => "PEN_HELD",
             Known::LedgerNotFetched => "LEDGER_NOT_FETCHED",
             Known::NewerElsewhere => "NEWER_ELSEWHERE",
             Known::EntryRefused => "ENTRY_REFUSED",
@@ -774,6 +631,7 @@ impl Known {
             Known::RefMissing => "REF_MISSING",
             Known::ObjectMissing => "OBJECT_MISSING",
             Known::Broken => "BROKEN",
+            Known::WouldBreak => "WOULD_BREAK",
             Known::ContentShape => "CONTENT_SHAPE",
             Known::QueueShape => "QUEUE_SHAPE",
             Known::QueueEmpty => "QUEUE_EMPTY",
@@ -783,19 +641,21 @@ impl Known {
             Known::GasNotShown => "GAS_NOT_ESTIMATED",
             Known::SendFailed => "SEND_FAILED",
             Known::NotAudited => "NOT_AUDITED",
+            Known::CleanWord => "CLEAN_WORD",
+            Known::SeatUnhomed => "SEAT_UNHOMED",
+            Known::AuditBehind => "AUDIT_BEHIND",
             Known::SubjectMissing => "SUBJECT_MISSING",
             Known::DirEmpty => "DIR_EMPTY",
             Known::ScanRefused => "SCAN_REFUSED",
             Known::FieldMissing => "FIELD_MISSING",
-            Known::StepSkipped => "STEP_SKIPPED",
             Known::KitRefused => "KIT_REFUSED",
             Known::Conflict => "CONFLICT",
-            Known::CosignRefused => "COSIGN_REFUSED",
             Known::HandedOver => "HANDED_OVER",
             Known::NoBytes => "NO_BYTES",
             Known::WorkerPanicked => "WORKER_PANICKED",
             Known::OutcomeLost => "OUTCOME_LOST",
             Known::NotHisBook => "NOT_HIS_BOOK",
+            Known::BookNotWhole => "BOOK_NOT_WHOLE",
             Known::NotThisLedger => "NOT_THIS_LEDGER",
             Known::NotAGrant => "ONLY_GRANTS_HELD",
             Known::AlreadyHeld => "ALREADY_HELD",
@@ -829,12 +689,12 @@ impl Known {
             Known::ExtractPath => "EXTRACT_PATH",
             Known::ExtractNothing => "EXTRACT_NOTHING",
             Known::ExtractClash => "EXTRACT_CLASH",
+            Known::ExtractName => "EXTRACT_NAME",
             Known::ExtractNotFolder => "EXTRACT_NOT_A_FOLDER",
             Known::ExtractExists => "EXTRACT_EXISTS",
             Known::ExtractLink => "EXTRACT_LINK",
             Known::ExtractChanged => "EXTRACT_CHANGED",
             Known::ExtractLanding => "EXTRACT_LANDING",
-            // The addressed package's refusals are spelled in its one table, both ends' (`zikaron_seal::addressed::Why`).
             Known::AddressedNotRecipient
             | Known::AddressedBroken
             | Known::AddressedHead
@@ -843,7 +703,8 @@ impl Known {
             | Known::AddressedBoth
             | Known::AddressedFolder
             | Known::AddressNotAnchored
-            | Known::AddressChainUnread => self.addressed().map(zikaron_seal::addressed::Why::code).unwrap_or_default(),
+            | Known::AddressChainUnread
+            | Known::AddressKeyUnproven => self.addressed().map(zikaron_seal::addressed::Why::code).unwrap_or_default(),
             Known::RemoteKit => "REMOTE_KIT",
             Known::RemoteStatus => "REMOTE_STATUS",
             Known::RemoteRedirect => "REMOTE_REDIRECT",
@@ -854,7 +715,6 @@ impl Known {
             Known::RemoteNotHttps => "REMOTE_NOT_HTTPS",
             Known::NotAnOriginal => "NOT_AN_ORIGINAL",
             Known::TraceFull => "TRACE_FULL",
-            Known::ClaimShape => "CLAIM_SHAPE",
             Known::LocalSeal => "LOCAL_SEAL",
             Known::RecoveryNotPrimary => "RECOVERY_NOT_PRIMARY",
             Known::PrimaryDelete => "PRIMARY_DELETE",
@@ -890,16 +750,48 @@ impl Known {
             Known::CliAloneDropped => "CLI_ALONE_DROPPED",
             Known::HomeOtherMachine => "HOME_OTHER_MACHINE",
             Known::CliWriting => "CLI_WRITING",
+            Known::ReadsUnkept => "READS_UNKEPT",
             Known::HandedOff => "HANDED_OFF",
             Known::OnChain => "ON_CHAIN",
+            Known::TooEarly => "TOO_EARLY",
+            Known::UpgradeHanded => "UPGRADE_HANDED",
+            Known::NotMoved => "NOT_MOVED",
+            Known::NotATarget => "NOT_A_TARGET",
+            Known::ChainInBasis => "CHAIN_IN_BASIS",
+            Known::OfficeNotInWords => "OFFICE_NOT_IN_WORDS",
+            Known::RotateOwed => "ROTATE_OWED",
+            Known::RotateBookless => "ROTATE_BOOKLESS",
+            Known::BookCode => "BOOK_CODE",
+            Known::NotIncluded => "NOT_INCLUDED",
+            Known::NoNoticeVenue => "NO_REVOCATION_CONTRACT",
+            Known::NoticeContract => "REVOCATION_CODE",
+            Known::RootNotInBook => "ROOT_NOT_IN_BOOK",
+            Known::NotAcceded => "NOT_ACCEDED",
+            Known::OfficeElsewhere => "BOOK_OFFICE_OTHER",
+            Known::OfficeIsContract => "OFFICE_IS_CONTRACT",
+            Known::RootKeyAbsent => "ROOT_KEY_ABSENT",
+            Known::FaceUnread => "FACE_UNREAD",
+            Known::FaceNoHome => "FACE_NO_HOME",
+            Known::FaceRotating => "FACE_ROTATING",
+            Known::FaceUnwritable => "FACE_UNWRITABLE",
+            Known::ConsentRefused => "CONSENT_REFUSED",
+            Known::FaceRow => "FACE_ROW",
+            Known::FaceHomeChain => "FACE_HOME_CHAIN",
+            Known::RegistryCode => "REGISTRY_CODE",
+            Known::RotateUnseated => "ROTATE_UNSEATED",
+            Known::RotateUnentered => "ROTATE_UNENTERED",
+            Known::BookClosed => "BOOK_CLOSED",
+            Known::CredentialPassMissing => "CREDENTIAL_PASS_MISSING",
+            Known::CredentialPassUnknown => "CREDENTIAL_PASS_UNKNOWN",
+            Known::CredentialNote => "CREDENTIAL_NOTE",
+            Known::CredentialFull => "CREDENTIAL_FULL",
+            Known::CredentialRowGone => "CREDENTIAL_ROW_GONE",
+            Known::CredentialReclaimed => "CREDENTIAL_RECLAIMED",
+            Known::FaceSealed => "FACE_SEALED",
         }
     }
 }
 
-
-/// The two sentences on screen (what happened, what next) as string-table keys in the UI language, one pair
-/// per member. [`translate`] gives the evidence words used by tests and raw errors (stable format), which are
-/// not shown at the first level.
 impl Known {
     pub fn what(self) -> crate::lang::Key {
         use crate::lang::Key as L;
@@ -948,6 +840,8 @@ impl Known {
             Known::RateLimited => L::FaultWhatRateLimited,
             Known::MethodMissing => L::FaultWhatMethodMissing,
             Known::NodeAuth => L::FaultWhatNodeAuth,
+            Known::ServiceUnserved => L::FaultWhatServiceUnserved,
+            Known::ServiceKeyMissing => L::FaultWhatServiceKeyMissing,
             Known::WrongChain => L::FaultWhatWrongChain,
             Known::NodeRefused => L::FaultWhatNodeRefused,
             Known::NodeTls => L::FaultWhatNodeTls,
@@ -966,7 +860,6 @@ impl Known {
             Known::Unreachable => L::FaultWhatUnreachable,
             Known::Disagree => L::FaultWhatDisagree,
             Known::ChainShape => L::FaultWhatChainShape,
-            Known::PenHeld => L::FaultWhatPenHeld,
             Known::LedgerNotFetched => L::FaultWhatLedgerNotFetched,
             Known::NewerElsewhere => L::FaultWhatNewerElsewhere,
             Known::EntryRefused => L::FaultWhatEntryRefused,
@@ -985,6 +878,7 @@ impl Known {
             Known::RefMissing => L::FaultWhatRefMissing,
             Known::ObjectMissing => L::FaultWhatObjectMissing,
             Known::Broken => L::FaultWhatBroken,
+            Known::WouldBreak => L::FaultWhatWouldBreak,
             Known::ContentShape => L::FaultWhatContentShape,
             Known::QueueShape => L::FaultWhatQueueShape,
             Known::QueueEmpty => L::FaultWhatQueueEmpty,
@@ -994,19 +888,21 @@ impl Known {
             Known::GasNotShown => L::FaultWhatGasNotShown,
             Known::SendFailed => L::FaultWhatSendFailed,
             Known::NotAudited => L::FaultWhatNotAudited,
+            Known::CleanWord => L::FaultWhatCleanWord,
+            Known::SeatUnhomed => L::FaultWhatSeatUnhomed,
+            Known::AuditBehind => L::FaultWhatAuditBehind,
             Known::SubjectMissing => L::FaultWhatSubjectMissing,
             Known::DirEmpty => L::FaultWhatDirEmpty,
             Known::ScanRefused => L::FaultWhatScanRefused,
             Known::FieldMissing => L::FaultWhatFieldMissing,
-            Known::StepSkipped => L::FaultWhatStepSkipped,
             Known::KitRefused => L::FaultWhatKitRefused,
             Known::Conflict => L::FaultWhatConflict,
-            Known::CosignRefused => L::FaultWhatCosignRefused,
             Known::HandedOver => L::FaultWhatHandedOver,
             Known::NoBytes => L::FaultWhatNoBytes,
             Known::WorkerPanicked => L::FaultWhatWorkerPanicked,
             Known::OutcomeLost => L::FaultWhatOutcomeLost,
             Known::NotHisBook => L::FaultWhatNotHisBook,
+            Known::BookNotWhole => L::FaultWhatBookNotWhole,
             Known::NotThisLedger => L::FaultWhatNotThisLedger,
             Known::NotAGrant => L::FaultWhatNotAGrant,
             Known::AlreadyHeld => L::FaultWhatAlreadyHeld,
@@ -1040,6 +936,7 @@ impl Known {
             Known::ExtractPath => L::FaultWhatExtractPath,
             Known::ExtractNothing => L::FaultWhatExtractNothing,
             Known::ExtractClash => L::FaultWhatExtractClash,
+            Known::ExtractName => L::FaultWhatExtractName,
             Known::ExtractNotFolder => L::FaultWhatExtractNotFolder,
             Known::ExtractExists => L::FaultWhatExtractExists,
             Known::ExtractLink => L::FaultWhatExtractLink,
@@ -1054,6 +951,7 @@ impl Known {
             Known::AddressedFolder => L::FaultWhatAddressedFolder,
             Known::AddressNotAnchored => L::FaultWhatAddressNotAnchored,
             Known::AddressChainUnread => L::FaultWhatAddressChainUnread,
+            Known::AddressKeyUnproven => L::FaultWhatAddressKeyUnproven,
             Known::RemoteKit => L::FaultWhatRemoteKit,
             Known::RemoteStatus => L::FaultWhatRemoteStatus,
             Known::RemoteRedirect => L::FaultWhatRemoteRedirect,
@@ -1064,7 +962,6 @@ impl Known {
             Known::RemoteNotHttps => L::FaultWhatRemoteNotHttps,
             Known::NotAnOriginal => L::FaultWhatNotAnOriginal,
             Known::TraceFull => L::FaultWhatTraceFull,
-            Known::ClaimShape => L::FaultWhatClaimShape,
             Known::LocalSeal => L::FaultWhatLocalSeal,
             Known::RecoveryNotPrimary => L::FaultWhatRecoveryNotPrimary,
             Known::PrimaryDelete => L::FaultWhatPrimaryDelete,
@@ -1100,12 +997,47 @@ impl Known {
             Known::CliAloneDropped => L::FaultWhatCliAloneDropped,
             Known::HomeOtherMachine => L::FaultWhatHomeOtherMachine,
             Known::CliWriting => L::FaultWhatCliWriting,
+            Known::ReadsUnkept => L::FaultWhatReadsUnkept,
             Known::HandedOff => L::FaultWhatHandedOff,
             Known::OnChain => L::FaultWhatOnChain,
+            Known::TooEarly => L::FaultWhatTooEarly,
+            Known::UpgradeHanded => L::FaultWhatUpgradeHanded,
+            Known::NotMoved => L::FaultWhatNotMoved,
+            Known::NotATarget => L::FaultWhatNotATarget,
+            Known::ChainInBasis => L::FaultWhatChainInBasis,
+            Known::OfficeNotInWords => L::FaultWhatOfficeNotInWords,
+            Known::RotateOwed => L::FaultWhatRotateOwed,
+            Known::RotateBookless => L::FaultWhatRotateBookless,
+            Known::BookCode => L::FaultWhatBookCode,
+            Known::NotIncluded => L::FaultWhatNotIncluded,
+            Known::NoNoticeVenue => L::FaultWhatNoNoticeVenue,
+            Known::NoticeContract => L::FaultWhatNoticeContract,
+            Known::RootNotInBook => L::FaultWhatRootNotInBook,
+            Known::NotAcceded => L::FaultWhatNotAcceded,
+            Known::OfficeElsewhere => L::FaultWhatOfficeElsewhere,
+            Known::OfficeIsContract => L::FaultWhatOfficeIsContract,
+            Known::RootKeyAbsent => L::FaultWhatRootKeyAbsent,
+            Known::FaceUnread => L::FaultWhatFaceUnread,
+            Known::FaceNoHome => L::FaultWhatFaceNoHome,
+            Known::FaceRotating => L::FaultWhatFaceRotating,
+            Known::FaceUnwritable => L::FaultWhatFaceUnwritable,
+            Known::ConsentRefused => L::FaultWhatConsentRefused,
+            Known::FaceRow => L::FaultWhatFaceRow,
+            Known::FaceHomeChain => L::FaultWhatFaceHomeChain,
+            Known::RegistryCode => L::FaultWhatRegistryCode,
+            Known::RotateUnseated => L::FaultWhatRotateUnseated,
+            Known::RotateUnentered => L::FaultWhatRotateUnentered,
+            Known::BookClosed => L::FaultWhatBookClosed,
+            Known::CredentialPassMissing => L::FaultWhatCredentialPassMissing,
+            Known::CredentialPassUnknown => L::FaultWhatCredentialPassUnknown,
+            Known::CredentialNote => L::FaultWhatCredentialNote,
+            Known::CredentialFull => L::FaultWhatCredentialFull,
+            Known::CredentialRowGone => L::FaultWhatCredentialRowGone,
+            Known::CredentialReclaimed => L::FaultWhatCredentialReclaimed,
+            Known::FaceSealed => L::FaultWhatFaceSealed,
         }
     }
 
-    /// The sentence saying what to do next; `None` when there is nothing to do (the refusal says it all).
     pub fn next(self) -> Option<crate::lang::Key> {
         use crate::lang::Key as L;
         match self {
@@ -1153,6 +1085,8 @@ impl Known {
             Known::RateLimited => Some(L::FaultNextRateLimited),
             Known::MethodMissing => Some(L::FaultNextMethodMissing),
             Known::NodeAuth => Some(L::FaultNextNodeAuth),
+            Known::ServiceUnserved => Some(L::FaultNextServiceUnserved),
+            Known::ServiceKeyMissing => Some(L::FaultNextServiceKeyMissing),
             Known::WrongChain => Some(L::FaultNextWrongChain),
             Known::NodeRefused => Some(L::FaultNextNodeRefused),
             Known::NodeTls => Some(L::FaultNextNodeTls),
@@ -1171,7 +1105,6 @@ impl Known {
             Known::Unreachable => Some(L::FaultNextUnreachable),
             Known::Disagree => Some(L::FaultNextDisagree),
             Known::ChainShape => Some(L::FaultNextChainShape),
-            Known::PenHeld => Some(L::FaultNextPenHeld),
             Known::LedgerNotFetched => Some(L::FaultNextLedgerNotFetched),
             Known::NewerElsewhere => Some(L::FaultNextNewerElsewhere),
             Known::EntryRefused => Some(L::FaultNextEntryRefused),
@@ -1190,6 +1123,7 @@ impl Known {
             Known::RefMissing => Some(L::FaultNextRefMissing),
             Known::ObjectMissing => Some(L::FaultNextObjectMissing),
             Known::Broken => Some(L::FaultNextBroken),
+            Known::WouldBreak => Some(L::FaultNextWouldBreak),
             Known::ContentShape => Some(L::FaultNextContentShape),
             Known::QueueShape => Some(L::FaultNextQueueShape),
             Known::QueueEmpty => Some(L::FaultNextQueueEmpty),
@@ -1199,19 +1133,21 @@ impl Known {
             Known::GasNotShown => Some(L::FaultNextGasNotShown),
             Known::SendFailed => Some(L::FaultNextSendFailed),
             Known::NotAudited => Some(L::FaultNextNotAudited),
+            Known::CleanWord => Some(L::FaultNextCleanWord),
+            Known::SeatUnhomed => Some(L::FaultNextSeatUnhomed),
+            Known::AuditBehind => Some(L::FaultNextAuditBehind),
             Known::SubjectMissing => Some(L::FaultNextSubjectMissing),
             Known::DirEmpty => Some(L::FaultNextDirEmpty),
             Known::ScanRefused => Some(L::FaultNextScanRefused),
             Known::FieldMissing => Some(L::FaultNextFieldMissing),
-            Known::StepSkipped => Some(L::FaultNextStepSkipped),
             Known::KitRefused => Some(L::FaultNextKitRefused),
             Known::Conflict => Some(L::FaultNextConflict),
-            Known::CosignRefused => Some(L::FaultNextCosignRefused),
             Known::HandedOver => Some(L::FaultNextHandedOver),
             Known::NoBytes => Some(L::FaultNextNoBytes),
             Known::WorkerPanicked => Some(L::FaultNextWorkerPanicked),
             Known::OutcomeLost => Some(L::FaultNextOutcomeLost),
             Known::NotHisBook => Some(L::FaultNextNotHisBook),
+            Known::BookNotWhole => Some(L::FaultNextBookNotWhole),
             Known::NotThisLedger => Some(L::FaultNextNotThisLedger),
             Known::NotAGrant => Some(L::FaultNextNotAGrant),
             Known::AlreadyHeld => Some(L::FaultNextAlreadyHeld),
@@ -1241,8 +1177,8 @@ impl Known {
             Known::KitFileBad => Some(L::FaultNextKitFileBad),
             Known::KitFormWord => Some(L::FaultNextKitFormWord),
             Known::KitOriginalsWord => Some(L::FaultNextKitOriginalsWord),
-            Known::ExtractKit | Known::ExtractPath | Known::ExtractNothing | Known::ExtractClash | Known::ExtractNotFolder | Known::ExtractExists | Known::ExtractLink | Known::ExtractChanged | Known::ExtractLanding => None,
-            Known::AddressedNotRecipient | Known::AddressedBroken | Known::AddressedHead | Known::AddressedElsewhere | Known::AddressedKeyShape | Known::AddressedBoth | Known::AddressedFolder | Known::AddressNotAnchored | Known::AddressChainUnread => None,
+            Known::ExtractKit | Known::ExtractPath | Known::ExtractNothing | Known::ExtractClash | Known::ExtractName | Known::ExtractNotFolder | Known::ExtractExists | Known::ExtractLink | Known::ExtractChanged | Known::ExtractLanding => None,
+            Known::AddressedNotRecipient | Known::AddressedBroken | Known::AddressedHead | Known::AddressedElsewhere | Known::AddressedKeyShape | Known::AddressedBoth | Known::AddressedFolder | Known::AddressNotAnchored | Known::AddressChainUnread | Known::AddressKeyUnproven => None,
             Known::RemoteKit => Some(L::FaultNextRemoteKit),
             Known::RemoteStatus => Some(L::FaultNextRemoteStatus),
             Known::RemoteRedirect => Some(L::FaultNextRemoteRedirect),
@@ -1253,7 +1189,6 @@ impl Known {
             Known::RemoteNotHttps => Some(L::FaultNextRemoteNotHttps),
             Known::NotAnOriginal => Some(L::FaultNextNotAnOriginal),
             Known::TraceFull => Some(L::FaultNextTraceFull),
-            Known::ClaimShape => Some(L::FaultNextClaimShape),
             Known::LocalSeal => Some(L::FaultNextLocalSeal),
             Known::RecoveryNotPrimary => Some(L::FaultNextRecoveryNotPrimary),
             Known::PrimaryDelete => Some(L::FaultNextPrimaryDelete),
@@ -1289,13 +1224,48 @@ impl Known {
             Known::CliAloneDropped => None,
             Known::HomeOtherMachine => Some(L::FaultNextHomeOtherMachine),
             Known::CliWriting => Some(L::FaultNextCliWriting),
+            Known::ReadsUnkept => None,
             Known::HandedOff => Some(L::FaultNextHandedOff),
             Known::OnChain => Some(L::FaultNextOnChain),
+            Known::TooEarly => Some(L::FaultNextTooEarly),
+            Known::UpgradeHanded => Some(L::FaultNextUpgradeHanded),
+            Known::NotMoved => Some(L::FaultNextNotMoved),
+            Known::NotATarget => Some(L::FaultNextNotATarget),
+            Known::ChainInBasis => None,
+            Known::OfficeNotInWords => Some(L::FaultNextOfficeNotInWords),
+            Known::RotateOwed => None,
+            Known::RotateBookless => None,
+            Known::BookCode => None,
+            Known::NotIncluded => Some(L::FaultNextNotIncluded),
+            Known::NoNoticeVenue => None,
+            Known::NoticeContract => None,
+            Known::RootNotInBook => Some(L::FaultNextRootNotInBook),
+            Known::NotAcceded => Some(L::FaultNextNotAcceded),
+            Known::OfficeElsewhere => None,
+            Known::OfficeIsContract => None,
+            Known::RootKeyAbsent => None,
+            Known::FaceUnread => Some(L::FaultNextFaceUnread),
+            Known::FaceNoHome => Some(L::FaultNextFaceNoHome),
+            Known::FaceRotating => Some(L::FaultNextFaceRotating),
+            Known::FaceUnwritable => None,
+            Known::ConsentRefused => None,
+            Known::FaceRow => None,
+            Known::FaceHomeChain => None,
+            Known::RegistryCode => None,
+            Known::RotateUnseated => Some(L::FaultNextRotateUnseated),
+            Known::RotateUnentered => Some(L::FaultNextRotateUnentered),
+            Known::BookClosed => Some(L::FaultNextBookClosed),
+            Known::CredentialPassMissing => None,
+            Known::CredentialPassUnknown => None,
+            Known::CredentialNote => None,
+            Known::CredentialFull => Some(L::FaultNextCredentialFull),
+            Known::CredentialRowGone => None,
+            Known::CredentialReclaimed => Some(L::FaultNextCredentialReclaimed),
+            Known::FaceSealed => Some(L::FaultNextFaceSealed),
         }
     }
 }
 
-/// Plain words of known errors. The only source.
 pub fn translate(k: Known) -> &'static str {
     match k {
         Known::FontMissing => "系统里找不到这一面字体,界面会改用别的面顶上",
@@ -1342,6 +1312,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::RateLimited => "节点限流",
         Known::MethodMissing => "这一处节点不提供这一式",
         Known::NodeAuth => "节点要凭据",
+        Known::ServiceUnserved => "REST 服务不答这一问",
+        Known::ServiceKeyMissing => "本机没有这一 REST 服务的钥匙",
         Known::WrongChain => "节点的链号与所选网络不符",
         Known::NodeRefused => "节点拒了,原话在证据尾里",
         Known::NodeTls => "与节点的安全连接没建成(哪一层在证据尾里)",
@@ -1360,9 +1332,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::Unreachable => "配的端点一处也够不着",
         Known::Disagree => "端点之间对不上,承重读取不出绿",
         Known::ChainShape => "链上回来的东西形不对",
-        Known::PenHeld => "这本账还握着笔:恢复之后要等一次对锚对账报 COMPLETE",
         Known::LedgerNotFetched => "导入的身份,账本还没与链上核过尾:这一席的账本对过这把钥的锚、无缺才开写",
-        Known::NewerElsewhere => "取回的账本对不上链上这一位的锚:别处有更新的条目",
+        Known::NewerElsewhere => "链上有本世系的锚而本机没有它们的字节:别处有更新的条目,或同一位置另签过一条",
         Known::EntryRefused => "法拒了这一枚条目,拒因的 token 在证据尾里",
         Known::NoGenesis => "这本账里还没有创建账本的那一条",
         Known::ForkedRoot => "这本账里不止一个根",
@@ -1378,7 +1349,8 @@ pub fn translate(k: Known) -> &'static str {
         Known::NotARepo => "这一处不是一个 git 仓",
         Known::RefMissing => "这个引用在仓里找不到",
         Known::ObjectMissing => "对象库里没有这一枚",
-        Known::Broken => "这本账断链了:全 app 转只读,先走恢复",
+        Known::Broken => "这本账断链了:账本转只读,先走恢复",
+        Known::WouldBreak => "写这一条会让账本断链,一个字节都没写",
         Known::ContentShape => "内容哈希要三十二个字节",
         Known::QueueShape => "待锚队列那一份档的形不对",
         Known::QueueEmpty => "队列里没有挑中的条目",
@@ -1388,19 +1360,21 @@ pub fn translate(k: Known) -> &'static str {
         Known::GasNotShown => "这一批没按这个枚数估过 Gas 费",
         Known::SendFailed => "发出去了,而链上那一笔不是成功",
         Known::NotAudited => "还没有跑过一次对锚审计",
+        Known::CleanWord => "清理只认 yes",
+        Known::SeatUnhomed => "这一席没有账本而换新助记词会改它的地址",
+        Known::AuditBehind => "上次自审之后账本又写入了,或有链没读全",
         Known::SubjectMissing => "注记指的那一条不在这本账里",
         Known::DirEmpty => "这一处目录里一个档也没有",
         Known::ScanRefused => "链上这一趟没扫全(A2 的拒因在证据尾里)",
         Known::FieldMissing => "这一格是必填的,还空着",
-        Known::StepSkipped => "清单不许跳步:先做前一步",
         Known::KitRefused => "这一包出不去(V2 的拒因在证据尾里)",
         Known::Conflict => "同一枚记录上已经有一件带独占旗的授权,窗口还相交",
-        Known::CosignRefused => "连署验签没过(K1 的 token 在证据尾里)",
         Known::HandedOver => "这本账已经承继给新钥了,这一台转只读",
         Known::NoBytes => "只见锚,未见字节",
         Known::WorkerPanicked => "后台那一趟自己塌了",
         Known::OutcomeLost => "后台那一趟做完了,结果没有回到壳",
         Known::NotHisBook => "这一叠字节不是所填那一位的账本",
+        Known::BookNotWhole => "这份记录内容不是从开端起的整本账",
         Known::NotThisLedger => "这里的账不是这一条授权签发者的账,不作料",
         Known::NotAGrant => "这一枚过了法,而它不是一枚授权",
         Known::AlreadyHeld => "这一枚授权已在库里",
@@ -1434,6 +1408,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::ExtractPath => "记录包里有不合包内路径形制的路径",
         Known::ExtractNothing => "包里没有与记录对得上的原件",
         Known::ExtractClash => "两份原件要取成同一个名字",
+        Known::ExtractName => "包里的名字在这台电脑上建不成",
         Known::ExtractNotFolder => "所选的不是文件夹",
         Known::ExtractExists => "所选文件夹里已有同名者",
         Known::ExtractLink => "所选文件夹里那个名字是链接",
@@ -1448,6 +1423,7 @@ pub fn translate(k: Known) -> &'static str {
         Known::AddressedFolder => "加密只用于单文件记录包",
         Known::AddressNotAnchored => "各网络都读完了,没有这个地址自己签的锚",
         Known::AddressChainUnread => "有网络没读完,没找到这个地址的公钥",
+        Known::AddressKeyUnproven => "有节点给的交易证不出自身,没找到这个地址的公钥",
         Known::RemoteKit => "取回的记录包没过包验",
         Known::RemoteStatus => "发布地址上没有这一份",
         Known::RemoteRedirect => "发布地址转向别处",
@@ -1458,7 +1434,6 @@ pub fn translate(k: Known) -> &'static str {
         Known::RemoteNotHttps => "地址不是 https",
         Known::NotAnOriginal => "这份文件不是所选记录的原件",
         Known::TraceFull => "痕迹档到了上限,此后停写",
-        Known::ClaimShape => "认领的字读不成",
         Known::LocalSeal => "本机数据里有一份档解不开",
         Known::RecoveryNotPrimary => "这是次要身份的助记词或密钥文件",
         Known::PrimaryDelete => "主身份不能直接删除",
@@ -1494,40 +1469,94 @@ pub fn translate(k: Known) -> &'static str {
         Known::CliAloneDropped => "主钥换了,命令行凭据失效,纯命令行写入已关",
         Known::HomeOtherMachine => "另一台机器是这一处数据的写者",
         Known::CliWriting => "命令行正在写入这本账,这一步没有做",
+        Known::ReadsUnkept => "这台机器没留下这一趟读链所定的部分,下一趟照旧从头读",
         Known::HandedOff => "这本账已交接到另一处,收回之前不在这里写",
         Known::OnChain => "这一批里有锚链上已有:一笔也不签不发",
+        Known::TooEarly => "链头时刻未晚于上一批的块时刻:一笔也不签不发",
+        Known::UpgradeHanded => "在任钥曾交出这本账:不能用它升级",
+        Known::NotMoved => "这本账尚未升级到 zikaron/2,升级之前不写",
+        Known::NotATarget => "收编(旧法)条目只读,不作目标",
+        Known::ChainInBasis => "这条链已在基底里",
+        Known::OfficeNotInWords => "这本账的现行钥不在这组助记词里,一字未写",
+        Known::RotateOwed => "在任钥还有条目没上链,不换钥",
+        Known::RotateBookless => "基底有链读不到换钥簿(没有簿行或码不对),不换钥",
+        Known::BookCode => "换钥簿那一址的码不是家族的簿:不读不写",
+        Known::NotIncluded => "这一笔已发出,等候时限内还没入块",
+        Known::NoNoticeVenue => "该链无撤销合约:不签带撤销成员的授权、不发告示",
+        Known::NoticeContract => "撤销合约之址的码不是它的钉:不签不发",
+        Known::RootNotInBook => "这一席的根钥不在换钥簿里:入簿之前不签带撤销成员的授权",
+        Known::NotAcceded => "换钥未完成接任:接任之前不签不撤",
+        Known::OfficeElsewhere => "换钥簿上的现任钥不是账本的现任钥:不签不撤",
+        Known::OfficeIsContract => "现任钥是合约地址:发不出告示,不签不撤",
+        Known::RootKeyAbsent => "根钥不在本机:不能入簿",
+        Known::FaceUnread => "面表没读成:不写面条目",
+        Known::FaceNoHome => "没有世系链:不写关联、解除与显示名",
+        Known::FaceRotating => "面表的在任钥不是这一席的在任钥:不写面条目",
+        Known::FaceUnwritable => "面条目写不成其形:一字未写",
+        Known::ConsentRefused => "同意不能用:不写",
+        Known::FaceRow => "面表里这一行不容这一步",
+        Known::FaceHomeChain => "这条链不能立为世系链:不写",
+        Known::RegistryCode => "登记合约的码不是钉住的那一份:不带原文发送",
+        Known::RotateUnseated => "有面条目未落座或面表没读:不换钥",
+        Known::RotateUnentered => "有链的换钥簿没把在任钥记在根名下:不换钥",
+        Known::BookClosed => "这条链的换钥簿入不了",
+        Known::CredentialPassMissing => "命令行没有带程序钥",
+        Known::CredentialPassUnknown => "所带的程序钥开不了凭据",
+        Known::CredentialNote => "程序钥的备注不合:要一行、1 至 40 个字",
+        Known::CredentialFull => "程序钥已到上限",
+        Known::CredentialRowGone => "没有这一把程序钥(已删)",
+        Known::CredentialReclaimed => "命令行凭据不成形(或是旧版的),已删去,纯命令行写入已关",
+        Known::FaceSealed => "已换根:这个根不再写面条目",
     }
 }
 
-/// One error. Two branches, each with an evidence tail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fault {
     class: Class,
     said: String,
     tail: String,
-    /// For faults that carry a spec token (`ENTRY_REFUSED`, `SCAN_REFUSED`), the plain-words key for that
-    /// token; when present, the screen's first sentence uses it. Code, tail and evidence words are
-    /// unaffected.
     say: Option<crate::lang::Key>,
-    /// Likewise, the next-step sentence (`None` uses the closed table's).
     then: Option<crate::lang::Key>,
-    /// For a landing that failed, which of the landing troubles it was, as the glue handed it (the code and
-    /// subject in the tail are made from the same value).
     landing: Option<zikaron_glue::pack::Trouble>,
-    /// For a place a person named that could not be read, that place as given (the tail says it in words;
-    /// this is the same place as a value).
     place: Option<String>,
-    /// For a remote answer refused by its status, that status number (the tail says it in words).
     status: Option<u16>,
-    /// For a connection that failed after going without the system's configuration script, that script's trouble:
-    /// the next-step sentence then says it and the way out ([`Fault::without_script`]).
     script: Option<zikaron_net::PacTrouble>,
-    /// For the sender's "already on chain" refusal, its evidence as values (the hashes held, the earliest one's
-    /// transaction and block; the tail says the same in words): the door hands them over as they are.
     on_chain: Option<(Vec<String>, String, u64)>,
-    /// For a send refused after its batch was landed in flight (no node answered the broadcast, its bytes may be in a
-    /// pool): that batch's transaction, awaited by its hash. The batch is out, never answered as nothing sent.
     out: Option<String>,
+    tails: Option<Box<crate::lang::Words>>,
+    each: Vec<crate::lang::Words>,
+    nodes: Vec<zikaron_send::Why>,
+    ruled: Option<Box<Ruled>>,
+    owned: Option<Box<Owned>>,
+    machine: Option<String>,
+    no_answer: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Owned {
+    Reason(zikaron_glue::door::Own),
+    NotIncluded { entry: String, ledger: String },
+}
+
+pub fn rule_words(rule: zikaron_glue::door::Rule, token: &str) -> Option<(crate::lang::Key, crate::lang::Key)> {
+    use crate::lang::Key as L;
+    use zikaron_glue::door::Rule;
+    use zikaron_glue::retraction::{self as r, revocation as v};
+    match rule {
+        Rule::Revocation if token == v::Invalid::NotInLedger.token() => Some((L::RevokeNotInLedger, L::RevokeNext)),
+        Rule::Revocation if token == v::Invalid::NotAGrant.token() => Some((L::RevokeNotAGrant, L::RevokeNext)),
+        Rule::Retraction if token == r::Invalid::NotInLedger.token() => Some((L::RetractNotInLedger, L::RetractNext)),
+        Rule::WouldBreak if token == zikaron_glue::book::Sender::Outside.as_str() => Some((L::WriteKeyNotCounted, L::WriteKeyNext)),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ruled {
+    pub rule: zikaron_glue::door::Rule,
+    pub token: Option<&'static str>,
+    pub entry_id: Option<String>,
+    pub names: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1546,12 +1575,19 @@ impl Class {
 }
 
 impl Fault {
-    /// Known: plain words from the closed table, with the evidence tail.
-    pub fn known(k: Known, tail: impl Into<String>) -> Fault {
+    pub fn known(k: Known, tail: impl Into<crate::lang::Words>) -> Fault {
+        let w: crate::lang::Words = tail.into();
+        let tail = w.spoken().to_string();
+        let tails = (w.zh != w.en).then(|| Box::new(w));
         Fault {
             class: Class::Known,
             said: format!("{}:{}", k.as_str(), translate(k)),
-            tail: tail.into(),
+            tail,
+            tails,
+            each: Vec::new(),
+            nodes: Vec::new(),
+            ruled: None,
+            owned: None,
             say: None,
             then: None,
             landing: None,
@@ -1560,13 +1596,11 @@ impl Fault {
             script: None,
             on_chain: None,
             out: None,
+            machine: None,
+            no_answer: false,
         }
     }
 
-    /// Landing failures in five forms, each said separately: read/write error, place taken, kit path not
-    /// allowed, duplicate kit path, kit verification failed. The code stays `LANDING`; the tail is only the
-    /// refusal code and its subject (the offending name or the target path). Unrecognized codes use the
-    /// closed table's two sentences.
     pub fn landing(code: &str, subject: impl AsRef<str>) -> Fault {
         use crate::lang::Key as L;
         let (say, then) = match code {
@@ -1580,15 +1614,11 @@ impl Fault {
         Fault { say, then, ..Fault::known(Known::Landing, format!("{code}: {}", subject.as_ref())) }
     }
 
-    /// A landing that failed, from the glue's own trouble: the same code, tail and sentences as
-    /// [`Fault::landing`], with the trouble itself kept beside them ([`Fault::landing_trouble`]).
     pub fn of_landing(t: impl Into<zikaron_glue::pack::Trouble>) -> Fault {
         let t = t.into();
         Fault { landing: Some(t.clone()), ..Fault::landing(t.code(), t.subject()) }
     }
 
-    /// The same fault, recording which place a person named could not be read (an already recorded place is
-    /// kept: the innermost wins).
     pub fn at_place(mut self, place: impl Into<String>) -> Fault {
         if self.place.is_none() {
             self.place = Some(place.into());
@@ -1596,18 +1626,15 @@ impl Fault {
         self
     }
 
-    /// The same fault, carrying the remote status number it was refused for.
-    /// A connection that failed after it went without the system's configuration script (`x`, its trouble): the
-    /// next-step sentence says the script's trouble and the way out instead of the network's.
     pub fn without_script(mut self, x: zikaron_net::PacTrouble) -> Fault {
         self.script = Some(x);
         self
     }
 
-    /// The same known refusal with another evidence tail (every node's words for one attempt): what it says and its
-    /// next step stay this one's.
-    pub fn retold(mut self, tail: impl Into<String>) -> Fault {
-        self.tail = tail.into();
+    pub fn retold(mut self, tail: impl Into<crate::lang::Words>) -> Fault {
+        let w: crate::lang::Words = tail.into();
+        self.tail = w.spoken().to_string();
+        self.tails = (w.zh != w.en).then(|| Box::new(w));
         self
     }
 
@@ -1616,90 +1643,76 @@ impl Fault {
         self
     }
 
-    /// The remote status number this fault was refused for (`None` for every other fault).
     pub fn status(&self) -> Option<u16> {
         self.status
     }
 
-    /// The sender's "already on chain" evidence as values: the hashes held, the earliest one's transaction and
-    /// block (`None` for every other fault).
     pub fn on_chain(&self) -> Option<&(Vec<String>, String, u64)> {
         self.on_chain.as_ref()
     }
 
-    /// The transaction of a batch this send left in flight before it failed (`None` for every other fault).
     pub fn out(&self) -> Option<&str> {
         self.out.as_deref()
     }
 
-    /// The same fault, for a send whose batch is out (in flight, awaited by `tx`) though the broadcast failed.
     pub fn sent_out(self, tx: String) -> Fault {
         Fault { out: Some(tx), ..self }
     }
 
-    /// The place a person named that could not be read (`None` for every other fault).
     pub fn place(&self) -> Option<&str> {
         self.place.as_deref()
     }
 
-    /// Which landing trouble this fault was made from (`None` for every other fault).
     pub fn landing_trouble(&self) -> Option<&zikaron_glue::pack::Trouble> {
         self.landing.as_ref()
     }
 
-    /// The core rejected an entry: the tail is the token's name; the screen's sentence comes from
-    /// [`entry_token_say`].
     pub fn entry_refused(t: zikaron::tokens::Token) -> Fault {
         Fault { say: Some(entry_token_say(t)), ..Fault::known(Known::EntryRefused, format!("{t:?}")) }
     }
 
-    /// An entry in a mirror bundle was rejected by the core: the code stays `MIRROR_ENTRY` (the whole bundle
-    /// is refused), the tail carries the file name and token; the screen's sentence comes from
-    /// [`entry_token_say`].
     pub fn mirror_entry(name: &str, t: zikaron::tokens::Token) -> Fault {
-        Fault { say: Some(entry_token_say(t)), ..Fault::known(Known::MirrorEntry, crate::lang::filln(crate::lang::Key::Tail193, &[name, &format!("{t:?}")])) }
+        Fault { say: Some(entry_token_say(t)), ..Fault::known(Known::MirrorEntry, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail193, &[name, &format!("{t:?}")]))) }
     }
 
-    /// A chain scan did not read everything: the tail is as the caller gave it; the screen's sentence comes
-    /// from [`scan_refusal_say`] by the first refusal (with none, for example a malformed node address, the
-    /// closed table's sentence).
-    pub fn scan_refused(tail: impl Into<String>, rs: &[zikaron_anchor::scan::Refusal]) -> Fault {
-        Fault { say: rs.first().map(scan_refusal_say), ..Fault::known(Known::ScanRefused, tail) }
+    pub fn scan_refused(tail: impl Into<crate::lang::Words>, rs: &[zikaron_anchor::scan::Refusal]) -> Fault {
+        let over = rs.iter().find(|r| r.over_asks().is_some());
+        Fault { say: over.or(rs.first()).map(scan_refusal_say), then: over.map(|_| crate::lang::Key::FaultNextOverAsks), ..Fault::known(Known::ScanRefused, tail) }
     }
 
-    /// How a scan refusal is written in the evidence tail (`code:detail`). One answer.
     pub fn scan_tail(r: &zikaron_anchor::scan::Refusal) -> String {
         format!("{}:{}", r.code(), r.detail())
     }
 
-    /// Unknown: passed through unchanged; the sentence on screen is the underlying one.
     pub fn unknown(tail: impl Into<String>) -> Fault {
         let tail = tail.into();
-        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None, script: None, on_chain: None, out: None }
+        Fault { class: Class::Unknown, said: tail.clone(), tail, say: None, then: None, landing: None, place: None, status: None, script: None, on_chain: None, out: None, tails: None, each: Vec::new(), nodes: Vec::new(), ruled: None, owned: None, machine: None, no_answer: false }
     }
 
     pub fn class(&self) -> Class {
         self.class
     }
 
-    /// The sentence said on screen.
     pub fn said(&self) -> &str {
         &self.said
     }
 
-    /// The same fault in other words on screen (first sentence, next-step sentence); code, tail and evidence
-    /// unchanged. `None` keeps the current wording.
+    pub fn no_answer(self) -> Fault {
+        Fault { no_answer: true, ..self }
+    }
+
+    pub fn unanswered(&self) -> bool {
+        self.no_answer || self.which().is_some_and(Known::unanswered)
+    }
+
     pub fn worded(self, say: Option<crate::lang::Key>, then: Option<crate::lang::Key>) -> Fault {
         Fault { say: say.or(self.say), then: then.or(self.then), ..self }
     }
 
-    /// The next-step sentence this fault was given (`worded`), if any.
     pub fn then_key(&self) -> Option<crate::lang::Key> {
         self.then
     }
 
-    /// The key of the sentence said first for a known fault (its own wording, or the table's); `None` for the
-    /// unknown branch, which has no table sentence.
     pub fn what_key(&self) -> Option<crate::lang::Key> {
         match (self.which(), self.say) {
             (Some(_), Some(said)) => Some(said),
@@ -1708,8 +1721,6 @@ impl Fault {
         }
     }
 
-    /// The plain-words sentence shown at the first level: for the known branch, without the table code (code
-    /// and tail go to the raw error); the unknown branch has no plain words and stays as is.
     pub fn human(&self) -> &str {
         match (self.which(), self.say) {
             (Some(_), Some(said)) => crate::lang::t(said),
@@ -1718,8 +1729,6 @@ impl Fault {
         }
     }
 
-    /// What to do next (the second sentence). The unknown branch has no table sentence and points to the raw
-    /// error.
     pub fn next(&self) -> String {
         use crate::lang::{fill1, t, Key};
         if let Some(x) = self.script {
@@ -1730,14 +1739,12 @@ impl Fault {
             };
         }
         match self.which() {
-            Some(_) if self.then.is_some() => t(self.then.unwrap_or(Key::FaultNextUnknown)).to_string(),
+            Some(_) if self.then.is_some() => self.then.map(|then| fill1(then, &self.tail)).unwrap_or_default(),
             Some(k) => k.next().map(t).unwrap_or("").to_string(),
             None => t(Key::FaultNextUnknown).to_string(),
         }
     }
 
-    /// The raw error field: table code plus evidence tail (known); the unknown branch is the sentence from
-    /// below.
     pub fn raw(&self) -> String {
         match self.which() {
             Some(k) if self.tail.is_empty() => k.as_str().to_string(),
@@ -1746,36 +1753,84 @@ impl Fault {
         }
     }
 
-    /// Which member of the closed table a known fault is (recognized from the code; codes come from
-    /// `Known::as_str`).
+    pub fn shown(&self) -> String {
+        if !self.nodes.is_empty() {
+            return crate::chainx::plain_of(&self.nodes).join("\n");
+        }
+        self.tail.split(" · ").map(str::trim).filter(|p| !p.is_empty() && !code_like(p) && !p.contains("{\"")).collect::<Vec<_>>().join(" · ")
+    }
+
     pub fn which(&self) -> Option<Known> {
         if self.class != Class::Known {
             return None;
         }
-        let code = self.said.split_once(':').map(|(c, _)| c).unwrap_or(&self.said);
-        Known::ALL.iter().copied().find(|k| k.as_str() == code)
+        Known::of_str(self.said.split_once(':').map(|(c, _)| c).unwrap_or(&self.said))
     }
 
-    /// Evidence words: `said · tail`. Tests and readings built from faults (status line, check input source,
-    /// mirror and vault refusals) parse this form (the first word up to `:` is the code), so the format is
-    /// stable. The screen sentences and raw error use `human`, `next` and `raw`.
     pub fn evidence(&self) -> String {
         format!("{} · {}", self.said, self.tail)
     }
 
-    /// Evidence tail: the original return from below, kept in both branches.
     pub fn tail(&self) -> &str {
         &self.tail
     }
 
-    /// Whether the unknown branch passed through byte for byte.
+    pub fn nodes(&self) -> &[zikaron_send::Why] {
+        &self.nodes
+    }
+
+    pub fn each(&self) -> Vec<&str> {
+        self.each.iter().map(|w| w.spoken()).collect()
+    }
+
+    pub fn ruled(self, rule: zikaron_glue::door::Rule, token: Option<&'static str>, entry_id: Option<String>, names: Option<Vec<String>>) -> Fault {
+        let words = token.and_then(|t| rule_words(rule, t));
+        Fault { say: self.say.or(words.map(|w| w.0)), then: self.then.or(words.map(|w| w.1)), ruled: Some(Box::new(Ruled { rule, token, entry_id, names })), ..self }
+    }
+
+    pub fn rule(&self) -> Option<&Ruled> {
+        self.ruled.as_deref()
+    }
+
+    pub fn owned(self, o: Owned) -> Fault {
+        Fault { owned: Some(Box::new(o)), ..self }
+    }
+
+    pub fn owned_by(&self) -> Option<&Owned> {
+        self.owned.as_deref()
+    }
+
+    pub fn in_machine_words(self, m: String) -> Fault {
+        Fault { machine: Some(m), ..self }
+    }
+
+    pub fn machine(&self) -> Option<&str> {
+        self.machine.as_deref()
+    }
+
+    pub fn gate_owned(self) -> Fault {
+        use zikaron_glue::door::Own;
+        match self.which() {
+            Some(Known::LedgerNotFetched | Known::NewerElsewhere | Known::Broken) => self.owned(Owned::Reason(Own::ReadOnly)),
+            Some(Known::HandedOff) => self.owned(Owned::Reason(Own::HandedOff)),
+            Some(Known::NoChainId | Known::NoRegistry | Known::Disagree) => self.owned(Owned::Reason(Own::ChainUnread)),
+            Some(k) if Known::NETWORK.contains(&k) => self.owned(Owned::Reason(Own::ChainUnread)),
+            _ => self,
+        }
+    }
+
+    pub fn tail_in(&self, l: crate::lang::Lang) -> &str {
+        match &self.tails {
+            Some(w) => w.of(l),
+            None => &self.tail,
+        }
+    }
+
     pub fn passthrough(&self) -> bool {
         self.class == Class::Unknown && self.said == self.tail
     }
 }
 
-/// Entry rejection tokens to plain words (the 26 members of law §10). Exhaustive over the closed type: a new
-/// token does not compile until added here.
 pub fn entry_token_say(t: zikaron::tokens::Token) -> crate::lang::Key {
     use crate::lang::Key as L;
     use zikaron::tokens::Token as T;
@@ -1809,45 +1864,39 @@ pub fn entry_token_say(t: zikaron::tokens::Token) -> crate::lang::Key {
     }
 }
 
-/// Scan refusals to plain words (five members; a window too wide for the node's span says what to do). Exhaustive,
-/// as above.
 pub fn scan_refusal_say(r: &zikaron_anchor::scan::Refusal) -> crate::lang::Key {
     use crate::lang::Key as L;
-    use zikaron_anchor::scan::Refusal as R;
+    use zikaron_anchor::rpc::Broke;
+    use zikaron_anchor::scan::{Asked, Refusal as R};
     match r {
         R::ChainIdMismatch { .. } => L::TokScanChainId,
         R::NoEndpoint(_) => L::TokScanNoEndpoint,
-        R::Unanswered { asked: zikaron_anchor::scan::Asked::TooWide { .. }, .. } => L::TokScanTooWide,
+        R::Unanswered { asked: Asked::Broke { broke: Broke::NoKey { .. }, .. }, .. } => L::TokScanNoKey,
+        R::Unanswered { asked: Asked::Broke { broke: Broke::Unserved { .. }, .. }, .. } => L::TokScanUnserved,
+        R::Unanswered { asked: Asked::Declined { width: Some(_), .. }, .. } => L::TokScanTooWide,
+        R::Unanswered { asked: Asked::OverAsks { .. }, .. } => L::TokScanOverAsks,
         R::Unanswered { .. } => L::TokScanUnanswered,
         R::TxNotItself(_) => L::TokScanTxNotItself,
         R::Malformed(_) => L::TokScanMalformed,
     }
 }
 
-/// A whole number typed in a cell that goes into an entry: within the spec's whole-number ceiling
-/// (`2^53 − 1`), or refused as a shape error (`SETTINGS_SHAPE`) with one of two messages: past the ceiling
-/// (any run of digits beyond it, within 64 bits or not), or not a whole number at all (`not_a_number`, given
-/// the text). Surrounding whitespace, leading zeros and a leading `+` read as the same number.
 pub fn whole_within_ceiling(typed: &str, not_a_number: crate::lang::Key) -> Result<u64, Fault> {
     let t = typed.trim();
     let digits = t.strip_prefix('+').unwrap_or(t);
-    let past = || Fault::known(Known::SettingsShape, crate::lang::filln(crate::lang::Key::TailPastIntCeiling, &[t]));
+    let past = || Fault::known(Known::SettingsShape, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::TailPastIntCeiling, &[t])));
     match t.parse::<u64>() {
         Ok(n) if n <= zikaron::json::MAX_INT => Ok(n),
         Ok(_) => Err(past()),
         Err(_) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => Err(past()),
-        Err(_) => Err(Fault::known(Known::SettingsShape, crate::lang::filln(not_a_number, &[&format!("{t:?}")]))),
+        Err(_) => Err(Fault::known(Known::SettingsShape, crate::lang::both_of(|| crate::lang::filln(not_a_number, &[&format!("{t:?}")])))),
     }
 }
 
-/// Classifies an I/O error by the one table of system errors both ends use (`zikaron_seal::Trouble::io`). Only the
-/// table's members are recognized; everything else goes to the unknown branch, never guessed.
 pub fn classify(e: &std::io::Error, subject: &str) -> Fault {
     Fault::from(zikaron_seal::Trouble::io(e, subject))
 }
 
-/// The sealed layer's code as this fault table's member (`None`: a system error with no code of its own, said as
-/// unknown). Exhaustive: a code the sealed layer adds does not compile until it is said here.
 pub fn known_of_sealed(c: zikaron_seal::Code) -> Option<Known> {
     use zikaron_seal::Code as C;
     Some(match c {
@@ -1883,10 +1932,18 @@ pub fn known_of_sealed(c: zikaron_seal::Code) -> Option<Known> {
         C::HomeHeld => Known::HomeHeld,
         C::HomeOtherMachine => Known::HomeOtherMachine,
         C::HandedOff => Known::HandedOff,
+        C::CredentialPassMissing => Known::CredentialPassMissing,
+        C::CredentialPassUnknown => Known::CredentialPassUnknown,
+        C::CredentialNote => Known::CredentialNote,
+        C::CredentialFull => Known::CredentialFull,
+        C::CredentialRowGone => Known::CredentialRowGone,
     })
 }
 
-/// A refusal of the sealed layer (`zikaron-seal`) as one of this table's faults, its evidence unchanged.
+fn code_like(p: &str) -> bool {
+    p.len() >= 2 && p.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') && p.chars().any(|c| c.is_ascii_uppercase())
+}
+
 impl From<zikaron_seal::Trouble> for Fault {
     fn from(t: zikaron_seal::Trouble) -> Fault {
         match known_of_sealed(t.code) {
@@ -1896,8 +1953,10 @@ impl From<zikaron_seal::Trouble> for Fault {
     }
 }
 
-/// The sender's code as this fault table's member. Exhaustive: a code the sender adds does not compile until it is
-/// said here.
+pub fn refusal_words(code: &str) -> String {
+    Known::of_str(code).map(|k| crate::lang::t(k.what()).to_string()).unwrap_or_else(|| code.to_string())
+}
+
 pub fn known_of_sent(c: zikaron_send::Code) -> Known {
     use zikaron_send::Code as C;
     match c {
@@ -1916,6 +1975,8 @@ pub fn known_of_sent(c: zikaron_send::Code) -> Known {
         C::RateLimited => Known::RateLimited,
         C::MethodMissing => Known::MethodMissing,
         C::NodeAuth => Known::NodeAuth,
+        C::ServiceUnserved => Known::ServiceUnserved,
+        C::ServiceKeyMissing => Known::ServiceKeyMissing,
         C::NodeRefused => Known::NodeRefused,
         C::NodeTls => Known::NodeTls,
         C::NodeTimeout => Known::NodeTimeout,
@@ -1934,25 +1995,34 @@ pub fn known_of_sent(c: zikaron_send::Code) -> Known {
         C::NoChainId => Known::NoChainId,
         C::NoRegistry => Known::NoRegistry,
         C::OnChain => Known::OnChain,
+        C::TooEarly => Known::TooEarly,
         C::Broken => Known::Broken,
         C::HandedOff => Known::HandedOff,
         C::NotFetched => Known::LedgerNotFetched,
         C::NewerElsewhere => Known::NewerElsewhere,
+        C::NotIncluded => Known::NotIncluded,
+        C::NoNoticeVenue => Known::NoNoticeVenue,
+        C::NoticeContract => Known::NoticeContract,
+        C::RootNotInBook => Known::RootNotInBook,
+        C::NotAcceded => Known::NotAcceded,
+        C::OfficeElsewhere => Known::OfficeElsewhere,
+        C::OfficeIsContract => Known::OfficeIsContract,
+        C::BookCode => Known::BookCode,
+        C::RegistryCode => Known::RegistryCode,
     }
 }
 
-/// A refusal of the sender (`zikaron-send`) as one of this table's faults, its evidence said in this desktop's
-/// words (`chainx::said_of`): a scan's refusal with its first refusal's sentence, a connection made without the
-/// system's proxy script with that script's trouble.
 impl From<zikaron_send::Trouble> for Fault {
     fn from(t: zikaron_send::Trouble) -> Fault {
         let f = match (&t.code, &t.why) {
-            (zikaron_send::Code::ScanRefused, zikaron_send::Why::Scan { refused, .. }) => Fault::scan_refused(crate::chainx::said_of(&t.why), refused),
+            (zikaron_send::Code::ScanRefused, zikaron_send::Why::Scan { refused, .. }) => Fault::scan_refused(crate::lang::both_of(|| crate::chainx::said_of(&t.why)), refused),
             (zikaron_send::Code::OnChain, zikaron_send::Why::OnChain { names, tx, block }) => {
-                Fault { on_chain: Some((names.clone(), tx.clone(), *block)), ..Fault::known(Known::OnChain, crate::chainx::said_of(&t.why)) }
+                Fault { on_chain: Some((names.clone(), tx.clone(), *block)), ..Fault::known(Known::OnChain, crate::lang::both_of(|| crate::chainx::said_of(&t.why))) }
             }
-            _ => Fault::known(known_of_sent(t.code), crate::chainx::said_of(&t.why)),
+            _ => Fault::known(known_of_sent(t.code), crate::lang::both_of(|| crate::chainx::said_of(&t.why))),
         };
+        let f = Fault { each: nodes_said(&t.why).iter().map(|w| crate::lang::both_of(|| crate::chainx::said_of(w))).collect(), nodes: nodes_said(&t.why).to_vec(), machine: Some(zikaron_send::said(&t.why)), ..f };
+        let f = if f.which() == Some(Known::Unreachable) && reached_and_refused(nodes_said(&t.why)) { f.worded(Some(crate::lang::Key::FaultWhatUnanswered), Some(crate::lang::Key::FaultNextUnanswered)) } else { f };
         match t.script {
             Some(x) => f.without_script(x),
             None => f,
@@ -1960,7 +2030,19 @@ impl From<zikaron_send::Trouble> for Fault {
     }
 }
 
-/// So the sealed layer can read its own refusals back from a fault (`envelope::Unread::of`).
+pub fn reached_and_refused(nodes: &[zikaron_send::Why]) -> bool {
+    nodes.iter().any(|w| matches!(w, zikaron_send::Why::Node { trouble: zikaron_anchor::rpc::Trouble::Node(_), .. }))
+}
+
+fn nodes_said(w: &zikaron_send::Why) -> &[zikaron_send::Why] {
+    match w {
+        zikaron_send::Why::Each(xs) => xs,
+        zikaron_send::Why::AtChain { why, .. } => nodes_said(why),
+        zikaron_send::Why::Node { trouble: zikaron_anchor::rpc::Trouble::Node(_), .. } | zikaron_send::Why::Scan { .. } => std::slice::from_ref(w),
+        _ => &[],
+    }
+}
+
 impl zikaron_seal::Coded for Fault {
     fn sealed_code(&self) -> Option<zikaron_seal::Code> {
         use zikaron_seal::Code as C;
@@ -1970,7 +2052,7 @@ impl zikaron_seal::Coded for Fault {
             C::KeyboxNotEmpty, C::KdfBelowFloor, C::KeystoreParams, C::KeyMalformed, C::PinSet, C::PinShape, C::PinWrong,
             C::RecoveryNoMatch, C::RecoveryNotPrimary, C::LocalSeal, C::Ledger, C::ContentShape, C::SettingsShape, C::QueueShape,
             C::MachineShape, C::IdentitiesShape, C::CredentialExpired, C::CredentialMissing, C::CredentialShape, C::HomeHeld, C::HomeOtherMachine,
-            C::HandedOff,
+            C::HandedOff, C::CredentialPassMissing, C::CredentialPassUnknown, C::CredentialNote, C::CredentialFull, C::CredentialRowGone,
         ]
         .into_iter()
         .find(|c| known_of_sealed(*c) == Some(k))
@@ -1978,5 +2060,164 @@ impl zikaron_seal::Coded for Fault {
 
     fn sealed_tail(&self) -> &str {
         self.tail()
+    }
+}
+
+#[cfg(test)]
+mod unanswered_tests {
+    use super::*;
+
+    #[test]
+    fn a_node_reached_that_refused_is_never_said_unreachable() {
+        use zikaron_anchor::rpc::{Broke, Trouble as R};
+        use zikaron_send::{Code, Trouble, Why};
+        let closed = |n: &str| Why::Node { node: n.into(), trouble: R::Transport(Broke::Closed { node: n.into() }) };
+        let refused = |n: &str| Why::Node { node: n.into(), trouble: R::Node("{\"code\":-32000,\"message\":\"logs unavailable\"}".into()) };
+        let none: Fault = Trouble::new(Code::Unreachable, Why::Each(vec![closed("http://a"), closed("http://b")])).into();
+        let one: Fault = Trouble::new(Code::Unreachable, Why::Each(vec![closed("http://a"), refused("http://b")])).into();
+        let only: Fault = Trouble::new(Code::Unreachable, Why::Each(vec![refused("http://b")])).into();
+        for f in [&none, &one, &only] {
+            assert_eq!(f.which(), Some(Known::Unreachable), "the name stays: {f:?}");
+        }
+        assert_eq!((none.what_key(), none.next()), (Some(crate::lang::Key::FaultWhatUnreachable), crate::lang::t(crate::lang::Key::FaultNextUnreachable).to_string()));
+        for f in [&one, &only] {
+            assert_eq!((f.what_key(), f.next()), (Some(crate::lang::Key::FaultWhatUnanswered), crate::lang::t(crate::lang::Key::FaultNextUnanswered).to_string()), "{f:?}");
+        }
+        assert_eq!(one.nodes().len(), 2, "each node in the details, as before");
+        assert!(!reached_and_refused(&[closed("http://a")]) && reached_and_refused(&[closed("http://a"), refused("http://b")]));
+        let named: Fault = Trouble::new(Code::NodeRefused, Why::Each(vec![refused("http://b")])).into();
+        assert_eq!(named.what_key(), Some(crate::lang::Key::FaultWhatNodeRefused));
+    }
+}
+
+#[cfg(test)]
+mod shown_tests {
+    use super::*;
+
+    #[test]
+    fn every_refusal_whose_next_step_points_to_the_nodes_words_shows_them() {
+        use zikaron_anchor::rpc::Trouble as R;
+        use zikaron_send::{Code, Trouble, Why};
+        let words = "{\"code\":-32000,\"message\":\"account service is closed for maintenance\"}";
+        let node = "http://127.0.0.1:5";
+        let refused = || Why::Node { node: node.into(), trouble: R::Node(words.into()) };
+        let pointing: Vec<Known> = Known::ALL.iter().copied().filter(|k| k.next() == Some(crate::lang::Key::FaultNextNodeRefused)).collect();
+        assert!(!pointing.is_empty());
+        for k in pointing {
+            let codes: Vec<Code> = Code::ALL.iter().copied().filter(|c| known_of_sent(*c) == k).collect();
+            assert!(!codes.is_empty(), "{k:?} comes from a node's answer");
+            for c in codes {
+                for why in [refused(), Why::Each(vec![refused()]), Why::AtChain { chain: 31337, why: Box::new(refused()) }] {
+                    let f: Fault = Trouble::new(c, why.clone()).into();
+                    assert!(f.shown().contains(words), "{c:?} {why:?}: {:?}", f.shown());
+                }
+            }
+        }
+        let nonce: Fault = zikaron_send::node::said_trouble(node, &R::Node(words.into())).into();
+        assert_eq!(nonce.next(), crate::lang::t(crate::lang::Key::FaultNextNodeRefused), "the refused question for the nonce");
+        assert!(nonce.shown().contains(words), "{:?}", nonce.shown());
+    }
+
+    #[test]
+    fn a_node_giving_way_by_the_cap_shows_why_and_what_it_said_last() {
+        use zikaron_anchor::scan::{Asked, Refusal};
+        use zikaron_send::{Code, Trouble, Why};
+        let words = "{\"code\":-32000,\"message\":\"query exceeds max block range 2\"}";
+        let r = Refusal::Unanswered { chain: 31337, asked: Asked::OverAsks { cap: 7, said: Some(words.into()) } };
+        let line = format!("http://127.0.0.1:5 {}", zikaron_anchor::send::NotSaid::Logs(r.clone()).evidence());
+        let f: Fault = Trouble::new(Code::ScanRefused, Why::Scan { unanswered: vec![Why::Text(line)], refused: vec![r.clone()] }).into();
+        assert!(f.shown().contains("OVER_ASKS 7") && f.shown().contains(words), "{:?}", f.shown());
+        assert_eq!(f.next(), crate::lang::t(crate::lang::Key::FaultNextOverAsks));
+        let alone: Fault = Trouble::new(Code::ScanRefused, Why::Scan { unanswered: Vec::new(), refused: vec![r] }).into();
+        assert!(alone.shown().contains("OVER_ASKS 7") && alone.shown().contains(words), "{:?}", alone.shown());
+    }
+
+    #[test]
+    fn the_details_shown_carry_values_never_codes() {
+        let missing = Fault::known(Known::FileMissing, "/p/a.txt");
+        assert_eq!(missing.shown(), "/p/a.txt");
+        assert!(missing.raw().starts_with(Known::FileMissing.as_str()), "the code stays in raw");
+        assert_eq!(Fault::known(Known::FileMissing, "NOT_RECIPIENT").shown(), "", "a token alone shows nothing");
+        assert_eq!(Fault::unknown(r#"NO_BYTES · /p/b · {"code":-32012,"message":"x"}"#).shown(), "/p/b");
+    }
+}
+
+#[cfg(test)]
+mod next_tests {
+    use super::*;
+
+    fn sources(at: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(at).expect("the source reads").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                sources(&p, out);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                let text = std::fs::read_to_string(&p).expect("a source file reads");
+                out.push(text.split("#[cfg(test)]").next().unwrap_or_default().to_string());
+            }
+        }
+    }
+
+    fn args_of(call: &str) -> Vec<String> {
+        let (mut depth, mut cur, mut out) = (0usize, String::new(), Vec::new());
+        for ch in call.chars() {
+            match ch {
+                '(' | '[' | '{' => {
+                    depth += 1;
+                    cur.push(ch);
+                }
+                ')' | ']' | '}' if depth == 0 => break,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    cur.push(ch);
+                }
+                ',' if depth == 0 => out.push(std::mem::take(&mut cur)),
+                _ => cur.push(ch),
+            }
+        }
+        out.push(cur);
+        out.into_iter().map(|a| a.trim().to_string()).collect()
+    }
+
+    fn key_named(arg: &str) -> Option<String> {
+        let inner = arg.strip_prefix("Some(")?.strip_suffix(')')?;
+        Some(inner.rsplit("::").next()?.trim().to_string())
+    }
+
+    fn then_keys() -> Vec<String> {
+        let mut files = Vec::new();
+        sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut names = Vec::new();
+        for f in &files {
+            for (i, _) in f.match_indices(".worded(") {
+                if let Some(name) = args_of(&f[i + ".worded(".len()..]).get(1).and_then(|a| key_named(a)) {
+                    names.push(name);
+                }
+            }
+        }
+        let fault = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fault.rs")).expect("fault.rs");
+        let table = fault.split("pub fn rule_words(").nth(1).and_then(|b| b.split("\n}\n").next()).unwrap_or_default();
+        for (i, _) in table.match_indices("Some((") {
+            if let Some(second) = args_of(&table[i + "Some((".len()..]).get(1) {
+                names.push(second.rsplit("::").next().unwrap_or_default().to_string());
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    #[test]
+    fn every_next_step_handed_as_then_is_said_whole_with_the_faults_own_evidence() {
+        let names = then_keys();
+        assert!(names.iter().any(|n| n == "ExitBehindSay"), "the reading finds the then keys: {names:?}");
+        for name in &names {
+            let key = crate::lang::Key::ALL.iter().copied().find(|k| format!("{k:?}") == *name).unwrap_or_else(|| panic!("{name} is handed as a then and is no key"));
+            let said = Fault::known(Known::Broken, "7").worded(None, Some(key)).next();
+            let slot = said.match_indices('{').any(|(i, _)| said[i + 1..].split('}').next().is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())));
+            assert!(!slot && !said.is_empty(), "{name}: {said}");
+        }
+        let behind = Fault::known(Known::Broken, "7").worded(Some(crate::lang::Key::ExitBehind), Some(crate::lang::Key::ExitBehindSay));
+        assert_eq!(behind.next(), crate::lang::fill1(crate::lang::Key::ExitBehindSay, "7"));
     }
 }

@@ -1,7 +1,3 @@
-//! Checks of the control library, on the committed bytes: each either computes the library's own functions or
-//! scans its source. Expected numbers and colors are the design's, written here, not read from the tables
-//! under test.
-
 use std::path::{Path, PathBuf};
 
 fn src() -> PathBuf {
@@ -21,8 +17,6 @@ fn files() -> Vec<(String, String)> {
     out
 }
 
-/// Comments and docs also mention the scanned words (this file itself names `include_bytes!`), so comment
-/// lines are removed first: the scan is of code, not prose.
 fn code_only(s: &str) -> String {
     s.lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -34,11 +28,6 @@ fn hex(c: zikaron_ui::egui::Color32) -> String {
     format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
 }
 
-/// Bytes live only in the faces the closed table marks `Place::Embedded` on this target: monospace and Latin
-/// body everywhere, and the Chinese face on every system but macOS (macOS takes it from the system; Windows
-/// carries it as the fallback for the system face). Embedding happens only in `fonts.rs`; the files this
-/// build carries (an `include_bytes!` gated to another OS does not ship) are exactly the table's embedded
-/// files, and each reports its licence.
 #[test]
 fn bytes_are_embedded_only_where_the_closed_table_says_so() {
     use zikaron_ui::fonts::{embedded, Place, OFL, ROLES};
@@ -48,14 +37,13 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
         }
         assert!(!code_only(&text).contains("include_bytes!"), "{name} 里有 include_bytes!:字节只住 fonts.rs");
     }
-    // The table's embedded files: the first choices, the fallbacks that are embedded (Windows falls back to
-    // the embedded Chinese face), and the Latin weights of medium and strong text.
     let mut declared: Vec<&str> = ROLES
         .iter()
         .filter(|(_, _, _, p)| *p == Place::Embedded)
         .map(|(_, f, _, _)| *f)
         .chain(zikaron_ui::fonts::FALLBACK.iter().filter(|(_, _, _, p)| *p == Place::Embedded).map(|(_, f, _, _)| *f))
         .chain(zikaron_ui::fonts::LATIN_WEIGHTS.iter().map(|(_, f)| *f))
+        .chain(std::iter::once(zikaron_ui::fonts::MONO_BOLD_FILE))
         .collect();
     declared.sort();
     declared.dedup();
@@ -66,7 +54,6 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
     for (i, l) in lines.iter().enumerate() {
         let Some(at) = l.find("include_bytes!(\"") else { continue };
         let gate = if i > 0 { lines[i - 1] } else { "" };
-        // A gate names this system (`target_os = "<os>"`) or every system but one (`not(target_os = "<os>")`).
         let names_this = gate.contains(&format!("\"{}\"", std::env::consts::OS));
         let elsewhere = if gate.starts_with("#[cfg(not(target_os") {
             names_this
@@ -95,14 +82,12 @@ fn bytes_are_embedded_only_where_the_closed_table_says_so() {
     for (role, file, _, place) in zikaron_ui::fonts::FALLBACK {
         assert_eq!(embedded(file).is_some(), place == Place::Embedded, "{} 的退路 {file} 内嵌与否与表不符", role.as_str());
     }
-    // Embedded faces report a licence; system faces are not distributed by this crate.
     for face in zikaron_ui::fonts::find().faces {
         let want = (face.place == Place::Embedded).then_some(OFL);
         assert_eq!(face.licence(), want, "{} 的许可报错了", face.role.as_str());
     }
 }
 
-/// Two color tables of one closed set of roles; the values the design names, light and dark.
 #[test]
 fn the_two_colour_tables_hold_the_designed_values() {
     use zikaron_ui::palette::{C, DARK, LIGHT};
@@ -129,17 +114,13 @@ fn the_two_colour_tables_hold_the_designed_values() {
         assert_eq!(hex(LIGHT[at(k)]), l, "{k:?} in the light table");
         assert_eq!(hex(DARK[at(k)]), d, "{k:?} in the dark table");
     }
-    // The scrim darkens only: black at 30 % light, 50 % dark.
     assert_eq!((LIGHT[at(C::Scrim)].r(), LIGHT[at(C::Scrim)].a()), (0, 77), "light scrim is black at 30 %");
     assert_eq!((DARK[at(C::Scrim)].r(), DARK[at(C::Scrim)].a()), (0, 128), "dark scrim is black at 50 %");
-    // The translucent roles: a grey tone at 9 % light and white at 7 % dark; glass at 97 % in both.
     assert_eq!(LIGHT[at(C::Tone)].a(), 23, "light tone at 9 %");
     assert_eq!(DARK[at(C::Tone)].a(), 18, "dark tone at 7 %");
     assert_eq!((LIGHT[at(C::Glass)].a(), DARK[at(C::Glass)].a()), (247, 247), "glass at 97 % (the design's 93 % has a blur under it this toolkit draws no)");
 }
 
-/// The appearance blend is one value for the whole process, and tests run side by side: a test that moves it
-/// and a test that reads colors through it hold this lock, and each starts from light.
 fn light() -> std::sync::MutexGuard<'static, ()> {
     static BLEND: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let held = BLEND.lock().unwrap_or_else(|e| e.into_inner());
@@ -147,7 +128,6 @@ fn light() -> std::sync::MutexGuard<'static, ()> {
     held
 }
 
-/// Switching appearance blends the tables: every role reads the light value at 0 and the dark one at 1.
 #[test]
 fn the_blend_moves_every_role_between_its_two_values() {
     use zikaron_ui::palette::{c, set_blend, C, DARK, LIGHT};
@@ -161,8 +141,6 @@ fn the_blend_moves_every_role_between_its_two_values() {
     set_blend(0.0);
 }
 
-/// Corners: card 16, keys 17 (a capsule at 34 high), inputs 10, type tags 12, sheets 22, menus 14 with rows of
-/// 9, the segmented track 17 round a thumb of 15, pills fully round.
 #[test]
 fn the_corners_are_the_designed_family() {
     use zikaron_ui::tokens::{Radius, KEY_H, PILL_H};
@@ -173,14 +151,11 @@ fn the_corners_are_the_designed_family() {
     assert_eq!(Radius::Tag.px(), 12.0, "type tag corners");
     assert_eq!(Radius::Sheet.px(), 22.0, "sheet corners");
     assert_eq!(Radius::Menu.px(), 14.0, "menu corners");
-    assert_eq!(f32::from(zikaron_ui::band::corners(Radius::Menu.px(), 34.0).nw), Radius::Menu.px() - zikaron_ui::band::GAP, "a menu row's lit corners: the menu's less the gap");
+    assert_eq!(f32::from(zikaron_ui::band::corners(Radius::Menu.px(), 34.0, zikaron_ui::band::Bound::Row, zikaron_ui::band::Bound::Edge).nw), Radius::Menu.px() - zikaron_ui::band::GAP, "a menu row's lit corners: the menu's less the gap");
     assert_eq!((Radius::Track.px(), Radius::Thumb.px()), (17.0, 15.0), "segmented track and thumb");
     assert!(Radius::Pill.px() >= PILL_H / 2.0, "pills are fully round");
 }
 
-/// Type as the design sets it: page 22/30, card title 16/24, body 15/22, note 14/20, small 13/18, mono 14,
-/// small mono 13, rail group titles and the status line 12/16, the identity kind and menu headings 11/14;
-/// the rail's count 12.
 #[test]
 fn the_type_scale_is_the_designs() {
     use zikaron_ui::tokens::{Type, COUNT_TEXT};
@@ -201,7 +176,6 @@ fn the_type_scale_is_the_designs() {
     for t in Type::ALL {
         assert!(t.size() >= 11.0, "{t:?} is {} under the smallest the design uses", t.size());
     }
-    // Sizes under 14 come only from the type roles: no control writes one of its own.
     for (name, text) in files() {
         for (n, line) in code_only(&text).lines().enumerate() {
             for small in ["FontId::new(13.0", "FontId::new(12.0", "FontId::new(11.0", "FontId::new(12.5", "FontId::new(13.5"] {
@@ -211,9 +185,6 @@ fn the_type_scale_is_the_designs() {
     }
 }
 
-/// Spacing and sizes: the scale 4 · 8 · 12 · 16 · 24 · 32 · 48; card 22 × 24 inside, 16 between; page 32;
-/// sheet 24; key 34 high, 16 sides; input 38; table head 40, row 56, seq 36, tag 84, gaps 12; key-value 132
-/// key column, rows 14 apart, columns 20; switch 34 × 20; pill and tag 24, tag at least 52; marks 18; rail 216.
 #[test]
 fn the_spacing_and_sizes_are_the_designed_ones() {
     use zikaron_ui::tokens as k;
@@ -226,18 +197,15 @@ fn the_spacing_and_sizes_are_the_designed_ones() {
     assert_eq!((k::LABEL_W, k::KV_ROW_GAP, k::KV_COL_GAP), (132.0, 14.0, 20.0), "key-value rows");
     assert_eq!((k::SWITCH_W, k::SWITCH_H, k::SEG_H), (34.0, 20.0, 34.0), "switch and segments");
     assert_eq!((k::PILL_H, k::TAG_H, k::TAG_MIN_W, k::MARK), (24.0, 24.0, 52.0, 18.0), "pills, tags and marks");
-    assert_eq!((k::SHEET_W, k::SHEET_WIDE, k::SHEET_XWIDE), (460.0, 520.0, 640.0), "sheet widths");
+    assert_eq!((k::SHEET_NARROW, k::SHEET_W, k::SHEET_WIDE, k::SHEET_XWIDE), (392.0, 460.0, 520.0, 640.0), "sheet widths");
     assert_eq!(k::RAIL_W, 216.0, "the rail");
 }
 
-/// Motion: fast 120, middle 200, slow 300 ms as designed, each at the kit's pace (0.7 of those); loops of 1.2 s,
-/// which the pace does not touch.
 #[test]
 fn the_timings_are_the_designed_ones() {
     use zikaron_ui::tokens as k;
     assert_eq!(k::PACE, 0.7);
     assert_eq!((k::FAST, k::MID, k::SLOW, k::CYCLE), (0.12 * k::PACE, 0.2 * k::PACE, 0.3 * k::PACE, 1.2));
-    // The eased-out curve ends where it should and never overshoots; the spring does, and comes back.
     use zikaron_ui::motion::Curve;
     assert!((Curve::Ease.at(1.0) - 1.0).abs() < 1e-4 && Curve::Ease.at(0.0).abs() < 1e-4);
     assert!((0..=100).all(|i| Curve::Ease.at(i as f32 / 100.0) <= 1.0001), "ease-out does not overshoot");
@@ -256,8 +224,6 @@ fn eliding_never_cuts_a_character_in_half() {
 
 #[test]
 fn a_page_gives_up_itself_to_hand_out_its_one_primary() {
-    // "Exactly one" is carried by the type: `primary` consumes `self`, so a second cannot be written. This
-    // pins that signature: changing `self` to `&self` fails here.
     let text = std::fs::read_to_string(src().join("page.rs")).expect("读不出 page.rs");
     let code = code_only(&text);
     assert!(
@@ -294,15 +260,10 @@ fn every_icon_is_drawn_here_and_none_is_borrowed() {
 fn the_font_roles_name_their_faces_and_the_cjk_one_is_the_mainland_set() {
     use zikaron_ui::fonts::{find, Place, Role, ROLES};
     assert_eq!(ROLES.len(), Role::ALL.len());
-    // The `Place` column is part of the rule: lookup must follow it. One check per member, reading the face
-    // lookup actually returned (`bytes` and `path`), not what the table says.
     let found = find();
     for (role, file, index, place) in ROLES {
         assert!(!file.is_empty(), "{} 没有档名", role.as_str());
         if role == Role::Cjk {
-            // The Chinese face is the mainland glyph set. In the system's PingFang collection (macOS) face 0 is
-            // the Hong Kong set, so another face is taken; Microsoft YaHei (Windows) is simplified Chinese and
-            // is taken by its full name; the embedded Noto Sans SC is one face, the mainland set itself.
             match file {
                 "PingFang.ttc" => assert_ne!(index, 0, "苹方合集里中文那一面不许取第 0 面(那是港版字形)"),
                 "msyh.ttc" | "NotoSansSC-Regular.otf" => {}
@@ -314,13 +275,10 @@ fn the_font_roles_name_their_faces_and_the_cjk_one_is_the_mainland_set() {
             .unwrap_or_else(|| panic!("{} 这一面寻取没给出来(缺员 {:?})", role.as_str(), found.missing));
         assert_eq!(face.place, place, "{} 取法与表里写的那一格不同", role.as_str());
         match place {
-            // An embedded face's bytes travel with the binary; it has no path on disk.
             Place::Embedded => {
                 assert!(face.bytes > 0, "{} 是内嵌的,字节数不许为零", role.as_str());
                 assert!(face.path.is_none(), "{} 是内嵌的,不许带盘上那一条路", role.as_str());
             }
-            // A system face's bytes are on disk at a path found on this machine (the path itself is not
-            // compared).
             Place::System => {
                 let path = face
                     .path
@@ -350,8 +308,6 @@ fn every_glyph_is_drawn_here_inside_its_box() {
 #[test]
 fn only_the_system_taken_faces_have_a_fallback_and_the_strong_face_is_the_simplified_semibold() {
     use zikaron_ui::fonts::{embedded, Place, Role, FALLBACK, ROLES};
-    // The fallback table follows `Place`: embedded faces are always present, so a fallback for them would be
-    // dead code; system faces need one, because missing glyphs as boxes would be a silent failure.
     for (role, file, _, place) in ROLES {
         let has = FALLBACK.iter().any(|(r, _, _, _)| *r == role);
         match place {
@@ -365,9 +321,6 @@ fn only_the_system_taken_faces_have_a_fallback_and_the_strong_face_is_the_simpli
             }
         }
     }
-    // The strong face by system: macOS takes PingFang Semibold (face 11) from the system; Windows takes
-    // Microsoft YaHei UI Bold from the system, by its full name; every other system embeds its Chinese face,
-    // so the strong role carries the embedded one.
     let strong = ROLES.iter().find(|(r, _, _, _)| *r == Role::Strong).expect("有重字");
     if cfg!(target_os = "macos") {
         assert_eq!((strong.1, strong.2), ("PingFang.ttc", 11), "重字取苹方简体 Semibold 第 11 面");
@@ -391,7 +344,6 @@ fn a_pen_gives_itself_up_to_press_its_one_commit_key() {
     assert!(code.contains("pub fn press_long(self, ui: &mut egui::Ui"), "the long commit key also consumes its token");
 }
 
-/// One key shape, six roles: every face is distinguishable, all one height; a disabled key takes no clicks.
 #[test]
 fn one_key_shape_six_roles() {
     use zikaron_ui::button::{face, primary_fill, commit_fill, Role};
@@ -406,7 +358,6 @@ fn one_key_shape_six_roles() {
             assert!((a.fill, a.line, a.text) != (b.fill, b.line, b.text), "two roles look the same");
         }
     }
-    // Keys are painted only by button::paint: no other file fills a block with the primary or cinnabar color.
     for (name, text) in files() {
         if name == "button.rs" || name == "palette.rs" || name == "page.rs" {
             continue;
@@ -432,7 +383,6 @@ fn one_key_shape_six_roles() {
     assert!(sizes.iter().all(|h| *h == 34.0), "every role is one height: {sizes:?}");
 }
 
-/// The parts draw in a headless frame and read egui's own input for it: a dropped file reaches the drop zone.
 #[test]
 fn the_parts_draw_and_read_egui_input() {
     use zikaron_ui::egui;
@@ -461,8 +411,41 @@ fn the_parts_draw_and_read_egui_input() {
     assert_eq!(got_drop, vec!["/tmp/a-dropped-file".to_string()], "the drop zone reads egui's dropped files");
 }
 
-/// Toasts: one at a time; the same sentence again stays one toast and restarts its time; another replaces it;
-/// an error with raw words opens its details and then stays until closed.
+#[test]
+fn sentences_said_in_one_beat_come_on_screen_in_turn_and_a_later_one_replaces() {
+    use zikaron_ui::egui;
+    use zikaron_ui::toast::{Toasts, Tone, LIFE_NOTE};
+    let ctx = egui::Context::default();
+    let _ = zikaron_ui::skin::dress(&ctx);
+    let mut t = Toasts::new();
+    let run = |ctx: &egui::Context, t: &mut Toasts, time: f64| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), ..Default::default() };
+        let _ = ctx.run_ui(input, |root| {
+            let _ = t.draw(root.ctx(), 216.0);
+        });
+    };
+    t.say("first", Tone::Note, 1.0);
+    t.say("second", Tone::Note, 1.0);
+    t.say("second", Tone::Note, 1.0);
+    assert_eq!((t.showing(), t.waiting()), (Some("first"), 1));
+    let mut seen: Vec<String> = Vec::new();
+    let mut at = 1.0;
+    while at < 1.0 + 3.0 * LIFE_NOTE {
+        run(&ctx, &mut t, at);
+        if let Some(s) = t.showing() {
+            if seen.last().map(String::as_str) != Some(s) {
+                seen.push(s.to_string());
+            }
+        }
+        at += 0.05;
+    }
+    assert_eq!(seen, ["first", "second"]);
+    t.say("third", Tone::Note, 50.0);
+    t.say("fourth", Tone::Note, 50.0);
+    t.say("fifth", Tone::Note, 50.5);
+    assert_eq!((t.showing(), t.waiting()), (Some("fifth"), 0));
+}
+
 #[test]
 fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
     use zikaron_ui::egui;
@@ -487,7 +470,6 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
     let r = run(&ctx, &mut t, 4.5, Vec::new());
     let bad = r[0];
     assert!((bad.center().x - (216.0 + 1180.0) / 2.0).abs() < 1.5, "centered over the page area: {bad:?}");
-    // Open the details: the second-to-last key of the error row (details, then close).
     let click = |p: egui::Pos2| {
         vec![
             egui::Event::PointerMoved(p),
@@ -496,7 +478,6 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
         ]
     };
     let mut opened = bad;
-    // Frame time only moves forward.
     let mut at = 4.5;
     let mut next = || {
         at += 0.01;
@@ -508,8 +489,6 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
         let _ = run(&ctx, &mut t, next(), click(p));
         let now = run(&ctx, &mut t, next(), Vec::new());
         if t.live() == 0 {
-            // That was "close": say it again and keep looking left of it, once the closed one has left and the new
-            // one is in.
             let when = next();
             t.say_full("配的节点一处也连不上。", "检查网络,或在设置里换一处节点。", "UNREACHABLE · http://127.0.0.1:9", Tone::Bad, when);
             for _ in 0..40 {
@@ -528,11 +507,6 @@ fn a_toast_is_one_at_a_time_and_a_failing_one_stays_open_with_its_raw_words() {
     assert_eq!(t.live(), 1);
 }
 
-/// A face is found by its full name inside a font file: in a collection, the number of the first face with
-/// that name; in a single font, face 0; none when no face has it or the bytes are not a font. Checked on every
-/// build against the embedded Inter (a single font), and on macOS also against the system PingFang collection
-/// when this machine has it (faces 3 and 11 by the closed table; a build machine without PingFang has
-/// nothing to check there).
 #[test]
 fn a_face_is_found_by_its_full_name() {
     use zikaron_ui::fonts::{embedded, face_named, find, Role};
@@ -550,8 +524,6 @@ fn a_face_is_found_by_its_full_name() {
     }
 }
 
-/// One place never holds two toasts in one frame: a new sentence waits while the one it replaces (here an error
-/// with its details open, the tallest) fades out, and drops in once it has left; its time starts then.
 #[test]
 fn a_new_toast_enters_once_the_one_it_replaces_has_left() {
     use zikaron_ui::egui;
@@ -570,7 +542,6 @@ fn a_new_toast_enters_once_the_one_it_replaces_has_left() {
     assert_eq!(run(&ctx, &mut t, 1.0).len(), 1);
     t.say("代理:跟随系统代理", Tone::Note, 2.0);
     assert_eq!(t.showing(), Some("代理:跟随系统代理"), "the new sentence is the one on screen");
-    // Every frame while the old one fades: one toast drawn, never two.
     let mut time = 2.0;
     while time < 2.6 {
         let rects = run(&ctx, &mut t, time);
@@ -578,16 +549,12 @@ fn a_new_toast_enters_once_the_one_it_replaces_has_left() {
         time += 0.02;
     }
     assert_eq!(run(&ctx, &mut t, 2.7).len(), 1, "the new one is drawn once the old one has left");
-    // Its time started when it entered: still on screen 3.2 s after it was said, gone after it entered + 3.2 s.
     let _ = run(&ctx, &mut t, 5.3);
     assert_eq!(t.showing(), Some("代理:跟随系统代理"));
     let _ = run(&ctx, &mut t, 5.6);
     assert_eq!(t.showing(), None);
 }
 
-/// A full-window column taller than the window scrolls with its bar beside the column, never over it: the
-/// column keeps its width and its right edge stays clear of the bar's handle (shown while the pointer is over
-/// it).
 #[test]
 fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
     use zikaron_ui::egui;
@@ -598,7 +565,6 @@ fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
     let mut width = 0.0_f32;
     let mut out = egui::FullOutput::default();
     for (i, time) in [0.0, 0.5, 1.0, 1.5].into_iter().enumerate() {
-        // The pointer over the column's right part, so the floating bar shows.
         let events = if i > 0 { vec![egui::Event::PointerMoved(egui::pos2(520.0, 200.0))] } else { Vec::new() };
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
         out = ctx.run_ui(input, |root| {
@@ -615,7 +581,6 @@ fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
         });
     }
     assert!((width - 420.0).abs() < 0.5, "the column keeps its width: {width}");
-    // The bar's handle: a narrow, tall filled rectangle not of the rows' colour, right of the window's middle.
     let mut handles = Vec::new();
     fn walk(s: &egui::Shape, out: &mut Vec<egui::Rect>) {
         match s {
@@ -631,8 +596,6 @@ fn a_scrolling_full_window_column_keeps_its_right_edge_clear_of_the_bar() {
     assert!(handle.left() >= right - 0.5, "the bar {handle:?} lies over the column, whose right edge is {right}");
 }
 
-/// A centred field draws its text, and its hint while empty, on the field's middle; a field without it starts
-/// them at its left.
 #[test]
 fn a_centred_field_draws_its_number_and_its_hint_in_the_middle() {
     use zikaron_ui::egui;

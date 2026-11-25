@@ -1,97 +1,51 @@
-//! A record package addressed to one key: sealing a plain record package (`.zkit`) so that only the holder of one
-//! secp256k1 private key opens it, and opening it again. The format's constants and head are the glue's
-//! (`zikaron_glue::addressed`); the cryptography is this crate's `crypto`. Opening decrypts with the private key and
-//! signs nothing.
-//!
-//! ─── Sealing ───
-//!
-//! A one-time key `e` is drawn; `S = e·P` with `P` the recipient's public key; the key schedule is HKDF-SHA256 over
-//! the x coordinate of `S`, salted with the one-time public key and `P` (both compressed), under the format's
-//! information string: 32 bytes of cipher key and 19 bytes of nonce prefix, unique to the package because the
-//! one-time key is. Segment `i` (64 KiB of plaintext, the last one shorter) is XChaCha20-Poly1305 under the nonce
-//! `prefix · i (4 bytes, big-endian) · last (1 byte)` with the whole head as additional data: a changed byte, a
-//! dropped or appended segment, two segments swapped, all fail a tag. The one-time private key is wiped once
-//! agreed; nothing is wrapped for the sender.
-//!
-//! ─── Opening ───
-//!
-//! Each key on offer agrees with the head's one-time key and tries the first segment: the one whose tag passes is
-//! the recipient's, a moment's work per key. The package is then opened segment by segment into a file of its
-//! own in a fresh folder of the system's temporary place; a segment that fails removes the folder before the
-//! refusal is returned, so no plaintext stays behind. Only a package every segment of which passed is handed on.
-
 use crate::crypto;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zikaron_glue::addressed::{self as form, BadHead, HEAD, INFO, POINT, SEGMENT, TAG};
 
-/// The cipher key and the nonce prefix of one package.
 const KEY: usize = 32;
 const PREFIX: usize = 19;
 
-/// Why a package did not seal or open. Closed: each end says every member in its own words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// The file is not an addressed record package (no mark).
     NotAddressed,
-    /// The head does not read: it ends early, names a version this build does not read, or its one-time key is not
-    /// a point of the curve (what, in the evidence).
     Head(String),
-    /// No key on offer opens it: none of them is the recipient.
     NotRecipient,
-    /// A segment after the first failed (changed, cut short, reordered, or bytes added): the segment's number in
-    /// the evidence. Nothing opened is kept.
     Broken(String),
-    /// The recipient's public key is not a point of the curve.
     Recipient,
-    /// A disk or entropy operation failed (the system's words).
     Io(String),
 }
 
-/// The words each end says a refusal in, both languages, one place (the desktop's fault table and the command line
-/// read them here). None names a recipient.
 pub mod words {
-    pub const NOT_RECIPIENT: (&str, &str) = ("本机的身份都不是这份记录包的接收方", "No identity on this machine is the recipient of this record package");
+    pub const NOT_RECIPIENT: (&str, &str) = ("这份加密包不是给本机身份的", "This encrypted package is not for an identity on this machine");
     pub const BROKEN: (&str, &str) = ("加密记录包已损坏或不完整,没有解开", "The encrypted record package is damaged or incomplete; it was not opened");
     pub const HEAD: (&str, &str) = ("加密记录包的格式不认识,没有解开", "The encrypted record package is in a form not read here; it was not opened");
     pub const RECIPIENT: (&str, &str) = ("接收方公钥不是曲线上的点", "The recipient's public key is not a point of the curve");
-    pub const ELSEWHERE: (&str, &str) = ("这是加密记录包,请在核验页打开", "This is an encrypted record package. Open it on the verify page");
+    pub const ELSEWHERE: (&str, &str) = ("这是加密记录包,请在「核验记录」打开", "This is an encrypted record package. Open it under Verify record");
     pub const BOTH: (&str, &str) = ("记录接收方地址与公钥只填一个", "Give the recipient's address or public key, not both");
     pub const FOLDER: (&str, &str) = ("加密只用于单文件记录包", "Only a one-file record package is encrypted");
     pub const NOT_ANCHORED: (&str, &str) = ("导出加密记录失败:该地址未进行链上锚定", "Encrypted record package not exported: this address has not anchored on chain");
     pub const CHAIN_UNREAD: (&str, &str) = ("导出加密记录失败:读链失败", "Encrypted record package not exported: the chain could not be read");
+    pub const UNPROVEN: (&str, &str) = ("导出加密记录失败:节点给的交易证不出自身,请换一台节点", "Encrypted record package not exported: a node gave a transaction that does not prove itself; use another node");
 }
 
-/// Every refusal a record package addressed to one key meets, on the desktop and on the command line alike: one
-/// closed table of codes, spelled as both ends spell them (the desktop's fault table; the command line's
-/// `E_ADDRESSED` token, and the desktop's word through its door), each with its words ([`words`]). Opening and
-/// sealing ([`Refused`]) and finding an address's key on chain (`zikaron_send::recipient`) answer in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// No key on offer opens the package.
     NotRecipient,
-    /// A segment fails its tag: changed, cut short, reordered or added to.
     Broken,
-    /// The head does not read, or the file is not an addressed package.
     Head,
-    /// An addressed package met where packages are read but not opened (verifying opens it).
     Elsewhere,
-    /// The recipient's public key is not a point of the curve.
     KeyShape,
-    /// The recipient's address and key both given.
     Both,
-    /// A package laid out as a folder asked to be sealed (only one file is).
     Folder,
-    /// Every node of every network read through, and no anchor the address signed.
     NotAnchored,
-    /// Not found, and some network not read through: no answer, never an answer of absence.
     ChainUnread,
+    Unproven,
 }
 
 impl Why {
-    pub const ALL: [Why; 9] = [Why::NotRecipient, Why::Broken, Why::Head, Why::Elsewhere, Why::KeyShape, Why::Both, Why::Folder, Why::NotAnchored, Why::ChainUnread];
+    pub const ALL: [Why; 10] = [Why::NotRecipient, Why::Broken, Why::Head, Why::Elsewhere, Why::KeyShape, Why::Both, Why::Folder, Why::NotAnchored, Why::ChainUnread, Why::Unproven];
 
-    /// The code, one word in capitals.
     pub fn code(self) -> &'static str {
         match self {
             Why::NotRecipient => "ADDRESSED_NOT_RECIPIENT",
@@ -103,10 +57,10 @@ impl Why {
             Why::Folder => "ADDRESSED_FOLDER",
             Why::NotAnchored => "ADDRESS_NOT_ANCHORED",
             Why::ChainUnread => "ADDRESS_CHAIN_UNREAD",
+            Why::Unproven => "ADDRESS_KEY_UNPROVEN",
         }
     }
 
-    /// Its words in both languages.
     pub fn words(self) -> (&'static str, &'static str) {
         match self {
             Why::NotRecipient => words::NOT_RECIPIENT,
@@ -118,17 +72,14 @@ impl Why {
             Why::Folder => words::FOLDER,
             Why::NotAnchored => words::NOT_ANCHORED,
             Why::ChainUnread => words::CHAIN_UNREAD,
+            Why::Unproven => words::UNPROVEN,
         }
     }
 
-    /// Whether this is the absence of an answer (some network was not read through) rather than a refusal: the
-    /// one member that is. The command line exits 4 for it, and the desktop's door marks it so.
     pub fn unanswered(self) -> bool {
         self == Why::ChainUnread
     }
 
-    /// A refusal of opening or sealing in this table; `None` for a disk or entropy failure (the system's words say
-    /// it).
     pub fn of(r: &Refused) -> Option<Why> {
         match r {
             Refused::NotRecipient => Some(Why::NotRecipient),
@@ -141,12 +92,10 @@ impl Why {
 }
 
 impl Refused {
-    /// Its words in both languages ([`Why::words`]); `None` for a disk or entropy failure (the system's words say it).
     pub fn words(&self) -> Option<(&'static str, &'static str)> {
         Why::of(self).map(Why::words)
     }
 
-    /// The refusal's code, one word (each end's tables key on it).
     pub fn code(&self) -> &'static str {
         match self {
             Refused::NotAddressed => "NOT_ADDRESSED",
@@ -158,7 +107,6 @@ impl Refused {
         }
     }
 
-    /// Its evidence (never the recipient: an addressed package says nothing of whom it is for).
     pub fn tail(&self) -> &str {
         match self {
             Refused::Head(s) | Refused::Broken(s) | Refused::Io(s) => s,
@@ -167,8 +115,6 @@ impl Refused {
     }
 }
 
-/// A recipient's public key as typed, both ends' one reading: `0x` and 66 (compressed) or 130 (uncompressed) hex
-/// digits, case ignored, a point of the curve; compressed. Anything else is `None`.
 pub fn key_text(text: &str) -> Option<[u8; POINT]> {
     let t = text.trim().to_ascii_lowercase();
     if !t.starts_with("0x") || !matches!(t.len(), 68 | 132) {
@@ -177,14 +123,11 @@ pub fn key_text(text: &str) -> Option<[u8; POINT]> {
     crypto::point(&zikaron::hexfmt::decode(&t)?)
 }
 
-/// A key that may be the recipient of a package: its compressed public key, and Diffie-Hellman with a one-time
-/// public key. Each end lends its own private keys through this, so the private key itself never leaves its holder.
 pub trait Recipient {
     fn public(&self) -> [u8; POINT];
     fn agree(&self, one_time: &[u8; POINT]) -> Option<[u8; 32]>;
 }
 
-/// A private key held as bytes (a key file's, a test's).
 pub struct Bytes(pub [u8; 32]);
 
 impl Recipient for Bytes {
@@ -202,7 +145,6 @@ impl Drop for Bytes {
     }
 }
 
-/// The package's cipher key and nonce prefix, from the shared x coordinate and the two public keys.
 struct Schedule {
     key: [u8; KEY],
     prefix: [u8; PREFIX],
@@ -238,7 +180,6 @@ impl Drop for Schedule {
     }
 }
 
-/// Read until `buf` is full or the stream ends; how many bytes came.
 fn fill(r: &mut dyn Read, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut got = 0;
     while got < buf.len() {
@@ -256,9 +197,6 @@ fn io(what: &str, e: &std::io::Error) -> Refused {
     Refused::Io(format!("{what}: {e}"))
 }
 
-/// Seal the plain record package read from `plain` to the holder of `recipient` (a public key as given, 33 or 65
-/// bytes), writing the addressed package to `out`. The head carries the one-time public key and nothing of the
-/// recipient; it is returned (a package's local copy is told apart by it, and it names no one).
 pub fn seal(recipient: &[u8], plain: &mut dyn Read, out: &mut dyn Write) -> Result<[u8; POINT], Refused> {
     let to = crypto::point(recipient).ok_or(Refused::Recipient)?;
     let mut e = crypto::fresh_secret().map_err(|t| Refused::Io(t.tail))?;
@@ -292,8 +230,6 @@ pub fn seal(recipient: &[u8], plain: &mut dyn Read, out: &mut dyn Write) -> Resu
     Ok(one_time)
 }
 
-/// Why [`seal_out`] did not land an addressed package: the plain package's own laying out (`lay`'s refusal), the
-/// sealing ([`Refused`]), or the landing at `out` (an existing `out` among them).
 #[derive(Debug)]
 pub enum Sealing<E> {
     Lay(E),
@@ -301,11 +237,6 @@ pub enum Sealing<E> {
     Land(zikaron_glue::landing::Trouble),
 }
 
-/// Seal a record package to `to` at `out`, both ends' one way: `out` taken already is refused before anything is
-/// done; `lay` writes the plain one-file package at the path it is given, in a fresh folder of the system's
-/// temporary place (never beside `out`); it is then sealed into `out` the one way files land
-/// (`zikaron_glue::landing::land_stream`: nothing at `out` on failure), and the plain copy is removed either way.
-/// Returns what `lay` returned and the package's one-time key.
 pub fn seal_out<T, E>(to: &[u8; POINT], out: &Path, lay: impl FnOnce(&Path) -> Result<T, E>) -> Result<(T, [u8; POINT]), Sealing<E>> {
     use zikaron_glue::landing::{land_stream, Readers, Streamed, Trouble};
     if out.exists() {
@@ -328,8 +259,6 @@ pub fn seal_out<T, E>(to: &[u8; POINT], out: &Path, lay: impl FnOnce(&Path) -> R
     Ok((laid, one_time))
 }
 
-/// A fresh folder of our own in the system's temporary place for a plain package about to be sealed, removed with
-/// what is in it when this drops.
 struct SealingRoom(PathBuf);
 
 impl Drop for SealingRoom {
@@ -342,7 +271,6 @@ fn sealing_room() -> Result<SealingRoom, Refused> {
     temp_folder("zikaron-sealing-").map(SealingRoom)
 }
 
-/// A fresh folder in the system's temporary place, its name `stem` and eight random bytes.
 fn temp_folder(stem: &str) -> Result<PathBuf, Refused> {
     let mut n = [0u8; 8];
     crate::trouble::fill_random(&mut n).map_err(|t| Refused::Io(t.tail))?;
@@ -351,8 +279,6 @@ fn temp_folder(stem: &str) -> Result<PathBuf, Refused> {
     Ok(dir)
 }
 
-/// An addressed package opened into a plain record package, in a folder of its own in the system's temporary
-/// place, removed when this is dropped. `key` is the index, among the keys offered, of the one that opened it.
 pub struct Opened {
     pub dir: PathBuf,
     pub file: PathBuf,
@@ -365,14 +291,11 @@ impl Drop for Opened {
     }
 }
 
-/// The name of the plain package inside an opened folder.
 const OPENED_NAME: &str = "kit.zkit";
 
-/// The length of the format's mark (the head's first part).
 #[cfg(test)]
 const MAGIC_LEN: usize = zikaron_glue::addressed::MAGIC.len();
 
-/// The head of the package read from `r`: its bytes and its one-time key judged a point.
 fn read_head(r: &mut dyn Read) -> Result<([u8; HEAD], [u8; POINT]), Refused> {
     let mut head = [0u8; HEAD];
     let n = fill(r, &mut head).map_err(|e| io("read", &e))?;
@@ -385,8 +308,6 @@ fn read_head(r: &mut dyn Read) -> Result<([u8; HEAD], [u8; POINT]), Refused> {
     Ok((head, p))
 }
 
-/// One segment's sealed bytes off the stream, and whether it is the last (nothing follows it). `held` carries a
-/// byte read ahead to tell.
 fn next_segment(r: &mut dyn Read, held: &mut Option<u8>, buf: &mut Vec<u8>) -> std::io::Result<bool> {
     buf.clear();
     buf.resize(SEGMENT + TAG, 0);
@@ -408,8 +329,6 @@ fn next_segment(r: &mut dyn Read, held: &mut Option<u8>, buf: &mut Vec<u8>) -> s
     Ok(false)
 }
 
-/// Open the addressed package at `file` with the first of `keys` that is its recipient, into a fresh folder of the
-/// system's temporary place. Every refusal leaves nothing behind.
 pub fn open(file: &Path, keys: &[&dyn Recipient]) -> Result<Opened, Refused> {
     let f = std::fs::File::open(file).map_err(|e| io(&format!("open {}", file.display()), &e))?;
     let mut r = std::io::BufReader::new(f);
@@ -418,7 +337,6 @@ pub fn open(file: &Path, keys: &[&dyn Recipient]) -> Result<Opened, Refused> {
     let mut seg = Vec::new();
     let mut last = next_segment(&mut r, &mut held, &mut seg).map_err(|e| io("read", &e))?;
     if seg.len() < TAG {
-        // Too short to hold even the last segment's tag: no key can be told the recipient by it.
         return Err(Refused::Broken("0".into()));
     }
     let mut found = None;
@@ -457,20 +375,16 @@ pub fn open(file: &Path, keys: &[&dyn Recipient]) -> Result<Opened, Refused> {
             opened.key = k;
             Ok(opened)
         }
-        Err(r) => Err(r), // `opened` drops here: the folder and what was written in it go
+        Err(r) => Err(r),
     }
 }
 
-/// A fresh folder of our own in the system's temporary place, for one opened package (the file in it is created
-/// owner only).
 fn room() -> Result<Opened, Refused> {
     let dir = temp_folder("zikaron-opened-")?;
     let file = dir.join(OPENED_NAME);
     Ok(Opened { dir, file, key: usize::MAX })
 }
 
-/// Whether one of `keys` is the recipient of the addressed package at `file`, without opening it past its first
-/// segment (nothing is written). `Ok(Some(index))` names the key.
 pub fn recipient_among(file: &Path, keys: &[&dyn Recipient]) -> Result<Option<usize>, Refused> {
     let f = std::fs::File::open(file).map_err(|e| io(&format!("open {}", file.display()), &e))?;
     let mut r = std::io::BufReader::new(f);
@@ -498,8 +412,6 @@ mod tests {
         Bytes([b; 32])
     }
 
-    /// The tests that count the opened folders left in the system's temporary place take turns, so one test's open
-    /// package is not counted as another's leftover.
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn turn() -> std::sync::MutexGuard<'static, ()> {
@@ -518,8 +430,6 @@ mod tests {
         p
     }
 
-    /// A test's own folder in the temporary area, removed when the test lets it go (passed or failed): no run leaves
-    /// one behind.
     struct Scratch(PathBuf);
 
     impl std::ops::Deref for Scratch {
@@ -549,8 +459,6 @@ mod tests {
     fn opened_rooms() -> usize {
         std::fs::read_dir(std::env::temp_dir()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("zikaron-opened-")).count()
     }
-
-    // Who is hurt by each: the recipient (bytes not those sealed), the sender (a stranger reads the originals).
 
     #[test]
     fn the_recipient_opens_the_very_bytes_sealed_at_every_segment_boundary() {
@@ -593,7 +501,6 @@ mod tests {
             let f = at(&d, "p.zkit", &bad);
             let r = open(&f, &[&k]).err().unwrap();
             if i < HEAD {
-                // The one-time key changed: no key agrees to the first segment's key, or the point is off the curve.
                 assert!(matches!(r, Refused::NotRecipient | Refused::Head(_)), "{i}: {r:?}");
             } else if i < HEAD + SEGMENT + TAG {
                 assert_eq!(r, Refused::NotRecipient, "{i}");
@@ -616,18 +523,13 @@ mod tests {
         let s = SEGMENT + TAG;
         let segs: Vec<&[u8]> = vec![&good[HEAD..HEAD + s], &good[HEAD + s..HEAD + 2 * s], &good[HEAD + 2 * s..HEAD + 3 * s], &good[HEAD + 3 * s..]];
         let before = opened_rooms();
-        // Cut at a segment boundary: the segment now last was sealed as not last.
         let cut = [&good[..HEAD], segs[0], segs[1]].concat();
         assert_eq!(open(&at(&d, "c.zkit", &cut), &[&k]).err(), Some(Refused::Broken("1".into())));
-        // Cut inside a segment.
         assert!(matches!(open(&at(&d, "c2.zkit", &good[..good.len() - 3]), &[&k]).err(), Some(Refused::Broken(_))));
-        // Two segments swapped.
         let swapped = [&good[..HEAD], segs[0], segs[2], segs[1], segs[3]].concat();
         assert_eq!(open(&at(&d, "s.zkit", &swapped), &[&k]).err(), Some(Refused::Broken("1".into())));
-        // Bytes added after the last segment.
         let longer = [&good[..], &[0u8; 20][..]].concat();
         assert!(matches!(open(&at(&d, "l.zkit", &longer), &[&k]).err(), Some(Refused::Broken(_))));
-        // The head alone.
         assert_eq!(open(&at(&d, "h.zkit", &good[..HEAD]), &[&k]).err(), Some(Refused::Broken("0".into())));
         assert_eq!(opened_rooms(), before);
     }
@@ -641,7 +543,6 @@ mod tests {
         let out = sealed_to(&k, &plain(SEGMENT + 3));
         let has = |needle: &[u8]| out.windows(needle.len()).any(|w| w == needle);
         assert!(!has(&p) && !has(&full[1..]) && !has(&addr));
-        // Two packages to the same key share nothing past the mark and version.
         let again = sealed_to(&k, &plain(SEGMENT + 3));
         assert_ne!(out[form::MAGIC.len() + 1..HEAD], again[form::MAGIC.len() + 1..HEAD]);
     }
@@ -651,7 +552,6 @@ mod tests {
         let _turn = turn();
         let k = key(3);
         let mut out = Vec::new();
-        // x = 0 is on no point of the curve (7 is no square modulo its prime).
         let mut no_point = [0u8; 33];
         no_point[0] = 2;
         assert_eq!(seal(&no_point, &mut &b"x"[..], &mut out), Err(Refused::Recipient));
@@ -679,8 +579,6 @@ mod tests {
         std::fs::read_dir(std::env::temp_dir()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("zikaron-sealing-")).count()
     }
 
-    // Who is hurt: whoever reads a refusal on one end and its code on the other (two spellings of one refusal, a
-    // chain not read taken as an answer).
     #[test]
     fn one_table_of_codes_and_words_serves_both_ends() {
         let mut codes: Vec<&str> = Why::ALL.iter().map(|w| w.code()).collect();
@@ -700,7 +598,6 @@ mod tests {
         }
     }
 
-    // Who is hurt: the sender (a package half written at `--out`, or a plain copy left in the clear beside it).
     #[test]
     fn a_package_is_sealed_out_whole_or_not_at_all_and_no_plain_copy_stays() {
         let _turn = turn();
@@ -714,7 +611,6 @@ mod tests {
         assert_eq!(&std::fs::read(&out).unwrap()[MAGIC_LEN..MAGIC_LEN + 1 + POINT][1..], &one_time[..], "the one-time key in the head");
         assert_eq!(std::fs::read(&open(&out, &[&k]).unwrap().file).unwrap(), plain, "opens to the bytes laid out");
         assert_eq!(sealing_rooms(), rooms, "the plain copy is gone");
-        // `out` taken: refused before anything is laid out, its bytes as they were.
         let before = std::fs::read(&out).unwrap();
         let mut laid_out = false;
         let taken = seal_out(&k.public(), &out, |_| {
@@ -724,7 +620,6 @@ mod tests {
         assert!(matches!(taken, Err(Sealing::Land(zikaron_glue::landing::Trouble::Occupied(_)))));
         assert!(!laid_out, "nothing laid out");
         assert_eq!(std::fs::read(&out).unwrap(), before);
-        // Laying out refused: nothing at `out`, no plain copy left.
         let other = d.join("t.zkit");
         let refused = seal_out(&k.public(), &other, |p| {
             std::fs::write(p, b"half").unwrap();
@@ -735,7 +630,6 @@ mod tests {
         assert_eq!(sealing_rooms(), rooms, "the plain copy is gone");
     }
 
-    // Who is hurt: the sender, who pasted the recipient's key (a key not on the curve sealed to no one).
     #[test]
     fn a_typed_key_is_read_once_for_both_ends() {
         let k = key(3).public();

@@ -1,9 +1,3 @@
-//! A write lands where it says, and syncs the directory it landed in, whatever shape the path has: a bare file
-//! name and an empty directory sync the working directory `.`, a relative path with a directory and an absolute
-//! path sync their parent (`zikaron_os::parent_dir`, the one place that says a path's directory). Each form runs
-//! in a child process started in a fresh temporary directory, so the working directory is the child's own and
-//! this process's never moves.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,8 +5,6 @@ const FORM: &str = "ZIKARON_OS_BARE_FORM";
 const CHILD: &str = "the_child_writes_its_form_where_it_was_started";
 const BYTES: &[u8] = b"landed";
 
-/// The child's side: write the form named in `FORM` (with the sync of the expected directory made to fail when
-/// asked) and say what came back. Started without `FORM` (the ordinary run), it does nothing.
 #[test]
 fn the_child_writes_its_form_where_it_was_started() {
     let Ok(form) = std::env::var(FORM) else { return };
@@ -43,7 +35,6 @@ fn the_child_writes_its_form_where_it_was_started() {
     }
 }
 
-/// Start the child in a fresh directory for `shape` and `mode`; its report and the directory.
 fn child(shape: &str, mode: &str) -> (String, PathBuf) {
     let dir = std::env::temp_dir().join(format!("zk-os-bare-{shape}-{mode}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -69,8 +60,6 @@ fn landed_at(shape: &str) -> &'static str {
     }
 }
 
-/// Each form lands its bytes, says it did and leaves no temporary file. Victim: whoever writes to a bare file name
-/// and is told the write failed though it landed (a sync asked of the empty path).
 #[test]
 fn each_form_lands_and_says_so() {
     let before = std::env::current_dir().expect("this process's directory");
@@ -85,8 +74,6 @@ fn each_form_lands_and_says_so() {
     assert_eq!(std::env::current_dir().expect("still here"), before, "this process's working directory never moves");
 }
 
-/// The directory synced is `.` for a bare name and an empty directory, the parent otherwise: making exactly that
-/// directory's sync fail turns the answer into a failure said with it, and the file is in place all the same.
 #[test]
 fn each_form_syncs_the_directory_it_landed_in() {
     for shape in ["bare", "empty", "relative", "absolute"] {

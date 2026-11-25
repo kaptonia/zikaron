@@ -1,18 +1,11 @@
-//! Parts of forms and pages beyond the fields and rows: the callout (an amber note with its info glyph), the page's
-//! bottom bar (its keys held at the bottom of the page's view), a picker opened by a small key inside a joined
-//! input, and the one-line drop zone with its key inside.
-
 use crate::icons::{self, Glyph};
 use crate::palette::{c, C};
 use crate::tokens;
 use egui::{pos2, vec2, Rect};
 
-/// The bottom bar's keys: 14 above them and 16 below.
 const BAR_ABOVE: f32 = 14.0;
 const BAR_BELOW: f32 = 16.0;
 
-/// Where a page's bottom bar last stood: the view it was held at the foot of, its height, and the pass it was drawn
-/// in ([`bar_over`]).
 #[derive(Clone, Copy, Debug)]
 struct Floor {
     view: Rect,
@@ -22,8 +15,6 @@ struct Floor {
 
 const FLOOR: &str = "zikaron-page-bar-floor";
 
-/// How much of the foot of `view` a page's bottom bar covers: its height when one was drawn at the foot of this view
-/// this pass or the one before, else zero. What opens into view ([`crate::fold::reveal`]) ends above it.
 pub fn bar_over(ctx: &egui::Context, view: Rect) -> f32 {
     let now = ctx.cumulative_pass_nr();
     match ctx.data(|d| d.get_temp::<Floor>(egui::Id::new(FLOOR))) {
@@ -32,15 +23,10 @@ pub fn bar_over(ctx: &egui::Context, view: Rect) -> f32 {
     }
 }
 
-/// A page's bottom bar: its keys at the right edge of the page's column (laid right to left, 10 apart), held at
-/// the bottom of the page's view whether the page is short or scrolls, on a band of the page ground that fades in
-/// over its first 14. Drawn last on the page: the page keeps room at its end so its last block clears the bar,
-/// and the band takes the pointer from what scrolls under it. Returns what `add` answers.
 pub fn page_bar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let h = BAR_ABOVE + tokens::KEY_H + BAR_BELOW;
     let view = ui.clip_rect();
     let col = ui.max_rect();
-    // Room at the page's end: the bar stands over the page's own bottom margin and this.
     ui.allocate_space(vec2(col.width(), (h - tokens::PAGE_PAD).max(0.0)));
     let band = Rect::from_min_max(pos2(view.left(), view.bottom() - h), view.max);
     let pass = ui.ctx().cumulative_pass_nr();
@@ -68,9 +54,6 @@ pub fn page_bar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R
     add(&mut child)
 }
 
-/// A small key inside a joined input that opens a picker under it (its right edge on the key's): 30 high, corner
-/// 8; with `face` it has a key's face and edge ("change"), else none until the pointer is on it; a caret after its
-/// words with `caret`. A key that cannot open now is quiet and takes no clicks. Returns the row picked.
 #[allow(clippy::too_many_arguments)]
 pub fn inner_pick(ui: &mut egui::Ui, id_salt: &str, label: &str, caret: bool, face: bool, enabled: bool, spec: &crate::pick::Spec, items: &[crate::menu::Item], keep: crate::pick::Keep) -> Option<usize> {
     let id = ui.id().with(("zikaron-pick", id_salt));
@@ -83,14 +66,10 @@ pub fn inner_pick(ui: &mut egui::Ui, id_salt: &str, label: &str, caret: bool, fa
     picked
 }
 
-/// A small key with a key's face inside a joined input that opens a sheet of the caller's (a picker too long for a
-/// floating card), enabled or not.
 pub fn inner_open(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
     inner_key(ui, label, false, true, enabled)
 }
 
-/// The small key inside a joined input, enabled or not (`fields::inner_key` and `fields::inner_face` take no
-/// state).
 fn inner_key(ui: &mut egui::Ui, label: &str, caret: bool, face: bool, enabled: bool) -> egui::Response {
     let font = egui::FontId::new(crate::tokens::Type::Small.size(), crate::fonts::medium());
     let ink = if enabled { c(C::Ink) } else { c(C::Ink3) };
@@ -114,12 +93,8 @@ fn inner_key(ui: &mut egui::Ui, label: &str, caret: bool, face: bool, enabled: b
     }
 }
 
-/// The one-line drop zone's height.
 const LINE_H: f32 = 56.0;
 
-/// A one-line drop zone (56 high, corner 12, dashed): the inbox glyph and `words` at its left, a key at its right
-/// (6 in). A file dropped on it, a click on it or on its key: the caller takes the file or opens the system
-/// picker. Returns what the zone received and whether its key was pressed.
 pub fn drop_line(ui: &mut egui::Ui, id_salt: &str, words: &str, key: &str, accept: bool) -> (crate::drop::Drop, bool) {
     let at = ui.cursor().min;
     let w = ui.available_width();

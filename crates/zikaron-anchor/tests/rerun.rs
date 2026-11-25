@@ -1,9 +1,3 @@
-//! Before anything new is signed, what a sender sent earlier is asked about by its hashes (`send::earlier`,
-//! judged by the one rule for transactions no node holds, `send::unheld`, which the app's queue uses too), and
-//! the command line's send lands each hash once it is signed and before it is broadcast
-//! (`send::anchor_landed`). The scan's code question goes through the patience table (`scan::code_at`).
-//! Scripted endpoints in this process; never the network.
-
 use std::sync::{Arc, Mutex};
 use zikaron::json::Value;
 use zikaron_anchor::rpc::{Endpoint, Trouble};
@@ -18,7 +12,6 @@ fn quick() {
     zikaron_anchor::patience::set_waits(Some(std::time::Duration::ZERO));
 }
 
-/// A node answering each question by `answer(method, how many times it was asked before)`; every question kept.
 struct Scripted {
     asked: Arc<Mutex<Vec<String>>>,
     answer: fn(&str, usize) -> Result<W, Trouble>,
@@ -42,7 +35,6 @@ impl Endpoint for Scripted {
     fn name(&self) -> String {
         "scripted".into()
     }
-    /// No address: the place is the name.
     fn place(&self) -> String {
         self.name()
     }
@@ -56,8 +48,6 @@ const FROM: [u8; 20] = [0x11; 20];
 const ONE: [u8; 32] = [0xa1; 32];
 const TWO: [u8; 32] = [0xa2; 32];
 
-/// The one rule, one line per form: the nonce on chain not read waits; at or below the sent nonce is unused;
-/// past it, void when none has a receipt on asking again and waiting when one does.
 #[test]
 fn transactions_no_node_holds_are_judged_by_the_nonce_on_chain() {
     assert_eq!(send::unheld(None, 5, || true), Unheld::Wait, "not read");
@@ -95,7 +85,6 @@ fn unused(m: &str, _: usize) -> Result<W, Trouble> {
 fn late_receipt(m: &str, before: usize) -> Result<W, Trouble> {
     Ok(match m {
         "eth_getTransactionCount" => w("\"0x4\""),
-        // Not yet on the first round (two transactions), there on asking again.
         "eth_getTransactionReceipt" if before >= 2 => w("{\"blockNumber\":\"0xa\",\"status\":\"0x0\"}"),
         _ => w("null"),
     })
@@ -122,10 +111,6 @@ fn silent(_: &str, _: usize) -> Result<W, Trouble> {
     Err(Trouble::Transport(zikaron_anchor::rpc::Broke::Said("connection refused".into())))
 }
 
-/// Where the transactions sent before stand, one line per form: a receipt (in the block, nothing new signed),
-/// held by the node (in flight), held by none with the nonce past (void), held by none with it unused (sent
-/// again at that nonce), a receipt heard on asking again (included), and a node that answers in another shape
-/// or not at all at each question (unread, the last sent named).
 #[test]
 fn what_was_sent_before_is_asked_about_by_its_hashes() {
     quick();
@@ -152,8 +137,6 @@ fn what_was_sent_before_is_asked_about_by_its_hashes() {
     }
 }
 
-/// A node that answers as one does: fees, the head, an estimate, the nonce, the broadcast as `send` says, no
-/// receipt.
 fn sends(m: &str, _: usize) -> Result<W, Trouble> {
     Ok(match m {
         "eth_blockNumber" => w("\"0x40\""),
@@ -172,9 +155,6 @@ fn refuses_the_broadcast(m: &str, n: usize) -> Result<W, Trouble> {
     }
 }
 
-/// The send that lands what it signs, one line per form: a hash that cannot be landed sends nothing; a
-/// broadcast refused after the hash was landed answers with that hash; a nonce given is the one signed at, the
-/// node's is never asked.
 #[test]
 fn a_send_lands_its_hash_before_the_broadcast() {
     quick();
@@ -189,7 +169,7 @@ fn a_send_lands_its_hash_before_the_broadcast() {
             landed.push((n, *h));
             Ok(())
         };
-        let got = send::anchor_landed(&mut ep, &key, 31337, send::Form::Bare, None, &[[0xaa; 32]], None, std::time::Duration::ZERO, nonce, &mut land);
+        let got = send::anchor_landed(&mut ep, &key, 31337, send::Form::Registry, Some([0x11; 20]), &[[0xaa; 32]], None, std::time::Duration::ZERO, nonce, &mut land, &mut |_, _, _| Ok(()));
         (got.map(|(s, _)| s.tx), landed, asked)
     };
     let (got, landed, asked) = go(sends, None, false);
@@ -222,9 +202,6 @@ fn code_refused(_: &str, _: usize) -> Result<W, Trouble> {
     Err(Trouble::Node("{\"code\":-32601,\"message\":\"the method eth_getCode does not exist\"}".into()))
 }
 
-/// The scan's code question with patience, one line per form: limited once then answered (the answer, asked
-/// twice); limited to the end of the table (declined: UNPROVEN, asked once plus once per pause); refused for
-/// another reason (declined at once, asked once).
 #[test]
 fn the_scans_code_question_waits_out_a_rate_limit() {
     quick();

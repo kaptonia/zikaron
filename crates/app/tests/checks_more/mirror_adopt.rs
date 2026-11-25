@@ -1,18 +1,10 @@
-//! A ledger mirror, as "Export ledger mirror…" writes it, is adopted in place: every entry passes the mirror's
-//! own check and is sealed into this home, and not one byte of the mirror changes; one entry changed refuses the
-//! whole mirror, by name, and nothing is written. The fixture is a mirror written by 0.1.2's own export
-//! (`tests/fixtures/mirror-0.1.2`), so a ledger kept by an earlier version is brought over this way. Each test
-//! runs alone (its own machine directory).
-
 use app::action::{apply, Action, Applied};
 use std::path::{Path, PathBuf};
 
-/// The author seat's bundle of the 0.1.2 mirror.
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mirror-0.1.2/author")
 }
 
-/// Every file under `dir` with its bytes, by relative path.
 fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -30,7 +22,6 @@ fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     out
 }
 
-/// A copy of the fixture to change.
 fn copy_of_fixture(to: &Path) {
     let _ = std::fs::remove_dir_all(to);
     for (rel, bytes) in files_under(&fixture()) {
@@ -40,7 +31,6 @@ fn copy_of_fixture(to: &Path) {
     }
 }
 
-/// A shell with a fresh, empty home of the current identity's author seat open at a temporary place.
 fn fresh_home(tag: &str) -> (app::shell::Shell, PathBuf) {
     super::vault_open();
     let ctx = zikaron_ui::egui::Context::default();
@@ -106,8 +96,6 @@ fn a_mirror_with_one_entry_changed_is_refused_whole_and_nothing_is_written() {
     let _ = std::fs::remove_dir_all(&from);
 }
 
-/// A home that already has its own ledger is not given another: a mirror with another root is refused whole, by
-/// name and with the way out, and nothing is written; the home's own ledger still checks whole.
 #[test]
 fn a_mirror_of_another_ledger_is_refused_by_a_home_that_has_its_own() {
     if super::alone_in(module_path!(), "a_mirror_of_another_ledger_is_refused_by_a_home_that_has_its_own") {
@@ -130,7 +118,6 @@ fn a_mirror_of_another_ledger_is_refused_by_a_home_that_has_its_own() {
     let _ = std::fs::remove_dir_all(&at);
 }
 
-/// The same ledger again is taken as before: what the home has already is skipped, nothing is refused.
 #[test]
 fn the_same_ledger_adopted_again_is_taken_as_before() {
     if super::alone_in(module_path!(), "the_same_ledger_adopted_again_is_taken_as_before") {
@@ -147,7 +134,6 @@ fn the_same_ledger_adopted_again_is_taken_as_before() {
     let _ = std::fs::remove_dir_all(&at);
 }
 
-/// After adopting, starting a ledger of its own is refused as before.
 #[test]
 fn a_home_that_adopted_a_ledger_starts_no_other() {
     if super::alone_in(module_path!(), "a_home_that_adopted_a_ledger_starts_no_other") {
@@ -163,8 +149,6 @@ fn a_home_that_adopted_a_ledger_starts_no_other() {
     let _ = std::fs::remove_dir_all(&at);
 }
 
-/// Adopting writes the home's ledger, so only the instance that writes it adopts: a second instance on the same home
-/// (a reader) is refused by name, and nothing is written.
 #[test]
 fn a_second_instance_reading_a_home_adopts_nothing() {
     if super::alone_in(module_path!(), "a_second_instance_reading_a_home_adopts_nothing") {

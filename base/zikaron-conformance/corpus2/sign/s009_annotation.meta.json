@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s009_annotation.bin",
+ "note": "sec 5.1: B6 of an annotation",
+ "predicted": {
+  "digest": "0xf991ed53504d64b0ee8919717b480cdc31a7073e32efa2df05ddf1a86658f823",
+  "presig": "0xb86e2c0824bf9b0d7cfeee42bd95c2b140edaceeca9342a25772a4b232b0938f",
+  "sig": "0xfd31697a084c9ee539eda3f0908d6b211e55a9904dbce0afce86f349851f08352bdb5cd23c3d6d9c643c852122f3bff96b03dbaae3a5c85ba772c6133df905421b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

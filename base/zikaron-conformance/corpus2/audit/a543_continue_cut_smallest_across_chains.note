@@ -1,0 +1,1 @@
+sec 12.6: the cut is the smallest blockTimestamp over every chain, T+2 here, so the genesis at T+5 on chain 1 is in the new segment though chain 1's record of the succession is later.

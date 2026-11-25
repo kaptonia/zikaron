@@ -1,14 +1,7 @@
-//! Three details of a sheet, read in headless egui frames: a scroll bar only when the body does not fit; a fold row
-//! ending the body stands off the keys as the body's last block does, closed and open; and a pass the app draws
-//! nothing in (a window covered by another) does not play the sheet's coming again. The same fold row ending the rows
-//! of a form card on a page stands off that card's keys as a field does.
-
 use std::cell::Cell;
 use zikaron_ui::egui::{self, pos2, vec2, Event, Pos2, Rect};
 use zikaron_ui::{button, fields, layer, sheet, tokens};
 
-/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
-/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
 fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
     top.set_clip_rect(ctx.content_rect());
@@ -29,8 +22,6 @@ impl Frames {
         Frames { ctx, t: 0.0 }
     }
 
-    /// One frame `dt` after the last, with `events`; overlays that left fade at its end, as in the window. `draw`
-    /// false is a pass the app draws nothing in (the window covered: `eframe` runs the pass and not the app's ui).
     fn run(&mut self, dt: f64, events: Vec<Event>, draw: bool, mut ui: impl FnMut(&egui::Context)) -> egui::FullOutput {
         self.t += dt;
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
@@ -49,7 +40,6 @@ fn card_layer(name: &str) -> egui::LayerId {
     egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("zikaron-sheet", name)).with("card"))
 }
 
-/// Every text drawn in a frame, with where.
 fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
     out.shapes
         .iter()
@@ -60,14 +50,10 @@ fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
         .collect()
 }
 
-/// Shapes drawn wholly within `strip`.
 fn shapes_in(out: &egui::FullOutput, strip: Rect) -> usize {
     out.shapes.iter().filter(|cs| cs.shape.visual_bounding_rect().is_positive() && strip.contains_rect(cs.shape.visual_bounding_rect())).count()
 }
 
-/// A sheet whose body fits (its height in fractions of a point) shows no scroll bar, the pointer resting on it;
-/// one whose body does not fit shows one. Victim: whoever opens a short sheet and sees a bar along its right edge
-/// that scrolls nothing.
 #[test]
 fn a_scroll_bar_shows_only_when_the_body_does_not_fit() {
     for (tall, name, bar) in [(200.3_f32, "fits", false), (2000.0, "long", true)] {
@@ -92,22 +78,17 @@ fn a_scroll_bar_shows_only_when_the_body_does_not_fit() {
             f.run(0.05, vec![], true, |ctx| draw(ctx, &mut n));
         }
         let body = card.get();
-        // The pointer on the body's right edge, where the bar would be.
         let over = vec![Event::PointerMoved(pos2(body.right() + 16.0, body.top() + 40.0))];
         let mut out = f.run(0.05, over, true, |ctx| draw(ctx, &mut n));
         for _ in 0..10 {
             out = f.run(0.05, vec![], true, |ctx| draw(ctx, &mut n));
         }
-        // The bar lies along the body's right edge, inside the card.
         let strip = Rect::from_min_max(pos2(body.right() + 4.0, body.top() - 24.0), pos2(body.right() + 28.0, body.top() + 400.0));
         let drawn = shapes_in(&out, strip);
         assert_eq!(drawn > 0, bar, "{name}: shapes along the right edge {drawn}");
     }
 }
 
-/// The distance from what the body's last block shows to the keys: a field's box, a fold row closed (its words),
-/// the same fold open (its panel's field box). All three the same. Victim: whoever reads a sheet whose "advanced
-/// options" or "by hand" row stands far off its keys, closed or open.
 #[test]
 fn a_fold_row_ending_the_body_stands_off_the_keys_as_a_field_does() {
     let mut gaps: Vec<(String, f32)> = Vec::new();
@@ -127,7 +108,6 @@ fn a_fold_row_ending_the_body_stands_off_the_keys_as_a_field_does() {
                             let _ = fields::line(ui, s, "", w, fields::Look::default());
                         });
                         if form == "field" {
-                            // A field's box as the body's last block.
                             st.field(ui, "另一格", None, None, |ui, w| shown.set(ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover()).0));
                         }
                     });
@@ -154,7 +134,6 @@ fn a_fold_row_ending_the_body_stands_off_the_keys_as_a_field_does() {
         let t = texts(&out);
         let key = t.iter().find(|(w, _)| w == "确认").map(|(_, r)| r.center().y - tokens::KEY_H / 2.0).expect("the key");
         let bottom = if form == "closed" {
-            // The fold row's words: its title line box, centred on the words.
             t.iter().find(|(w, _)| w == "高级选项").map(|(_, r)| r.center().y + 21.0 / 2.0).expect("the fold's words")
         } else {
             shown.get().bottom()
@@ -167,9 +146,6 @@ fn a_fold_row_ending_the_body_stands_off_the_keys_as_a_field_does() {
     }
 }
 
-/// A sheet up, then passes the app draws nothing in (its window covered), then drawn again: it stands as it stood,
-/// whole and in place, its coming not played again. Victim: whoever switches to another app and back with a sheet
-/// open: the window flashes as the sheet comes again.
 #[test]
 fn a_pass_drawn_by_nobody_does_not_bring_the_sheet_again() {
     let mut f = Frames::new();
@@ -189,15 +165,10 @@ fn a_pass_drawn_by_nobody_does_not_bring_the_sheet_again() {
     assert_eq!(scale(&f), 1.0, "whole the first frame it shows again");
     let words = texts(&out);
     assert!(words.iter().any(|(w, _)| w == "卡里"), "drawn");
-    // Nothing of it is leaving: no copy of its layer fading over it.
     let leaving = egui::LayerId::new(egui::Order::Foreground, card_layer("covered").id.with("leaving"));
     assert!(out.shapes.iter().all(|cs| f.ctx.layer_id_at(cs.clip_rect.center()) != Some(leaving)), "no leaving copy");
 }
 
-/// On a page, a form card (fields, then rows, then its keys at its foot): the distance from what its last block
-/// shows to the keys, for a field's box, a fold row closed (its words) and the same fold open (its panel's field
-/// box). All three the same. Victim: whoever fills a page form (verify, read another's records) whose "advanced
-/// options" row stands far off the key under it.
 #[test]
 fn a_fold_row_ending_a_page_form_card_stands_off_its_keys_as_a_field_does() {
     let mut gaps: Vec<(String, f32)> = Vec::new();
@@ -246,4 +217,52 @@ fn a_fold_row_ending_a_page_form_card_stands_off_its_keys_as_a_field_does() {
     for (form, g) in &gaps {
         assert!((g - field).abs() <= 1.0, "{form}: {g} off the keys, a field {field} ({gaps:?})");
     }
+}
+
+#[test]
+fn a_foot_laid_past_its_row_is_said() {
+    use zikaron_ui::button::Role;
+    let mut f = Frames::new();
+    let mut n = 0;
+    for _ in 0..20 {
+        f.run(0.05, vec![], true, |ctx| {
+            sheet::show(ctx, sheet::Spec::new("foot-keys", tokens::SHEET_W), &mut n, |ui, _| ui.label("卡里"), |ui, _| {
+                let _ = button::key(ui, "继续", Role::Primary, true);
+                let _ = button::key(ui, "返回", Role::Secondary, true);
+            });
+        });
+    }
+    assert!(!zikaron_ui::probe::feet_out().iter().any(|o| o.id == "foot-keys"), "two keys at the right: {:?}", zikaron_ui::probe::feet_out());
+    for _ in 0..20 {
+        f.run(0.05, vec![], true, |ctx| {
+            sheet::show(ctx, sheet::Spec::new("foot-note", tokens::SHEET_W), &mut n, |ui, _| ui.label("卡里"), |ui, _| {
+                zikaron_ui::states::note_box(ui, "一段说明,画在了卡底那一行钮里,占满整行,其后的钮被排到卡外。");
+                let _ = button::key(ui, "撤回", Role::Primary, true);
+                let _ = button::key(ui, "返回", Role::Secondary, true);
+            });
+        });
+    }
+    let out = zikaron_ui::probe::feet_out();
+    let o = out.iter().find(|o| o.id == "foot-note").unwrap_or_else(|| panic!("a note in the row of keys is said: {out:?}"));
+    assert!(zikaron_ui::probe::overruns(o.row, o.laid), "{o:?}");
+}
+
+#[test]
+fn a_sheet_widens_to_the_keys_it_lays() {
+    use zikaron_ui::button::Role;
+    let mut f = Frames::new();
+    let mut n = 0;
+    for _ in 0..30 {
+        f.run(0.05, vec![], true, |ctx| {
+            sheet::show(ctx, sheet::Spec::new("wide-keys", tokens::SHEET_W), &mut n, |ui, _| ui.label("卡里"), |ui, _| {
+                let _ = button::key(ui, "Go put them on chain, all of them now", Role::Primary, true);
+                let _ = button::key(ui, "Cancel this and come back later", Role::Secondary, true);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| button::key(ui, "Cancel key change", Role::Secondary, true));
+            });
+        });
+    }
+    let out = zikaron_ui::probe::feet_out();
+    assert!(!out.iter().any(|o| o.id == "wide-keys"), "keys side by side within the card: {out:?}");
+    let card = zikaron_ui::probe::sheets(&f.ctx).into_iter().filter(|s| s.id == "wide-keys").map(|s| s.card).last().expect("drawn");
+    assert!(card.width() > tokens::SHEET_W, "widened: {card:?}");
 }

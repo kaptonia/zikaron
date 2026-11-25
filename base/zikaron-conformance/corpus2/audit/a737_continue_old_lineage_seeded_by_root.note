@@ -1,0 +1,1 @@
+sec 12.6: the continuation's author re-anchors the old root's genesis late on another chain; the old ledger is seeded by the root, so the genesis is an old ledger entry and the record an old record, counted there since k2 is of the old lineage.

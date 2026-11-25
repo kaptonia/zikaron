@@ -1,7 +1,3 @@
-//! `send::on_chain`: which hashes a sender already anchored through a registry, read from the registry's logs and
-//! judged again here (the node's filtering is not trusted); a node that does not say is said in words. In-process
-//! endpoints; never the network.
-
 use zikaron::json::Value;
 use zikaron_anchor::rpc::{Endpoint, Trouble};
 use zikaron_anchor::send;
@@ -35,7 +31,6 @@ fn log(address: &[u8; 20], t0: [u8; 32], sender: &[u8; 20], hash: [u8; 32], tx: 
     )
 }
 
-/// A node with a head and a fixed answer to the log question (`None`: it refuses it).
 struct Node {
     head: Option<&'static str>,
     logs: Option<String>,
@@ -58,8 +53,6 @@ impl Endpoint for Node {
     }
 }
 
-/// Each hash once at its earliest anchor from this sender through this registry; logs of another sender, another
-/// contract or another event are not this key's anchors whatever the node returned.
 #[test]
 fn only_this_senders_anchors_through_this_registry_count_each_at_its_earliest() {
     let t0 = zikaron_anchor::scan::topic0();
@@ -72,18 +65,15 @@ fn only_this_senders_anchors_through_this_registry_count_each_at_its_earliest() 
         log(&REG, h(0x99), &ME, h(0xb2), 0x05, 0x13),
     );
     let mut node = Node { head: Some("0x64"), logs: Some(logs) };
-    let found = send::on_chain(&mut node, 1, &REG, &ME, &[h(0xa1), h(0xb2), h(0xc3)], 0).expect("answered");
+    let found = send::on_chain(&mut node, 1, &[REG], &ME, &[h(0xa1), h(0xb2), h(0xc3)], 0).expect("answered");
     assert_eq!(found, vec![send::OnChain { hash: h(0xa1), tx: [0x02; 32], block: 0x10 }]);
-    // Nothing asked of nothing.
-    assert_eq!(send::on_chain(&mut node, 1, &REG, &ME, &[], 0), Ok(Vec::new()));
+    assert_eq!(send::on_chain(&mut node, 1, &[REG], &ME, &[], 0), Ok(Vec::new()));
 }
 
-/// A head that does not read, or a log question refused at every range, is no answer, never "not on chain", and
-/// says which question and what the node met, as structure.
 #[test]
 fn a_node_that_does_not_say_is_no_answer() {
     let mut no_head = Node { head: None, logs: Some("[]".into()) };
-    assert!(matches!(send::on_chain(&mut no_head, 1, &REG, &ME, &[h(0xa1)], 0), Err(send::NotSaid::Head(_))));
+    assert!(matches!(send::on_chain(&mut no_head, 1, &[REG], &ME, &[h(0xa1)], 0), Err(send::NotSaid::Head(_))));
     let mut no_logs = Node { head: Some("0x64"), logs: None };
-    assert!(matches!(send::on_chain(&mut no_logs, 1, &REG, &ME, &[h(0xa1)], 0), Err(send::NotSaid::Logs(_))));
+    assert!(matches!(send::on_chain(&mut no_logs, 1, &[REG], &ME, &[h(0xa1)], 0), Err(send::NotSaid::Logs(_))));
 }

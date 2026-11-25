@@ -1,7 +1,3 @@
-//! The window's in-place changes, read frame by frame over its own pages: switching seats moves the
-//! rail's rows that stay in one run from where they were to where they belong; switching the language cross-fades
-//! the changed words in place from the very frame of the switch and is done within 0.3 s, on the same page.
-
 use std::sync::{Arc, Mutex};
 
 use app::action::{apply, Action, Applied};
@@ -12,7 +8,6 @@ use zikaron_ui::egui;
 
 type Said = (String, egui::Rect, f32);
 
-/// Every frame's words as the window drew them: where, and how opaque.
 struct Capture {
     frames: Arc<Mutex<Vec<Vec<Said>>>>,
 }
@@ -62,7 +57,6 @@ fn a_home(tag: &str) -> Shell {
     shell
 }
 
-/// Draw `place` (five frames to settle, then `steps`), every frame's words.
 fn frames(shell: Shell, place: Place, steps: Vec<(f64, Vec<egui::Event>)>) -> (Shell, Vec<Vec<Said>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let ctx = egui::Context::default();
@@ -82,8 +76,6 @@ fn find<'a>(f: &'a [Said], w: &str, x_max: f32) -> Option<&'a Said> {
     f.iter().find(|s| s.0 == w && s.1.center().x < x_max && s.2 > 0.5)
 }
 
-/// Switching seats: a rail row both seats have (the alerts item) moves from where it was to where it belongs,
-/// starting where it was, in one direction, and is there within 0.4 s.
 #[test]
 fn switching_seats_moves_the_rail_rows_in_one_run() {
     if super::alone_in(module_path!(), "switching_seats_moves_the_rail_rows_in_one_run") {
@@ -112,8 +104,6 @@ fn switching_seats_moves_the_rail_rows_in_one_run() {
     assert!(there as f32 / 60.0 <= 0.4, "there within 0.4 s ({there} frames)");
 }
 
-/// Switching the language: the frame after the press is already crossing (changed words coming in by their
-/// colour, the old ones going where they were), the page is the same page, and within 0.3 s every word is whole.
 #[test]
 fn switching_the_language_cross_fades_in_place() {
     if super::alone_in(module_path!(), "switching_the_language_cross_fades_in_place") {
@@ -132,7 +122,6 @@ fn switching_the_language_cross_fades_in_place() {
     assert_eq!(app::lang::lang(), other, "the language switched");
     let new_word = t(Key::Language).to_string();
     assert_ne!(old_word, new_word);
-    // The frame after the press: the old title fading where it was, the new one coming in.
     let next = &seen[6];
     let old_now = next.iter().find(|s| s.0 == old_word);
     let new_now = next.iter().find(|s| s.0 == new_word);

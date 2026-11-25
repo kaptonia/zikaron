@@ -1,6 +1,3 @@
-//! Unit tests of the corners of law §3 to §9 that the reference implementations do not reach. Every sample is
-//! built and signed inside the tests; nothing is copied from `base/`.
-
 use zikaron::audit;
 use zikaron::cryptox;
 use zikaron::entry;
@@ -22,8 +19,6 @@ fn st(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
-/// Build a signed entry: take the §5.1 preimage of the six-member envelope, sign, add `sig`, return the
-/// canonical bytes.
 fn signed(key: &[u8; 32], entry_type: &str, seq: u64, prev: Option<&str>, body: Value) -> Vec<u8> {
     let author = addr(key);
     let six = o(vec![
@@ -60,8 +55,6 @@ fn id_of(b: &[u8]) -> String {
     hexfmt::encode(&entry::entry_id(b))
 }
 
-// §3 canonical form.
-
 #[test]
 fn canon_sorts_members_bytewise_and_emits_no_whitespace() {
     let v = json::parse_tests_1_5(b"{ \"b\" : 1 , \"a\" : [ 1 , 2 ] }").unwrap();
@@ -95,7 +88,6 @@ fn numeric_shape_faults_are_e_number_and_others_e_json() {
     assert_eq!(json::parse(b"1.5").unwrap_err().as_str(), "E_NUMBER");
     assert_eq!(json::parse(b"9007199254740992").unwrap_err().as_str(), "E_NUMBER");
     assert!(json::parse(b"9007199254740991").is_ok());
-    // `0x10`: the number bytes are `0`, an integer; `x` is the fault, so E_JSON.
     assert_eq!(json::parse(b"0x10").unwrap_err().as_str(), "E_JSON");
     assert_eq!(json::parse(b"NaN").unwrap_err().as_str(), "E_JSON");
 }
@@ -130,11 +122,8 @@ fn duplicate_keys_then_key_charset_then_value_charset() {
         json::parse_tests_1_5("{\"a\":\"\u{e9}\"}".as_bytes()).unwrap_err().as_str(),
         "E_VALUE_CHARSET"
     );
-    // Prose subtree: under a key ending in `_md`, string values at any depth pass.
     assert!(json::parse_tests_1_5("{\"a_md\":{\"b\":[\"\u{e9}\"]}}".as_bytes()).is_ok());
 }
-
-// §4 to §6: envelope and body.
 
 #[test]
 fn a_self_signed_genesis_is_an_entry() {
@@ -149,24 +138,19 @@ fn a_self_signed_genesis_is_an_entry() {
 fn decision_order_names_the_first_fault() {
     let b = genesis(&KEY_A);
     let s = String::from_utf8(b.clone()).unwrap();
-    // An eighth key: E_ENVELOPE_CLOSED.
     let closed = s.replace("{\"author\"", "{\"aextra\":1,\"author\"");
     assert_eq!(entry::check(closed.as_bytes()).unwrap_err().as_str(), "E_ENVELOPE_CLOSED");
-    // A missing key: E_ENVELOPE_MISSING (judged before E_ENVELOPE_CLOSED).
     let missing = json::canon_bytes(&Value::Obj(vec![("spec".to_string(), st("zikaron/1"))]));
     assert_eq!(entry::check(&missing).unwrap_err().as_str(), "E_ENVELOPE_MISSING");
     assert_eq!(entry::check(b"[]").unwrap_err().as_str(), "E_ENVELOPE");
-    // spec before entryType.
     let spec = s.replace("\"spec\":\"zikaron/1\"", "\"spec\":\"zikaron/2\"");
     assert_eq!(entry::check(spec.as_bytes()).unwrap_err().as_str(), "E_SPEC");
 }
 
 #[test]
 fn genesis_placement_and_prev_seq() {
-    // seq 0 but not genesis: E_GENESIS_PLACE.
     let b = signed(&KEY_A, "history", 0, None, o(vec![]));
     assert_eq!(entry::check(&b).unwrap_err().as_str(), "E_GENESIS_PLACE");
-    // seq 1 with a null prev: E_PREV_SEQ, judged before the genesis position.
     let b = signed(&KEY_A, "genesis", 1, None, o(vec![("statement_md", st("x"))]));
     assert_eq!(entry::check(&b).unwrap_err().as_str(), "E_PREV_SEQ");
 }
@@ -175,7 +159,6 @@ fn genesis_placement_and_prev_seq() {
 fn body_tables_are_one_token() {
     let g = genesis(&KEY_A);
     let head = id_of(&g);
-    // history without mode.
     let b = signed(
         &KEY_A,
         "history",
@@ -184,7 +167,6 @@ fn body_tables_are_one_token() {
         o(vec![("content", st(&hexfmt::encode(&[0u8; 32])))]),
     );
     assert_eq!(entry::check(&b).unwrap_err().as_str(), "E_BODY_FIELD");
-    // A grant window running backwards.
     let b = signed(
         &KEY_A,
         "grant",
@@ -198,7 +180,6 @@ fn body_tables_are_one_token() {
         ]),
     );
     assert_eq!(entry::check(&b).unwrap_err().as_str(), "E_BODY_FIELD");
-    // An optional field written as null is present in its refused shape.
     let b = signed(
         &KEY_A,
         "annotation",
@@ -207,7 +188,6 @@ fn body_tables_are_one_token() {
         o(vec![("subject", Value::Null), ("note_md", st("n"))]),
     );
     assert_eq!(entry::check(&b).unwrap_err().as_str(), "E_BODY_FIELD");
-    // Unlisted type: an object body suffices (§6.9).
     let b = signed(&KEY_A, "weather", 1, Some(&head), o(vec![("anything", Value::Int(1))]));
     assert!(entry::check(&b).is_ok());
 }
@@ -218,18 +198,15 @@ fn signature_boundaries() {
     let s = String::from_utf8(g.clone()).unwrap();
     let sig_start = s.find("\"sig\":\"0x").unwrap() + 9;
     let mut bytes = s.clone().into_bytes();
-    // v changed to 1: E_SIG_V.
     let v_at = sig_start + 128;
     bytes[v_at] = b'0';
     bytes[v_at + 1] = b'1';
     assert_eq!(entry::check(&bytes).unwrap_err().as_str(), "E_SIG_V");
-    // r all zero: E_SIG_RANGE.
     let mut bytes = s.clone().into_bytes();
     for i in 0..64 {
         bytes[sig_start + i] = b'0';
     }
     assert_eq!(entry::check(&bytes).unwrap_err().as_str(), "E_SIG_RANGE");
-    // Someone else's signature: E_SIG_SIGNER or E_SIG_RECOVER; not an entry either way.
     let other = genesis(&KEY_B);
     let os = String::from_utf8(other).unwrap();
     let osig = &os[os.find("\"sig\":\"0x").unwrap() + 7..];
@@ -255,8 +232,6 @@ fn entry_message_is_76_bytes_and_adoption_is_85() {
     assert_eq!(entry::message("zikaron/1", &presig).len(), 76);
     assert_eq!(entry::message("zikaron/1-adoption", &presig).len(), 85);
 }
-
-// §8 audit.
 
 fn basis_empty() -> Value {
     o(vec![
@@ -390,8 +365,6 @@ fn an_anchor_verdict_outside_the_closed_set_is_no_audit_input() {
 #[test]
 fn an_anchor_from_outside_the_lineage_is_discarded() {
     let g = genesis(&KEY_A);
-    // Reach (law §9.4): the record must be within the basis, so bareTx names this transaction (a bare anchor
-    // ignores senders).
     let basis = o(vec![
         ("chains", Value::Arr(vec![])),
         (
@@ -421,9 +394,6 @@ fn an_anchor_from_outside_the_lineage_is_discarded() {
         }
     }
     let rep = audit::audit(&Value::Obj(inp));
-    // A sender outside the lineage cannot put a hash into this ledger's reconciliation: MISSING is empty and
-    // the label stays COMPLETE; the discarded record is listed with its seven members in DISCARDED (§8.7 item
-    // 14).
     assert!(rep.member("missing").unwrap().as_arr().unwrap().is_empty());
     assert_eq!(rep.member("label").unwrap().as_str().unwrap(), "COMPLETE");
     let discarded = rep.member("discarded").unwrap().as_arr().unwrap();

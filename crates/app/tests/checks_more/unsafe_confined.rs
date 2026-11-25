@@ -1,13 +1,7 @@
-//! `unsafe` lives in the platform pieces alone: the `zikaron-os` crate and the app's `platform` module. Every
-//! other crate root of the product forbids it (the app denies it and lifts that for its `platform` module only;
-//! the widget library forbids it in its shipped build, its own tests reading raw memory), and no source file
-//! elsewhere under `crates/*/src` uses it.
-
 fn crates() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// Every `.rs` file under a directory.
 fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(listing) = std::fs::read_dir(dir) else { return };
     for e in listing.flatten() {
@@ -20,7 +14,6 @@ fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// Whether a line uses `unsafe` as code (not in a comment).
 fn uses_unsafe(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or("");
     code.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "unsafe")
@@ -43,7 +36,6 @@ fn unsafe_is_only_in_the_platform_pieces() {
                 continue;
             }
             let text = std::fs::read_to_string(&f).expect("source");
-            // The widget library's own tests read raw memory (its shipped build forbids it): the test module only.
             let shipped = if rel == "zikaron-ui/src/secret.rs" { text.split("#[cfg(test)]").next().unwrap_or("") } else { text.as_str() };
             for (i, line) in shipped.lines().enumerate() {
                 if uses_unsafe(line) && !line.contains("unsafe_code") {

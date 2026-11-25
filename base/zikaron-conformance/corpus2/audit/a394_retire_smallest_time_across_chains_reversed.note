@@ -1,0 +1,1 @@
+input arrays reversed: sec 7.4: the retirement is the smallest blockTimestamp over every chain; the chain-8453 record at T+2 retires the root, so its chain-1 record at T+5 is discarded though the succession's chain-1 record is later still.

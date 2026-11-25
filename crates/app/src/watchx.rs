@@ -1,50 +1,24 @@
-//! Watch and notifications: every row of both seats' watch tables; notifications with deduplication, one
-//! alert per deadline; the status line.
-//!
-//! This layer touches no disk and no network: every row is computed from readings the shell already has
-//! (ledger table, queue, grant table, mirror state, self-audit report, cards, sentinel alarms), each owned
-//! elsewhere (ledger view, anchoring queue, grant register, mirror and restore, self-audit clock, grant vault,
-//! revocation sentinel). A gap comes with an action: a row does not only light a lamp, it carries an action
-//! with a number and the page to go to. A row with no reading says "not read yet" and points to the page that
-//! can read it, never passing grey off as green.
-//!
-//! The two expiry rows (the author's window, the grantee's holding) use only the chain's current time:
-//! without it they say "no chain time yet" and point to the pass that can fetch it (self-audit, re-check),
-//! never falling back to the local clock.
-//!
-//! Each row that should alert has a key (`p2:<row>:<subject>:<episode>`), and alerted keys go into the
-//! settings' `alarmed` (the revocation sentinel's record, not a separate one): the same deadline alerts once,
-//! and a changed deadline (renewal, new grant) is a new key and alerts again. Revocation and succession alerts
-//! belong to the revocation sentinel and are not repeated here. Network errors are not notifications: they go
-//! to the status line (`Shell::status`).
-
 use crate::shell::Page;
 use zikaron::json::Value;
 
-/// The expiry threshold in seconds: closer than this to the deadline counts as soon.
 pub const SOON_SECS: u64 = 7 * 86_400;
 
-/// Which seat.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seat {
     Author,
     Grantee,
 }
 
-/// Watch table rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Item {
-    // Author seat
     Unanchored,
     QueueBacklog,
     WindowExpiring,
     AuditLabel,
-    // Grantee seat
     HoldingExpiring,
     Revoked,
     Handed,
     UpstreamRed,
-    // Both seats: the whole-machine backup (never written, or ledger entries and held grants came after it).
     Backup,
 }
 
@@ -75,8 +49,6 @@ impl Item {
     }
 }
 
-/// Lights. The same four states as the widget library's `Dot`, but this layer does not depend on the library
-/// (it is a reading, not a drawing).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Light {
     Ok,
@@ -96,9 +68,6 @@ impl Light {
     }
 }
 
-/// The form of an action sentence. Each row picks its sentence from its own state, and the UI only turns it
-/// into text (key table). A UI guessing the sentence from (row, light, number) would read "a mirror exists but
-/// is one entry behind" as "no mirror yet".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Say {
     UnanchoredRead,
@@ -125,7 +94,6 @@ pub enum Say {
 }
 
 impl Say {
-    /// The sentence's name; the UI assembles the text from the key table.
     pub fn as_str(self) -> &'static str {
         match self {
             Say::UnanchoredRead => "unanchored_read",
@@ -153,8 +121,6 @@ impl Say {
     }
 }
 
-/// A gap's action: which sentence, a number, optional seconds, the page to go to. The UI assembles the text
-/// from the key table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Gap {
     pub say: Say,
@@ -163,29 +129,14 @@ pub struct Gap {
     pub go: Page,
 }
 
-/// The identity of an episode: the part of the alert key that says which occurrence this is. An episode
-/// alerts once; a new episode alerts again. Each row defines its own episode identity, and keys are assembled
-/// only in [`notices`].
-///
-/// If each row chose this part ad hoc (a constant, an entry count, a block head), a constant would alert once
-/// and stay silent forever, and a moving reading would alert on every change. As a closed type, a row that
-/// wants to alert must say which episode the alert belongs to.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Episode {
-    /// The deadline family: the deadline itself (chain time). Renewal is a new episode; recomputing the same
-    /// deadline stays the same episode.
     Until(u64),
-    /// The break family: which entries it broke at (ids of the findings the core marks hard). Repaired in
-    /// place and broken again is another episode: the entry count can stay the same, while the ids at the
-    /// break change with the bytes.
     At(String),
-    /// The upstream family: the id of the upstream ledger's head entry. Any change to the upstream, even one
-    /// entry or one character, is a new episode.
     Head(String),
 }
 
 impl Episode {
-    /// Which family this episode belongs to; used by key assembly and the UI.
     pub fn kind(&self) -> &'static str {
         match self {
             Episode::Until(_) => "until",
@@ -194,7 +145,6 @@ impl Episode {
         }
     }
 
-    /// The episode's value, unchanged (ids always lowercase: the two cases of one id are the same episode).
     pub fn value(&self) -> String {
         match self {
             Episode::Until(n) => n.to_string(),
@@ -202,37 +152,27 @@ impl Episode {
         }
     }
 
-    /// The text of this part of the key. Family name first, so numbers from two families never collide.
     pub fn as_key(&self) -> String {
         format!("{}-{}", self.kind(), self.value())
     }
 }
 
-/// One alert a row should raise: to whom (subject), which episode.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Ring {
     pub subject: String,
     pub episode: Episode,
 }
 
-/// One row of the watch table.
 #[derive(Clone, Debug)]
 pub struct Row {
     pub item: Item,
     pub light: Light,
-    /// This row's main number (how many entries, items or places).
     pub n: u64,
-    /// A one-line reading (label name, state name), shown unchanged in the UI.
     pub detail: String,
-    /// The action sentence when the light is not green; `None` when green.
     pub gap: Option<Gap>,
-    /// The alerts to raise. Empty means this row does not alert.
     pub rings: Vec<Ring>,
 }
 
-/// The rows that need attention, as the desktop's alerts list them: a row that warns or is bad, never one that is
-/// fine or not yet read, and never the whole-machine backup (its state is shown in settings, not raised as an
-/// alert). The command line's watch output reads every row and is not filtered here.
 pub fn needing_attention(rows: Vec<Row>) -> Vec<Row> {
     rows.into_iter().filter(|r| r.item != Item::Backup && matches!(r.light, Light::Warn | Light::Bad)).collect()
 }
@@ -241,17 +181,11 @@ fn row(item: Item, light: Light, n: u64, detail: String, gap: Option<Gap>) -> Ro
     Row { item, light, n, detail, gap, rings: Vec::new() }
 }
 
-/// Where it broke: the ids of the findings the core marked `hard` in the report, sorted, deduplicated and
-/// joined. Which findings are hard is the core's decision; this layer re-judges none.
-///
-/// BROKEN_CHAIN is set by having a hard finding (law §8.7 item 15), so there is always at least one. If none
-/// can be read, this returns an empty string; the row still alerts once and not again (the empty string is
-/// the same episode).
 fn broken_at(report: &Value) -> String {
-    let mut ids: Vec<String> = crate::auditx::rows_of(report, zikaron::tokens::Key::Findings)
+    let mut ids: Vec<String> = crate::auditx::rows_of(report, zikaron::v2::tokens::Key::Findings)
         .iter()
-        .filter(|r| matches!(member(r, zikaron::tokens::Key::Hard.as_str()), Some(Value::Bool(true))))
-        .filter_map(|r| match member(r, zikaron::tokens::Key::EntryId.as_str()) {
+        .filter(|r| matches!(member(r, zikaron::v2::tokens::Key::Hard.as_str()), Some(Value::Bool(true))))
+        .filter_map(|r| match member(r, zikaron::v2::tokens::Key::EntryId.as_str()) {
             Some(Value::Str(x)) => Some(x.to_ascii_lowercase()),
             _ => None,
         })
@@ -268,16 +202,10 @@ fn member<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// How many rows one table in the self-audit report has.
-fn table_len(report: &Value, k: zikaron::tokens::Key) -> u64 {
+fn table_len(report: &Value, k: zikaron::v2::tokens::Key) -> u64 {
     crate::auditx::rows_of(report, k).len() as u64
 }
 
-/// The whole-machine backup row (both seats), four colours: a last backup attempt that was not written or not
-/// read back is red (`failed`, its time is the episode); never backed up is grey (one alert); ledger entries
-/// and held grants added since the last backup are amber with the count (one alert per backup: the episode is
-/// the last backup's time); nothing behind is green. A count not measured yet is grey too, undecided, never
-/// passing for "nothing behind".
 fn backup_row(backup: Option<&crate::machine::Backed>, items_now: Option<u64>, failed: Option<u64>) -> Row {
     let gap = |say: Say, n: u64| Some(Gap { say, n, secs: None, go: Page::Archive });
     if let Some(at) = failed {
@@ -303,27 +231,30 @@ fn backup_row(backup: Option<&crate::machine::Backed>, items_now: Option<u64>, f
     }
 }
 
-/// Author seat, five rows. All readings come from the parameters.
+pub fn unqueued(rows: Option<&[crate::ledgerx::Row]>, queued: usize) -> Option<u64> {
+    let r = rows?;
+    let d = crate::queue::density(Some(r), queued);
+    let uncovered = |x: &&crate::ledgerx::Row| !d.covers(x);
+    Some(r.iter().filter(uncovered).filter(|x| x.lamp == crate::ledgerx::Lamp::Landed).count() as u64)
+}
+
 pub fn author(
     rows: Option<&[crate::ledgerx::Row]>,
     queued: usize,
     grants: Option<&[crate::grantx::Row]>,
     backup: (Option<&crate::machine::Backed>, Option<u64>, Option<u64>),
     audit: Option<(&str, &Value, &[String])>,
+    verdict: Option<crate::shell::Verdict>,
     now: Option<u64>,
 ) -> Vec<Row> {
     crate::trace::mark(crate::feature::Feature::P2);
     let gap = |say: Say, n: u64, secs: Option<u64>, go: Page| Some(Gap { say, n, secs, go });
     let mut out: Vec<Row> = Vec::new();
-    // Unanchored: entries no anchor covers (transitively, as the anchoring queue reads it: anchoring seq N
-    // covers ≤N); a covered entry whose light is not green is not a gap. Recorded but not yet queued points to
-    // the anchoring desk; all queued points to the queue.
     out.push(match rows {
         None => row(Item::Unanchored, Light::Unknown, 0, String::new(), gap(Say::UnanchoredRead, 1, None, Page::Ledger)),
         Some(r) => {
             let d = crate::queue::density(Some(r), queued);
-            let uncovered = |x: &&crate::ledgerx::Row| d.anchored_through.map(|n| x.seq > n).unwrap_or(true);
-            let landed = r.iter().filter(uncovered).filter(|x| x.lamp == crate::ledgerx::Lamp::Landed).count() as u64;
+            let landed = unqueued(Some(r), queued).unwrap_or(0);
             row(
                 Item::Unanchored,
                 if d.behind == 0 { Light::Ok } else { Light::Warn },
@@ -333,13 +264,14 @@ pub fn author(
                     None
                 } else if landed > 0 {
                     gap(Say::Unanchored, landed, None, Page::Anchoring)
+                } else if queued > 0 {
+                    gap(Say::Queue, queued as u64, None, Page::Queue)
                 } else {
                     gap(Say::Queue, d.behind as u64, None, Page::Queue)
                 },
             )
         }
     });
-    // Queue backlog.
     out.push(row(
         Item::QueueBacklog,
         if queued == 0 { Light::Ok } else { Light::Warn },
@@ -347,7 +279,6 @@ pub fn author(
         String::new(),
         if queued > 0 { gap(Say::Queue, queued as u64, None, Page::Queue) } else { None },
     ));
-    // Window expiring: chain time only.
     out.push(match (grants, now) {
         (None, _) => row(Item::WindowExpiring, Light::Unknown, 0, String::new(), gap(Say::WindowRead, 1, None, Page::Grants)),
         (Some(_), None) => row(Item::WindowExpiring, Light::Unknown, 0, String::new(), gap(Say::NoChainTime, 1, None, Page::Audit)),
@@ -371,20 +302,18 @@ pub fn author(
             r
         }
     });
-    // The whole-machine backup.
     out.push(backup_row(backup.0, backup.1, backup.2));
-    // Self-audit label. The broken-chain alert's episode is the ids at the break: repaired in place and
-    // broken again (same entry count) is another episode and alerts again.
-    out.push(match audit {
-        None => row(Item::AuditLabel, Light::Unknown, 0, String::new(), gap(Say::AuditRun, 1, None, Page::Audit)),
-        Some((label, report, unanswered)) => {
-            use zikaron::tokens::Label;
+    out.push(match (audit, verdict) {
+        (None, _) => row(Item::AuditLabel, Light::Unknown, 0, String::new(), gap(Say::AuditRun, 1, None, Page::Audit)),
+        (Some((label, _, _)), Some(crate::shell::Verdict::HandedOn(_))) => row(Item::AuditLabel, Light::Ok, 0, label.to_string(), None),
+        (Some((label, report, unanswered)), Some(crate::shell::Verdict::Normal | crate::shell::Verdict::Abnormal) | None) => {
+            use zikaron::v2::tokens::Label;
             if label == Label::Complete.as_str() {
                 row(Item::AuditLabel, Light::Ok, 0, label.to_string(), None)
             } else if label == Label::Gaps.as_str() {
-                let n = table_len(report, zikaron::tokens::Key::Missing);
+                let n = table_len(report, zikaron::v2::tokens::Key::Missing);
                 row(Item::AuditLabel, Light::Bad, n, label.to_string(), gap(Say::AuditGaps, n.max(1), None, Page::Audit))
-            } else if label == Label::Unavailable.as_str() {
+            } else if label == Label::Unproven.as_str() {
                 let n = unanswered.len() as u64;
                 row(Item::AuditLabel, Light::Warn, n, label.to_string(), gap(Say::AuditUnavailable, n.max(1), None, Page::Identity))
             } else {
@@ -397,7 +326,6 @@ pub fn author(
     out
 }
 
-/// Grantee seat, five rows.
 pub fn grantee(
     cards: Option<&[crate::vaultx::Card]>,
     alarms: &[crate::sentinelx::Alarm],
@@ -407,9 +335,6 @@ pub fn grantee(
     crate::trace::mark(crate::feature::Feature::P2);
     let gap = |say: Say, n: u64, secs: Option<u64>, go: Page| Some(Gap { say, n, secs, go });
     let mut out: Vec<Row> = Vec::new();
-    // Holding expiring: each card counts down on its own; a card without chain time leaves only that card
-    // undecided, and the others still alert. Expired ones alert too (one key per deadline: one that alerted
-    // while expiring does not alert again; one that never alerted does once expired).
     out.push(match cards {
         None => row(Item::HoldingExpiring, Light::Unknown, 0, String::new(), gap(Say::HoldingRead, 1, None, Page::Vault)),
         Some(c) if c.is_empty() => row(Item::HoldingExpiring, Light::Ok, 0, String::new(), None),
@@ -445,7 +370,6 @@ pub fn grantee(
             r
         }
     });
-    // Revocation and succession alarms (the revocation sentinel's readings; the alerts belong to it).
     let revoked = alarms.iter().filter(|a| a.kind == crate::sentinelx::Kind::Revoked).count() as u64;
     out.push(row(
         Item::Revoked,
@@ -463,18 +387,12 @@ pub fn grantee(
         String::new(),
         if handed > 0 { gap(Say::Handed, handed, None, Page::Upstreams) } else { None },
     ));
-    // Upstream turned red: the upstream ledger's audit label is BROKEN_CHAIN, or BROKEN_LEDGER failed among
-    // the six checks. The alert's episode is the upstream ledger's head entry id, so any change, even with the
-    // same entry count, is a new episode.
     out.push(match cards {
         None => row(Item::UpstreamRed, Light::Unknown, 0, String::new(), gap(Say::HoldingRead, 1, None, Page::Vault)),
         Some(c) => {
             let mut authors: Vec<Ring> = c
                 .iter()
-                .filter(|x| {
-                    x.upstream_label == zikaron::tokens::Label::BrokenChain.as_str()
-                        || x.failed.iter().any(|f| f == zikaron_kit::tokens::Check::BrokenLedger.as_str())
-                })
+                .filter(|x| x.failed.iter().any(|f| f == zikaron_kit::tokens::Check::BrokenLedger.as_str()))
                 .map(|x| Ring {
                     subject: x.author.to_ascii_lowercase(),
                     episode: Episode::Head(x.upstream_head.clone().unwrap_or_default()),
@@ -497,18 +415,14 @@ pub fn grantee(
     out
 }
 
-/// One notification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
-    /// The deduplication key: `p2:<row>:<subject>:<episode>`, assembled only here.
     pub key: String,
     pub item: Item,
     pub subject: String,
     pub episode: Episode,
 }
 
-/// The keys to alert. How many alerts a row raises is set by its `rings`: one key per subject and episode.
-/// The key's four parts are assembled only here, so what goes in each part is not decided row by row.
 pub fn notices(rows: &[Row]) -> Vec<Notice> {
     let mut out: Vec<Notice> = Vec::new();
     for r in rows {
@@ -524,13 +438,10 @@ pub fn notices(rows: &[Row]) -> Vec<Notice> {
     out
 }
 
-/// What may ring: the notices of the rows that need attention (`needing_attention`, the alerts page's own
-/// judgment), so nothing rings that the alerts page would not list (the whole-machine backup never does).
 pub fn to_ring(rows: Vec<Row>) -> Vec<Notice> {
     notices(&needing_attention(rows))
 }
 
-/// Deduplicate. Keys already alerted do not alert again; returns (the new alerts this pass, their keys).
 pub fn fresh(all: Vec<Notice>, already: &[String]) -> (Vec<Notice>, Vec<String>) {
     let mut out: Vec<Notice> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
@@ -544,11 +455,8 @@ pub fn fresh(all: Vec<Notice>, already: &[String]) -> (Vec<Notice>, Vec<String>)
     (out, keys)
 }
 
-/// Whether a fault is network-related (network errors go to the status line, not to notifications).
 pub fn is_network(f: &crate::fault::Fault) -> bool {
     use crate::fault::Known;
     let head = f.said().split(':').next().unwrap_or("");
-    // The member table lives in one place (`fault::NETWORK`): the status line and dispatching read the same
-    // table.
     Known::NETWORK.iter().any(|k| k.as_str() == head)
 }

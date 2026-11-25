@@ -1,24 +1,13 @@
-//! Trace channel: each public entry point this crate crosses appends its component code to the trace file.
-//!
-//! Same channel as the core's: with `ZIKARON_TRACE` pointing at a file, each crossing appends `<id>\n`;
-//! without it nothing happens. Trace marks are diagnostic only and never affect a decision.
-//!
-//! This crate carries its own copy of the emitter because it does not depend on the core, and a dependency
-//! added only for tracing would show up as a real edge in the dependency graph.
-
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// The component code this crate writes as its trace mark.
 pub const A1: &str = "A1";
 
-/// Environment variable naming the trace file.
 pub const TRACE_ENV: &str = "ZIKARON_TRACE";
 
 static SINK: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// Cross a public entry point: append the trace mark. A failed write changes nothing else.
 pub fn mark(id: &str) {
     let sink = SINK.get_or_init(|| std::env::var_os(TRACE_ENV).map(PathBuf::from));
     if let Some(path) = sink {
@@ -26,7 +15,6 @@ pub fn mark(id: &str) {
             let mut line = String::with_capacity(id.len() + 1);
             line.push_str(id);
             line.push('\n');
-            // Stop writing at the cap (set once in `.cargo/config.toml`).
             let size = f.metadata().map(|m| m.len()).unwrap_or(0);
             if over_cap(size, line.len() as u64) {
                 return;
@@ -36,8 +24,6 @@ pub fn mark(id: &str) {
     }
 }
 
-/// Upper bound of the trace file in bytes, read at compile time from `[env] ZIKARON_TRACE_CAP_BYTES` in
-/// `.cargo/config.toml`; a malformed value fails the build.
 pub const TRACE_CAP_BYTES: u64 = cap_of(env!("ZIKARON_TRACE_CAP_BYTES"));
 
 const fn cap_of(s: &str) -> u64 {
@@ -53,7 +39,6 @@ const fn cap_of(s: &str) -> u64 {
     n
 }
 
-/// Whether writing `line` more bytes to a file of `size` bytes would pass the cap.
 pub fn over_cap(size: u64, line: u64) -> bool {
     size + line > TRACE_CAP_BYTES
 }

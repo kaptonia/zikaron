@@ -1,16 +1,5 @@
-//! Closed tables of kit law §11 (document tokens in four types, and the result vocabularies), with the keys
-//! of §9.2, §10.3, §10.5 and the command outputs.
-//!
-//! As in `zikaron::tokens`, each table is a closed type with a single string conversion (`as_str`). Document
-//! tokens get one type per area of the spec (documents, payload encoding, payload decoding, kit verdicts);
-//! each producer returns only its own type. law §3 and §5 tokens pass through `DocToken::Canon` and
-//! `DocToken::Sig`.
-
 pub use zikaron::tokens::{CanonToken, SigToken, Token};
 
-/// Document tokens of kit law §11 (decision order of §4.2, §5.2): the eight law §3 tokens via
-/// `Canon`, the six law §5 tokens via `Sig`, and the kit spec's own seventeen. 31 members, equal to the
-/// docs vocabulary (plus `ok`); `check_fpm` and `check_ack` return only this type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DocToken {
     Canon(CanonToken),
@@ -60,8 +49,6 @@ impl DocToken {
     }
 }
 
-/// The three encoding-side tokens of kit law §6.1 (per-segment acceptance and type, then the cap); with
-/// `payload` they form the badge-encode vocabulary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BadgeEncodeToken {
     Entry,
@@ -79,8 +66,6 @@ impl BadgeEncodeToken {
     }
 }
 
-/// The seven decoding-side tokens of kit law §6.2, in the order of its six steps; with `BADGE_OK` they form
-/// the badge-decode vocabulary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BadgeDecodeToken {
     Prefix,
@@ -116,7 +101,6 @@ impl BadgeDecodeToken {
     }
 }
 
-/// The seven failure verdicts of kit law §7.1 and §7.4; with `KIT_OK` they form the kit-verdicts vocabulary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KitFailToken {
     Unreadable,
@@ -142,7 +126,6 @@ impl KitFailToken {
     }
 }
 
-/// The six pairing verdicts of kit law §5.3.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PairVerdict {
     Paired,
@@ -166,7 +149,6 @@ impl PairVerdict {
     }
 }
 
-/// The two attribution verdicts of kit law §5.4.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attribution {
     Attributed,
@@ -182,7 +164,6 @@ impl Attribution {
     }
 }
 
-/// The three check states of kit law §10.2.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Pass,
@@ -200,7 +181,6 @@ impl State {
     }
 }
 
-/// The six check tokens of kit law §10.2, in check order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Check {
     BadSig,
@@ -233,7 +213,6 @@ impl Check {
     ];
 }
 
-/// Kit law §10.3: the reason when check 1 fails, a law §10 token or `NOT_A_GRANT`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reason {
     NotAGrant,
@@ -249,7 +228,6 @@ impl Reason {
     }
 }
 
-/// The three verdicts of kit law §10.2 and §10.5.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CheckVerdict {
     Green,
@@ -267,7 +245,6 @@ impl CheckVerdict {
     }
 }
 
-/// The three chain-check tokens of kit law §10.5.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChainToken {
     Incomplete,
@@ -285,7 +262,6 @@ impl ChainToken {
     }
 }
 
-/// The four failing-point kinds of kit law §10.5.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FailKind {
     Empty,
@@ -305,7 +281,6 @@ impl FailKind {
     }
 }
 
-/// The nine manifest rule names of kit law §7.3, in decision order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rule {
     Canonical,
@@ -335,25 +310,19 @@ impl Rule {
     }
 }
 
-/// Keys of the kit spec's result objects and command outputs (the six §9.2 members, §10.3, §10.5, §7.4, §6,
-/// §4, §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
-    // General.
     Ok,
     Token,
     Index,
     Inner,
     Verdict,
-    // Documents (§4, §5).
     DocId,
     Recipient,
     Variant,
     Attributed,
-    // Payloads (§6).
     Payload,
     Grants,
-    // Disclosure kits (§7.4).
     Counts,
     Entries,
     Files,
@@ -362,7 +331,6 @@ pub enum Key {
     EntryId,
     KitId,
     Subject,
-    // Depth reading (§9.2).
     Valid,
     Label,
     Found,
@@ -371,7 +339,6 @@ pub enum Key {
     Continuity,
     Anchored,
     Span,
-    // Six checks and chain check (§10.3, §10.5).
     Basis,
     Checks,
     N,
@@ -382,7 +349,6 @@ pub enum Key {
     Links,
     Failing,
     Kind,
-    // Signing output (same shape as `zk1 sign` in the `zikaron/1` harness).
     Digest,
     Presig,
     Sig,
@@ -437,7 +403,6 @@ impl Key {
     }
 }
 
-/// The two signing domains of kit law §3.2.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Domain {
     Fpm,
@@ -452,24 +417,19 @@ impl Domain {
         }
     }
 
-    /// The only domain literals accepted on the command line (`HARNESS-KIT.md`: `<domain>` is exactly …).
     pub fn parse(x: &str) -> Option<Domain> {
         [Domain::Fpm, Domain::Ack].into_iter().find(|d| d.as_str() == x)
     }
 }
 
-// Spec literals (§4.1, §5.1, §7.3).
 pub const SPEC_FPM: &str = "zikaron.fpm/1";
 pub const SPEC_ACK: &str = "zikaron.ack/1";
 pub const SPEC_KIT: &str = "zikaron.kit/1";
 
-// Success words of payloads and kits (kit law §6.2, §7.4): one-member vocabularies.
 pub const BADGE_OK: &str = "BADGE_OK";
 pub const KIT_OK: &str = "KIT_OK";
 
-// Payload prefix and cap (kit law §6.1).
 pub const BADGE_PREFIX: &str = "zikaron-grant:";
 pub const BADGE_CAP: usize = 2953;
 
-// The component code this crate carries in its trace marks.
 pub const K2: &str = "K2";

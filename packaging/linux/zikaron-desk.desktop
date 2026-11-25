@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=ZIKARON
+Name=ZIKARON Desk
 Comment=Signed, append-only ledger of your works, anchored on chain
 Exec=zikaron-desk
 Icon=zikaron-desk

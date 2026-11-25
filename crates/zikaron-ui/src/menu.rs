@@ -1,15 +1,3 @@
-//! Menus and pop-ups: rows 34 high on a floating glass card; the hovered row keeps its ink on a light grey ground
-//! (darker when pressed). A menu grows out of its anchor's corner from 0.97 and fades in over 120 ms, and leaves the same way
-//! backwards (120 ms, back to 0.97 and up the 4 it came down). A press outside (taken by its guard, so it
-//! reaches nothing under the menu), Esc, or picking a row closes it.
-//!
-//! The identity lens (only the switch-identity menu uses it): identity rows ([`Item::Who`]) are 48 high with
-//! two lines (the name; the kind, with "primary" and "in use" in the quiet ink at its end). The current or
-//! hovered one lies on one lens (a block of the hover tone with a row's corners, under the words) that slides
-//! between identity rows only (top and height over 220 ms; on opening it sits on the identity in use at once).
-//! Where it lands: the hovered identity, else the one the arrow keys moved to, else the one in use; the other
-//! rows of that menu are plain and the lens never lands on them. ↑ ↓ move among identity rows, Enter picks the framed one, Esc closes.
-
 use crate::icons::{self, Glyph};
 use crate::mark;
 use crate::motion::{self, Curve};
@@ -18,59 +6,40 @@ use crate::palette::{c, Tone, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// One row of a menu.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Row<'a> {
     pub label: &'a str,
-    /// Small words before the label (such as "address").
     pub lead: &'a str,
-    /// The label in monospace (short addresses).
     pub mono: bool,
-    /// A second, smaller line under the label; green when `sub_ok`.
     pub sub: &'a str,
     pub sub_ok: bool,
-    /// A check column before the label: `Some(true)` checked, `Some(false)` empty.
     pub check: Option<bool>,
-    /// A check at the right end (the identity in use).
     pub tick_right: bool,
-    /// A pill at the right end (why a row cannot be picked).
     pub pill: Option<(&'a str, Tone)>,
-    /// Small words at the right end ("#3").
     pub trail: &'a str,
-    /// Struck through (a deleted record).
     pub struck: bool,
     pub disabled: bool,
 }
 
-/// One identity row of the lens menu: two lines, always 48 high.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Who<'a> {
-    /// The name (upper line).
     pub name: &'a str,
-    /// The kind (lower line).
     pub kind: &'a str,
-    /// Words after the kind in the accent ink ("primary", "in use"); changing them changes only this line's end.
     pub tags: &'a [&'a str],
-    /// The identity in use: where the lens rests.
     pub current: bool,
 }
 
-/// A menu's items. Closed.
 #[derive(Clone, Copy, Debug)]
 pub enum Item<'a> {
     Head(&'a str),
     Sep,
     Row(Row<'a>),
-    /// An identity row: the menu becomes a lens menu (see the file header).
     Who(Who<'a>),
 }
 
-/// Identity rows are this high (two lines).
 pub const WHO_H: f32 = 48.0;
 
-/// The rows lie this far in from the card's sides, top and bottom: the lit block's gap ([`crate::band::GAP`]).
 const PAD: f32 = crate::band::GAP;
-/// A separator: its line with that same gap above and below it.
 const SEP_H: f32 = 2.0 * PAD + 1.0;
 
 pub fn row(label: &str) -> Item<'_> {
@@ -81,12 +50,10 @@ fn open_id(id: egui::Id) -> egui::Id {
     id.with("open")
 }
 
-/// Whether a menu is open.
 pub fn is_open(ctx: &egui::Context, id: egui::Id) -> bool {
     ctx.data(|d| d.get_temp::<bool>(open_id(id))).unwrap_or(false)
 }
 
-/// Open or close a menu (its anchor calls this when clicked).
 pub fn toggle(ctx: &egui::Context, id: egui::Id) {
     let now = is_open(ctx, id);
     set(ctx, id, !now);
@@ -96,8 +63,6 @@ pub fn set(ctx: &egui::Context, id: egui::Id, open: bool) {
     ctx.data_mut(|d| d.insert_temp(open_id(id), open));
     if open {
         motion::restart(ctx, id.with("age"));
-        // A new opening: the lens and the arrow keys start over (the lens sits on the identity in use at
-        // once, without sliding there).
         ctx.data_mut(|d| {
             let n = d.get_temp::<u64>(id.with("opened")).unwrap_or(0) + 1;
             d.insert_temp(id.with("opened"), n);
@@ -106,21 +71,16 @@ pub fn set(ctx: &egui::Context, id: egui::Id, open: bool) {
     }
 }
 
-/// Draw an open menu under `anchor` (aligned to its left edge when `left`, its right edge otherwise), at
-/// least `min_w` wide, inside the window (an anchor drawn on no ui of its own). Returns the picked row's index.
 pub fn show(ctx: &egui::Context, id: egui::Id, anchor: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     show_from(ctx, None, id, anchor, ctx.content_rect(), left, min_w, items)
 }
 
-/// As [`show`], for a menu whose anchor lies in `parent` (an overlay it then hangs above; see
-/// [`crate::layer::under`]), inside `bounds` (the anchor's ui clip: [`crate::layer::drop_card`]).
 #[allow(clippy::too_many_arguments)]
 pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::Id, anchor: Rect, bounds: Rect, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     if !is_open(ctx, id) {
         return None;
     }
     let e = crate::layer::entrance(ctx, &[id.with("keep")], id.with("age"), tokens::FAST);
-    // Width: the widest row, at least `min_w`.
     let row_w = |it: &Item| -> f32 {
         match it {
             Item::Row(r) => {
@@ -166,7 +126,6 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
     let layer = egui::LayerId::new(egui::Order::Foreground, id.with("menu"));
     drop.enter(ctx, layer, e);
     let mut picked = None;
-    // The lens: which identity rows there are, where each sits, and which one it frames now.
     let lens = items.iter().any(|it| matches!(it, Item::Who(_)));
     let mut who_rows: Vec<(usize, f32)> = Vec::new();
     {
@@ -202,21 +161,16 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             picked = Some(who_rows[at].0);
         }
     }
-    // The guard under the card takes a press outside it: that press closes the menu and reaches nothing under it.
     crate::layer::place(ctx, layer, parent);
     let mut guarded = false;
     let shown = crate::layer::over(ctx, layer).show(ctx, |ui| {
-        // The guard over the whole window, then the card's body, in the card's own layer: a press outside the
-        // card closes it and reaches nothing under it; a press on the card off its rows does nothing.
         guarded = crate::layer::under(ui, crate::layer::Under::Guard);
         crate::layer::body(ui, rect);
         ui.multiply_opacity(e);
         crate::material::paint(ui.painter(), rect, Radius::Menu, crate::material::Level::Float, 0.0);
         card_is(ctx, rect);
-        // The lens lies under the identity rows: kept a place before them, filled once they are laid.
         let lens_slot = ui.painter().add(egui::Shape::Noop);
         let mut y = rect.top() + PAD;
-        // The separators go on after the rows: a lit row's edge lies under the line beside it.
         let mut seps = Vec::new();
         for (i, it) in items.iter().enumerate() {
             match it {
@@ -231,12 +185,13 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
                 Item::Row(r) => {
                     let rh = row_h(r);
                     let rr = Rect::from_min_size(pos2(rect.left() + PAD, y), vec2(w - 2.0 * PAD, rh));
-                    let bound = |k: Option<&Item>| match k {
+                    let bound = |k: Option<&Item>, sep: crate::band::Bound| match k {
                         None => crate::band::Bound::Edge,
-                        Some(Item::Sep) => crate::band::Bound::Line,
+                        Some(Item::Sep) => sep,
                         Some(_) => crate::band::Bound::Row,
                     };
-                    if draw_row(ui, id.with(("row", i)), rr, r, (bound(i.checked_sub(1).and_then(|k| items.get(k))), bound(items.get(i + 1)))).clicked() {
+                    let above = bound(i.checked_sub(1).and_then(|k| items.get(k)), crate::band::Bound::Rule);
+                    if draw_row(ui, id.with(("row", i)), rr, r, (above, bound(items.get(i + 1), crate::band::Bound::Line))).clicked() {
                         picked = Some(i);
                     }
                     y += rh;
@@ -257,8 +212,6 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
         for sy in seps {
             ui.painter().hline((rect.left() + PAD + 6.0)..=(rect.right() - PAD - 6.0), sy, egui::Stroke::new(1.0_f32, c(C::Line2)));
         }
-        // The lens: one block of the hover tone under the identity rows only (hovered > moved to by keys > in
-        // use), gliding between them.
         if lens && !who_rows.is_empty() {
             let hovered = ctx.data(|d| d.get_temp::<usize>(id.with("hovered-who")));
             let pointer_in = ctx.input(|i| i.pointer.hover_pos()).map(|p| who_rows.iter().any(|(_, y)| Rect::from_min_size(pos2(rect.left() + PAD, *y), vec2(w - 2.0 * PAD, WHO_H)).contains(p))).unwrap_or(false);
@@ -271,12 +224,11 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
             let opened = ctx.data(|d| d.get_temp::<u64>(id.with("opened"))).unwrap_or(0);
             let top = motion::to(ctx, id.with(("lens", opened)), who_rows[target].1, tokens::LENS, Curve::Ease);
             let lr = Rect::from_min_size(pos2(rect.left() + PAD, top), vec2(w - 2.0 * PAD, WHO_H));
-            ui.painter().set(lens_slot, egui::epaint::RectShape::filled(lr, crate::band::corners(Radius::Menu.px(), WHO_H), c(C::Hover)));
+            ui.painter().set(lens_slot, egui::epaint::RectShape::filled(lr, crate::band::corners(Radius::Menu.px(), WHO_H, crate::band::Bound::Row, crate::band::Bound::Row), c(C::Hover)));
         }
         ui.allocate_rect(rect, egui::Sense::hover());
     });
     crate::layer::keep(ctx, id.with("keep"), layer, tokens::FAST, 0.97, origin, drop.moved);
-    // Close on pick, Esc, or a press on the guard (outside the card, its anchor included).
     let esc = crate::layer::esc(ctx, id);
     if picked.is_some() || guarded || esc {
         set(ctx, id, false);
@@ -285,7 +237,6 @@ pub fn show_from(ctx: &egui::Context, parent: Option<egui::LayerId>, id: egui::I
     picked
 }
 
-/// A key that opens a menu: a secondary key with a caret; returns the picked row.
 pub fn menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     let id = ui.id().with(("zikaron-menu", id_salt));
     let resp = crate::button::show(ui, crate::button::Key::new(label, crate::button::Role::Secondary).trail(Glyph::Down));
@@ -297,7 +248,6 @@ pub fn menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, left: bool, min_w
     picked
 }
 
-/// A flat key inside a joined input ([`crate::fields::inner_key`], with a caret) that opens a menu under it.
 pub fn inner_menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, min_w: f32, items: &[Item]) -> Option<usize> {
     let id = ui.id().with(("zikaron-menu", id_salt));
     let resp = crate::fields::inner_key(ui, label, Some(Glyph::Down));
@@ -309,14 +259,12 @@ pub fn inner_menu_key(ui: &mut egui::Ui, id_salt: &str, label: &str, min_w: f32,
     picked
 }
 
-/// An open card stays with its anchor ([`crate::layer::follow`]); it closes once the anchor scrolls away.
 pub(crate) fn stay(ui: &egui::Ui, id: egui::Id, anchor: Rect) {
     if is_open(ui.ctx(), id) && crate::layer::follow(ui, id, anchor) {
         set(ui.ctx(), id, false);
     }
 }
 
-/// A key without a caret that opens a menu (the "recent addresses" key beside a field).
 pub fn plain_key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, left: bool, min_w: f32, items: &[Item]) -> Option<usize> {
     let id = ui.id().with(("zikaron-menu", id_salt));
     let resp = crate::button::key(ui, label, crate::button::Role::Secondary, enabled);
@@ -328,19 +276,14 @@ pub fn plain_key(ui: &mut egui::Ui, id_salt: &str, label: &str, enabled: bool, l
     picked
 }
 
-/// One plain row drawn in `rr` (menus and the pickers share it), `bounds` what lies above and below it: a hovered
-/// row keeps its ink on a light grey ground, darker when pressed, the block [`crate::band`] gives for where the row
-/// stands.
 pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, rr: Rect, r: &Row, bounds: (crate::band::Bound, crate::band::Bound)) -> egui::Response {
     let sense = if r.disabled { egui::Sense::hover() } else { egui::Sense::click() };
-    // The row takes the pointer over the very block it lights (reaching a separator's line beside it).
     let lit = lit_rect(ui, rr, bounds);
     let resp = ui.interact(lit, id, sense);
-    // Lit at once while under the pointer this frame (one row in a list), never while the list scrolls.
     let hovered = !r.disabled && crate::flow::pointer_on(ui, lit);
     if hovered {
         let press = resp.is_pointer_button_down_on();
-        let corners = crate::band::corners(Radius::Menu.px(), lit.height());
+        let corners = crate::band::corners(Radius::Menu.px(), lit.height(), bounds.0, bounds.1);
         ui.painter().with_clip_rect(ui.clip_rect().union(lit)).rect_filled(lit, corners, c(if press { C::Press } else { C::Hover }));
         lit_probe(ui, rr, lit, corners, bounds);
     }
@@ -396,17 +339,14 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, rr: Rect, r: &Row, bound
     }
 }
 
-/// A plain row's height: 34, or 44 with a second line.
 pub(crate) fn row_h(r: &Row) -> f32 {
     if r.sub.is_empty() { 34.0 } else { 44.0 }
 }
 
-/// One identity row drawn in `rr`: the name, then the kind with its tags in the accent ink.
 pub(crate) fn draw_who(ui: &mut egui::Ui, id: egui::Id, rr: Rect, wr: &Who) -> egui::Response {
     let resp = ui.interact(rr, id, egui::Sense::click());
     let p = ui.painter();
     let room = rr.width() - 24.0;
-    // Two lines, each always there: the name, then the kind with its tags in the quiet ink.
     paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 6.0), egui::Align2::LEFT_TOP, wr.name, Type::Key, c(C::Ink), room);
     let kind_r = paint::at(p, ui, pos2(rr.left() + 12.0, rr.top() + 26.0), egui::Align2::LEFT_TOP, wr.kind, Type::Small, c(C::Ink3), room);
     let mut tx = kind_r.right();
@@ -420,32 +360,25 @@ pub(crate) fn draw_who(ui: &mut egui::Ui, id: egui::Id, rr: Rect, wr: &Who) -> e
 
 const CARD: &str = "zikaron-menu-card";
 
-/// The card the rows about to be drawn lie in (a menu's or a picker's), for the readings of their blocks.
 pub(crate) fn card_is(ctx: &egui::Context, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CARD), rect));
 }
 
-/// A menu row's lit fill: the row, reaching out on a side that meets a separator or the picker's head line (whose
-/// middle is `PAD` and a half beyond the row) to that line's middle, under the line drawn over it
-/// ([`crate::band`]); only while the row's own edge on that side is in view (a row scrolled half out of a list
-/// never lights the room above the list).
 fn lit_rect(ui: &egui::Ui, rr: Rect, bounds: (crate::band::Bound, crate::band::Bound)) -> Rect {
     use crate::band::Bound;
     let clip = ui.clip_rect();
     let reach = PAD + crate::band::LINE_HALF;
-    let up = if bounds.0 == Bound::Line && rr.top() >= clip.top() - 0.5 { reach } else { 0.0 };
-    let down = if bounds.1 == Bound::Line && rr.bottom() <= clip.bottom() + 0.5 { reach } else { 0.0 };
+    let at_line = |b: Bound| matches!(b, Bound::Line | Bound::Rule);
+    let up = if at_line(bounds.0) && rr.top() >= clip.top() - 0.5 { reach } else { 0.0 };
+    let down = if at_line(bounds.1) && rr.bottom() <= clip.bottom() + 0.5 { reach } else { 0.0 };
     Rect::from_min_max(pos2(rr.left(), rr.top() - up), pos2(rr.right(), rr.bottom() + down))
 }
 
-/// A menu row's block for the readings. Across, the card's edges. Above and below: a side at a line is bounded by
-/// the line's middle, `PAD` and a half out; a side at the list's end `PAD` in from the card's edge by that edge;
-/// a side at the next row by that row.
 fn lit_probe(ui: &egui::Ui, rr: Rect, lit: Rect, corners: egui::CornerRadius, bounds: (crate::band::Bound, crate::band::Bound)) {
     use crate::band::Bound;
     let card = ui.ctx().data(|d| d.get_temp::<Rect>(egui::Id::new(CARD))).unwrap_or(rr.expand(PAD));
     let out = |b: Bound, gap_to_edge: f32| match b {
-        Bound::Line => PAD + crate::band::LINE_HALF,
+        Bound::Line | Bound::Rule => PAD + crate::band::LINE_HALF,
         _ if (gap_to_edge - PAD).abs() < 0.5 => PAD,
         _ => 0.0,
     };

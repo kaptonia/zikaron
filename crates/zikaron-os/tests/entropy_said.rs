@@ -1,8 +1,3 @@
-//! An entropy error names the operation and source before the OS message (`entropy <source>: …`) and keeps the
-//! OS error kind; no weaker source is substituted. Its own test binary, since the simulated failure is
-//! process-wide and no other test may read entropy alongside it.
-
-/// A simulated unreadable source gives `entropy <ENTROPY_SOURCE>: …` and no bytes.
 #[test]
 fn an_entropy_error_names_its_interface_and_source() {
     zikaron_os::pretend_entropy_fails(true);

@@ -1,27 +1,17 @@
-//! Inputs: 38 high, 15 text, corner 10, a flat grey tone (a step deeper under the pointer); focused, the field
-//! turns to the surface with a blue edge and a soft blue ring. Multi-line areas use the monospace face. Masked
-//! fields never show their text.
-
 use crate::icons::{self, Glyph};
 use crate::motion;
 use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{vec2, Rect};
 
-/// The states of the frame. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Edge {
     Rest,
-    /// At rest under the pointer.
     Hover,
     Focus,
-    /// The field's text is wrong (the caller decides; this only draws). Red wins over blue: a wrong field
-    /// shows while the person types in it.
     Bad,
 }
 
-/// A field's frame as one shape: the soft focus ring (eased in and out over 120 ms), the ground and its edge.
-/// Fields draw their text first, so focus is known, and put this shape into a slot reserved under it.
 pub fn frame_shape(ctx: &egui::Context, rect: Rect, id: egui::Id, edge: Edge) -> egui::Shape {
     let focus = motion::flag(ctx, id.with("focus"), edge == Edge::Focus, tokens::FAST);
     let hot = motion::flag(ctx, id.with("hot"), edge == Edge::Hover, tokens::FAST);
@@ -41,61 +31,65 @@ pub fn frame_shape(ctx: &egui::Context, rect: Rect, id: egui::Id, edge: Edge) ->
     egui::Shape::Vec(v)
 }
 
-/// The single-line field's frame for a control that is not a text field but looks like one (the date field):
-/// open, it draws the focused state. The shape is still [`frame_shape`]'s, the one source of the frame.
+fn told_id() -> egui::Id {
+    egui::Id::new("zikaron-field-told")
+}
+
+pub(crate) fn telling<R>(ui: &mut egui::Ui, bad: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let id = told_id();
+    let was: Option<Option<egui::LayerId>> = ui.ctx().data(|d| d.get_temp(id));
+    let layer = ui.layer_id();
+    ui.ctx().data_mut(|d| d.insert_temp(id, bad.then_some(layer)));
+    let r = add(ui);
+    ui.ctx().data_mut(|d| match was {
+        Some(w) => {
+            d.insert_temp(id, w);
+        }
+        None => {
+            d.remove::<Option<egui::LayerId>>(id);
+        }
+    });
+    r
+}
+
+pub(crate) fn told(ui: &egui::Ui) -> bool {
+    ui.ctx().data(|d| d.get_temp::<Option<egui::LayerId>>(told_id())).flatten() == Some(ui.layer_id())
+}
+
 pub fn frame_of(ctx: &egui::Context, rect: Rect, id: egui::Id, open: bool) -> egui::Shape {
     frame_shape(ctx, rect, id, if open { Edge::Focus } else { Edge::Rest })
 }
 
-/// How a single-line field looks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Look {
-    /// Monospace text (addresses, hashes, numbers the person types).
     pub mono: bool,
-    /// A search glyph before the text.
     pub search: bool,
-    /// Red frame: the text is wrong.
     pub bad: bool,
-    /// The text (and its hint) centred in the field: a short number in a small cell.
     pub centred: bool,
 }
 
-/// Single-line field, full width.
 pub fn line(ui: &mut egui::Ui, text: &mut String, hint: &str) -> egui::Response {
     let w = ui.available_width();
     field(ui, text, hint, w, Look::default())
 }
 
-/// Single-line field of a given width.
 pub fn line_w(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32) -> egui::Response {
     field(ui, text, hint, w, Look::default())
 }
 
-/// Single-line monospace field, full width.
 pub fn mono(ui: &mut egui::Ui, text: &mut String, hint: &str) -> egui::Response {
     let w = ui.available_width();
     field(ui, text, hint, w, Look { mono: true, ..Default::default() })
 }
 
-/// The search field of a list page.
 pub fn search(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32) -> egui::Response {
     field(ui, text, hint, w, Look { search: true, ..Default::default() })
 }
 
-/// A field's id, stable while the page around it changes: the id of the layout it sits in, what kind of field
-/// it is, its hint, and its place among fields with that same kind and hint in that layout this pass. An id
-/// counted from the widgets drawn before it would change when a line or a table above it comes or goes, and
-/// the field would lose focus in the middle of typing.
-/// A text edit's frame when the kit paints the field itself: nothing painted, nothing across (the field's own
-/// 12 is the whole inset, as in every field), 2 down.
 fn unframed() -> egui::Frame {
     egui::Frame::new().inner_margin(egui::Margin::symmetric(0, 2))
 }
 
-/// A field's identity: its words and which of the fields with those words in its `ui` it is, so it keeps its
-/// focus and state while the page around it changes. When the words change language ([`crate::flow::morphing`])
-/// the field keeps the identity it had (the `n`th field of its kind in its `ui` stays the same field), so what is
-/// being typed keeps its focus and cursor.
 pub(crate) fn field_id(ui: &egui::Ui, kind: &str, hint: &str) -> egui::Id {
     let worded = worded_id(ui, kind, hint);
     let ctx = ui.ctx();
@@ -148,28 +142,21 @@ fn worded_id(ui: &egui::Ui, kind: &str, hint: &str) -> egui::Id {
     base.with(n)
 }
 
-/// What the text edit keeps inside its own width beyond the hint's words (its cursor's margin).
 const HINT_SLACK: f32 = 4.0;
 
-/// The one single-line field.
 pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Look) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
     let id = field_id(ui, "zikaron-line", hint);
     let slot = ui.painter().add(egui::Shape::Noop);
     let mut inner = rect.shrink2(vec2(tokens::INPUT_PAD_X, 4.0));
     if look.search {
-        // The glyph 16 with its centre 19 in; the words from 34.
         icons::glyph_at(ui.painter(), Glyph::Search, egui::pos2(rect.left() + 19.0, inner.center().y), 16.0, c(C::Ink3));
         inner.min.x = rect.left() + 34.0;
     }
     let t = if look.mono { Type::Mono } else { Type::Body };
-    // A search box's hint is the small size, as designed.
     let hint_type = if look.search { Type::Small } else { t };
-    // The hint fits the room the field gives it, measured in its own size: longer words end in "…" instead of
-    // running under the frame's edge.
     let hint = crate::width::elide_to(ui, hint, hint_type.font(), (inner.width() - HINT_SLACK).max(0.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    // A centred field's hint is drawn here, on the field's middle: the text edit lays a hint out from its start.
     let painter = ui.painter().clone();
     let resp = crate::compose::around(&mut child, id, text, |child, text| {
         let edit = egui::TextEdit::singleline(text)
@@ -187,7 +174,7 @@ pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Loo
         }
         resp
     });
-    let edge = if look.bad {
+    let edge = if look.bad || told(ui) {
         Edge::Bad
     } else if resp.has_focus() {
         Edge::Focus
@@ -200,17 +187,14 @@ pub fn field(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Loo
     resp
 }
 
-/// Multi-line area: same frame, monospace, 10 × 12 inside.
 pub fn area(ui: &mut egui::Ui, text: &mut String, rows: usize) -> egui::Response {
     area_hint(ui, text, rows, "")
 }
 
-/// Multi-line area with a hint.
 pub fn area_hint(ui: &mut egui::Ui, text: &mut String, rows: usize, hint: &str) -> egui::Response {
     area_ex(ui, text, rows, hint, Type::Mono)
 }
 
-/// Multi-line area in body text (notes and scopes a person writes in words).
 pub fn area_words(ui: &mut egui::Ui, text: &mut String, rows: usize, hint: &str) -> egui::Response {
     area_ex(ui, text, rows, hint, Type::Note)
 }
@@ -232,7 +216,9 @@ fn area_ex(ui: &mut egui::Ui, text: &mut String, rows: usize, hint: &str, t: Typ
             )
         })
     });
-    let edge = if shown.inner.has_focus() {
+    let edge = if told(ui) {
+        Edge::Bad
+    } else if shown.inner.has_focus() {
         Edge::Focus
     } else if ui.rect_contains_pointer(shown.response.rect) {
         Edge::Hover
@@ -243,27 +229,19 @@ fn area_ex(ui: &mut egui::Ui, text: &mut String, rows: usize, hint: &str, t: Typ
     shown.inner
 }
 
-/// A password field: same frame, dots instead of text. It stores a secret type, edited in place.
 pub fn secret_line(ui: &mut egui::Ui, text: &mut crate::secret::Secret, hint: &str) -> egui::Response {
     let w = ui.available_width();
     secret_line_w_marked(ui, text, hint, w, false)
 }
 
-/// The masked field with a given width and the "text is wrong" state (red frame; text still hidden).
-///
-/// Masking is answered here: the twelve word cells and every passcode and password field get it without the
-/// caller writing anything, and there is no key that reveals plain text.
 pub fn secret_line_w_marked(ui: &mut egui::Ui, text: &mut crate::secret::Secret, hint: &str, w: f32, bad: bool) -> egui::Response {
     secret_field(ui, text, hint, w, bad, Face::Plain)
 }
 
-/// The masked field for a key written out in characters (a private key): its hint in the same 13 monospace as
-/// what is typed.
 pub fn secret_key_line(ui: &mut egui::Ui, text: &mut crate::secret::Secret, hint: &str, w: f32, bad: bool) -> egui::Response {
     secret_field(ui, text, hint, w, bad, Face::Key)
 }
 
-/// What a masked field holds: a passcode or password, a key in characters, or one of the twelve words.
 #[derive(Clone, Copy)]
 enum Face {
     Plain,
@@ -271,7 +249,6 @@ enum Face {
     Word(usize),
 }
 
-/// A word cell of the twelve: 36 high, its number the hint until a word is typed (14 monospace, quiet ink).
 pub fn secret_numbered(ui: &mut egui::Ui, text: &mut crate::secret::Secret, n: usize, w: f32, bad: bool) -> egui::Response {
     secret_field(ui, text, "", w, bad, Face::Word(n))
 }
@@ -287,16 +264,11 @@ fn secret_field(ui: &mut egui::Ui, text: &mut crate::secret::Secret, hint: &str,
     let inner = rect.shrink2(vec2(tokens::INPUT_PAD_X, 4.0));
     let hint = number.map(|n| n.to_string()).unwrap_or_else(|| hint.to_string());
     let (font, hint_font) = match face {
-        // A passcode's hint is words, in the plain face; a key's and a word cell's are in the monospace they take.
         Face::Plain => (Type::Mono.font(), Type::Body.font()),
         Face::Key => (Type::MonoSmall.font(), Type::MonoSmall.font()),
         Face::Word(_) => (Type::Mono.font(), Type::Mono.font()),
     };
     let id = field_id(ui, "zikaron-secret", &format!("{hint}#{}", number.unwrap_or(0)));
-    // Masked fields do not open the input method: while composing, the candidate bar and composing text are
-    // plain text drawn by the system, and composed text can leak into the next field. So while this field has
-    // focus, input-method events are dropped, and after drawing the frame's input-method request is withdrawn,
-    // so keys produce characters directly.
     let focused = ui.memory(|m| m.has_focus(id));
     if focused {
         ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Ime(_))));
@@ -316,13 +288,11 @@ fn secret_field(ui: &mut egui::Ui, text: &mut crate::secret::Secret, hint: &str,
     if resp.has_focus() {
         ui.ctx().output_mut(|o| o.ime = None);
     }
-    // No plain text kept in the undo stack from frame to frame: the text control pushes the previous text (a
-    // `String` egui frees without wiping) every frame, and a masked field needs no undo.
     if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
         st.clear_undoer();
         st.store(ui.ctx(), id);
     }
-    let edge = if bad {
+    let edge = if bad || told(ui) {
         Edge::Bad
     } else if resp.has_focus() {
         Edge::Focus

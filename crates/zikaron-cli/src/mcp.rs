@@ -1,18 +1,3 @@
-//! `zikaron mcp`: the Model Context Protocol on standard input and output (CLI-SCHEMA §13), the command line's
-//! other way of being asked. It is not a door and holds no right of its own. Each tool call is the verb it names,
-//! run as this same program in a process of its own with the arguments laid out as a person would type them; the
-//! answer is that process's answer, byte for byte, and its exit code. Which way a write goes (the command line's
-//! credential, else the running desktop) is judged at each call as `--home` judges it (`desk::writes_alone`); the
-//! master key is opened, if at all, in that one process, never in this one.
-//!
-//! Messages are read one per line and written one per line through `out::frame`; nothing listens on a port or a
-//! local channel, and nothing is written to a file. Tool calls are done one at a time in the order they came;
-//! `ping` and `initialize` are answered as they come.
-//!
-//! The tools are read off the verb table and the product's tool table ([`Table`]): the write tools are verbs the
-//! desktop does under `--home` (`verbs::HOME`), each taking that row's flags and `home`; the read tools are the
-//! table's, taking their row's flags less the ones withheld. A verb named in neither is no tool.
-
 use crate::args::Args;
 use crate::codes::Reason;
 use crate::out::{self, Said, Subject};
@@ -21,64 +6,92 @@ use std::io::{BufRead, Read};
 use std::sync::{mpsc, Arc, Mutex};
 use zikaron::json::{self, Value};
 
-/// The protocol versions spoken; the first is the one answered when the client asks for another.
 const VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
-/// The parameter that names the home.
 const HOME: &str = "home";
 
-/// What a product hands the engine: which verbs of its table are tools, and how their parameters go.
 pub struct Table {
-    /// The server's name, as `initialize` gives it.
     pub name: &'static str,
-    /// The rows of `verbs::HOME` that are no write tool; every other row is one.
     pub not_writes: &'static [&'static str],
-    /// The read tools, each with the flags of its row it does not take.
     pub reads: &'static [(&'static str, &'static [&'static str])],
-    /// The read tools that write: marked not read-only and, cancelled while running, let finish and answered; their
-    /// `home` goes the way a write's goes.
     pub writes_too: &'static [&'static str],
-    /// The write tools whose `home` may be left out.
     pub home_optional: &'static [&'static str],
-    /// A read tool's flag given as the home (`--<flag> <home>/ledger`).
     pub as_home: &'static [(&'static str, &'static str)],
-    /// The parameters whose values are paths (any tool when the tool is empty), each taken whole only.
     pub paths: &'static [(&'static str, &'static str)],
-    /// The path parameters given as one path or two joined by `=`, each whole.
     pub joined: &'static [&'static str],
-    /// The tools that send to a network and spend (`destructiveHint`, `openWorldHint`).
     pub sends: &'static [&'static str],
-    /// Each tool's one sentence, a closed constant in the system's language; never anything from a ledger.
+    pub door_reads: &'static [&'static str],
+    pub alone_home: (&'static str, &'static str),
+    pub alone_more: &'static [&'static str],
     pub told: fn(&str) -> &'static str,
 }
 
-/// One tool: its name (the verb's), whether it writes, and its parameters (flags of the verb's row, in that order).
 struct Tool {
     name: &'static str,
     write: bool,
+    through: bool,
     params: Vec<&'static str>,
+    needs: Vec<(verbs::Need, Vec<&'static str>)>,
 }
 
-/// The tools, read off the verb table and the product's.
 fn tools(t: &Table) -> Vec<Tool> {
     let mut all = Vec::new();
     for name in verbs::HOME.iter().map(|(v, _)| *v).filter(|v| !t.not_writes.contains(v) && !t.reads.iter().any(|(r, _)| r == v)) {
         let params = verbs::accepts(name, true).unwrap_or_default();
-        all.push(Tool { name, write: true, params });
+        let mut needs = needs_of(name, true, &params, &|f| f);
+        if t.door_reads.contains(&name) {
+            needs.extend(needs_of(name, false, &params, &|f| f).into_iter().filter(|(_, ps)| ps.as_slice() != [HOME]));
+        }
+        all.push(Tool { name, write: !t.door_reads.contains(&name), through: true, params, needs });
     }
     for &(name, withheld) in t.reads {
-        let params = verbs::accepts(name, false)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| !withheld.contains(f))
-            .map(|f| if t.as_home.contains(&(name, f)) { HOME } else { f })
-            .collect();
-        all.push(Tool { name, write: t.writes_too.contains(&name), params });
+        let as_param = |f: &'static str| if t.as_home.contains(&(name, f)) { HOME } else { f };
+        let params: Vec<&'static str> =
+            verbs::accepts(name, false).unwrap_or_default().into_iter().filter(|f| !withheld.contains(f) && *f != "rest-keys").map(as_param).collect();
+        let needs = needs_of(name, false, &params, &as_param);
+        let write = t.writes_too.contains(&name);
+        all.push(Tool { name, write, through: write, params, needs });
     }
     all
 }
 
-/// The flag a tool's parameter is passed as.
+fn needs_of(name: &str, homed: bool, params: &[&'static str], as_param: &dyn Fn(&'static str) -> &'static str) -> Vec<(verbs::Need, Vec<&'static str>)> {
+    verbs::required(name, homed)
+        .iter()
+        .map(|n| (*n, n.flags().into_iter().map(as_param).filter(|p| params.contains(p)).collect::<Vec<_>>()))
+        .filter(|(_, ps)| !ps.is_empty())
+        .collect()
+}
+
+fn required_members(tool: &Tool, home_needed: bool) -> Vec<(&'static str, Value)> {
+    let mut names: Vec<&str> = Vec::new();
+    if home_needed {
+        names.push(HOME);
+    }
+    let mut groups: Vec<(&'static str, Value)> = Vec::new();
+    for (need, ps) in &tool.needs {
+        match (need, ps.as_slice()) {
+            (_, [one]) => names.push(one),
+            (verbs::Need::OneOf(_), many) => groups.push(("oneOf", branches(many))),
+            (_, many) => groups.push(("anyOf", branches(many))),
+        }
+    }
+    let mut out = Vec::new();
+    if !names.is_empty() {
+        out.push(("required", Value::Arr(names.into_iter().map(st).collect())));
+    }
+    if groups.len() > 1 {
+        out.push(("allOf", Value::Arr(groups.into_iter().map(|(k, v)| o(vec![(k, v)])).collect())));
+    } else {
+        out.extend(groups);
+    }
+    out
+}
+
+fn branches(params: &[&'static str]) -> Value {
+    Value::Arr(params.iter().map(|p| o(vec![("required", Value::Arr(vec![st(p)]))])).collect())
+}
+
 fn flag_of(t: &Table, tool: &str, param: &'static str) -> &'static str {
     t.as_home.iter().find(|(t, _)| *t == tool).filter(|_| param == HOME).map(|(_, f)| *f).unwrap_or(param)
 }
@@ -91,6 +104,21 @@ fn is_path(t: &Table, tool: &str, param: &str) -> bool {
     t.paths.iter().any(|(t, p)| *p == param && (t.is_empty() || *t == tool))
 }
 
+fn param_schema(t: &Table, tool: &str, param: &str, shape: &Value) -> Value {
+    if !is_path(t, tool, param) {
+        return shape.clone();
+    }
+    let said = if t.joined.contains(&param) {
+        out::say("本机上的绝对路径,以 = 相连;给路径,不给内容", "Absolute paths on this machine joined by =; the paths, not their content")
+    } else {
+        out::say("本机上的绝对路径;给路径,不给内容", "An absolute path on this machine; the path, not its content")
+    };
+    match shape {
+        Value::Obj(m) => Value::Obj(m.iter().cloned().chain(std::iter::once(("description".to_string(), st(said)))).collect()),
+        other => other.clone(),
+    }
+}
+
 fn o(members: Vec<(&str, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
@@ -99,19 +127,16 @@ fn st(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
-/// The tools as `tools/list` gives them: each parameter a string, a repeated one a list of strings; the write
-/// tools need `home`; every result is the exit code and the verb's answer.
 pub fn listed(t: &Table) -> Value {
     let text = o(vec![("type", st("string"))]);
     let texts = o(vec![("type", st("array")), ("items", text.clone())]);
     let items = tools(t)
         .into_iter()
         .map(|tool| {
-            let props = Value::Obj(tool.params.iter().map(|p| (p.to_string(), if repeated(tool.name, flag_of(t, tool.name, p)) { texts.clone() } else { text.clone() })).collect());
+            let props = Value::Obj(tool.params.iter().map(|p| (p.to_string(), param_schema(t, tool.name, p, if repeated(tool.name, flag_of(t, tool.name, p)) { &texts } else { &text }))).collect());
             let mut input = vec![("type", st("object")), ("properties", props), ("additionalProperties", Value::Bool(false))];
-            if tool.write && tool.params.contains(&HOME) && !t.home_optional.contains(&tool.name) {
-                input.push(("required", Value::Arr(vec![st(HOME)])));
-            }
+            let home_needed = tool.through && tool.params.contains(&HOME) && !t.home_optional.contains(&tool.name);
+            input.extend(required_members(&tool, home_needed));
             let output = o(vec![
                 ("type", st("object")),
                 ("properties", o(vec![("exit", o(vec![("type", st("integer"))])), ("answer", o(vec![]))])),
@@ -134,27 +159,31 @@ pub fn listed(t: &Table) -> Value {
     o(vec![("tools", Value::Arr(items))])
 }
 
-/// A tool call's parameters refused here (no process is started): the two lines a misuse writes, the subject
-/// first (`E_ARGS --home`), never a word the client gave as a value.
 fn refusal(subject: Subject, said: Said) -> String {
     format!("{} {}\n{}", Reason::Args.as_str(), subject.spelled(), said.text())
 }
 
-/// The command a call stands for: the verb, then each parameter given as its flag (a repeated one once per value,
-/// in the order given), the parameters in the tool's order. A write goes with the credential when this machine
-/// writes alone (`--ledger <home>/ledger`), else through the desktop (`--home <home>`).
 fn command(t: &Table, tool: &Tool, given: &[(String, Value)]) -> Result<Vec<String>, String> {
+    let homed = tool.through && given.iter().any(|(k, _)| k == HOME);
+    argv_with(t, tool, given, homed && alone())
+}
+
+pub fn argv_of(t: &Table, tool: &str, given: &[(String, Value)], alone: bool) -> Option<Result<Vec<String>, String>> {
+    let tool = tools(t).into_iter().find(|x| x.name == tool)?;
+    Some(argv_with(t, &tool, given, alone))
+}
+
+fn argv_with(t: &Table, tool: &Tool, given: &[(String, Value)], alone: bool) -> Result<Vec<String>, String> {
     for (i, (k, _)) in given.iter().enumerate() {
         if !tool.params.iter().any(|p| p == k) {
             return Err(refusal(Subject::Placed { at: i + 1, bytes: k.len() }, Said::McpNotAParameter));
         }
     }
-    // Which way a write goes, judged once for the call: with the credential while this machine writes alone, else
-    // through the desktop, which takes the flags of the verb's `--home` row and no other (one given is refused here
-    // by name, before any process starts).
-    let homed = tool.write && given.iter().any(|(k, _)| k == HOME);
-    let alone = homed && alone();
-    if homed && !alone {
+    let homed = tool.through && given.iter().any(|(k, _)| k == HOME);
+    let writes_entry = verbs::accepts(tool.name, false).is_some_and(|f| verbs::WRITE.iter().all(|w| f.contains(w))) || verbs::KEYED_TOO.contains(&tool.name);
+    let keyed = homed && tool.write && writes_entry && KEYED.get().is_some();
+    let alone = homed && alone && !keyed;
+    if homed && !alone && !keyed {
         let through = verbs::accepts(tool.name, true).unwrap_or_default();
         if let Some((k, _)) = given.iter().find(|(k, _)| !through.iter().any(|f| f == k)) {
             let param = tool.params.iter().find(|p| *p == k).copied().unwrap_or(HOME);
@@ -162,9 +191,26 @@ fn command(t: &Table, tool: &Tool, given: &[(String, Value)]) -> Result<Vec<Stri
         }
     }
     let mut argv = vec![tool.name.to_string()];
+    let takes = |flag: &str| verbs::accepts(tool.name, false).unwrap_or_default().contains(&flag);
+    if let Some(r) = REST_KEYS.get().filter(|_| !(homed && !alone && !keyed) && takes("rest-keys")) {
+        argv.extend(["--rest-keys".to_string(), r.clone()]);
+    }
+    if let (true, Some(k)) = (keyed, KEYED.get()) {
+        if takes("key") {
+            argv.extend([format!("--{}", crate::args::KEY_FILE), k.key_file.clone()]);
+        }
+        if takes("endpoint") {
+            for e in &k.endpoints {
+                argv.extend(["--endpoint".to_string(), e.clone()]);
+            }
+        }
+        if let (true, Some(p)) = (takes("proxy"), k.proxy.as_ref()) {
+            argv.extend(["--proxy".to_string(), p.clone()]);
+        }
+    }
     for param in &tool.params {
         let Some((_, v)) = given.iter().find(|(k, _)| k == param) else {
-            if tool.write && *param == HOME && !t.home_optional.contains(&tool.name) {
+            if tool.through && *param == HOME && !t.home_optional.contains(&tool.name) {
                 return Err(refusal(Subject::flag(HOME), Said::Missing));
             }
             continue;
@@ -176,11 +222,9 @@ fn command(t: &Table, tool: &Tool, given: &[(String, Value)]) -> Result<Vec<Stri
             (false, _) => return Err(refusal(Subject::flag(param), Said::McpNotText)),
             (true, _) => return Err(refusal(Subject::flag(param), Said::McpNotTexts)),
         };
-        // A value cannot carry a NUL into an argument (no system passes one): it is not text this takes.
         if values.iter().any(|x| x.contains('\0')) {
             return Err(refusal(Subject::flag(param), if repeated(tool.name, flag) { Said::McpNotTexts } else { Said::McpNotText }));
         }
-        // A path whole; a joined one is one path or two joined by `=`, each whole.
         let whole = |x: &str| std::path::Path::new(x).is_absolute();
         let paths_whole = |x: &str| if t.joined.contains(param) { x.split('=').all(whole) } else { whole(x) };
         if is_path(t, tool.name, param) && !values.iter().all(|x| paths_whole(x)) {
@@ -189,10 +233,15 @@ fn command(t: &Table, tool: &Tool, given: &[(String, Value)]) -> Result<Vec<Stri
         for x in values {
             if *param == HOME {
                 let ledger = std::path::Path::new(x).join(zikaron_seal::envelope::LEDGER_DIR).display().to_string();
-                if !tool.write {
+                if !tool.through {
                     argv.extend([format!("--{flag}"), ledger]);
+                } else if keyed {
+                    argv.extend(["--ledger".to_string(), x.to_string()]);
                 } else if alone {
-                    argv.extend(["--ledger".to_string(), ledger]);
+                    let (flag, room) = t.alone_home;
+                    let place = if room.is_empty() { x.to_string() } else { std::path::Path::new(x).join(room).display().to_string() };
+                    argv.extend([format!("--{flag}"), place]);
+                    argv.extend(t.alone_more.iter().map(|m| m.to_string()));
                 } else {
                     argv.extend(["--home".to_string(), x.to_string()]);
                 }
@@ -204,28 +253,22 @@ fn command(t: &Table, tool: &Tool, given: &[(String, Value)]) -> Result<Vec<Stri
     Ok(argv)
 }
 
-/// Whether this machine writes alone now: the command line's credential is in its folder (`desk::writes_alone`,
-/// the one judgement). No machine folder is the desktop's way, whose answer then says so.
 fn alone() -> bool {
     zikaron_os::machine::here().map(|(m, _)| crate::desk::writes_alone(&m)).unwrap_or(false)
 }
 
-/// One call in the queue.
 struct Call {
     id: Value,
     tool: &'static str,
     args: Vec<(String, Value)>,
 }
 
-/// The calls queued and not started (by id), and the one being done.
 #[derive(Default)]
 struct Shared {
     waiting: Vec<Value>,
     running: Option<Running>,
 }
 
-/// The call being done: its id, whether it writes, its process once started, and whether a cancellation stopped it
-/// (a read only).
 struct Running {
     id: Value,
     write: bool,
@@ -233,8 +276,29 @@ struct Running {
     stopped: bool,
 }
 
-/// Serve until the input closes: read a message per line, answer, then end (`out::finish`).
-pub fn serve(_a: &Args, t: &'static Table) -> ! {
+static REST_KEYS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+struct Keyed {
+    key_file: String,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+}
+
+static KEYED: std::sync::OnceLock<Keyed> = std::sync::OnceLock::new();
+
+pub fn serve(a: &Args, t: &'static Table) -> ! {
+    if let Some(r) = a.one("rest-keys") {
+        let _ = REST_KEYS.set(r);
+    }
+    match a.one(crate::args::KEY_FILE) {
+        Some(k) => {
+            let _ = KEYED.set(Keyed { key_file: k, endpoints: a.many("endpoint"), proxy: a.one("proxy") });
+        }
+        None if !a.many("endpoint").is_empty() || a.one("proxy").is_some() => {
+            out::misuse(Reason::Args, Subject::flag(crate::args::KEY_FILE), Said::Missing)
+        }
+        None => {}
+    }
     let (calls, queue) = mpsc::channel::<Call>();
     let shared = Arc::new(Mutex::new(Shared::default()));
     let worker = {
@@ -251,7 +315,6 @@ pub fn serve(_a: &Args, t: &'static Table) -> ! {
         }
         take(t, &line, &calls, &shared);
     }
-    // The input closed: the call being done finishes; the ones not started are not done.
     shared.lock().unwrap_or_else(|e| e.into_inner()).waiting.clear();
     drop(calls);
     let _ = worker.join();
@@ -262,7 +325,6 @@ fn reply(id: &Value, result: Value) {
     out::frame(&o(vec![("jsonrpc", st("2.0")), ("id", id.clone()), ("result", result)]));
 }
 
-/// A JSON-RPC error: `code` is its magnitude (written negative, `out::frame`).
 fn fail(id: &Value, code: u64, message: &str, data: Option<Value>) {
     let mut e = vec![("code", Value::Int(code)), ("message", st(message))];
     if let Some(d) = data {
@@ -276,13 +338,11 @@ const REQUEST: u64 = 32600;
 const METHOD: u64 = 32601;
 const PARAMS: u64 = 32602;
 
-/// One message read: answered at once, queued (a tool call) or taken note of (a notification).
 fn take(t: &Table, line: &[u8], calls: &mpsc::Sender<Call>, shared: &Arc<Mutex<Shared>>) {
     use zikaron::tokens::CanonToken as T;
     let v = match json::parse_tests_1_3(line) {
         Ok(v) => v,
         Err(t @ (T::Utf8 | T::Json)) => return fail(&Value::Null, PARSE, "Parse error", Some(o(vec![("token", st(t.as_str()))]))),
-        // A number outside the law's integers, a container too deep, a member twice: named by where it stands.
         Err(t) => return fail(&Value::Null, REQUEST, "Invalid request", Some(o(vec![("token", st(t.as_str())), ("at", st(&fault_at(line)))]))),
     };
     let id = v.member("id").cloned();
@@ -291,7 +351,6 @@ fn take(t: &Table, line: &[u8], calls: &mpsc::Sender<Call>, shared: &Arc<Mutex<S
     }
     let method = match (v.member("jsonrpc").and_then(Value::as_str), v.member("method").and_then(Value::as_str)) {
         (Some("2.0"), Some(m)) => m,
-        // A response to nothing this asked: no answer.
         (_, None) if v.member("result").is_some() || v.member("error").is_some() => return,
         _ => return fail(id.as_ref().unwrap_or(&Value::Null), REQUEST, "Invalid request", None),
     };
@@ -336,8 +395,6 @@ fn take(t: &Table, line: &[u8], calls: &mpsc::Sender<Call>, shared: &Arc<Mutex<S
     }
 }
 
-/// A cancellation: a read tool's process is stopped and nothing is answered; a write's goes on to its end and its
-/// answer is given (a send cut halfway cannot be undone); a call not started yet is not done.
 fn cancel(id: &Value, shared: &Arc<Mutex<Shared>>) {
     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(i) = s.waiting.iter().position(|x| x == id) {
@@ -352,13 +409,10 @@ fn cancel(id: &Value, shared: &Arc<Mutex<Shared>>) {
     }
 }
 
-/// Do the queued calls, one at a time, in the order they came.
 fn work(t: &Table, queue: mpsc::Receiver<Call>, shared: Arc<Mutex<Shared>>) {
     for call in queue {
         let tool = tools(t).into_iter().find(|x| x.name == call.tool).expect("a queued tool is in the table");
         {
-            // Taken off the queue and made the call being done in one step: a cancellation finds it in one place or
-            // the other, never between.
             let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
             let Some(i) = s.waiting.iter().position(|x| *x == call.id) else { continue };
             s.waiting.remove(i);
@@ -372,18 +426,14 @@ fn work(t: &Table, queue: mpsc::Receiver<Call>, shared: Arc<Mutex<Shared>>) {
                 continue;
             }
         };
-        // Stopped by a cancellation, nothing is answered.
         if let Some(r) = run(&argv, &shared) {
             reply(&call.id, r);
         }
     }
 }
 
-/// The exit code of misuse, which a refusal of this server's own is given as.
 const MISUSE: u64 = 2;
 
-/// A tool's result: the text, and whether it is an error; with an exit code of the command line's table, the
-/// structured content (that code and the answer); without one, none.
 fn result(text: String, exit: Option<u64>, answer: Value, error: bool) -> Value {
     let mut ms = vec![("content", Value::Arr(vec![o(vec![("type", st("text")), ("text", Value::Str(text))])])), ("isError", Value::Bool(error))];
     if let Some(code) = exit {
@@ -392,8 +442,6 @@ fn result(text: String, exit: Option<u64>, answer: Value, error: bool) -> Value 
     o(ms)
 }
 
-/// Run the verb as this program, its input empty and its environment this one's, without a deadline; the result
-/// is its stdout, stderr and exit code as they came. `None` when a cancellation stopped it.
 fn run(argv: &[String], shared: &Arc<Mutex<Shared>>) -> Option<Value> {
     let program = std::env::current_exe();
     let spawned = program.and_then(|p| {
@@ -420,7 +468,6 @@ fn run(argv: &[String], shared: &Arc<Mutex<Shared>>) -> Option<Value> {
     let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
     let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
     {
-        // A cancellation that came before the process was there stops it now.
         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
         let stop = s.running.as_ref().is_some_and(|r| r.stopped);
         if stop {
@@ -447,9 +494,6 @@ fn run(argv: &[String], shared: &Arc<Mutex<Shared>>) -> Option<Value> {
         return None;
     }
     let said = |b: &[u8]| String::from_utf8_lossy(b).trim_end().to_string();
-    // An answer is one of the command line's exit codes; misuse writes nothing on stdout, so its two stderr lines
-    // are the text, and it is marked an error. Any other end (a crash, a signal) is no answer: an error, its stderr as
-    // the text, no structured content.
     let code = status.code().and_then(|c| u8::try_from(c).ok()).filter(|c| crate::codes::Exit::ALL.iter().any(|e| e.code() == *c));
     match code.map(u64::from) {
         Some(MISUSE) => Some(result(said(&err_bytes), Some(MISUSE), Value::Null, true)),
@@ -458,12 +502,8 @@ fn run(argv: &[String], shared: &Arc<Mutex<Shared>>) -> Option<Value> {
     }
 }
 
-/// Where in a message the first number outside the law's integers (a sign, a fraction, an exponent, a leading
-/// zero, past 2^53 − 1), the first container past the law's depth or the first member given twice stands, as member
-/// names and places joined by `.` (`params.arguments.n`); the whole message as `.`.
 pub fn fault_at(b: &[u8]) -> String {
     enum In {
-        /// An object: the member being read, and the names read so far.
         Obj(Option<String>, Vec<String>),
         Arr(usize),
     }
@@ -510,7 +550,6 @@ pub fn fault_at(b: &[u8]) -> String {
                 i += 1;
                 let next = b[i.min(b.len())..].iter().find(|c| !c.is_ascii_whitespace());
                 if let (Some(In::Obj(k, seen)), Some(b':')) = (stack.last_mut(), next) {
-                    // A member given twice stands where it is given the second time.
                     let twice = seen.contains(&word);
                     seen.push(word.clone());
                     *k = Some(word);

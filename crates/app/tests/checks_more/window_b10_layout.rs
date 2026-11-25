@@ -1,7 +1,3 @@
-//! The window at its least size in English, Esc over the first-run wizard, the window handle on a maximized
-//! window, and the proxy section with no "now" line: each read from the real window in windowless frames (the
-//! product's own probes), on a temporary machine directory of this test process.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -10,15 +6,11 @@ use app::nav::{Place, Section, Step};
 use zikaron_ui::egui::{self, pos2, Event, PointerButton, Rect};
 use super::vault_open;
 
-
-/// A booted shell for the window probes.
 fn probe_shell(ctx: &egui::Context) -> app::shell::Shell {
     vault_open();
     app::shell::Shell::boot(zikaron_ui::skin::dress(ctx))
 }
 
-/// The language is one switch for the whole process: every test here runs its body alone, in English, and puts
-/// the language back after (also when the body fails).
 fn english<R>(body: impl FnOnce() -> R) -> R {
     static ONE: Mutex<()> = Mutex::new(());
     let _held = ONE.lock().unwrap_or_else(|e| e.into_inner());
@@ -33,15 +25,12 @@ fn english<R>(body: impl FnOnce() -> R) -> R {
     body()
 }
 
-/// An identity's address for the steps past the identity step (the wizard gates them on it).
 fn some_anchor() -> app::key::Address {
     app::key::Address([0x5d; 20])
 }
 
-/// One text drawn: its words, its drawn rectangle, and the rectangle it is clipped to.
 type Seen = (String, Rect, Rect);
 
-/// Every text shape in a frame's output (nested ones too).
 fn texts_in(shapes: &[egui::epaint::ClippedShape]) -> Vec<Seen> {
     fn walk(s: &egui::Shape, clip: Rect, out: &mut Vec<Seen>) {
         match s {
@@ -57,9 +46,6 @@ fn texts_in(shapes: &[egui::epaint::ClippedShape]) -> Vec<Seen> {
     out
 }
 
-/// A tap on the context, through egui's own plugin hooks (no product code): the windowing layer's report of
-/// whether the window is maximized is set on each frame's input, and each frame's texts are kept (the last pass
-/// of each frame).
 struct Tap {
     ctx: egui::Context,
     maximized: Option<bool>,
@@ -84,7 +70,6 @@ impl egui::Plugin for Tap {
     }
 }
 
-/// A fresh context with the tap on it; the frames it keeps, in order.
 fn tapped(maximized: Option<bool>) -> (egui::Context, Arc<Mutex<BTreeMap<u64, Vec<Seen>>>>) {
     let ctx = egui::Context::default();
     let frames = Arc::new(Mutex::new(BTreeMap::new()));
@@ -96,12 +81,10 @@ fn frames_of(frames: &Arc<Mutex<BTreeMap<u64, Vec<Seen>>>>) -> Vec<Vec<Seen>> {
     frames.lock().unwrap().values().cloned().collect()
 }
 
-/// Where `text` is drawn in a frame (exactly that text).
 fn at(frame: &[Seen], text: &str) -> Option<Rect> {
     frame.iter().find(|(s, _, _)| s == text).map(|(_, r, _)| *r)
 }
 
-/// A click at `p`: the pointer moves there in one frame, presses and releases in the next.
 fn click(p: egui::Pos2) -> Vec<(f64, Vec<Event>)> {
     let press = |down| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: down, modifiers: Default::default() };
     vec![(0.1, vec![Event::PointerMoved(p)]), (0.1, vec![press(true), press(false)]), (0.1, vec![Event::PointerGone])]
@@ -115,18 +98,12 @@ fn esc() -> Vec<(f64, Vec<Event>)> {
     vec![(0.1, vec![Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }])]
 }
 
-/// The probes settle five frames before the first step: frame `5 + i` is step `i`.
 const SETTLE: usize = 5;
 
 fn inside(inner: Rect, outer: Rect) -> bool {
     inner.min.x >= outer.min.x - 0.5 && inner.max.x <= outer.max.x + 0.5 && inner.min.y >= outer.min.y - 0.5 && inner.max.y <= outer.max.y + 0.5
 }
 
-// ───────────────────── 1 · The wizard's bottom row at the least width ─────────────────────
-
-/// At the window's least size in English, the identity step's card lays "Back" (in its foot) where it does not
-/// cross the step's three ways ("Generate recovery words", "Import an existing key", "Restore from backup", rows
-/// in the card).
 #[test]
 fn at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys() {
     if super::alone_in(module_path!(), "at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys") {
@@ -145,8 +122,6 @@ fn at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys() {
             assert!(r.max.x <= app::window::MIN_W + 0.5, "{:?} runs past the window: {r:?}", t(*k));
         }
         assert!(back.min.x >= 0.0 && back.max.x <= app::window::MIN_W + 0.5, "\"Back\" stays in the window: {back:?}");
-        // Every key stays in the step's own column (the count line above it marks the column's left edge):
-        // none is laid onto the list of steps beside it.
         let count = app::lang::fill2(Key::WizCount, "2", &Step::ALL.len().to_string());
         let left = texts.iter().find(|d| d.text == count).map(|d| d.rect.min.x).expect("the step count is drawn");
         for (k, r) in right.iter().chain(std::iter::once(&(Key::WizPrev, back))) {
@@ -155,11 +130,6 @@ fn at_the_least_width_the_wizards_back_key_does_not_cross_the_steps_own_keys() {
     })
 }
 
-// ───────────────────── 2 · The network rows at the least width ─────────────────────
-
-/// At the least size in English, the network step's rows hold their words, their tag and their radio: the "Custom"
-/// row's title and the "Recommended" tag each lie inside a row (the row is one click target), and every row stays
-/// in the window.
 #[test]
 fn at_the_least_width_the_network_rows_hold_their_words() {
     if super::alone_in(module_path!(), "at_the_least_width_the_network_rows_hold_their_words") {
@@ -171,9 +141,8 @@ fn at_the_least_width_the_network_rows_hold_their_words() {
         shell.anchor = Some(some_anchor());
         let (_, texts, _) = app::window::probe_wizard_step(&ctx, shell, Place::Home, Step::Network, app::window::MIN_W, app::window::MIN_H);
         let rows = ctx.viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, ws)| ws.iter().filter(|w| w.sense.senses_click()).map(|w| w.rect).collect::<Vec<_>>()).collect::<Vec<_>>());
-        // The smallest clickable widget around a text is its row.
         let row_of = |r: Rect| rows.iter().copied().filter(|w| w.contains(r.center())).min_by(|a, b| a.area().total_cmp(&b.area()));
-        for k in [Key::U3Custom, Key::WizNetRecommended] {
+        for k in [Key::U3Custom] {
             let said = texts.iter().find(|d| d.text == t(k)).map(|d| d.rect).unwrap_or_else(|| panic!("{:?} is drawn", t(k)));
             let row = row_of(said).unwrap_or_else(|| panic!("{:?} lies in a row", t(k)));
             assert!(inside(said, row), "{:?} {said:?} stays in its row {row:?}", t(k));
@@ -182,11 +151,6 @@ fn at_the_least_width_the_network_rows_hold_their_words() {
     })
 }
 
-// ───────────────────── 3 · The gas code at the least width ─────────────────────
-
-/// At the least size in English, the gas step's code stands whole by its rows: one plate, inside the window, the
-/// address and the balance clear of it (beside it, or over it when the card is narrow), the rows not cut by what
-/// they are clipped to.
 #[test]
 fn at_the_least_width_the_gas_code_stands_whole_by_its_rows() {
     if super::alone_in(module_path!(), "at_the_least_width_the_gas_code_stands_whole_by_its_rows") {
@@ -196,7 +160,6 @@ fn at_the_least_width_the_gas_code_stands_whole_by_its_rows() {
         let (ctx, frames) = tapped(None);
         let mut shell = probe_shell(&ctx);
         shell.anchor = Some(some_anchor());
-        // The network step came first: the code carries its chain.
         shell.settings.chain_id = Some(11_155_111);
         let (_, texts, plates) = app::window::probe_wizard_step(&ctx, shell, Place::Home, Step::Gas, app::window::MIN_W, app::window::MIN_H);
         let plate = *plates.first().expect("the code's plate is drawn");
@@ -212,13 +175,6 @@ fn at_the_least_width_the_gas_code_stands_whole_by_its_rows() {
     })
 }
 
-// ───────────────────── 4 · Esc over the wizard ─────────────────────
-
-/// Esc over the wizard goes through the one Esc owner (`zikaron_ui::layer::esc`): with a sheet opened over the
-/// wizard (the identity step's "Import an existing key…"), one Esc closes the sheet only and the wizard stays.
-/// This machine has a passcode and no identity yet, so the wizard offers no way out (it is offered once both are
-/// here): the next Esc leaves it standing. Driven through the window's own input: the wizard opened with "Run
-/// wizard again" on Settings, About.
 #[test]
 fn one_esc_over_the_wizard_closes_only_the_top_layer() {
     if super::alone_in(module_path!(), "one_esc_over_the_wizard_closes_only_the_top_layer") {
@@ -227,7 +183,6 @@ fn one_esc_over_the_wizard_closes_only_the_top_layer() {
     english(|| {
         let (w, h) = (1180.0, 1400.0);
         let place = Place::Settings(Section::About);
-        // Where the keys are drawn: read from runs of the same walk, each on a fresh context and shell.
         let walk = |steps: Vec<(f64, Vec<Event>)>| {
             let (ctx, frames) = tapped(None);
             let n = steps.len();
@@ -257,7 +212,6 @@ fn one_esc_over_the_wizard_closes_only_the_top_layer() {
         let (f, _) = walk(steps);
         let frame = |i: usize| &f[SETTLE + i];
         let shows = |i: usize, k: Key| at(frame(i), t(k)).is_some();
-        // The wizard's own count line ("Step 2 of 6") says the wizard is up on the identity step.
         let count = app::lang::fill2(Key::WizCount, "2", &Step::ALL.len().to_string());
         let wizard_up = |i: usize| at(frame(i), &count).is_some();
         assert!(shows(sheet_up, Key::IdImportTitle) && wizard_up(sheet_up), "the import sheet is up over the wizard");
@@ -267,8 +221,6 @@ fn one_esc_over_the_wizard_closes_only_the_top_layer() {
     })
 }
 
-/// The wizard asks for Esc in the one place every overlay asks (`zikaron_ui::layer::esc`, under the wizard's
-/// own key), and the kit's rule holds: of two overlays on screen, one Esc goes to the one opened last only.
 #[test]
 fn the_wizard_asks_the_one_esc_owner_and_one_esc_goes_to_the_last_opened() {
     if super::alone_in(module_path!(), "the_wizard_asks_the_one_esc_owner_and_one_esc_goes_to_the_last_opened") {
@@ -300,11 +252,6 @@ fn the_wizard_asks_the_one_esc_owner_and_one_esc_goes_to_the_last_opened() {
     assert_eq!(frame(true, false), (true, false), "with it gone, the next Esc goes to the one under it");
 }
 
-// ───────────────────── 5 · The handle on a maximized window ─────────────────────
-
-/// A double click on the window's handle puts a maximized window back (`Maximized(false)`), as a title bar
-/// does; on a window that is not maximized it maximizes. The windowing layer's report is given on each frame's
-/// input (egui's input hook), as the system gives it.
 #[test]
 fn a_double_click_on_the_handle_of_a_maximized_window_puts_it_back() {
     if super::alone_in(module_path!(), "a_double_click_on_the_handle_of_a_maximized_window_puts_it_back") {
@@ -322,11 +269,6 @@ fn a_double_click_on_the_handle_of_a_maximized_window_puts_it_back() {
     assert_eq!(sent(false), vec!["Maximized(true)".to_string()], "a window not maximized is maximized");
 }
 
-// ───────────────────── 6 · The proxy section: one card, no "now" line ─────────────────────
-
-/// On Settings, Network, the proxy section shows the choice and (for a typed proxy) its address, with no line
-/// under it saying how a new connection goes now: no frame draws any of the "now" sentences, before or after a
-/// save; "Off" chosen over a typed proxy saves it, and the typed proxy saved again is what the machine keeps.
 #[test]
 fn the_proxy_section_draws_no_now_line_and_still_saves() {
     if super::alone_in(module_path!(), "the_proxy_section_draws_no_now_line_and_still_saves") {
@@ -363,7 +305,6 @@ fn the_proxy_section_draws_no_now_line_and_still_saves() {
         lead.extend(click(manual.center()));
         lead.extend(idle(2));
         let (f, _) = walk(lead.clone());
-        // The proxy's "Save" is at its card's foot, the lowest on the page (the publish address has its own).
         let save = f.last().unwrap().iter().filter(|(s, _, _)| s.as_str() == t(Key::ReadNetSave)).map(|(_, r, _)| *r).max_by(|a, b| a.top().total_cmp(&b.top())).expect("\"Save\" stands once a proxy is to be entered");
         let mut steps = lead;
         steps.extend(click(save.center()));
@@ -374,17 +315,14 @@ fn the_proxy_section_draws_no_now_line_and_still_saves() {
     })
 }
 
-/// A new grant's "choose a record" is a sheet: it lists the records with the search and the two dates over them;
-/// a record not yet on chain says why and a press on it chooses nothing; a press on a record on chain chooses it
-/// and closes the sheet.
 #[test]
 fn a_new_grants_record_is_chosen_in_a_sheet() {
     english(|| {
         let ctx = egui::Context::default();
         let shell = probe_shell(&ctx);
-        let row = |seq: u64, note: &str, lamp: app::ledgerx::Lamp, byte: u8| app::ledgerx::Row {
+        let row = |seq: u64, note: &str, lamp: app::ledgerx::Lamp, byte: u8| app::ledgerx::Row { law: zikaron_glue::book::Law::Two,
             seq,
-            kind: zikaron::tokens::EntryType::History,
+            kind: zikaron_glue::book::Kind::History,
             id: format!("{:02x}", byte).repeat(32),
             prev: None,
             author: String::new(),
@@ -406,18 +344,14 @@ fn a_new_grants_record_is_chosen_in_a_sheet() {
     })
 }
 
-/// In a list of a sheet (here a new grant's "choose a record"), the first row's lit block is as tall as the next
-/// row's and keeps the same distance from its row: the list's top is no line above it, and its block neither
-/// reaches up to the list's edge nor stops short of it. Whoever moves down the list sees one block, the same at
-/// every row.
 #[test]
 fn the_first_rows_lit_block_is_as_tall_as_the_next_rows() {
     english(|| {
         let ctx = egui::Context::default();
         let shell = probe_shell(&ctx);
-        let row = |seq: u64, note: &str, byte: u8| app::ledgerx::Row {
+        let row = |seq: u64, note: &str, byte: u8| app::ledgerx::Row { law: zikaron_glue::book::Law::Two,
             seq,
-            kind: zikaron::tokens::EntryType::History,
+            kind: zikaron_glue::book::Kind::History,
             id: format!("{:02x}", byte).repeat(32),
             prev: None,
             author: String::new(),

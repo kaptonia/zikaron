@@ -1,14 +1,7 @@
-//! The question a send asks first, whether the chain already holds these anchors (`batch::on_chain`), names the
-//! way to a node breaking by the one table, as every other read of the chain names it (`node::said_trouble`): a
-//! node on `https` that answers in plain text is the handshake's (`NODE_TLS`), never the network's. A node reached
-//! that refuses the question cannot say: no answer (`UNREACHABLE`), nothing sent on a guess. Nodes are plain
-//! sockets on 127.0.0.1 in this process; no network.
-
 use std::io::{Read, Write};
 use zikaron_send::node::{self, Endpoint, NodeAddr};
 use zikaron_send::Code;
 
-/// A port that answers whatever comes with one plain-text HTTP 400, as a server that speaks no TLS does.
 fn plain_text_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -23,8 +16,6 @@ fn plain_text_port() -> u16 {
     port
 }
 
-/// A plain `http` node that answers every question with this JSON-RPC error (its `id` null, as a node that did not
-/// read the request's answers).
 fn refusing_node(error: &'static str) -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -54,7 +45,7 @@ fn refusing_node(error: &'static str) -> u16 {
 }
 
 fn ask(url: &NodeAddr) -> zikaron_send::Trouble {
-    zikaron_send::batch::on_chain(std::slice::from_ref(url), 1, &[0x11; 20], &[0x22; 20], &[[0xaa; 32]], 0).expect_err("no node can say")
+    zikaron_send::batch::on_chain(std::slice::from_ref(url), 1, &[0x11; 20], &[0x22; 20], &[[0xaa; 32]], 0, &[]).expect_err("no node can say")
 }
 
 #[test]
@@ -72,4 +63,5 @@ fn a_node_that_refuses_the_question_cannot_say() {
     let url = NodeAddr::new(format!("http://127.0.0.1:{}", refusing_node(error)));
     let t = ask(&url);
     assert_eq!(t.code, Code::Unreachable, "reached, and it could not say: no answer, nothing sent on a guess: {t:?}");
+    assert!(Code::NETWORK.contains(&t.code), "still no answer, nothing sent on a guess: {t:?}");
 }

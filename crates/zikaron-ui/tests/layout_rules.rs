@@ -1,8 +1,3 @@
-//! Two layout rules of the library, on its committed source and in headless frames: every scroll area goes in
-//! through `scroll` and says whether it is a page's or a nested one, and a nested one at its end keeps the wheel
-//! (GALEED's probe, 2026-10-16: an inner list at its end carried the page 597 points); and no widget opens a row
-//! of its own in the layout it was handed (it takes one cell, `width::cell`), only a container in a region it owns.
-
 use std::path::Path;
 use zikaron_ui::egui::{self, Pos2, Rect};
 
@@ -18,12 +13,10 @@ fn files() -> Vec<(String, String)> {
     out
 }
 
-/// Code without its comment lines: the scan is of code, not prose.
 fn code_only(s: &str) -> String {
     s.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
 }
 
-/// The name of the call whose parentheses hold `at` (the path just before the nearest unclosed `(`).
 fn enclosing_call(code: &str, at: usize) -> String {
     let b = code.as_bytes();
     let mut depth = 0i32;
@@ -44,7 +37,6 @@ fn enclosing_call(code: &str, at: usize) -> String {
     String::new()
 }
 
-/// The function a byte of `code` is in (the last `fn` before it).
 fn enclosing_fn(code: &str, at: usize) -> String {
     let head = &code[..at];
     let Some(k) = head.rfind("fn ") else { return String::new() };
@@ -65,14 +57,11 @@ fn every_scroll_area_goes_in_through_scroll() {
             seen += 1;
         }
     }
-    // The page body, the rail, a whole-window column, a picker's list and a sheet's body.
-    assert_eq!(seen, 5, "the scan reaches the library's five scroll areas");
+    assert_eq!(seen, 6, "the scan reaches the library's six scroll areas");
 }
 
 #[test]
 fn no_widget_opens_a_row_in_the_layout_it_was_handed() {
-    // Containers laying their own parts in a region they made: the key-value table's rows (inside its own column),
-    // a picker's two date fields (inside its own floating card).
     let owned = [("kv.rs", "kv"), ("pick.rs", "show_from")];
     let mut met = std::collections::BTreeSet::new();
     for (name, text) in files() {
@@ -90,9 +79,6 @@ fn no_widget_opens_a_row_in_the_layout_it_was_handed() {
     }
 }
 
-/// An outer page area with a nested one (150 high, much longer inside) between its lines, in an area of the window
-/// (a layer the pointer is known to rest on); the pointer rests on the nested one and the wheel turns a line a
-/// frame. Returns the two areas' offsets after `frames` frames.
 fn wheel_over_nested(frames: usize, nested: bool) -> (f32, f32) {
     let ctx = egui::Context::default();
     let _ = zikaron_ui::skin::dress(&ctx);
@@ -134,7 +120,6 @@ fn wheel_over_nested(frames: usize, nested: bool) -> (f32, f32) {
 
 #[test]
 fn a_nested_area_at_its_end_keeps_the_wheel_and_the_page_stays() {
-    // As egui leaves it, the page is carried once the inner area is at its end (the probe's own red leg).
     let (carried, _) = wheel_over_nested(200, false);
     assert!(carried > 0.0, "the probe moves no page without the rule ({carried})");
     let (outer, inner) = wheel_over_nested(200, true);
@@ -160,7 +145,6 @@ fn a_nested_area_with_nothing_more_to_show_lets_the_wheel_reach_the_page() {
             egui::Area::new(egui::Id::new("window")).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 outer_y = zikaron_ui::scroll::page(ui, egui::ScrollArea::vertical().id_salt("outer").max_height(560.0), |ui| {
                     ui.label("页面行");
-                    // Three short lines in an area 150 high: nothing to scroll in it.
                     inner_rect = zikaron_ui::scroll::nested(ui, egui::ScrollArea::vertical().id_salt("inner").max_height(150.0), |ui| {
                         for k in 0..3 {
                             ui.label(format!("短行 {k}"));
@@ -180,9 +164,6 @@ fn a_nested_area_with_nothing_more_to_show_lets_the_wheel_reach_the_page() {
     assert!(outer_y > 0.0, "the page scrolled under a nested area that had nothing more ({outer_y})");
 }
 
-/// A nested area under another layer (a sheet floating over the page) keeps nothing of the wheel turned over that
-/// layer: the pointer rests on the floating layer's own long list, drawn over the page's nested one, and that list
-/// scrolls while the page's nested area under it stays.
 #[test]
 fn a_nested_area_under_another_layer_keeps_nothing_of_its_wheel() {
     let ctx = egui::Context::default();
@@ -217,8 +198,6 @@ fn a_nested_area_under_another_layer_keeps_nothing_of_its_wheel() {
     assert_eq!(under_y, 0.0, "the page's nested area under it stayed");
 }
 
-/// A cell's id is its parent's whatever was laid before it (`width::cell`): a field inside keeps its focus and state
-/// while a line appears or goes above it.
 #[test]
 fn a_cell_keeps_its_id_whatever_was_laid_before_it() {
     let ctx = egui::Context::default();
@@ -240,8 +219,6 @@ fn a_cell_keeps_its_id_whatever_was_laid_before_it() {
     assert_eq!(id_with(false), id_with(true), "the same cell, the same id");
 }
 
-/// A field's name stands as far over its control as the credential sheet's validity row's name stands over its
-/// box: the name centred on a key's height, then the row's gap (`fields::name_gap`).
 #[test]
 fn a_fields_name_stands_over_its_control_by_the_one_measure() {
     let ctx = egui::Context::default();

@@ -1,0 +1,1 @@
+sec 12.6 with zikaron/1 sec 8.2: the old segment lacks seq 1 and the root hands the seat to k2 at seq 2, the entry that opens the gap. Under zikaron/1 too a succession by the key in office moves the seat after a gap, so k2's entries at seq 3 and 4 record nothing there: the old report carries one SEQ_GAP and no AUTHORITY_MISMATCH, and the whole reads GAPS.

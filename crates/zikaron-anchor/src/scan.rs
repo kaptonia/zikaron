@@ -1,16 +1,3 @@
-//! Scan: read the part of the chain a basis declares into §9.2 records, by the §9.4 completeness rule.
-//!
-//! This layer draws no audit conclusion. Whether a basis is a `zikaron/1` basis is answered by the core
-//! ([`ask_core_about_basis`]) through an empty-pile audit input; no second basis check is written here.
-//!
-//! Completeness means an incomplete read gives no report. An unreadable block range, a `bareTx` that cannot
-//! be fetched, a chain that does not answer are each a scan failure, never an empty result. Failures are a
-//! named [`Refusal`]: an anchor set missing records looks complete downstream and gets a different label.
-//!
-//! Query order follows decision order: wherever the answer is already known, stop without asking. A malformed
-//! log (three topics, empty data) stops without a node query. On replay, asking one question the recording
-//! lacks is an error, so query order is part of what is tested.
-
 use crate::rpc::{Broke, Endpoint, Trouble};
 use crate::tx::{self, Tx};
 use zikaron::cryptox;
@@ -19,83 +6,59 @@ use crate::wire::W;
 use zikaron::json::Value;
 use zikaron::tokens::Verdict;
 
-/// The §9.1 topic 0 preimage. The event is declared `Anchored(address indexed sender, bytes32 indexed hash)`;
-/// the topic 0 preimage omits `indexed`.
 pub const ANCHORED_SIGNATURE: &str = "Anchored(address,bytes32)";
 
-/// Topic 0, 32 bytes.
+pub const OVER_ASKS: &str = "OVER_ASKS";
+
 pub fn topic0() -> [u8; 32] {
     cryptox::keccak256(ANCHORED_SIGNATURE.as_bytes())
 }
 
-/// Why a scan cannot go on. Every case means the scan did not read everything, which differs from reading
-/// everything and finding no records.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Refusal {
-    /// The endpoint's chain id is not the one the basis declares (check identity first, then trust answers).
     ChainIdMismatch { declared: u64, served: String },
-    /// The basis names a chain with no endpoint at hand.
     NoEndpoint(u64),
-    /// The chain did not answer ([`Asked`]: what went unanswered, and how).
     Unanswered { chain: u64, asked: Asked },
-    /// The transaction the endpoint gave does not re-encode to the one it claims.
     TxNotItself(String),
-    /// What the endpoint gave is missing parts or has the wrong shape ([`Shape`]).
     Malformed(Shape),
 }
 
-/// What went unanswered, and how: structure only (the method, the node's own words, the transport's
-/// structure). Each end says it in its own words; the evidence is its machine form ([`Asked::evidence`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Asked {
-    /// The node declined `method`, in its own words (its JSON-RPC error as it sent it).
-    Declined { method: String, said: String },
-    /// The way to the node broke on `method`.
+    Declined { method: String, said: String, width: Option<(u64, u64)> },
     Broke { method: String, broke: Broke },
-    /// A recording lacks the question (its key).
     NotServed(String),
-    /// `eth_getLogs` answered with something that is not a list of logs.
     NotLogs,
-    /// The transaction (`0x` hash) is in a block, and its receipt is not given.
     NoReceipt(String),
-    /// A window of `whole` blocks cannot be read at the `span` this node takes within `asks` questions.
-    TooWide { span: u64, whole: u64, asks: usize },
-    /// The scan stopped short (its round was cut off).
     Short,
+    OverAsks { cap: u64, said: Option<String> },
 }
 
 impl Asked {
-    /// The machine form: the method, a code, and the node's or the transport's own words where there are any.
     pub fn evidence(&self) -> String {
         match self {
-            Asked::Declined { method, said } => format!("{method} {said}"),
+            Asked::Declined { method, said, .. } => format!("{method} {said}"),
             Asked::Broke { method, broke } => format!("{method} {}", broke.evidence()),
             Asked::NotServed(k) => format!("NOT_SERVED {k}"),
             Asked::NotLogs => "eth_getLogs NOT_LOGS".to_string(),
             Asked::NoReceipt(tx) => format!("eth_getTransactionReceipt NO_RECEIPT {tx}"),
-            Asked::TooWide { span, whole, asks } => format!("eth_getLogs TOO_WIDE span {span} whole {whole} asks {asks}"),
             Asked::Short => "SHORT".to_string(),
+            Asked::OverAsks { cap, said: None } => format!("eth_getLogs {OVER_ASKS} {cap}"),
+            Asked::OverAsks { cap, said: Some(said) } => format!("eth_getLogs {OVER_ASKS} {cap} {said}"),
         }
     }
 }
 
-/// How what an endpoint gave is malformed: structure only; its machine form is [`Shape::evidence`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Shape {
-    /// A transaction (`0x` hash) lacks a part, or has it in the wrong shape.
     TxLacks { part: String, tx: String },
-    /// A block has no `timestamp`.
     NoTimestamp(u64),
-    /// `eth_getCode` answered with something that is not a byte string.
     CodeNotBytes,
-    /// The basis passed the core's check, and yet its structure does not read.
     Basis,
-    /// The recording contradicts itself (its key).
     Contradiction(String),
 }
 
 impl Shape {
-    /// The machine form: a code and what it is about.
     pub fn evidence(&self) -> String {
         match self {
             Shape::TxLacks { part, tx } => format!("TX_LACKS {part} {tx}"),
@@ -108,6 +71,25 @@ impl Shape {
 }
 
 impl Refusal {
+    pub fn stands_aside(&self) -> bool {
+        match self {
+            Refusal::Unanswered { asked: Asked::Declined { said, .. }, .. } => crate::patience::stands_aside(&Trouble::Node(said.clone())),
+            Refusal::Unanswered { asked: Asked::Broke { broke, .. }, .. } => crate::patience::stands_aside(&Trouble::Transport(broke.clone())),
+            _ => false,
+        }
+    }
+
+    pub fn cut(&self) -> bool {
+        matches!(self, Refusal::Unanswered { asked: Asked::Declined { width: Some(_), .. }, .. })
+    }
+
+    pub fn over_asks(&self) -> Option<u64> {
+        match self {
+            Refusal::Unanswered { asked: Asked::OverAsks { cap, .. }, .. } => Some(*cap),
+            _ => None,
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Refusal::ChainIdMismatch { .. } => "E_CHAIN_ID",
@@ -118,7 +100,6 @@ impl Refusal {
         }
     }
 
-    /// The evidence in machine form (the chain, the method, numbers, the node's own words): never a sentence.
     pub fn detail(&self) -> String {
         match self {
             Refusal::ChainIdMismatch { declared, served } => format!("chain {declared} eth_chainId {served}"),
@@ -130,14 +111,18 @@ impl Refusal {
     }
 }
 
-/// Whether the endpoint's chain id is the one the basis declares.
-///
-/// Another chain's answer is the answer to another question, so only byte equality continues.
 pub fn endpoint_serves(served: &W, declared: u64) -> bool {
-    tx::hex_qty(served) == Some(declared)
+    chain_served(served) == Some(declared)
 }
 
-/// One `chains` window.
+pub fn chain_served(served: &W) -> Option<u64> {
+    tx::hex_qty(served)
+}
+
+pub fn serves_another(served: Option<u64>, given: u64) -> Option<u64> {
+    served.filter(|s| *s != given)
+}
+
 #[derive(Clone, Debug)]
 pub struct Window {
     pub chain_id: u64,
@@ -147,17 +132,12 @@ pub struct Window {
     pub senders: Vec<[u8; 20]>,
 }
 
-/// The basis as read. The core owns the shape check; this only reads bytes that already passed into a
-/// structure.
 #[derive(Clone, Debug)]
 pub struct Basis {
     pub windows: Vec<Window>,
-    pub bare: Vec<(u64, [u8; 32])>,
-    pub adoption_chains: Vec<(u64, u64)>,
     pub value: Value,
 }
 
-/// A §9.2 anchor record.
 #[derive(Clone, Debug)]
 pub struct AnchorRec {
     pub chain_id: u64,
@@ -169,36 +149,125 @@ pub struct AnchorRec {
     pub verdict: Verdict,
 }
 
-/// A §9.2 adoption evidence record.
-#[derive(Clone, Debug)]
-pub struct EvidenceRec {
-    pub chain_id: u64,
-    pub tx: [u8; 32],
-    pub sender: [u8; 20],
-    pub calldata: Vec<u8>,
-}
-
-/// What one scan produces.
 pub struct Scanned {
     pub anchors: Vec<AnchorRec>,
-    pub evidence: Vec<EvidenceRec>,
     pub basis: Value,
+    pub candidates: Vec<Claim>,
 }
 
-/// Ask the core whether these bytes are a `zikaron/1` basis.
-///
-/// With an empty pile, anchor set and evidence set, the basis is the only thing left that can be wrong, so no
-/// label from the core means no. No basis check is written here.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Claim {
+    pub chain_id: u64,
+    pub block_number: u64,
+    pub tx: [u8; 32],
+    pub log_index: u64,
+    pub sender: [u8; 20],
+    pub hash: [u8; 32],
+}
+
+#[derive(Clone)]
+pub enum Pick {
+    All,
+    Only(std::sync::Arc<dyn Fn(&[u8; 32]) -> bool + Send + Sync>),
+}
+
+impl Pick {
+    pub fn only(choose: impl Fn(&[u8; 32]) -> bool + Send + Sync + 'static) -> Pick {
+        Pick::Only(std::sync::Arc::new(choose))
+    }
+
+    fn tests(&self, chain: u64, w: &Window, log: &W, t0: &[u8; 32]) -> bool {
+        match self {
+            Pick::All => true,
+            Pick::Only(f) => anchored_log(log, t0).is_some_and(|x| f(&x.hash) || claim_of(chain, w, log, t0).is_none()),
+        }
+    }
+}
+
+impl std::fmt::Debug for Pick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Pick::All => "Pick::All",
+            Pick::Only(_) => "Pick::Only",
+        })
+    }
+}
+
+fn claim_of(chain: u64, w: &Window, log: &W, t0: &[u8; 32]) -> Option<Claim> {
+    let f = anchored_log(log, t0)?;
+    if f.block_number < w.from_block || f.block_number > w.to_block || !window_admits(w, &f.claimed) {
+        return None;
+    }
+    let emitter = emitter_of(log)?;
+    if !w.registries.iter().any(|r| *r == emitter) {
+        return None;
+    }
+    let log_index = log.member("logIndex").and_then(tx::hex_qty)?;
+    Some(Claim { chain_id: chain, block_number: f.block_number, tx: f.tx, log_index, sender: f.claimed, hash: f.hash })
+}
+
+pub fn candidates_in(fragment: &Value) -> Vec<Claim> {
+    let Some(Value::Arr(xs)) = fragment.member("candidates") else { return Vec::new() };
+    xs.iter()
+        .filter_map(|c| {
+            let int = |k: &str| match c.member(k) {
+                Some(Value::Int(n)) => Some(*n),
+                _ => None,
+            };
+            let h32s = |k: &str| c.member(k).and_then(Value::as_str).and_then(hexfmt::decode).and_then(|b| <[u8; 32]>::try_from(b).ok());
+            Some(Claim {
+                chain_id: int("chainId")?,
+                block_number: int("blockNumber")?,
+                tx: h32s("tx")?,
+                log_index: int("logIndex")?,
+                sender: c.member("sender").and_then(addr_of)?,
+                hash: h32s("hash")?,
+            })
+        })
+        .collect()
+}
+
+fn claim_value(c: &Claim) -> Value {
+    Value::Obj(vec![
+        ("blockNumber".into(), Value::Int(c.block_number)),
+        ("chainId".into(), Value::Int(c.chain_id)),
+        ("hash".into(), Value::Str(hexfmt::encode(&c.hash))),
+        ("logIndex".into(), Value::Int(c.log_index)),
+        ("sender".into(), Value::Str(hex20(&c.sender))),
+        ("tx".into(), Value::Str(hexfmt::encode(&c.tx))),
+    ])
+}
+
+pub fn joined(parts: &[Value], basis: Value) -> Value {
+    let mut anchors = Vec::new();
+    let mut candidates = Vec::new();
+    for p in parts {
+        if let Some(Value::Arr(xs)) = p.member("anchors") {
+            anchors.extend(xs.iter().cloned());
+        }
+        if let Some(Value::Arr(xs)) = p.member("candidates") {
+            candidates.extend(xs.iter().cloned());
+        }
+    }
+    let mut members = vec![("anchors".to_string(), Value::Arr(anchors)), ("basis".to_string(), basis)];
+    if !candidates.is_empty() {
+        members.push(("candidates".to_string(), Value::Arr(candidates)));
+    }
+    Value::Obj(members)
+}
+
 pub fn ask_core_about_basis(basis_bytes: &[u8]) -> Option<Value> {
     let mut doc = Vec::new();
     doc.extend_from_slice(b"{\"anchors\":[],\"basis\":");
     doc.extend_from_slice(basis_bytes);
-    doc.extend_from_slice(
-        b",\"evidence\":[],\"pile\":[],\"root\":\"0x0000000000000000000000000000000000000000\",\"unavailable\":[]}",
-    );
+    doc.extend_from_slice(b",\"pile\":[],\"root\":\"0x0000000000000000000000000000000000000000\"}");
     let v = zikaron::json::parse_tests_1_3(&doc).ok()?;
-    zikaron::audit::audit_full(&v)?;
+    zikaron::v2::audit::audit_full(&v)?;
     Some(v.member("basis")?.clone())
+}
+
+pub fn no_label() -> Value {
+    zikaron::v2::audit::no_label()
 }
 
 fn addr_of(v: &Value) -> Option<[u8; 20]> {
@@ -207,16 +276,6 @@ fn addr_of(v: &Value) -> Option<[u8; 20]> {
         return None;
     }
     let mut a = [0u8; 20];
-    a.copy_from_slice(&b);
-    Some(a)
-}
-
-fn h32_core(v: &Value) -> Option<[u8; 32]> {
-    let b = hexfmt::decode(v.as_str()?)?;
-    if b.len() != 32 {
-        return None;
-    }
-    let mut a = [0u8; 32];
     a.copy_from_slice(&b);
     Some(a)
 }
@@ -231,7 +290,6 @@ fn h32(v: &W) -> Option<[u8; 32]> {
     Some(a)
 }
 
-/// Read a basis the core accepted into a structure.
 pub fn read_basis(basis: &Value) -> Option<Basis> {
     let mut windows = Vec::new();
     for c in basis.member("chains")?.as_arr()? {
@@ -243,18 +301,9 @@ pub fn read_basis(basis: &Value) -> Option<Basis> {
             senders: c.member("senders")?.as_arr()?.iter().map(addr_of).collect::<Option<_>>()?,
         });
     }
-    let mut bare = Vec::new();
-    for b in basis.member("bareTx")?.as_arr()? {
-        bare.push((b.member("chainId")?.as_int()?, h32_core(b.member("tx")?)?));
-    }
-    let mut adoption_chains = Vec::new();
-    for a in basis.member("adoptionChains")?.as_arr()? {
-        adoption_chains.push((a.member("chainId")?.as_int()?, a.member("throughBlock")?.as_int()?));
-    }
-    Some(Basis { windows, bare, adoption_chains, value: basis.clone() })
+    Some(Basis { windows, value: basis.clone() })
 }
 
-/// Hex quantity spelling the nodes accept (no leading zeros, zero as `0x0`). The only place it is spelled.
 pub fn hex_quantity(x: u64) -> String {
     format!("0x{x:x}")
 }
@@ -263,7 +312,6 @@ fn hex20(a: &[u8; 20]) -> String {
     hexfmt::encode(a)
 }
 
-/// The §9.1 containment test: the 32-byte word appears in calldata at an offset aligned to 32 or 4 + 32k.
 pub fn calldata_carries(calldata: &[u8], word: &[u8; 32]) -> bool {
     let mut base = 0usize;
     while base <= 4 {
@@ -285,63 +333,62 @@ struct Chain<'a> {
 }
 
 impl<'a> Chain<'a> {
-    /// Ask with patience (`patience::ask`: a rate limit and a server error are waited out by the one table).
     fn ask(&mut self, method: &str, params: Vec<Value>) -> Result<W, Refusal> {
         crate::patience::ask(self.ep, method, &Value::Arr(params)).map_err(|t| self.refused(method, t))
     }
 
-    /// [`Chain::ask`], also telling whether the node still refused for its rate (after the patience table's
-    /// pauses) rather than for what was asked ([`rate_limited`]).
-    fn ask_paced(&mut self, method: &str, params: Vec<Value>) -> Result<W, (Refusal, bool)> {
-        crate::patience::ask(self.ep, method, &Value::Arr(params)).map_err(|t| {
-            let limited = rate_limited(&t);
-            (self.refused(method, t), limited)
-        })
-    }
-
-    /// A trouble as the scan's refusal.
     fn refused(&self, method: &str, t: Trouble) -> Refusal {
         match t {
-            Trouble::Node(e) => Refusal::Unanswered { chain: self.id, asked: Asked::Declined { method: method.to_string(), said: e } },
+            Trouble::Node(e) => Refusal::Unanswered { chain: self.id, asked: Asked::Declined { method: method.to_string(), width: None, said: e } },
             Trouble::NotServed(k) => Refusal::Unanswered { chain: self.id, asked: Asked::NotServed(k) },
             Trouble::Transport(b) => Refusal::Unanswered { chain: self.id, asked: Asked::Broke { method: method.to_string(), broke: b } },
             Trouble::Contradiction(k) => Refusal::Malformed(Shape::Contradiction(k)),
         }
     }
 
-    /// A declined answer and "no such transaction on chain" differ: the first is a scan failure, the second a
-    /// definite no.
+    fn refused_log(&self, params: &Value, t: Trouble, cuttable: bool) -> Refusal {
+        let width = (cuttable && matches!(&t, Trouble::Node(_)) && crate::patience::class_of(&t) == crate::patience::Class::Other).then(|| crate::patience::log_blocks("eth_getLogs", params)).flatten();
+        if let (Some(_), Trouble::Node(words)) = (width, &t) {
+            crate::action::heard(&self.ep.place(), words);
+        }
+        match self.refused("eth_getLogs", t) {
+            Refusal::Unanswered { chain, asked: Asked::Declined { method, said, .. } } => Refusal::Unanswered { chain, asked: Asked::Declined { method, said, width } },
+            other => other,
+        }
+    }
+
     fn tx_by_hash(&mut self, h: &[u8; 32]) -> Result<Option<Tx>, Refusal> {
         let v = self.ask("eth_getTransactionByHash", vec![Value::Str(hexfmt::encode(h))])?;
         if v.is_null() {
             return Ok(None);
         }
         match tx::read(&v) {
+            Ok(t) if t.hash != *h => Err(Refusal::TxNotItself(hexfmt::encode(h))),
             Ok(t) => Ok(Some(t)),
             Err(tx::Bad::HashMismatch) => Err(Refusal::TxNotItself(hexfmt::encode(h))),
             Err(tx::Bad::Shape(w)) => Err(Refusal::Malformed(Shape::TxLacks { part: w.to_string(), tx: hexfmt::encode(h) })),
         }
     }
 
-    /// Whether the receipt says the transaction succeeded. A missing receipt is not failure: the transaction
-    /// is in a block and the node cannot give its receipt, so the endpoint contradicts itself, and §9.4 calls
-    /// that a scan failure.
     fn status_one(&mut self, h: &[u8; 32]) -> Result<bool, Refusal> {
+        if let Some(one) = crate::ahead::status_at(self.id, h) {
+            return Ok(one);
+        }
         let v = self.ask("eth_getTransactionReceipt", vec![Value::Str(hexfmt::encode(h))])?;
         if v.is_null() {
             return Err(Refusal::Unanswered { chain: self.id, asked: Asked::NoReceipt(hexfmt::encode(h)) });
         }
-        // A receipt without `status` does not have status 1 (§9.1); the status byte is read, never the state
-        // root.
         Ok(tx::qty_u64(&v, "status") == Some(1))
     }
 
     fn block_timestamp(&mut self, n: u64) -> Result<u64, Refusal> {
-        let v = self.ask("eth_getBlockByNumber", vec![Value::Str(hex_quantity(n)), Value::Bool(false)])?;
+        if let Some(t) = crate::ahead::time_at(self.id, n) {
+            return Ok(t);
+        }
+        let v = self.ask("eth_getBlockByNumber", block_params(n))?;
         tx::qty_u64(&v, "timestamp").ok_or(Refusal::Malformed(Shape::NoTimestamp(n)))
     }
 
-    /// The two §9.3 boundaries: unanswered is UNPROVEN, answered with code is VOID.
     fn verdict_at(&mut self, who: &[u8; 20], block: u64) -> Result<Verdict, Refusal> {
         let mut coded = false;
         if block > 0 {
@@ -357,19 +404,14 @@ impl<'a> Chain<'a> {
         Ok(if coded { Verdict::Void } else { Verdict::Counted })
     }
 
-    /// `Ok(None)`: this boundary could not be asked (the node declined); `Ok(Some(true))`: the address has
-    /// code ([`code_at`]).
     fn code_at(&mut self, who: &[u8; 20], block: u64) -> Result<Option<bool>, Refusal> {
+        if let Some(coded) = crate::ahead::code_at(self.id, who, block) {
+            return Ok(Some(coded));
+        }
         code_at(self.ep, self.id, who, block)
     }
 }
 
-/// Whether `who` has code at `block` on one node of chain `chain` (`eth_getCode`): `Ok(Some(true))` it has,
-/// `Ok(Some(false))` it has none, `Ok(None)` the node declined (this boundary could not be asked: §9.3
-/// UNPROVEN). Asked with patience as every other question of the scan (`patience::ask`): a rate limit is waited
-/// out by the one table before the node's word is taken as a decline; a node still limited after the table's
-/// pauses declined. A broken transport, a question a recording lacks, or an answer that is not bytes is no
-/// answer at all.
 pub fn code_at(ep: &mut dyn Endpoint, chain: u64, who: &[u8; 20], block: u64) -> Result<Option<bool>, Refusal> {
     let params = vec![Value::Str(hex20(who)), Value::Str(hex_quantity(block))];
     match crate::patience::ask(ep, "eth_getCode", &Value::Arr(params)) {
@@ -384,31 +426,18 @@ pub fn code_at(ep: &mut dyn Endpoint, chain: u64, who: &[u8; 20], block: u64) ->
     }
 }
 
-/// One scan. `endpoints` gives a channel per chain id; a chain the basis names without a channel fails the
-/// scan.
 pub fn run(
     basis_bytes: &[u8],
-    adoptions: &[(u64, [u8; 32])],
     endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
 ) -> Result<Result<Scanned, Value>, Refusal> {
     crate::seam();
-    noting(basis_bytes, adoptions, endpoints, &Known::default()).map(|r| r.map(|(s, _, _)| s))
+    noting(basis_bytes, endpoints, &Known::default(), &[], &mut Vec::new(), &Pick::All).map(|r| r.map(|(s, _, _)| s))
 }
 
-/// The §9.4 deduplication key of a record: `(chainId, blockNumber, tx, hash)`.
 pub type RecordKey = (u64, u64, [u8; 32], [u8; 32]);
 
-/// What one log on chain is known by, for the facts read about it: the chain, the hash of its block (a block
-/// that was replaced is another block, and its facts are not these), the transaction, and the log's index in
-/// that block.
 pub type FactKey = (u64, [u8; 32], [u8; 32], u64);
 
-/// What a registry-form record took questions to learn, once the log was judged an anchor: the block's time
-/// and the sender's verdict at that block (the transaction, its receipt and its calldata having passed), with
-/// the log as it was when they passed (its block number, the sender and hash it names, the registry that
-/// emitted it). A log read later under the same key is spared the questions only when it still says exactly
-/// this; one that says anything else is asked about as new, so what the questions bound to the transaction
-/// cannot be carried over to other words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fact {
     pub block_number: u64,
@@ -419,79 +448,90 @@ pub struct Fact {
     pub verdict: Verdict,
 }
 
-/// Facts a caller already holds, checked before (its own record of readings several endpoints agreed on).
-/// The logs are still asked for whole, every time; a log found here under the same key and saying the same
-/// is not asked about again, and any other (a new anchor, the same transaction in another block, a log that
-/// says something else under a key held here) is asked about as always. Empty: every log is asked about.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Known(pub std::collections::BTreeMap<FactKey, Fact>);
+pub struct Known(pub std::collections::BTreeMap<FactKey, Fact>, pub std::collections::BTreeMap<FactKey, Fact>);
 
-/// Facts this scan read afresh, each under its key: only logs judged anchors with a decided verdict (an
-/// unproven verdict is no fact), and only logs that carry their block hash and index.
 pub type Sightings = Vec<(FactKey, Fact)>;
 
-/// The key of a log as it came back: its chain, block hash, transaction and index; `None` when the log does
-/// not carry them.
 fn fact_key(chain: u64, log: &W, tx: &[u8; 32]) -> Option<FactKey> {
     let block = log.member("blockHash").and_then(h32)?;
     let index = log.member("logIndex").and_then(tx::hex_qty)?;
     Some((chain, block, *tx, index))
 }
 
-/// Which registry contracts emitted the logs each registry-form record was read from: a side reading, never
-/// part of the record or of the scan's canonical bytes. One key may have several (one transaction calling two
-/// registries of a window); bare-form records have none.
 pub type Emitters = std::collections::BTreeMap<RecordKey, std::collections::BTreeSet<[u8; 20]>>;
 
-/// The key a record is deduplicated by.
 pub fn record_key(a: &AnchorRec) -> RecordKey {
     (a.chain_id, a.block_number, a.tx, a.hash)
 }
 
-/// [`run`], noting beside it which registry each registry-form record came from. The address is the one on
-/// the log already read: no question is asked for it, so the query order is [`run`]'s.
 pub fn run_noting(
     basis_bytes: &[u8],
-    adoptions: &[(u64, [u8; 32])],
     endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
 ) -> Result<Result<(Scanned, Emitters), Value>, Refusal> {
     crate::seam();
-    noting(basis_bytes, adoptions, endpoints, &Known::default()).map(|r| r.map(|(s, e, _)| (s, e)))
+    noting(basis_bytes, endpoints, &Known::default(), &[], &mut Vec::new(), &Pick::All).map(|r| r.map(|(s, e, _)| (s, e)))
 }
 
-/// [`run_noting`] with facts already checked ([`Known`]), handing back as well the facts this scan read
-/// afresh ([`Sightings`]). With an empty table it asks exactly what [`run`] asks.
 pub fn run_knowing(
     basis_bytes: &[u8],
-    adoptions: &[(u64, [u8; 32])],
     endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
     known: &Known,
 ) -> Result<Result<(Scanned, Emitters, Sightings), Value>, Refusal> {
     crate::seam();
-    noting(basis_bytes, adoptions, endpoints, known)
+    noting(basis_bytes, endpoints, known, &[], &mut Vec::new(), &Pick::All)
 }
 
-/// The scan every public entry runs (each marks the trace once, then comes here).
-fn noting(
+pub fn run_knowing_picked(
     basis_bytes: &[u8],
-    adoptions: &[(u64, [u8; 32])],
     endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
     known: &Known,
+    pick: &Pick,
+) -> Result<Result<(Scanned, Emitters, Sightings), Value>, Refusal> {
+    crate::seam();
+    noting(basis_bytes, endpoints, known, &[], &mut Vec::new(), pick)
+}
+
+pub fn run_settling(
+    basis_bytes: &[u8],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+    known: &Known,
+    nodes: &[(u64, String)],
+) -> Result<Result<(Scanned, Emitters, Sightings, Vec<crate::settled::Settling>), Value>, Refusal> {
+    run_picked(basis_bytes, endpoints, known, nodes, &Pick::All)
+}
+
+pub fn run_picked(
+    basis_bytes: &[u8],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+    known: &Known,
+    nodes: &[(u64, String)],
+    pick: &Pick,
+) -> Result<Result<(Scanned, Emitters, Sightings, Vec<crate::settled::Settling>), Value>, Refusal> {
+    crate::seam();
+    let mut out = Vec::new();
+    noting(basis_bytes, endpoints, known, nodes, &mut out, pick).map(|r| r.map(|(s, e, k)| (s, e, k, out)))
+}
+
+fn noting(
+    basis_bytes: &[u8],
+    endpoints: &mut Vec<(u64, &mut dyn Endpoint)>,
+    known: &Known,
+    nodes: &[(u64, String)],
+    settling: &mut Vec<crate::settled::Settling>,
+    pick: &Pick,
 ) -> Result<Result<(Scanned, Emitters, Sightings), Value>, Refusal> {
     let Some(basis_value) = ask_core_about_basis(basis_bytes) else {
-        // The core says this is not a zikaron/1 basis; its no-label value is the only byte shape.
-        return Ok(Err(zikaron::audit::no_label()));
+        return Ok(Err(no_label()));
     };
     let basis = read_basis(&basis_value).ok_or(Refusal::Malformed(Shape::Basis))?;
 
     let mut chains: Vec<u64> = basis.windows.iter().map(|w| w.chain_id).collect();
-    chains.extend(basis.bare.iter().map(|b| b.0));
-    chains.extend(basis.adoption_chains.iter().map(|a| a.0));
     chains.sort_unstable();
     chains.dedup();
 
     let mut anchors: Vec<AnchorRec> = Vec::new();
-    let mut evidence: Vec<EvidenceRec> = Vec::new();
+    let mut candidates: Vec<Claim> = Vec::new();
     let mut emitters = Emitters::new();
     let mut seen = Sightings::new();
     let t0 = topic0();
@@ -504,19 +544,41 @@ fn noting(
         let ep: &mut dyn Endpoint = &mut *endpoints[idx].1;
         let mut chain = Chain { id, ep };
 
-        // Check the endpoint's chain id first; on mismatch stop and trust nothing after.
         let served = chain.ask("eth_chainId", vec![])?;
         if !endpoint_serves(&served, id) {
             return Err(Refusal::ChainIdMismatch { declared: id, served: crate::wire::write(&served) });
         }
 
-        // Registry form.
+        let list = nodes.iter().find(|(c, _)| *c == id).map(|(_, l)| l.as_str());
+        let filters: Vec<(LogFilter, u64, u64)> =
+            basis.windows.iter().filter(|w| w.chain_id == id && !w.registries.is_empty() && !w.senders.is_empty()).map(|w| (anchor_filter(w, &t0), w.from_block, w.to_block)).collect();
+        let reads: Vec<(&LogFilter, u64, u64)> = filters.iter().map(|(f, a, b)| (f, *a, *b)).collect();
+        if reads.len() >= 2 {
+            let asks = logs_ahead_asks(&*chain.ep, id, &reads, list);
+            crate::ahead::ask_ahead(&mut *chain.ep, &asks);
+        }
+
         for w in basis.windows.iter().filter(|w| w.chain_id == id) {
-            // No registry, or no sender this window admits: no log could become a record, so none is asked.
             if w.registries.is_empty() || w.senders.is_empty() {
                 continue;
             }
-            let logs = paged(&mut chain, &anchor_filter(w, &t0), w.from_block, w.to_block)?;
+            let over = match nodes.iter().find(|(c, _)| *c == id) {
+                Some((_, list)) => Over::Agreed { nodes: list, out: &mut *settling },
+                None => Over::Alone,
+            };
+            let logs = paged(&mut chain, &anchor_filter(w, &t0), w.from_block, w.to_block, over)?;
+            let (logs, untested): (Vec<W>, Vec<W>) = logs.into_iter().partition(|l| pick.tests(id, w, l, &t0));
+            candidates.extend(untested.iter().filter_map(|l| claim_of(id, w, l, &t0)));
+            let (mut wants, mut receipts): (Vec<crate::ahead::Want>, Vec<[u8; 32]>) = (Vec::new(), Vec::new());
+            for l in &logs {
+                match wanted(chain.id, w, l, &t0, known) {
+                    Some(Wanted::All(x)) => wants.push(x),
+                    Some(Wanted::Receipt(tx)) if !receipts.contains(&tx) => receipts.push(tx),
+                    _ => {}
+                }
+            }
+            let share = crate::ahead::Share::of(&chain.ep.place(), list);
+            crate::ahead::read_ahead_receipts(&mut *chain.ep, chain.id, &wants, &receipts, share);
             for log in &logs {
                 let Some(rec) = registry_record(&mut chain, w, log, &t0, known, &mut seen)? else { continue };
                 if let Some(at) = emitter_of(log) {
@@ -525,75 +587,69 @@ fn noting(
                 anchors.push(rec);
             }
         }
-
-        // Bare form.
-        for (_, h) in basis.bare.iter().filter(|b| b.0 == id) {
-            bare_records(&mut chain, h, &mut anchors)?;
-        }
-
-        // Adoption evidence.
-        if let Some((_, through)) = basis.adoption_chains.iter().find(|a| a.0 == id) {
-            let mut seen: Vec<[u8; 32]> = Vec::new();
-            for (_, h) in adoptions.iter().filter(|e| e.0 == id) {
-                if seen.contains(h) {
-                    continue;
-                }
-                seen.push(*h);
-                if let Some(rec) = evidence_record(&mut chain, h, *through)? {
-                    evidence.push(rec);
-                }
-            }
-        }
     }
 
-    // The §9.4 deduplication key and both tables' order; sorting goes through the core's `ordered` only.
     let anchors = zikaron::audit::ordered(anchors, |a, b| {
         (a.chain_id, a.block_number, a.tx, a.hash).cmp(&(b.chain_id, b.block_number, b.tx, b.hash))
     });
     let deduped = dedupe(anchors);
-    let evidence = zikaron::audit::ordered(evidence, |a, b| (a.chain_id, a.tx).cmp(&(b.chain_id, b.tx)));
+    candidates.sort();
+    candidates.dedup();
 
-    Ok(Ok((Scanned { anchors: deduped, evidence, basis: basis_value }, emitters, seen)))
+    Ok(Ok((Scanned { anchors: deduped, basis: basis_value, candidates }, emitters, seen)))
 }
 
-/// The contract that emitted a log (its `address`), as twenty bytes.
+pub fn served_single_chains(basis_bytes: &[u8], nodes: &[(u64, String)]) -> Vec<u64> {
+    if !crate::settled::keeps() {
+        return Vec::new();
+    }
+    let Some(basis) = zikaron::json::parse(basis_bytes).ok().as_ref().and_then(read_basis) else { return Vec::new() };
+    let t0 = topic0();
+    let mut out: Vec<u64> = basis
+        .windows
+        .iter()
+        .filter(|w| !w.registries.is_empty() && !w.senders.is_empty())
+        .filter_map(|w| {
+            let (_, list) = nodes.iter().find(|(c, _)| *c == w.chain_id)?;
+            subject_groups(&anchor_filter(w, &t0))
+                .iter()
+                .any(|g| {
+                    let key = crate::settled::Key { chain: w.chain_id, nodes: crate::settled::spell_nodes(list), filter: filter_key(g) };
+                    crate::settled::entry(&key).is_some_and(|e| e.single_source && e.from <= w.from_block)
+                })
+                .then_some(w.chain_id)
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn emitter_of(log: &W) -> Option<[u8; 20]> {
     let b = log.member("address").and_then(|a| a.as_str()).and_then(hexfmt::decode)?;
     b.try_into().ok()
 }
 
-/// An address as a log's indexed topic carries it: twelve zero bytes, then the twenty.
 fn padded(a: &[u8; 20]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[12..].copy_from_slice(a);
     out
 }
 
-/// What one log question asks for besides its block range: the contracts that emitted the logs, and the topics
-/// position by position, in `eth_getLogs`'s own terms. Built into the question in one place ([`LogFilter::at`])
-/// for the whole range and for every sub-range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogFilter {
-    /// The emitting contracts: any of these (empty: any contract).
     pub addresses: Vec<[u8; 20]>,
-    /// The topics, by position; positions past the last are any.
     pub topics: Vec<Topic>,
 }
 
-/// One topic position of a log question. Closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Topic {
-    /// Any topic here.
     Any,
-    /// This one.
     One([u8; 32]),
-    /// Any of these.
     AnyOf(Vec<[u8; 32]>),
 }
 
 impl LogFilter {
-    /// The `eth_getLogs` filter object over blocks `from` to `to`: `address` (the list), `fromBlock`,
-    /// `toBlock`, `topics` (`null`, one value, or a list, by position).
     pub fn at(&self, from: u64, to: u64) -> Value {
         let topic = |t: &Topic| match t {
             Topic::Any => Value::Null,
@@ -609,234 +665,416 @@ impl LogFilter {
     }
 }
 
-/// The anchor scan's filter for one window: the window's registries, topic 0, and as topic 1 the window's
-/// senders in one "any of" list (each left-padded to 32 bytes as the log carries it). §9.4 reads only logs whose
-/// sender the window lists, so asking for those alone reads the same records; the node's filtering is never
-/// trusted for that, every log that comes back is still judged here (`registry_record`). One question per
-/// window range, never one per sender.
+pub const SUBJECT_GROUP: usize = 32;
+
+pub fn subject_groups(filter: &LogFilter) -> Vec<LogFilter> {
+    let Some(at) = filter.topics.iter().position(|t| matches!(t, Topic::AnyOf(xs) if xs.len() > SUBJECT_GROUP)) else { return vec![filter.clone()] };
+    let Topic::AnyOf(xs) = &filter.topics[at] else { return vec![filter.clone()] };
+    let mut once: Vec<[u8; 32]> = Vec::new();
+    for x in xs {
+        if !once.contains(x) {
+            once.push(*x);
+        }
+    }
+    if once.len() <= SUBJECT_GROUP {
+        return vec![filter.clone()];
+    }
+    once.chunks(SUBJECT_GROUP)
+        .map(|g| {
+            let mut f = filter.clone();
+            f.topics[at] = Topic::AnyOf(g.to_vec());
+            f
+        })
+        .collect()
+}
+
+fn merged(parts: Vec<Vec<W>>) -> Vec<W> {
+    let mut all: Vec<W> = parts.into_iter().flatten().collect();
+    let index = |l: &W| l.member("logIndex").and_then(crate::tx::hex_qty).unwrap_or(0);
+    all.sort_by_key(|l| (crate::settled::block_of(l).unwrap_or(0), index(l)));
+    all
+}
+
+pub fn lineage_filter(registries: &[[u8; 20]], senders: &[[u8; 20]]) -> LogFilter {
+    LogFilter { addresses: registries.to_vec(), topics: vec![Topic::One(topic0()), Topic::AnyOf(senders.iter().map(padded).collect())] }
+}
+
 fn anchor_filter(w: &Window, t0: &[u8; 32]) -> LogFilter {
     LogFilter { addresses: w.registries.clone(), topics: vec![Topic::One(*t0), Topic::AnyOf(w.senders.iter().map(padded).collect())] }
 }
 
-/// After splitting, each sub-range spans at least one block; a refusal at one block is passed on as the node
-/// said it.
-const MIN_SPAN: u64 = 1;
-/// How many times to shrink. Each shrink costs the refused query, so this bounds the splitting path: if the
-/// node refuses for another reason (unknown method, auth), at most eight extra queries pass its sentence on.
-const MAX_SHRINKS: usize = 8;
-
-/// How many times one log question is asked before its range is split: a node that declines now often
-/// answers the same question a moment later (a busy public node), and splitting a range that was refused only
-/// for that would cost many questions. Asked again at once, never after waiting.
-const TRIES: usize = 3;
-
-/// Queries per window at most (asking again counts). Splitting exists to finish a window, not to shatter it: a misread limit
-/// (reading `up to a 2K block range` as 2) would turn a two-million-block window into a million queries. At
-/// this bound the scan returns a named refusal saying what to do (move the start block forward, or use a node
-/// that accepts wider ranges).
-///
-/// 4096: at a 2000-block limit this covers over eight million blocks; a wider window on such a node takes
-/// hours, and the person should know that up front.
-const MAX_ASKS: usize = 4096;
-
-/// Words that introduce a limit. The number must follow the word: a node's sentence carries many numbers
-/// (block numbers, error codes, result counts). `only` is Arbitrum's official node: `query spans 268435456
-/// blocks (1 to 268435456), but only 10000000 are allowed for this request`.
-const LIMIT_WORDS: [&str; 9] = ["maximum", "max", "limited to", "limit", "up to", "at most", "more than", "range", "only"];
-
-/// Whether a refusal says the node is limiting its rate, and not that the range was too wide: the patience
-/// table's class (`patience::class_of`: a 429, or a rate-limit marker in words naming no range). A rate
-/// refusal carries no range limit, so no number is read from it.
-fn rate_limited(t: &Trouble) -> bool {
-    crate::patience::class_of(t) == crate::patience::Class::RateLimited
-}
-
-/// Set the pauses a scan waits before asking a rate-limited log question again: now every pause of the
-/// patience table (`patience::set_waits`; `Some` of anything takes every pause as its first entry, zero in
-/// a test; `None`: the table's own).
-pub fn set_rate_backoff(pauses: Option<Vec<std::time::Duration>>) {
-    crate::patience::set_waits(pauses.map(|p| p.first().copied().unwrap_or_default()));
-}
-
-/// The widest log range each node took after its range was cut, by node, for the life of this process: the
-/// next window asked of that node starts at it, instead of being refused down to it again (a node that takes
-/// 10,000 blocks is asked 10,000 at a time from then on). Only ever narrowed.
-static SPANS: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-/// The range this node is known to take ([`SPANS`]), if it was ever cut.
-pub fn known_span(node: &str) -> Option<u64> {
-    SPANS.lock().unwrap_or_else(|e| e.into_inner()).get(node).copied()
-}
-
-/// Remember that this node took `span` blocks after its range was cut (the narrower of what is known).
-fn remember_span(node: &str, span: u64) {
-    let mut g = SPANS.lock().unwrap_or_else(|e| e.into_inner());
-    let at = g.entry(node.to_string()).or_insert(span);
-    *at = (*at).min(span);
-}
-
-/// Forget every node's known range (for tests, or a run that starts over).
-pub fn forget_spans() {
-    SPANS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
-/// The limit a node reports in its refusal, if any. `range: 50000`, `limited to 1000 blocks`, `up to a 2K
-/// block range` and `more than 10000 results` each carry one.
-///
-/// Only the first number after a limit word counts (`2k` and `10K` in thousands), and it must fall within
-/// `1..span`. Taking the first number in the sentence would read 1000000 from `requested from block 1000000
-/// to 2000000, maximum is 5000` and 2 from `up to a 2K block range`.
-fn said_limit(said: &str, span: u64) -> Option<u64> {
-    let low = said.to_lowercase();
-    let mut best: Option<(usize, u64)> = None;
-    for w in LIMIT_WORDS {
-        let mut from = 0usize;
-        while let Some(i) = low[from..].find(w) {
-            let at = from + i + w.len();
-            if let Some((n, _)) = number_after(&low[at..]) {
-                if n >= MIN_SPAN && n < span && best.map(|(p, _)| at < p).unwrap_or(true) {
-                    best = Some((at, n));
-                }
-            }
-            from = at;
-        }
-    }
-    best.map(|(_, n)| n)
-}
-
-/// The first number within 24 characters of the start of a string, with thousands grouped by commas read as
-/// one number (`2,000`, `1,000,000`: a lead of one to three digits, then groups of exactly three) and `k`/`m`
-/// suffixes in thousands or millions; returns the number and where it ends. A comma not followed by exactly
-/// three digits ends the number (`10,20` is 10).
-fn number_after(rest: &str) -> Option<(u64, usize)> {
-    let b = rest.as_bytes();
-    let mut i = 0usize;
-    while i < b.len() && i < 24 && !b[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i >= b.len() || i >= 24 || !b[i].is_ascii_digit() {
-        return None;
-    }
-    let start = i;
-    while i < b.len() && b[i].is_ascii_digit() {
-        i += 1;
-    }
-    let mut digits = rest[start..i].to_string();
-    if digits.len() <= 3 {
-        let group = |at: usize| b.get(at) == Some(&b',') && (1..=3).all(|k| b.get(at + k).is_some_and(u8::is_ascii_digit)) && !b.get(at + 4).is_some_and(u8::is_ascii_digit);
-        while group(i) {
-            digits.push_str(&rest[i + 1..i + 4]);
-            i += 4;
-        }
-    }
-    let mut n: u64 = digits.parse().ok()?;
-    if i < b.len() {
-        match b[i] {
-            b'k' => {
-                n = n.saturating_mul(1000);
-                i += 1;
-            }
-            b'm' => {
-                n = n.saturating_mul(1_000_000);
-                i += 1;
-            }
-            _ => {}
-        }
-    }
-    Some((n, i))
-}
-
-/// Logs matching `filter` in blocks `from` to `to` on one node of chain `chain`, fetched in ranges the node
-/// accepts: the anchor scan's own reader, under the same rules (asked with patience, asked again, the range
-/// shrunk, a node's cut range remembered, the asks bounded; see [`paged`]). An unfinished range is a named
-/// refusal, never fewer logs. The logs come back as the node gave them, in block order of the ranges asked;
-/// judging them is the caller's.
 pub fn logs_over_window(ep: &mut dyn Endpoint, chain: u64, filter: &LogFilter, from: u64, to: u64) -> Result<Vec<W>, Refusal> {
     crate::seam();
-    paged(&mut Chain { id: chain, ep }, filter, from, to)
+    let place = ep.place();
+    let mut got = [paged(&mut Chain { id: chain, ep: &mut *ep }, filter, from, to, Over::Alone)];
+    crate::action::cut_and_ask(&mut got, |_, _| vec![place.clone()], |_| false, |g| g.as_ref().err().is_some_and(Refusal::cut), |_, _| vec![paged(&mut Chain { id: chain, ep }, filter, from, to, Over::Alone)]);
+    let [got] = got;
+    got
 }
 
-/// Logs of one window, fetched in ranges the node accepts.
-///
-/// Ask for the whole range first: when the node accepts, the query is byte-identical to a single-range scan
-/// (so recordings still replay). A refused question is asked again as it was, up to [`TRIES`] times in all;
-/// refused that many times, the span shrinks and the next question starts from the same block, using the
-/// node's reported limit or halving, and that question too has [`TRIES`] tries. Asking again counts toward
-/// [`MAX_ASKS`], never toward [`MAX_SHRINKS`]; if one block is still refused, pass the node's sentence on (a
-/// refusal is not "zero logs").
-///
-/// A node limiting its rate ([`rate_limited`]) is not asked again at once and its range is not shrunk: the
-/// patience table asked it again after each of its pauses already (`patience::ask`), so a refusal still
-/// limited is passed on. Shrinking would only send more, smaller questions to a node that asks for fewer.
-///
-/// A node whose range was cut before in this process ([`known_span`]) is asked at that range from the start;
-/// a range cut in this window is remembered once a question at it is answered.
-fn paged(chain: &mut Chain, filter: &LogFilter, from: u64, to: u64) -> Result<Vec<W>, Refusal> {
-    let mut logs: Vec<W> = Vec::new();
+pub fn logs_judged_over(ep: &mut dyn Endpoint, chain: u64, filter: &LogFilter, from: u64, to: u64, nodes: &str) -> Result<Vec<W>, Refusal> {
+    crate::seam();
+    paged(&mut Chain { id: chain, ep }, filter, from, to, Over::Judged { nodes })
+}
+
+pub fn log_asks(ep: &dyn Endpoint, chain: u64, filter: &LogFilter, from: u64, to: u64, nodes: Option<&str>) -> Vec<crate::rpc::Ask<'static>> {
     if to < from {
-        return Ok(logs);
+        return Vec::new();
     }
-    // Saturating: a window from block 0 to the last there is spans one more block than a u64 counts.
-    let whole = (to - from).saturating_add(1);
-    // Kept by place, not by the name said: two nodes on one host (`…/eth/<key>`, `…/polygon/<key>`) are two.
-    let node = chain.ep.place();
-    let mut span = known_span(&node).map_or(whole, |k| k.clamp(MIN_SPAN, whole));
-    let mut at = from;
-    let mut shrinks = 0usize;
-    let mut asks = 0usize;
-    // How many times the question now due was refused.
-    let mut refused = 0usize;
-    while at <= to {
-        let end = at.saturating_add(span - 1).min(to);
-        if asks >= MAX_ASKS {
-            // Unfinished is said as unfinished: a refusal goes out, never "zero logs", which downstream would
-            // read as "no anchors in this range".
-            return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::TooWide { span, whole, asks: MAX_ASKS } });
+    let groups = subject_groups(filter);
+    if groups.len() > 1 {
+        return groups.iter().flat_map(|g| log_asks(ep, chain, g, from, to, nodes)).collect();
+    }
+    let place = ep.place();
+    match reading_on(&place, chain, filter, from, nodes).and_then(|r| r.kept) {
+        Some(e) => kept_asks(&place, &e, filter, from, to),
+        None => whole_ask(&place, filter, from, to),
+    }
+}
+
+pub fn logs_ahead<'e>(nodes: &mut [&mut (dyn Endpoint + Send + 'e)], chain: u64, reads: &[(&LogFilter, u64, u64)], nodes_list: Option<&str>) {
+    crate::seam();
+    if reads.len() < 2 || crate::action::current().is_none() {
+        return;
+    }
+    let mut items: Vec<(String, Box<dyn Endpoint + Send>, Vec<crate::rpc::Ask<'static>>)> = Vec::new();
+    let mut here: Vec<usize> = Vec::new();
+    for (i, ep) in nodes.iter_mut().enumerate() {
+        let asks = logs_ahead_asks(&**ep, chain, reads, nodes_list);
+        match ep.another() {
+            Some(other) => items.push((ep.place(), other, asks)),
+            None => here.push(i),
         }
-        asks += 1;
-        match chain.ask_paced("eth_getLogs", vec![filter.at(at, end)]) {
-            // Still limited after the patience table's pauses: passed on as it is.
-            Err((e, true)) => return Err(e),
-            Ok(answered) => {
-                // An answer that is not a log list was not answered: reading it as zero logs would turn an
-                // unusable answer into a complete empty anchor set.
-                let Some(mut got) = answered.as_arr().map(<[W]>::to_vec) else {
-                    return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::NotLogs });
-                };
-                logs.append(&mut got);
-                at = end.saturating_add(1);
-                refused = 0;
-                if shrinks > 0 {
-                    remember_span(&node, span);
-                }
-                // The last block there is was read: `at` cannot move past it.
-                if end == u64::MAX {
-                    break;
-                }
-            }
-            Err((e, false)) => {
-                refused += 1;
-                if refused < TRIES {
-                    continue;
-                }
-                refused = 0;
-                if span <= MIN_SPAN || shrinks >= MAX_SHRINKS {
-                    return Err(e);
-                }
-                // The range limit is read from the node's own words only, never from a sentence made here.
-                let said = match &e {
-                    Refusal::Unanswered { asked: Asked::Declined { said, .. }, .. } => said.clone(),
-                    _ => String::new(),
-                };
-                span = said_limit(&said, span).unwrap_or(span / 2).max(MIN_SPAN);
-                shrinks += 1;
+    }
+    let done = crate::endpoints::until_enough(
+        items,
+        |(place, mut ep, asks)| {
+            crate::ahead::ask_ahead(ep.as_mut(), &asks);
+            place
+        },
+        String::new,
+        |slots: &[Option<String>]| crate::endpoints::distinct_places(slots.iter().flatten().filter(|p| !p.is_empty()).map(String::as_str)) >= 2,
+    );
+    if crate::endpoints::distinct_places(done.iter().flatten().filter(|p| !p.is_empty()).map(String::as_str)) >= 2 {
+        return;
+    }
+    for i in here {
+        let asks = logs_ahead_asks(&*nodes[i], chain, reads, nodes_list);
+        crate::ahead::ask_ahead(&mut *nodes[i], &asks);
+    }
+}
+
+fn logs_ahead_asks(ep: &dyn Endpoint, chain: u64, reads: &[(&LogFilter, u64, u64)], nodes: Option<&str>) -> Vec<crate::rpc::Ask<'static>> {
+    let mut asks: Vec<crate::rpc::Ask<'static>> = Vec::new();
+    for (filter, from, to) in reads {
+        for a in log_asks(ep, chain, filter, *from, *to, nodes) {
+            if !asks.contains(&a) {
+                asks.push(a);
             }
         }
+    }
+    asks
+}
+
+fn logs_question(filter: &LogFilter, from: u64, to: u64) -> Value {
+    Value::Arr(vec![filter.at(from, to)])
+}
+
+fn block_params(n: u64) -> Vec<Value> {
+    vec![Value::Str(hex_quantity(n)), Value::Bool(false)]
+}
+
+fn whole_ask(place: &str, filter: &LogFilter, from: u64, to: u64) -> Vec<crate::rpc::Ask<'static>> {
+    if crate::patience::answered_width(place).is_some_and(|w| w < span_of(from, to)) {
+        return Vec::new();
+    }
+    vec![("eth_getLogs", logs_question(filter, from, to))]
+}
+
+fn span_of(from: u64, to: u64) -> u64 {
+    to.saturating_sub(from).saturating_add(1)
+}
+
+struct ReadingOn {
+    key: crate::settled::Key,
+    own: Option<crate::settled::Entry>,
+    kept: Option<crate::settled::Entry>,
+}
+
+fn reading_on(place: &str, chain: u64, filter: &LogFilter, from: u64, nodes: Option<&str>) -> Option<ReadingOn> {
+    use crate::settled::{self, Key};
+    if !settled::keeps() {
+        return None;
+    }
+    let list = match nodes {
+        Some(n) => n.to_string(),
+        None => settled::nodes_of([place]),
+    };
+    let key = Key { chain, nodes: settled::spell_nodes(&list), filter: filter_key(filter) };
+    let own = settled::entry(&key).filter(|e| e.from <= from);
+    let lent = if own.is_none() && nodes.is_none() { settled::lent(&key, from) } else { None };
+    let kept = own.clone().or(lent);
+    Some(ReadingOn { key, own, kept })
+}
+
+pub fn logs_agreed(nodes: Vec<Box<dyn Endpoint + Send>>, chain: u64, filter: &LogFilter, from: u64, to: u64) -> AgreedLogs {
+    crate::seam();
+    let places: Vec<String> = nodes.iter().map(|ep| ep.place()).collect();
+    let list = crate::settled::nodes_of(places.iter().map(String::as_str));
+    type Got = (Box<dyn Endpoint + Send>, Result<(Vec<W>, Vec<crate::settled::Settling>), Refusal>);
+    let ask = |nodes: Vec<Box<dyn Endpoint + Send>>, places: Vec<String>| -> Vec<Option<Got>> {
+        let (filter, list) = (filter.clone(), list.clone());
+        crate::endpoints::until_enough(
+            nodes,
+            move |mut ep| {
+                let mut out = Vec::new();
+                let got = paged(&mut Chain { id: chain, ep: ep.as_mut() }, &filter, from, to, Over::Agreed { nodes: &list, out: &mut out }).map(|l| (l, out));
+                Some((ep, got))
+            },
+            || None,
+            move |slots: &[Option<Option<Got>>]| {
+                let read: Vec<(&str, Vec<u8>)> = places.iter().zip(slots).filter_map(|(p, g)| match g {
+                    Some(Some((_, Ok((logs, _))))) => Some((p.as_str(), logs_bytes(logs))),
+                    _ => None,
+                }).collect();
+                crate::judge::two_places_alike(&read) || crate::action::read_while_cut(read.iter().map(|(p, _)| *p))
+            },
+        )
+        .into_iter()
+        .map(Option::flatten)
+        .collect()
+    };
+    let mut got: Vec<Option<Got>> = ask(nodes, places.clone());
+    crate::action::cut_and_ask(
+        &mut got,
+        |i, _| vec![places[i].clone()],
+        |g| matches!(g, Some((_, Ok(_)))),
+        |g| matches!(g, Some((_, Err(r))) if r.cut()),
+        |idx, got| {
+            let again: Vec<Box<dyn Endpoint + Send>> = idx.iter().filter_map(|i| got[*i].take().map(|(ep, _)| ep)).collect();
+            let again_places: Vec<String> = idx.iter().map(|i| places[*i].clone()).collect();
+            ask(again, again_places)
+        },
+    );
+    let mut read: Vec<(String, Vec<W>, Vec<crate::settled::Settling>)> = Vec::new();
+    let mut refused: Vec<(String, Refusal)> = Vec::new();
+    for (g, place) in got.into_iter().zip(places) {
+        match g {
+            Some((_, Ok((logs, out)))) => read.push((place, logs, out)),
+            Some((_, Err(r))) => refused.push((place, r)),
+            None => {}
+        }
+    }
+    let bytes: Vec<(&str, Vec<u8>)> = read.iter().map(|(p, l, _)| (p.as_str(), logs_bytes(l))).collect();
+    let alike = bytes.iter().find(|(_, b)| crate::endpoints::distinct_places(bytes.iter().filter(|(_, x)| x == b).map(|(p, _)| *p)) >= 2).map(|(_, b)| b.clone());
+    if let Some(b) = alike {
+        let kept: Vec<(String, Vec<W>, Vec<crate::settled::Settling>)> = read.into_iter().filter(|(_, l, _)| logs_bytes(l) == b).collect();
+        let runs: Vec<Vec<crate::settled::Settling>> = kept.iter().map(|(_, _, o)| o.clone()).collect();
+        crate::settled::settle(&runs, &[]);
+        let answered = kept.len();
+        return AgreedLogs { answered, agreed: true, logs: kept.into_iter().next().map(|(_, l, _)| l).unwrap_or_default(), refused: Vec::new() };
+    }
+    let alike = read.iter().all(|(_, l, _)| crate::settled::same_logs(l, &read[0].1));
+    let agreed = crate::endpoints::distinct_places(read.iter().map(|(p, _, _)| p.as_str())) >= 2 && alike;
+    if !read.is_empty() && alike {
+        let runs: Vec<Vec<crate::settled::Settling>> = read.iter().map(|(_, _, o)| o.clone()).collect();
+        crate::settled::settle(&runs, &[]);
+    }
+    AgreedLogs { answered: read.len(), agreed, logs: read.into_iter().next().map(|(_, l, _)| l).unwrap_or_default(), refused }
+}
+
+fn logs_bytes(logs: &[W]) -> Vec<u8> {
+    logs.iter().flat_map(|l| crate::wire::write(&crate::wire::project(l, &crate::settled::LOG_FACTS)).into_bytes().into_iter().chain(std::iter::once(b'\n'))).collect()
+}
+
+#[derive(Debug)]
+pub struct AgreedLogs {
+    pub logs: Vec<W>,
+    pub answered: usize,
+    pub agreed: bool,
+    pub refused: Vec<(String, Refusal)>,
+}
+
+enum Over<'a> {
+    Alone,
+    Judged { nodes: &'a str },
+    Agreed { nodes: &'a str, out: &'a mut Vec<crate::settled::Settling> },
+}
+
+impl Over<'_> {
+    fn list(&self) -> Option<&str> {
+        match self {
+            Over::Alone => None,
+            Over::Judged { nodes } | Over::Agreed { nodes, .. } => Some(nodes),
+        }
+    }
+}
+
+fn filter_key(filter: &LogFilter) -> String {
+    let at = filter.at(0, 0);
+    let kept = match at {
+        Value::Obj(ms) => Value::Obj(ms.into_iter().filter(|(k, _)| k == "address" || k == "topics").collect()),
+        other => other,
+    };
+    String::from_utf8(zikaron::json::canon_bytes(&kept)).unwrap_or_default()
+}
+
+fn paged(chain: &mut Chain, filter: &LogFilter, from: u64, to: u64, over: Over) -> Result<Vec<W>, Refusal> {
+    use crate::settled::{self, Entry};
+    if to < from {
+        return Ok(Vec::new());
+    }
+    let groups = subject_groups(filter);
+    if groups.len() > 1 {
+        let mut over = over;
+        let mut parts = Vec::new();
+        for g in &groups {
+            let each = match &mut over {
+                Over::Alone => Over::Alone,
+                Over::Judged { nodes } => Over::Judged { nodes },
+                Over::Agreed { nodes, out } => Over::Agreed { nodes, out: &mut **out },
+            };
+            parts.push(paged(chain, g, from, to, each)?);
+        }
+        return Ok(merged(parts));
+    }
+    let place = chain.ep.place();
+    let Some(ReadingOn { key, own, kept }) = reading_on(&place, chain.id, filter, from, over.list()) else {
+        return asked(chain, filter, from, to);
+    };
+    if let Some(e) = &kept {
+        let asks = kept_asks(&place, e, filter, from, to);
+        crate::ahead::ask_ahead(chain.ep, &asks);
+    }
+    let held = kept.and_then(|e| rechecked(chain, e));
+    let in_range = |l: &W| settled::block_of(l).is_some_and(|b| (from..=to).contains(&b));
+    let (mut logs, ask_from) = match &held {
+        Some(e) => (e.logs.iter().filter(|l| in_range(l)).cloned().collect::<Vec<W>>(), from.max(e.settled.saturating_add(1))),
+        None => (Vec::new(), from),
+    };
+    let fetched = if ask_from <= to { asked(chain, filter, ask_from, to)? } else { Vec::new() };
+    logs.extend(fetched.iter().cloned());
+    let settle_to = to.saturating_sub(settled::MARGIN);
+    let (base_from, base_logs, base_settled) = match &held {
+        Some(e) => (e.from, e.logs.clone(), Some(e.settled)),
+        None => (from, Vec::new(), None),
+    };
+    let carried = base_settled.is_none_or(|s| ask_from == s.saturating_add(1) && settle_to > s);
+    let proposed = if carried && settle_to >= base_from {
+        let mut kept = base_logs;
+        let mut readable = true;
+        for l in &fetched {
+            match settled::block_of(l) {
+                Some(b) if b <= settle_to => kept.push(l.clone()),
+                Some(_) => {}
+                None => readable = false,
+            }
+        }
+        readable.then_some(Entry { from: base_from, settled: settle_to, logs: kept, single_source: true })
+    } else {
+        None
+    };
+    let base = held.as_ref().filter(|_| own.is_some()).map(|e| (e.from, e.settled));
+    match over {
+        Over::Alone => {
+            if let Some(e) = proposed {
+                settled::keep_on(&key, e, base);
+            }
+        }
+        Over::Agreed { out, .. } => out.push(settled::Settling { key, entry: proposed, served_single: held.is_some_and(|e| e.single_source), base }),
+        Over::Judged { .. } => {}
     }
     Ok(logs)
 }
 
-/// A log read as the anchor it claims to be, or as not an anchor.
+fn kept_asks(place: &str, e: &crate::settled::Entry, filter: &LogFilter, from: u64, to: u64) -> Vec<crate::rpc::Ask<'static>> {
+    let mut asks = Vec::new();
+    if let Some(last) = e.logs.iter().filter(|l| l.member("blockHash").and_then(W::as_str).is_some()).filter_map(crate::settled::block_of).max() {
+        asks.push(("eth_getBlockByNumber", Value::Arr(block_params(last))));
+    }
+    let ask_from = from.max(e.settled.saturating_add(1));
+    if ask_from <= to {
+        asks.extend(whole_ask(place, filter, ask_from, to));
+    }
+    asks
+}
+
+fn rechecked(chain: &mut Chain, e: crate::settled::Entry) -> Option<crate::settled::Entry> {
+    let mut blocks: Vec<(u64, String)> = e.logs.iter().filter_map(|l| Some((crate::settled::block_of(l)?, l.member("blockHash")?.as_str()?.to_ascii_lowercase()))).collect();
+    blocks.sort();
+    blocks.dedup();
+    let Some(last) = blocks.last().map(|(n, _)| *n) else { return Some(e) };
+    for (n, hash) in blocks.iter().rev() {
+        let said = chain.ask("eth_getBlockByNumber", block_params(*n)).ok()?;
+        if said.member("hash").and_then(W::as_str).is_some_and(|h| h.eq_ignore_ascii_case(hash)) {
+            if *n == last {
+                return Some(e);
+            }
+            let logs = e.logs.iter().filter(|l| crate::settled::block_of(l).is_some_and(|b| b <= *n)).cloned().collect();
+            return Some(crate::settled::Entry { settled: *n, logs, ..e });
+        }
+    }
+    None
+}
+
+fn asked(chain: &mut Chain, filter: &LogFilter, from: u64, to: u64) -> Result<Vec<W>, Refusal> {
+    if to < from {
+        return Ok(Vec::new());
+    }
+    let place = chain.ep.place();
+    let span = span_of(from, to);
+    let known = crate::patience::answered_width(&place).filter(|w| *w < span);
+    if known.is_none() && !crate::action::splits(&place) {
+        return match crate::patience::ask_again_once(chain.ep, "eth_getLogs", &logs_question(filter, from, to)) {
+            Ok(answered) => answered.as_arr().map(<[W]>::to_vec).ok_or(Refusal::Unanswered { chain: chain.id, asked: Asked::NotLogs }),
+            Err(t) => Err(chain.refused_log(&logs_question(filter, from, to), t, true)),
+        };
+    }
+    match known {
+        Some(w) => pieces(chain, filter, from, to, w, 0),
+        None => pieces(chain, filter, from, to, span.div_ceil(2), 1),
+    }
+}
+
+fn pieces(chain: &mut Chain, filter: &LogFilter, from: u64, to: u64, width: u64, asked_before: u64) -> Result<Vec<W>, Refusal> {
+    let place = chain.ep.place();
+    let cap = crate::action::asks_cap();
+    let (mut width, mut used, mut at) = (width.max(1), asked_before, from);
+    let mut said = crate::action::heard_from(&place);
+    let mut out = Vec::new();
+    while at <= to {
+        if crate::endpoints::stopped() {
+            return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::Short });
+        }
+        let left = span_of(at, to);
+        if used.saturating_add(left.div_ceil(width)) > cap {
+            return Err(Refusal::Unanswered { chain: chain.id, asked: Asked::OverAsks { cap, said } });
+        }
+        let end = at.saturating_add(width.min(left) - 1);
+        let q = logs_question(filter, at, end);
+        used += 1;
+        match crate::patience::ask(chain.ep, "eth_getLogs", &q) {
+            Ok(answered) => {
+                out.extend(answered.as_arr().map(<[W]>::to_vec).ok_or(Refusal::Unanswered { chain: chain.id, asked: Asked::NotLogs })?);
+                if end < to {
+                    crate::patience::keep_answered(&place, width);
+                }
+                if end == u64::MAX {
+                    break;
+                }
+                at = end + 1;
+            }
+            Err(Trouble::Node(words)) if end > at && crate::patience::class_of(&Trouble::Node(words.clone())) == crate::patience::Class::Other => {
+                crate::action::heard(&place, &words);
+                said = Some(words);
+                width = span_of(at, end).div_ceil(2);
+            }
+            Err(t) => return Err(chain.refused_log(&q, t, false)),
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Debug)]
 pub struct LogFacts {
     pub claimed: [u8; 20],
@@ -845,17 +1083,11 @@ pub struct LogFacts {
     pub block_number: u64,
 }
 
-/// The §9.1 log shape: exactly three topics and no data bytes; topic 0 is the hash of the signature, topic 1
-/// is a 20-byte address left-padded with twelve zero bytes.
-///
-/// One topic more or less, or one data byte, is not an anchor whatever the topics hold. No node query is
-/// spent on a malformed log.
 pub fn anchored_log(log: &W, t0: &[u8; 32]) -> Option<LogFacts> {
     let topics = log.member("topics")?.as_arr()?;
     if topics.len() != 3 {
         return None;
     }
-    // `data` must be present, a string and empty; a log without it is incomplete, not an anchor.
     if log.member("data")?.as_str()? != "0x" {
         return None;
     }
@@ -873,28 +1105,23 @@ pub fn anchored_log(log: &W, t0: &[u8; 32]) -> Option<LogFacts> {
     })
 }
 
-/// The public key of `author` as one node of chain `chain` shows it: the logs `registry` emitted for anchors whose
-/// topic 1 is `author`, in blocks `from` to `to` (read by the anchor scan's own reader, [`logs_over_window`]), each
-/// judged as an anchor log ([`anchored_log`]: shape, topic 0, the emitter and topic 1 checked here, never left to
-/// the node's filter), and each one's transaction read ([`tx::read`]: the signing hash rebuilt by its type, the
-/// hash checked) until one whose recovered sender is `author` itself and whose signature names this chain. Its
-/// public key is returned: that key's address is `author`, so the answer proves itself whichever node gave it.
-/// An anchor sent through a relay or a contract (the transaction's signer is not `author`) is passed over.
-/// `Ok(None)`: the node read every block and holds no such anchor. A log whose transaction the node does not give
-/// is a node that contradicts itself, refused ([`Shape::TxLacks`]), never passed over as no anchor.
+fn no_tx(tx: &[u8; 32]) -> Refusal {
+    Refusal::Malformed(Shape::TxLacks { part: "transaction".into(), tx: hexfmt::encode(tx) })
+}
+
 pub fn author_key(ep: &mut dyn Endpoint, chain: u64, registry: &[u8; 20], author: &[u8; 20], from: u64, to: u64) -> Result<Option<[u8; 65]>, Refusal> {
     crate::seam();
     let t0 = topic0();
-    let filter = LogFilter { addresses: vec![*registry], topics: vec![Topic::One(t0), Topic::One(padded(author))] };
+    let emitters = crate::revoke::registries(chain, &[*registry]);
+    let filter = LogFilter { addresses: emitters.clone(), topics: vec![Topic::One(t0), Topic::One(padded(author))] };
     let mut c = Chain { id: chain, ep };
-    for log in paged(&mut c, &filter, from, to)? {
+    for log in paged(&mut c, &filter, from, to, Over::Alone)? {
         let Some(f) = anchored_log(&log, &t0) else { continue };
-        if &f.claimed != author || emitter_of(&log).as_ref() != Some(registry) || f.block_number < from || f.block_number > to {
+        if &f.claimed != author || !emitter_of(&log).is_some_and(|e| emitters.contains(&e)) || f.block_number < from || f.block_number > to {
             continue;
         }
-        let Some(t) = c.tx_by_hash(&f.tx)? else {
-            return Err(Refusal::Malformed(Shape::TxLacks { part: "transaction".into(), tx: hexfmt::encode(&f.tx) }));
-        };
+        let id = c.id;
+        let Some(t) = crate::action::proven(id, &f.tx, || c.tx_by_hash(&f.tx))? else { return Err(no_tx(&f.tx)) };
         if t.sender != Some(*author) || t.chain_id != Some(chain) {
             continue;
         }
@@ -905,9 +1132,103 @@ pub fn author_key(ep: &mut dyn Endpoint, chain: u64, registry: &[u8; 20], author
     Ok(None)
 }
 
-/// Whether this window admits the sender (§9.4: `senders` bounds only the registry-form scan).
+pub fn tx_proved(ep: &mut dyn Endpoint, chain: u64, hash: &[u8; 32]) -> Result<Option<Tx>, Refusal> {
+    crate::seam();
+    let mut c = Chain { id: chain, ep };
+    crate::action::proven(chain, hash, || c.tx_by_hash(hash))
+}
+
+pub fn accessions_under(ep: &mut dyn Endpoint, chain: u64, book: &[u8; 20], root: &[u8; 20], from: u64, to: u64) -> Result<Vec<Value>, Refusal> {
+    crate::seam();
+    let mut c = Chain { id: chain, ep };
+    let served = c.ask("eth_chainId", vec![])?;
+    if !endpoint_serves(&served, chain) {
+        return Err(Refusal::ChainIdMismatch { declared: chain, served: crate::wire::write(&served) });
+    }
+    if to < from {
+        return Ok(Vec::new());
+    }
+    let t0 = cryptox::keccak256(crate::revoke::ACCEDED_SIGNATURE.as_bytes());
+    let filter = LogFilter { addresses: vec![*book], topics: vec![Topic::One(t0), Topic::Any, Topic::Any, Topic::One(padded(root))] };
+    let logs = asked(&mut c, &filter, from, to)?;
+    let mut asks: Vec<crate::rpc::Ask<'_>> = Vec::new();
+    let under_root = |log: &W| emitter_of(log) == Some(*book) && form_topics(log, &t0, 4).and_then(|t| address_topic(&t[3])) == Some(*root);
+    for log in logs.iter().filter(|l| under_root(l)) {
+        let (Some(txh), Some((n, _, _))) = (log.member("transactionHash").and_then(h32), position_of(log)) else { continue };
+        if (from..=to).contains(&n) {
+            asks.push(("eth_getTransactionReceipt", by_hash(&txh)));
+            asks.push(("eth_getBlockByNumber", Value::Arr(block_params(n))));
+        }
+    }
+    asks.sort_by(|a, b| (a.0, zikaron::json::canon_bytes(&a.1)).cmp(&(b.0, zikaron::json::canon_bytes(&b.1))));
+    asks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    crate::ahead::ask_ahead(c.ep, &asks);
+    let mut recs: Vec<((u64, u64, u64), Value)> = Vec::new();
+    for log in &logs {
+        if emitter_of(log) != Some(*book) {
+            continue;
+        }
+        let Some(topics) = form_topics(log, &t0, 4) else { continue };
+        let (Some(holder), Some(to_key), Some(of)) = (address_topic(&topics[1]), address_topic(&topics[2]), address_topic(&topics[3])) else { continue };
+        if of != *root {
+            continue;
+        }
+        let txh = log.member("transactionHash").and_then(h32);
+        let (Some(at), Some(txh)) = (position_of(log), txh) else {
+            return Err(Refusal::Malformed(Shape::TxLacks { part: "log position".into(), tx: txh.map(|h| hexfmt::encode(&h)).unwrap_or_default() }));
+        };
+        if at.0 < from || at.0 > to || !c.status_one(&txh)? {
+            continue;
+        }
+        let time = c.block_timestamp(at.0)?;
+        recs.push((
+            at,
+            Value::Obj(vec![
+                ("blockNumber".into(), Value::Int(at.0)),
+                ("blockTimestamp".into(), Value::Int(time)),
+                ("chainId".into(), Value::Int(chain)),
+                ("holder".into(), Value::Str(hex20(&holder))),
+                ("logIndex".into(), Value::Int(at.2)),
+                ("root".into(), Value::Str(hex20(&of))),
+                ("to".into(), Value::Str(hex20(&to_key))),
+                ("tx".into(), Value::Str(hexfmt::encode(&txh))),
+                ("txIndex".into(), Value::Int(at.1)),
+            ]),
+        ));
+    }
+    recs.sort_by(|a, b| a.0.cmp(&b.0));
+    recs.dedup_by(|a, b| a.0 == b.0);
+    Ok(recs.into_iter().map(|(_, v)| v).collect())
+}
+
 pub fn window_admits(w: &Window, claimed: &[u8; 20]) -> bool {
     w.senders.contains(claimed)
+}
+
+enum Wanted {
+    All(crate::ahead::Want),
+    Receipt([u8; 32]),
+}
+
+fn wanted(chain: u64, w: &Window, log: &W, t0: &[u8; 32], known: &Known) -> Option<Wanted> {
+    let f = anchored_log(log, t0)?;
+    if f.block_number < w.from_block || f.block_number > w.to_block || !window_admits(w, &f.claimed) {
+        return None;
+    }
+    let emitter: [u8; 20] = emitter_of(log)?;
+    if !w.registries.iter().any(|r| *r == emitter) {
+        return None;
+    }
+    let key = fact_key(chain, log, &f.tx);
+    let said_then = |k: &Fact| k.block_number == f.block_number && k.sender == f.claimed && k.hash == f.hash && k.emitter == emitter;
+    if key.and_then(|k| known.0.get(&k)).is_some_and(said_then) {
+        return None;
+    }
+    if key.and_then(|k| known.1.get(&k)).is_some_and(said_then) {
+        return Some(Wanted::Receipt(f.tx));
+    }
+    let block = log.member("blockHash").and_then(h32)?;
+    Some(Wanted::All(crate::ahead::Want { tx: f.tx, block, number: f.block_number, who: f.claimed, hash: f.hash }))
 }
 
 fn registry_record(
@@ -923,8 +1244,6 @@ fn registry_record(
     if bn < w.from_block || bn > w.to_block {
         return Ok(None);
     }
-    // The §9.1 half "the emitter is a registry this window declares" is checked locally, not left to the
-    // node's filter, as every other endpoint claim (chain id, transaction hash, sender) is rechecked here.
     let Some(addr) = log.member("address").and_then(|a| a.as_str()).and_then(hexfmt::decode) else {
         return Ok(None);
     };
@@ -933,10 +1252,6 @@ fn registry_record(
     }
     let mut emitter = [0u8; 20];
     emitter.copy_from_slice(&addr);
-    // Checked before under this very key (same block hash, same transaction, same log) and the log still says
-    // what it said then: its transaction, receipt and calldata passed and the time and verdict are known, so
-    // nothing is asked. A log that says anything else under that key is asked about as new. The window's own
-    // sender list is still applied here, every time.
     let key = fact_key(chain.id, log, &txh);
     let said_then = |f: &&Fact| f.block_number == bn && f.sender == claimed && f.hash == hash && f.emitter == emitter;
     if let Some(f) = key.and_then(|k| known.0.get(&k)).filter(said_then) {
@@ -945,28 +1260,36 @@ fn registry_record(
         }
         return Ok(Some(AnchorRec { chain_id: chain.id, block_number: bn, block_timestamp: f.block_timestamp, tx: txh, sender: claimed, hash, verdict: f.verdict }));
     }
+    if let Some((k, f)) = key.and_then(|k| known.1.get(&k).filter(said_then).map(|f| (k, *f))) {
+        if !window_admits(w, &claimed) || !chain.status_one(&txh)? {
+            return Ok(None);
+        }
+        crate::ahead::note_proved(k);
+        seen.push((k, f));
+        return Ok(Some(AnchorRec { chain_id: chain.id, block_number: bn, block_timestamp: f.block_timestamp, tx: txh, sender: claimed, hash, verdict: f.verdict }));
+    }
 
-    let Some(t) = chain.tx_by_hash(&txh)? else { return Ok(None) };
+    let _at = crate::ahead::reading_at(log.member("blockHash").and_then(h32));
+    let id = chain.id;
+    let Some(t) = crate::action::proven(id, &txh, || chain.tx_by_hash(&txh))? else { return Ok(None) };
     if !chain.status_one(&txh)? {
         return Ok(None);
     }
-    // `senders` bounds the registry-form scan: a sender the window does not list yields no record from it.
     if !window_admits(w, &claimed) {
         return Ok(None);
     }
     if !calldata_carries(&t.input, &hash) {
         return Ok(None);
     }
-    // These three are decided from bytes at hand, so they come before the two queries: the recovered sender
-    // must equal topic 1, the signature must name this chain, and a contract creation carries init code with
-    // no calldata to test containment in. Asking the node after the law has already ruled out an anchor would
-    // be one question too many, and on replay that is an error.
     if t.sender != Some(claimed) || t.chain_id != Some(chain.id) || t.to.is_none() {
         return Ok(None);
     }
     let block_timestamp = chain.block_timestamp(bn)?;
     let verdict = chain.verdict_at(&claimed, bn)?;
     if let (Some(k), false) = (key, verdict == Verdict::Unproven) {
+        if crate::ahead::proved_here(chain.id, &claimed, bn) {
+            crate::ahead::note_proved(k);
+        }
         seen.push((k, Fact { block_number: bn, sender: claimed, hash, emitter, block_timestamp, verdict }));
     }
     Ok(Some(AnchorRec {
@@ -980,64 +1303,417 @@ fn registry_record(
     }))
 }
 
-/// Read a transaction named by a `bareTx` into zero or more records.
-fn bare_records(chain: &mut Chain, h: &[u8; 32], out: &mut Vec<AnchorRec>) -> Result<(), Refusal> {
-    let Some(t) = chain.tx_by_hash(h)? else { return Ok(()) };
-    let Some(bn) = t.block_number else { return Ok(()) };
-    // The recipient is the sender itself; a contract creation has no recipient.
-    let Some(to) = t.to else { return Ok(()) };
-    if let Some(s) = t.sender {
-        if s != to {
-            return Ok(());
+fn position_of(log: &W) -> Option<(u64, u64, u64)> {
+    Some((log.member("blockNumber").and_then(tx::hex_qty)?, log.member("transactionIndex").and_then(tx::hex_qty)?, log.member("logIndex").and_then(tx::hex_qty)?))
+}
+
+fn form_topics(log: &W, t0: &[u8; 32], n: usize) -> Option<Vec<[u8; 32]>> {
+    let topics: Vec<[u8; 32]> = log.member("topics")?.as_arr()?.iter().map(h32).collect::<Option<_>>()?;
+    (topics.len() == n && &topics[0] == t0 && log.member("data")?.as_str()? == "0x").then_some(topics)
+}
+
+fn address_topic(t: &[u8; 32]) -> Option<[u8; 20]> {
+    t[..12].iter().all(|x| *x == 0).then(|| t[12..].try_into().ok()).flatten()
+}
+
+fn by_position(mut rs: Vec<((u64, u64, u64), Value)>) -> Value {
+    rs.sort_by(|a, b| a.0.cmp(&b.0));
+    rs.dedup_by(|a, b| a.0 == b.0);
+    Value::Arr(rs.into_iter().map(|(_, v)| v).collect())
+}
+
+pub fn notice_input(ep: &mut dyn Endpoint, v: &crate::revoke::Venue, to: u64) -> Result<Value, Refusal> {
+    crate::seam();
+    read_notices(ep, v, to, None).map(|(n, _)| n)
+}
+
+pub const REVOCATIONS: &str = "revocations";
+
+#[derive(Debug)]
+pub struct NoticesRead {
+    pub read: Vec<(usize, Value)>,
+    pub refused: Vec<(usize, Refusal)>,
+}
+
+pub fn notices_agreed(nodes: Vec<Box<dyn Endpoint + Send>>, v: &crate::revoke::Venue, to: u64) -> NoticesRead {
+    crate::seam();
+    let places: Vec<String> = nodes.iter().map(|ep| ep.place()).collect();
+    let list = crate::settled::nodes_of(places.iter().map(String::as_str));
+    let mut out = NoticesRead { read: Vec::new(), refused: Vec::new() };
+    let mut runs: Vec<Vec<crate::settled::Settling>> = Vec::new();
+    type Got = Result<(Value, Vec<crate::settled::Settling>), Refusal>;
+    let spare: Vec<Option<Box<dyn Endpoint + Send>>> = nodes.iter().map(|ep| ep.another()).collect();
+    let chain = v.chain;
+    let ask = |nodes: Vec<Box<dyn Endpoint + Send>>, at: Vec<String>| -> Vec<Option<Got>> {
+        let (venue, list) = (v.clone(), list.clone());
+        crate::endpoints::until_enough(
+            nodes,
+            move |mut ep| read_notices(ep.as_mut(), &venue, to, Some(&list)),
+            move || Err(Refusal::Unanswered { chain, asked: Asked::Short }),
+            move |slots: &[Option<Got>]| {
+                let read: Vec<(&str, Vec<u8>)> = at.iter().zip(slots).filter_map(|(p, g)| match g {
+                    Some(Ok((n, _))) => Some((p.as_str(), zikaron::json::canon_bytes(n))),
+                    _ => None,
+                }).collect();
+                crate::judge::two_places_alike(&read) || crate::action::read_while_cut(read.iter().map(|(p, _)| *p))
+            },
+        )
+    };
+    let mut got = ask(nodes, places.clone());
+    crate::action::cut_and_ask(
+        &mut got,
+        |i, _| vec![places[i].clone()],
+        |g| matches!(g, Some(Ok(_))),
+        |g| matches!(g, Some(Err(r)) if r.cut()),
+        |idx, got| {
+            let (mut eps, mut at, mut slot) = (Vec::new(), Vec::new(), Vec::new());
+            for (j, i) in idx.iter().enumerate() {
+                if let Some(ep) = spare[*i].as_ref().and_then(|e| e.another()) {
+                    eps.push(ep);
+                    at.push(places[*i].clone());
+                    slot.push(j);
+                }
+            }
+            let mut redo: Vec<Option<Got>> = idx.iter().map(|i| got[*i].take()).collect();
+            for (j, g) in slot.into_iter().zip(ask(eps, at)) {
+                redo[j] = g;
+            }
+            redo
+        },
+    );
+    for (i, r) in got.into_iter().enumerate() {
+        match r {
+            Some(Ok((n, settling))) => {
+                out.read.push((i, n));
+                runs.push(settling);
+            }
+            Some(Err(r)) => out.refused.push((i, r)),
+            None => {}
         }
     }
-    if !chain.status_one(h)? {
-        return Ok(());
+    let bytes: Vec<Vec<u8>> = out.read.iter().map(|(_, n)| zikaron::json::canon_bytes(n)).collect();
+    let alike = bytes.iter().find(|b| crate::endpoints::distinct_places(out.read.iter().zip(&bytes).filter(|(_, x)| x == b).map(|((i, _), _)| places[*i].as_str())) >= 2).cloned();
+    if let Some(b) = alike {
+        let keep: Vec<bool> = bytes.iter().map(|x| *x == b).collect();
+        let runs: Vec<Vec<crate::settled::Settling>> = runs.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(r, _)| r).collect();
+        crate::settled::settle_judged(&runs);
+        out.read = out.read.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect();
+        out.refused.clear();
+        return out;
     }
-    if t.input.is_empty() || t.input.len() % 32 != 0 {
-        return Ok(());
+    let alike = out.read.first().is_some_and(|(_, first)| {
+        let b = zikaron::json::canon_bytes(first);
+        out.read.iter().all(|(_, n)| zikaron::json::canon_bytes(n) == b)
+    });
+    if alike && out.refused.iter().all(|(_, r)| r.stands_aside()) {
+        crate::settled::settle_judged(&runs);
     }
-    let block_timestamp = chain.block_timestamp(bn)?;
-    let verdict = chain.verdict_at(&to, bn)?;
-    if t.sender != Some(to) || t.chain_id != Some(chain.id) {
-        return Ok(());
-    }
-    for word in t.input.chunks(32) {
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(word);
-        out.push(AnchorRec {
-            chain_id: chain.id,
-            block_number: bn,
-            block_timestamp,
-            tx: *h,
-            sender: to,
-            hash,
-            verdict,
-        });
-    }
-    Ok(())
+    out
 }
 
-/// Read a transaction named by an adoption element into zero or one evidence record.
-fn evidence_record(chain: &mut Chain, h: &[u8; 32], through: u64) -> Result<Option<EvidenceRec>, Refusal> {
-    let Some(t) = chain.tx_by_hash(h)? else { return Ok(None) };
-    let Some(bn) = t.block_number else { return Ok(None) };
-    if bn > through {
-        return Ok(None);
-    }
-    let (Some(sender), Some(cid)) = (t.sender, t.chain_id) else { return Ok(None) };
-    if cid != chain.id {
-        return Ok(None);
-    }
-    // §9.2: a creation's record carries empty calldata; its init code proves no element.
-    let calldata = if t.to.is_none() { Vec::new() } else { t.input };
-    Ok(Some(EvidenceRec { chain_id: chain.id, tx: *h, sender, calldata }))
+type Rec = ((u64, u64, u64), Value);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Form {
+    Notice,
+    Accession,
 }
 
-/// The §9.4 deduplication key: at most one record per `(chainId, blockNumber, tx, hash)`.
-///
-/// The same hash twice in one `anchorMany` is two logs on chain and one record here; one record and two
-/// records are different anchor sets for the audit. Input must be sorted by that key.
+impl Form {
+    fn word(self) -> &'static str {
+        match self {
+            Form::Notice => "notice",
+            Form::Accession => "accession",
+        }
+    }
+}
+
+fn judged_key(chain: u64, nodes: &str, filter: &LogFilter, form: Form) -> crate::settled::Key {
+    let mut ms: Vec<(String, Value)> = match filter.at(0, 0) {
+        Value::Obj(ms) => ms.into_iter().filter(|(k, _)| k == "address" || k == "topics").collect(),
+        _ => Vec::new(),
+    };
+    ms.push(("judged".into(), Value::Str(form.word().into())));
+    ms.sort_by(|a, b| a.0.cmp(&b.0));
+    crate::settled::Key { chain, nodes: crate::settled::spell_nodes(nodes), filter: String::from_utf8(zikaron::json::canon_bytes(&Value::Obj(ms))).unwrap_or_default() }
+}
+
+fn record_position(r: &Value) -> Option<(u64, u64, u64)> {
+    let at = |k: &str| r.member(k).and_then(Value::as_int);
+    Some((at("blockNumber")?, at("txIndex")?, at("logIndex")?))
+}
+
+fn read_notices(ep: &mut dyn Endpoint, v: &crate::revoke::Venue, to: u64, nodes: Option<&str>) -> Result<(Value, Vec<crate::settled::Settling>), Refusal> {
+    let mut chain = Chain { id: v.chain, ep };
+    let served = chain.ask("eth_chainId", vec![])?;
+    if !endpoint_serves(&served, v.chain) {
+        return Err(Refusal::ChainIdMismatch { declared: v.chain, served: crate::wire::write(&served) });
+    }
+    let from = v.from_block.min(to);
+    let book_from = v.book_from_block.min(to);
+    let int = |n: u64| Value::Int(n);
+    let s = |x: String| Value::Str(x);
+    let mut settling = Vec::new();
+
+    let revoked = cryptox::keccak256(crate::revoke::REVOKED_SIGNATURE.as_bytes());
+    let notice_filter = LogFilter { addresses: vec![v.contract], topics: vec![Topic::One(revoked)] };
+    let acceded = cryptox::keccak256(crate::revoke::ACCEDED_SIGNATURE.as_bytes());
+    let accession_filter = LogFilter { addresses: vec![v.book], topics: vec![Topic::One(acceded)] };
+
+    let place = chain.ep.place();
+    let mut asks = form_asks(&place, v.chain, &notice_filter, Form::Notice, from, to, nodes);
+    for a in form_asks(&place, v.chain, &accession_filter, Form::Accession, book_from, to, nodes) {
+        if !asks.contains(&a) {
+            asks.push(a);
+        }
+    }
+    crate::ahead::ask_ahead(chain.ep, &asks);
+
+    let notices = judged_form(&mut chain, &notice_filter, Form::Notice, from, to, nodes, &mut settling, &mut |c, logs| notices_of(c, v, &revoked, from, to, logs))?;
+    let accessions = judged_form(&mut chain, &accession_filter, Form::Accession, book_from, to, nodes, &mut settling, &mut |c, logs| accessions_of(c, v, &acceded, book_from, to, logs))?;
+
+    let n = Value::Obj(vec![
+        ("accessions".into(), by_position(accessions)),
+        (
+            "basis".into(),
+            Value::Obj(vec![
+                ("book".into(), s(hex20(&v.book))),
+                ("bookFromBlock".into(), int(book_from)),
+                ("chainId".into(), int(v.chain)),
+                ("fromBlock".into(), int(from)),
+                ("revocationContract".into(), s(hex20(&v.contract))),
+                ("toBlock".into(), int(to)),
+            ]),
+        ),
+        (REVOCATIONS.into(), by_position(notices)),
+    ]);
+    Ok((n, settling))
+}
+
+enum FormOn {
+    Whole,
+    Held(crate::settled::Entry),
+    Kept(crate::settled::Entry),
+}
+
+fn form_on(chain: u64, filter: &LogFilter, form: Form, from: u64, nodes: &str) -> (crate::settled::Key, FormOn) {
+    use crate::settled::judgement;
+    let key = judged_key(chain, nodes, filter, form);
+    let usable = |e: &crate::settled::Entry| e.from <= from && e.logs.iter().all(|l| judgement(l).is_some());
+    let on = match crate::action::judged_held(&key).filter(|e| e.from <= from) {
+        Some(e) if usable(&e) => FormOn::Held(e),
+        Some(_) => FormOn::Whole,
+        None => crate::settled::judged_entry(&key).filter(usable).map_or(FormOn::Whole, FormOn::Kept),
+    };
+    (key, on)
+}
+
+fn form_asks(place: &str, chain: u64, filter: &LogFilter, form: Form, from: u64, to: u64, nodes: Option<&str>) -> Vec<crate::rpc::Ask<'static>> {
+    if to < from {
+        return Vec::new();
+    }
+    let Some(nodes) = nodes else { return whole_ask(place, filter, from, to) };
+    match form_on(chain, filter, form, from, nodes).1 {
+        FormOn::Whole => whole_ask(place, filter, from, to),
+        FormOn::Held(e) => {
+            let ask_from = from.max(e.settled.saturating_add(1));
+            if ask_from <= to {
+                whole_ask(place, filter, ask_from, to)
+            } else {
+                Vec::new()
+            }
+        }
+        FormOn::Kept(e) => kept_asks(place, &e, filter, from, to),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn judged_form(
+    chain: &mut Chain,
+    filter: &LogFilter,
+    form: Form,
+    from: u64,
+    to: u64,
+    nodes: Option<&str>,
+    settling: &mut Vec<crate::settled::Settling>,
+    judge: &mut dyn FnMut(&mut Chain, &[W]) -> Result<Vec<Option<Rec>>, Refusal>,
+) -> Result<Vec<Rec>, Refusal> {
+    use crate::settled::{block_of, judged_log, judgement, Entry, Settling, MARGIN};
+    let Some(nodes) = nodes else {
+        let logs = asked(chain, filter, from, to)?;
+        return Ok(judge(chain, &logs)?.into_iter().flatten().collect());
+    };
+    let (key, on) = form_on(chain.id, filter, form, from, nodes);
+    let held = match on {
+        FormOn::Held(e) => Some(e),
+        FormOn::Kept(e) => {
+            let asks = kept_asks(&chain.ep.place(), &e, filter, from, to);
+            crate::ahead::ask_ahead(chain.ep, &asks);
+            rechecked(chain, e)
+        }
+        FormOn::Whole => None,
+    };
+    let in_range = |l: &W| block_of(l).is_some_and(|b| (from..=to).contains(&b));
+    let mut records: Vec<Rec> = held
+        .iter()
+        .flat_map(|e| e.logs.iter())
+        .filter(|l| in_range(l))
+        .filter_map(|l| judgement(l).flatten())
+        .filter_map(|r| Some((record_position(&r)?, r)))
+        .collect();
+    let ask_from = held.as_ref().map_or(from, |e| from.max(e.settled.saturating_add(1)));
+    let fetched = if ask_from <= to { asked(chain, filter, ask_from, to)? } else { Vec::new() };
+    let judged = judge(chain, &fetched)?;
+    records.extend(judged.iter().flatten().cloned());
+
+    let mut settle_to = to.saturating_sub(MARGIN);
+    let mut settleable = true;
+    for (l, j) in fetched.iter().zip(&judged) {
+        let undecided = j.as_ref().is_some_and(|(_, r)| r.member("verdict").and_then(Value::as_str) == Some(Verdict::Unproven.as_str()));
+        match (undecided, block_of(l)) {
+            (false, _) => {}
+            (true, Some(b)) if b > 0 => settle_to = settle_to.min(b - 1),
+            (true, _) => settleable = false,
+        }
+    }
+    let (base_from, base_logs, base_settled) = match &held {
+        Some(e) => (e.from, e.logs.clone(), Some(e.settled)),
+        None => (from, Vec::new(), None),
+    };
+    let carried = base_settled.is_none_or(|s| ask_from == s.saturating_add(1) && settle_to > s);
+    let entry = if settleable && carried && settle_to >= base_from {
+        let mut kept = base_logs;
+        let mut readable = true;
+        for (l, j) in fetched.iter().zip(&judged) {
+            match block_of(l) {
+                Some(b) if b <= settle_to => kept.push(judged_log(l, j.as_ref().map(|(_, r)| r))),
+                Some(_) => {}
+                None => readable = false,
+            }
+        }
+        readable.then_some(Entry { from: base_from, settled: settle_to, logs: kept, single_source: true })
+    } else {
+        None
+    };
+    settling.push(Settling { key, entry, served_single: held.as_ref().is_some_and(|e| e.single_source), base: held.as_ref().map(|e| (e.from, e.settled)) });
+    Ok(records)
+}
+
+fn by_hash(h: &[u8; 32]) -> Value {
+    Value::Arr(vec![Value::Str(hexfmt::encode(h))])
+}
+
+fn once(mut txs: Vec<[u8; 32]>) -> Vec<[u8; 32]> {
+    txs.sort_unstable();
+    txs.dedup();
+    txs
+}
+
+fn notices_of(chain: &mut Chain, v: &crate::revoke::Venue, t0: &[u8; 32], from: u64, to: u64, logs: &[W]) -> Result<Vec<Option<Rec>>, Refusal> {
+    struct Cand {
+        at: (u64, u64, u64),
+        txh: [u8; 32],
+        sender: [u8; 20],
+        grant: [u8; 32],
+    }
+    let cands: Vec<Option<Cand>> = logs
+        .iter()
+        .map(|log| {
+            if emitter_of(log) != Some(v.contract) {
+                return None;
+            }
+            let (topics, at, txh) = (form_topics(log, t0, 3)?, position_of(log)?, log.member("transactionHash").and_then(h32)?);
+            let sender = address_topic(&topics[1])?;
+            (at.0 >= from && at.0 <= to).then_some(Cand { at, txh, sender, grant: topics[2] })
+        })
+        .collect();
+    let txs = once(cands.iter().flatten().map(|c| c.txh).collect());
+    let mut codes: Vec<Value> = Vec::new();
+    for c in cands.iter().flatten() {
+        for b in [c.at.0.checked_sub(1), Some(c.at.0)].into_iter().flatten() {
+            let q = Value::Arr(vec![Value::Str(hex20(&c.sender)), Value::Str(hex_quantity(b))]);
+            if crate::ahead::code_at(chain.id, &c.sender, b).is_none() && !codes.contains(&q) {
+                codes.push(q);
+            }
+        }
+    }
+    let rest: Vec<crate::rpc::Ask<'_>> = txs.iter().map(|h| ("eth_getTransactionReceipt", by_hash(h))).chain(codes.into_iter().map(|q| ("eth_getCode", q))).collect();
+    crate::ahead::ask_txs_ahead(&mut *chain.ep, chain.id, &txs, &rest, false);
+    let mut passed: Vec<Option<&Cand>> = Vec::with_capacity(cands.len());
+    for c in &cands {
+        let Some(c) = c else {
+            passed.push(None);
+            continue;
+        };
+        let id = chain.id;
+        let Some(t) = crate::action::proven(id, &c.txh, || chain.tx_by_hash(&c.txh))? else { return Err(no_tx(&c.txh)) };
+        let ok = chain.status_one(&c.txh)? && t.sender == Some(c.sender) && t.chain_id == Some(chain.id) && t.to.is_some() && calldata_carries(&t.input, &c.grant);
+        passed.push(ok.then_some(c));
+    }
+    let mut out = Vec::with_capacity(passed.len());
+    for c in passed {
+        let Some(c) = c else {
+            out.push(None);
+            continue;
+        };
+        let verdict = chain.verdict_at(&c.sender, c.at.0)?;
+        out.push(Some((
+            c.at,
+            Value::Obj(vec![
+                ("blockNumber".into(), Value::Int(c.at.0)),
+                ("chainId".into(), Value::Int(chain.id)),
+                ("grant".into(), Value::Str(hexfmt::encode(&c.grant))),
+                ("logIndex".into(), Value::Int(c.at.2)),
+                ("sender".into(), Value::Str(hex20(&c.sender))),
+                ("tx".into(), Value::Str(hexfmt::encode(&c.txh))),
+                ("txIndex".into(), Value::Int(c.at.1)),
+                ("verdict".into(), Value::Str(verdict.as_str().into())),
+            ]),
+        )));
+    }
+    Ok(out)
+}
+
+fn accessions_of(chain: &mut Chain, v: &crate::revoke::Venue, t0: &[u8; 32], from: u64, to: u64, logs: &[W]) -> Result<Vec<Option<Rec>>, Refusal> {
+    let cands: Vec<Option<((u64, u64, u64), [u8; 32], [[u8; 20]; 3])>> = logs
+        .iter()
+        .map(|log| {
+            if emitter_of(log) != Some(v.book) {
+                return None;
+            }
+            let (topics, at, txh) = (form_topics(log, t0, 4)?, position_of(log)?, log.member("transactionHash").and_then(h32)?);
+            let keys = [address_topic(&topics[1])?, address_topic(&topics[2])?, address_topic(&topics[3])?];
+            (at.0 >= from && at.0 <= to).then_some((at, txh, keys))
+        })
+        .collect();
+    let txs = once(cands.iter().flatten().map(|c| c.1).collect());
+    crate::ahead::ask_ahead(&mut *chain.ep, &txs.iter().map(|h| ("eth_getTransactionReceipt", by_hash(h))).collect::<Vec<_>>());
+    let mut out = Vec::with_capacity(cands.len());
+    for c in cands {
+        let Some((at, txh, [holder, to_key, root])) = c else {
+            out.push(None);
+            continue;
+        };
+        if !chain.status_one(&txh)? {
+            out.push(None);
+            continue;
+        }
+        out.push(Some((
+            at,
+            Value::Obj(vec![
+                ("blockNumber".into(), Value::Int(at.0)),
+                ("chainId".into(), Value::Int(chain.id)),
+                ("holder".into(), Value::Str(hex20(&holder))),
+                ("logIndex".into(), Value::Int(at.2)),
+                ("root".into(), Value::Str(hex20(&root))),
+                ("to".into(), Value::Str(hex20(&to_key))),
+                ("txIndex".into(), Value::Int(at.1)),
+            ]),
+        )));
+    }
+    Ok(out)
+}
+
 pub fn dedupe(anchors: Vec<AnchorRec>) -> Vec<AnchorRec> {
     let mut out: Vec<AnchorRec> = Vec::new();
     for a in anchors {
@@ -1050,7 +1726,6 @@ pub fn dedupe(anchors: Vec<AnchorRec>) -> Vec<AnchorRec> {
     out
 }
 
-/// The scan output as canonical bytes: `{"anchors":[...],"basis":{...},"evidence":[...]}`.
 pub fn fragment(s: &Scanned) -> Value {
     crate::seam();
     let anchors = s
@@ -1068,76 +1743,126 @@ pub fn fragment(s: &Scanned) -> Value {
             ])
         })
         .collect();
-    let evidence = s
-        .evidence
-        .iter()
-        .map(|e| {
-            Value::Obj(vec![
-                ("calldata".into(), Value::Str(hexfmt::encode(&e.calldata))),
-                ("chainId".into(), Value::Int(e.chain_id)),
-                ("sender".into(), Value::Str(hex20(&e.sender))),
-                ("tx".into(), Value::Str(hexfmt::encode(&e.tx))),
-            ])
-        })
-        .collect();
-    Value::Obj(vec![
-        ("anchors".into(), Value::Arr(anchors)),
-        ("basis".into(), s.basis.clone()),
-        ("evidence".into(), Value::Arr(evidence)),
-    ])
+    let mut members = vec![("anchors".into(), Value::Arr(anchors)), ("basis".into(), s.basis.clone())];
+    if !s.candidates.is_empty() {
+        members.push(("candidates".into(), Value::Arr(s.candidates.iter().map(claim_value).collect())));
+    }
+    Value::Obj(members)
 }
 
 #[cfg(test)]
-mod said_limit_tests {
-    use super::{number_after, said_limit};
+mod notice_tests;
 
-    /// The limit a node reports is read from the right number. These are sentences real nodes returned (a
-    /// public Sepolia node, Alchemy, geth); each yields its stated limit and no other number.
-    #[test]
-    fn a_node_that_states_its_block_range_limit_is_read_at_that_number() {
-        // A public Sepolia node, its error as it sent it (it also carries `"code":-32701`).
-        let real = "{\"code\":-32701,\"message\":\"exceed maximum block range: 50000\"}";
-        assert_eq!(said_limit(real, 60_000), Some(50_000), "取的该是 50000,不是句里那个错误码");
-        // Alchemy: `2K` in thousands.
-        assert_eq!(said_limit("You can make eth_getLogs requests with up to a 2K block range", 2_600_000), Some(2_000));
-        // geth: block numbers first, the limit after.
-        assert_eq!(
-            said_limit("requested from block 1000000 to 2000000, maximum is 5000", 2_600_000),
-            Some(5_000),
-            "取的该是 maximum 后面那一枚,不是起始块号"
-        );
-        // No limit in the sentence: halving takes over.
-        assert_eq!(said_limit("query timeout exceeded", 50_000), None);
-        // The official Base node: thousands grouped by a comma.
-        assert_eq!(said_limit("eth_getLogs is limited to a 2,000 range", 2_600_000), Some(2_000), "2,000 是两千,不是 2");
-        // BlockPI: the limit, then a link carrying no number.
-        assert_eq!(
-            said_limit("eth_getLogs is limited to 5000 block range. Please check the parameter requirements at  https://docs.blockpi.io/documentations/api-reference", 2_600_000),
-            Some(5_000)
-        );
-        // Groups of three after a lead of one to three digits; anything else ends the number.
-        assert_eq!(number_after(" 1,000,000 blocks"), Some((1_000_000, 10)));
-        assert_eq!(number_after(" 10,20 blocks"), Some((10, 3)));
-        assert_eq!(number_after(" 2,0000"), Some((2, 2)));
-        assert_eq!(number_after(" 5000,000"), Some((5000, 5)));
-        assert_eq!(number_after(" 2,000k"), Some((2_000_000, 7)));
-    }
-}
+#[cfg(test)]
+mod ahead_logs_tests;
+
+#[cfg(test)]
+mod width_tests;
 
 #[cfg(test)]
 mod window_tests {
     use super::*;
 
-    /// A node answering log questions by a rule over `(from, to, how many asked before)`; every question's
-    /// range is kept in order.
+    #[test]
+    fn a_transaction_that_is_not_the_one_asked_is_refused_as_not_itself() {
+        let asked = [0x01u8; 32];
+        let unsigned = |hash: String| move |_: u64, _: u64, _: usize| -> Result<W, Trouble> {
+            Ok(crate::wire::parse(format!(r#"{{"hash":"{hash}","input":"0x","r":"0x0","s":"0x0","type":"0x0"}}"#).as_bytes()).expect("a transaction"))
+        };
+        let mut n = logs(unsigned(format!("0x{}", "02".repeat(32))));
+        let got = Chain { id: 1, ep: &mut n }.tx_by_hash(&asked);
+        assert!(matches!(got, Err(Refusal::TxNotItself(_))), "another transaction: {got:?}");
+        let mut n = logs(unsigned(hexfmt::encode(&asked)));
+        let got = Chain { id: 1, ep: &mut n }.tx_by_hash(&asked);
+        assert!(matches!(got, Ok(Some(_))), "its own: {got:?}");
+    }
+
+    #[test]
+    fn a_receipt_is_each_nodes_own_word() {
+        let h = [0x03u8; 32];
+        let mut n = logs(|_, _, _| Ok(crate::wire::parse(br#"{"blockNumber":"0x5","status":"0x0"}"#).expect("a receipt")));
+        assert_eq!(Chain { id: 1, ep: &mut n }.status_one(&h).ok(), Some(false), "status 0: did not succeed, its own word");
+        let mut n = logs(|_, _, _| Ok(crate::wire::parse(b"null").expect("null")));
+        let got = Chain { id: 1, ep: &mut n }.status_one(&h);
+        assert!(matches!(got, Err(Refusal::Unanswered { asked: Asked::NoReceipt(_), .. })), "no receipt: {got:?}");
+    }
+
+    struct NoTx {
+        contract: [u8; 20],
+        sender: [u8; 20],
+    }
+
+    impl Endpoint for NoTx {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            let filter_t0 = match params {
+                Value::Arr(ps) => ps.first().and_then(|f| f.member("topics")).and_then(Value::as_arr).and_then(|t| t.first()).and_then(Value::as_str).map(str::to_string),
+                _ => None,
+            };
+            let text = match method {
+                "eth_chainId" => "\"0x1\"".to_string(),
+                "eth_getLogs" => {
+                    let t0 = filter_t0.unwrap_or_default();
+                    let revoked = hexfmt::encode(&cryptox::keccak256(crate::revoke::REVOKED_SIGNATURE.as_bytes()));
+                    if t0 != revoked {
+                        return Ok(W::of(crate::wire::Body::Arr(Vec::new())));
+                    }
+                    format!(
+                        r#"[{{"address":"{}","blockNumber":"0x5","transactionIndex":"0x0","logIndex":"0x0","transactionHash":"0x{}","topics":["{}","0x{}{}","0x{}"],"data":"0x"}}]"#,
+                        hexfmt::encode(&self.contract),
+                        "ab".repeat(32),
+                        revoked,
+                        "00".repeat(12),
+                        hexfmt::encode(&self.sender).trim_start_matches("0x"),
+                        "cd".repeat(32)
+                    )
+                }
+                "eth_getTransactionByHash" => "null".to_string(),
+                "eth_getTransactionReceipt" => r#"{"status":"0x1","logs":[]}"#.to_string(),
+                _ => "null".to_string(),
+            };
+            Ok(crate::wire::parse(text.as_bytes()).expect("json"))
+        }
+        fn name(&self) -> String {
+            "no-tx".into()
+        }
+        fn place(&self) -> String {
+            "no-tx".into()
+        }
+    }
+
+    #[test]
+    fn a_notice_whose_transaction_is_not_given_is_no_notice_input() {
+        let contract = [0x50; 20];
+        let v = crate::revoke::Venue { chain: 1, contract, from_block: 0, book: [0x60; 20], book_from_block: 0 };
+        let got = notice_input(&mut NoTx { contract, sender: [0x22; 20] }, &v, 10);
+        assert!(matches!(&got, Err(Refusal::Malformed(Shape::TxLacks { part, .. })) if part == "transaction"), "refused naming the transaction: {got:?}");
+    }
+
     struct Logs<F: FnMut(u64, u64, usize) -> Result<W, Trouble>> {
         rule: F,
         asked: Vec<(u64, u64)>,
         methods: Vec<String>,
-        /// A name of its own: a node's known range is kept by place for the life of the process.
         name: String,
-        /// Its place, when it is not its name (two nodes said alike, one host, paths apart).
-        place: Option<String>,
+    }
+
+    struct Shared<E>(std::sync::Arc<std::sync::Mutex<E>>);
+
+    impl<E> Clone for Shared<E> {
+        fn clone(&self) -> Self {
+            Shared(self.0.clone())
+        }
+    }
+
+    impl<E: Endpoint> Endpoint for Shared<E> {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            self.0.lock().unwrap().call(method, params)
+        }
+        fn name(&self) -> String {
+            self.0.lock().unwrap().name()
+        }
+        fn place(&self) -> String {
+            self.0.lock().unwrap().place()
+        }
     }
 
     impl<F: FnMut(u64, u64, usize) -> Result<W, Trouble>> Endpoint for Logs<F> {
@@ -1161,14 +1886,14 @@ mod window_tests {
             self.name.clone()
         }
         fn place(&self) -> String {
-            self.place.clone().unwrap_or_else(|| self.name.clone())
+            self.name.clone()
         }
     }
 
     fn logs<F: FnMut(u64, u64, usize) -> Result<W, Trouble>>(rule: F) -> Logs<F> {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let name = format!("logs-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
-        Logs { rule, asked: Vec::new(), methods: Vec::new(), name, place: None }
+        Logs { rule, asked: Vec::new(), methods: Vec::new(), name }
     }
 
     fn window(from: u64, to: u64) -> Window {
@@ -1188,12 +1913,9 @@ mod window_tests {
     }
 
     fn no_pauses() {
-        set_rate_backoff(Some(vec![std::time::Duration::ZERO; crate::said::RATE_BACKOFF.len()]));
+        crate::patience::set_waits(Some(std::time::Duration::ZERO));
     }
 
-    /// The public filter is written position by position, in `eth_getLogs`'s own terms: no address is an empty
-    /// list (any contract), a topic left open is `null`, one topic is its hex, several are a list; the anchor
-    /// scan's own filter is the registries, topic 0 and its senders padded to a word, as it always asked.
     #[test]
     fn a_log_filter_is_written_position_by_position() {
         let f = LogFilter { addresses: Vec::new(), topics: vec![Topic::Any, Topic::One([0x33; 32]), Topic::AnyOf(vec![[0x44; 32], [0x55; 32]])] };
@@ -1211,116 +1933,83 @@ mod window_tests {
         assert_eq!(anchor, LogFilter { addresses: vec![[0x11; 20]], topics: vec![Topic::One(topic0()), Topic::AnyOf(vec![padded_sender])] });
     }
 
-    /// A refusal asked again at once answers on the third try: three questions, the range whole.
     #[test]
-    fn a_refused_range_is_asked_again_before_it_is_split() {
-        let mut node = logs(|_, _, n| if n < 2 { Err(node_says(-32000, "busy")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
-        assert_eq!(node.asked, vec![(1, 1000); 3]);
+    fn a_log_read_is_one_question_for_the_whole_range_and_a_width_refusal_is_read_in_pieces() {
+        no_pauses();
+        let mut node = logs(|_, _, _| empty());
+        assert!(scan_window(&mut node, &window(0, 1_208_000)).is_ok());
+        assert_eq!(node.asked, vec![(0, 1_208_000)]);
+        let sepolia = "{\"data\":{\"code\":\"ErrGetLogsExceededMaxAllowedRange\",\"message\":\"getLogs request exceeded max allowed range\",\"details\":{\"requestRange\":1208001,\"maxAllowedRange\":30000}},\"code\":-32012,\"message\":\"getLogs request exceeded max allowed range\"}";
+        let arbitrum = |f: u64, t: u64| format!("{{\"code\":-32602,\"message\":\"query spans {} blocks ({f} to {t}), but only 30000 are allowed for this request; narrow the block range\"}}", t - f + 1);
+        let words: [std::sync::Arc<dyn Fn(u64, u64) -> String + Send + Sync>; 2] = [std::sync::Arc::new(move |_: u64, _: u64| sepolia.to_string()), std::sync::Arc::new(arbitrum)];
+        for said in words {
+            let mut node = logs(move |f, t, _| if t - f + 1 > 30_000 { Err(Trouble::Node(said(f, t))) } else { empty() });
+            assert!(scan_window(&mut node, &window(0, 1_208_000)).is_ok(), "read in pieces");
+            assert_eq!(node.asked[..2], [(0, 1_208_000), (0, 1_208_000)], "{:?}", &node.asked[..2]);
+            assert!(lays(&node.asked, 30_000, 0, 1_208_000), "the pieces lay the window end to end: {:?}", node.asked);
+        }
     }
 
-    /// Refused three times, the range shrinks to the limit the node states, else by half; one block still refused
-    /// passes the node's words on; the shrinks are bounded.
+    fn lays(asked: &[(u64, u64)], cap: u64, from: u64, to: u64) -> bool {
+        let mut next = from;
+        for (a, b) in asked.iter().filter(|(a, b)| b - a < cap) {
+            if *a != next {
+                return false;
+            }
+            next = b + 1;
+        }
+        next == to + 1
+    }
+
     #[test]
-    fn a_range_shrinks_to_the_stated_limit_or_by_half() {
-        let mut node = logs(|f, t, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
-        assert_eq!(&node.asked[3..], &[(1, 50), (51, 100)]);
-        let mut node = logs(|f, t, _| if t - f + 1 > 25 { Err(node_says(-32000, "try a smaller range")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
-        assert_eq!(node.asked[3], (1, 50), "no number: half");
-        assert_eq!(node.asked[6], (1, 25));
-        let mut node = logs(|_, _, _| Err(node_says(-32000, "always no")));
-        match scan_window(&mut node, &window(1, 1)) {
-            Err(Refusal::Unanswered { asked: Asked::Declined { method, said }, .. }) => assert!(method == "eth_getLogs" && said.contains("always no"), "{said}"),
+    fn a_refusal_naming_no_range_is_passed_on_and_the_range_kept() {
+        no_pauses();
+        let busy = "service temporarily unavailable";
+        let mut node = logs(move |_, _, _| Err(node_says(-32603, busy)));
+        let refused = scan_window(&mut node, &window(1, 10_000));
+        match &refused {
+            Err(Refusal::Unanswered { asked: Asked::OverAsks { cap, said: Some(said) }, .. }) => assert!(*cap == crate::action::asks_cap() && said.contains(busy), "{said}"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(node.asked.len(), TRIES);
-        let mut node = logs(|_, _, _| Err(node_says(-32000, "always no")));
-        assert!(scan_window(&mut node, &window(1, 1 << 20)).is_err());
-        assert_eq!(node.asked.len(), TRIES * (MAX_SHRINKS + 1), "the shrinks are bounded");
-    }
-
-    /// A node's range cut once is remembered for the life of the process, by node: the next window at that node
-    /// starts at the cut range (no three refusals and a shrink again); another node starts whole.
-    #[test]
-    fn a_nodes_cut_range_is_remembered_for_the_next_window() {
-        let rule = |f: u64, t: u64, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() };
-        let mut node = logs(rule);
-        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
-        assert_eq!(known_span(&node.name), Some(50));
+        assert!(refused.as_ref().err().map(Refusal::detail).is_some_and(|d| d.contains(OVER_ASKS) && d.contains(busy)), "{refused:?}");
+        assert_eq!(node.asked[..2], [(1, 10_000); 2]);
+        assert!(node.asked[2..].iter().all(|(f, t)| t - f + 1 < 10_000), "halved after the whole range: {:?}", node.asked);
         node.asked.clear();
-        assert!(scan_window(&mut node, &window(101, 200)).is_ok());
-        assert_eq!(node.asked, vec![(101, 150), (151, 200)], "asked at the remembered range from the start");
-        // A window narrower than the remembered range is asked whole.
-        node.asked.clear();
-        assert!(scan_window(&mut node, &window(201, 210)).is_ok());
-        assert_eq!(node.asked, vec![(201, 210)]);
-        // Another node is not this one.
-        let mut other = logs(|_, _, _| empty());
-        assert!(scan_window(&mut other, &window(1, 100)).is_ok());
-        assert_eq!((other.asked.clone(), known_span(&other.name)), (vec![(1, 100)], None));
+        assert!(scan_window(&mut node, &window(1, 10_000)).is_err());
+        assert_eq!(node.asked[..2], [(1, 10_000); 2], "the next read asks it whole");
+        let mut node = logs(|_, _, n| if n == 0 { Err(node_says(-32603, busy)) } else { empty() });
+        assert!(scan_window(&mut node, &window(1, 10_000)).is_ok(), "answered when asked once more");
+        assert_eq!(node.asked, vec![(1, 10_000); 2]);
     }
 
-    /// A node's range is kept by its place, not by its display name: two nodes with the same name (one host,
-    /// `…/eth/<key>` and `…/polygon/<key>`), the first cut to 50, the second still asked its whole window.
     #[test]
-    fn two_nodes_said_alike_keep_their_ranges_apart() {
-        let mut eth = logs(|f: u64, t: u64, _| if t - f + 1 > 50 { Err(node_says(-32000, "maximum block range: 50")) } else { empty() });
-        let mut polygon = logs(|_, _, _| empty());
-        polygon.name = eth.name.clone();
-        eth.place = Some(format!("{}/eth", eth.name));
-        polygon.place = Some(format!("{}/polygon", polygon.name));
-        assert!(scan_window(&mut eth, &window(1, 100)).is_ok());
-        assert_eq!(known_span(&eth.place()), Some(50));
-        assert!(scan_window(&mut polygon, &window(1, 100)).is_ok());
-        assert_eq!(polygon.asked, vec![(1, 100)], "the other place is asked whole");
-        assert_eq!(known_span(&polygon.place()), None);
+    fn the_scans_other_questions_are_asked_once_when_refused() {
+        no_pauses();
+        let busy = || Err(node_says(-32603, "service temporarily unavailable"));
+        let mut node = logs(move |_, _, _| busy());
+        assert_eq!(code_at(&mut node, 1, &[0x22; 20], 5), Ok(None));
+        assert_eq!(node.methods, vec!["eth_getCode".to_string()]);
+        let mut node = logs(move |_, _, _| busy());
+        assert!(Chain { id: 1, ep: &mut node }.tx_by_hash(&[0x44; 32]).is_err());
+        assert_eq!(node.methods, vec!["eth_getTransactionByHash".to_string()]);
     }
 
-    /// A remembered range only ever narrows: remembered at 50, then cut to 25, it is 25; a wider range taken later
-    /// (100) leaves it at 25.
     #[test]
-    fn a_nodes_remembered_range_keeps_the_narrowest() {
-        let node = logs(|_, _, _| empty()).name;
-        remember_span(&node, 50);
-        assert_eq!(known_span(&node), Some(50));
-        remember_span(&node, 25);
-        assert_eq!(known_span(&node), Some(25), "narrowed");
-        remember_span(&node, 100);
-        assert_eq!(known_span(&node), Some(25), "never widened");
-    }
-
-    /// Past the ask bound the window is refused as unfinished, never as zero logs; an answer that is not a log list
-    /// is refused.
-    #[test]
-    fn an_unfinished_window_is_refused_never_empty() {
-        let mut node = logs(|f, t, _| if t > f { Err(node_says(-32000, "limited to 1 block")) } else { empty() });
-        match scan_window(&mut node, &window(1, 5000)) {
-            Err(Refusal::Unanswered { asked: Asked::TooWide { asks, .. }, .. }) => assert_eq!(asks, MAX_ASKS),
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(node.asked.len(), MAX_ASKS);
+    fn an_answer_that_is_not_a_log_list_is_refused_never_empty() {
         let mut node = logs(|_, _, _| Ok(W::of(crate::wire::Body::Null)));
         assert!(matches!(scan_window(&mut node, &window(1, 10)), Err(Refusal::Unanswered { asked: Asked::NotLogs, .. })));
     }
 
-    /// The window's extreme edges: from block 0 to the last block there is counts without overflow and
-    /// ends after the last block.
     #[test]
-    fn a_window_to_the_last_block_ends() {
+    fn a_window_to_the_last_block_is_one_question() {
         let mut node = logs(|_, _, _| empty());
         assert!(scan_window(&mut node, &window(0, u64::MAX)).is_ok());
-        // One block more than a u64 counts: the span saturates, so the last block is a question of its own.
-        assert_eq!(node.asked, vec![(0, u64::MAX - 1), (u64::MAX, u64::MAX)]);
+        assert_eq!(node.asked, vec![(0, u64::MAX)]);
         let mut node = logs(|_, _, _| empty());
         assert!(scan_window(&mut node, &window(u64::MAX, u64::MAX)).is_ok());
         assert_eq!(node.asked.len(), 1);
     }
 
-    /// A node limiting its rate is asked the same range again after each pause and never has its range shrunk;
-    /// past the pauses its refusal is passed on. A number in a rate-limit sentence is not read as a range limit; a
-    /// 429 is a rate limit; a refusal naming a range is a range refusal even with the rate-limit code.
     #[test]
     fn a_rate_limited_node_is_waited_out_and_its_range_kept() {
         no_pauses();
@@ -1334,60 +2023,16 @@ mod window_tests {
         let mut node = logs(|_, _, _| Err(crate::rpc::status("https://n.example", 429)));
         assert!(scan_window(&mut node, &window(1, 1000)).is_err());
         assert_eq!(node.asked, vec![(1, 1000); 1 + pauses]);
-        // "more than 10000 results" with -32005 names results: a range refusal, split as one.
         let mut node = logs(|f, t, _| if t - f + 1 > 500 { Err(node_says(-32005, "query returned more than 10000 results")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
-        assert_eq!(node.asked[TRIES], (1, 500));
-        // The rate-limit code without rate-limit words is not waited out: asked again at once, then split.
-        let mut node = logs(|_, _, _| Err(node_says(-32005, "query timeout exceeded")));
-        assert!(scan_window(&mut node, &window(1, 1 << 10)).is_err());
-        assert_eq!(node.asked.len(), TRIES * (MAX_SHRINKS + 1));
-        let mut node = logs(|f, t, _| if t > f { Err(node_says(-32005, "maximum 1 block per query")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 3)).is_ok());
-        assert_eq!(node.asked[TRIES], (1, 1));
-        // A limit exceeded on the range is the range's.
-        let mut node = logs(|f, t, _| if t - f + 1 > 500 { Err(node_says(-32000, "block range limit exceeded")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 1000)).is_ok());
-        assert_eq!(node.asked[TRIES], (1, 500));
+        assert!(scan_window(&mut node, &window(1, 1000)).is_ok(), "read in pieces");
+        assert_eq!(node.asked[..2], [(1, 1000), (1, 1000)], "a refusal naming results is no rate limit: {:?}", &node.asked[..2]);
+        assert!(lays(&node.asked[2..], 500, 1, 1000), "the pieces lay the window end to end: {:?}", node.asked);
     }
 
-    /// Arbitrum's official node and Sepolia's ethpandaops node, their refusals as they were returned
-    /// (2026-10-05): each is read at its own limit, so the next question already fits.
-    #[test]
-    fn two_public_nodes_state_their_range_in_their_own_words() {
-        let arbitrum = "{\"code\":-32602,\"message\":\"query spans 268435456 blocks (1 to 268435456), but only 10000000 are allowed for this request; narrow the block range\"}";
-        let mut node = logs(|f, t, _| if t - f + 1 > 10_000_000 { Err(Trouble::Node(arbitrum.into())) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 30_000_000)).is_ok());
-        assert_eq!(&node.asked[TRIES..], &[(1, 10_000_000), (10_000_001, 20_000_000), (20_000_001, 30_000_000)]);
-        let arbitrum_wide = "{\"code\":-32602,\"message\":\"query spans 16777216 blocks (1 to 16777216), but only 30000 are allowed for this request; narrow the block range, or add an address filter\"}";
-        assert_eq!(said_limit(arbitrum_wide, 16_777_216), Some(30_000));
-        let sepolia = "{\"data\":{\"code\":\"ErrGetLogsExceededMaxAllowedRange\",\"message\":\"getLogs request exceeded max allowed range\",\"details\":{\"requestRange\":1048576,\"maxAllowedRange\":30000}},\"code\":-32012,\"message\":\"getLogs request exceeded max allowed range\"}";
-        let mut node = logs(|f, t, _| if t - f + 1 > 30_000 { Err(Trouble::Node(sepolia.into())) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 60_000)).is_ok());
-        assert_eq!(&node.asked[TRIES..], &[(1, 30_000), (30_001, 60_000)]);
-    }
-
-    /// The range a node takes is read from its own words only (its error as it sent it), never from what this
-    /// side made of a failure: a broken way whose evidence happens to carry a range and a number halves the span,
-    /// a node that says its range is asked at it.
-    #[test]
-    fn the_range_is_read_from_the_nodes_own_words_only() {
-        no_pauses();
-        let broke = || Trouble::Transport(Broke::Said("http://n:1: limited to 50 blocks".into()));
-        let mut node = logs(|f, t, _| if t - f + 1 > 25 { Err(broke()) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
-        assert_eq!(node.asked[TRIES], (1, 50), "the transport's words are not the node's: half, not 50");
-        let mut node = logs(|f, t, _| if t - f + 1 > 40 { Err(node_says(-32000, "limited to 40 blocks")) } else { empty() });
-        assert!(scan_window(&mut node, &window(1, 100)).is_ok());
-        assert_eq!(node.asked[TRIES], (1, 40), "the node's own words: at its limit");
-    }
-
-    /// Every refusal's evidence is in machine form, in no language: the method, codes, numbers, and the node's or
-    /// the transport's own words; the words for people are the two ends'.
     #[test]
     fn a_refusals_evidence_is_machine_form_in_no_language() {
         let cjk = |x: &str| x.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
-        let declined = Refusal::Unanswered { chain: 1, asked: Asked::Declined { method: "eth_getLogs".into(), said: "{\"code\":-32000,\"message\":\"busy\"}".into() } };
+        let declined = Refusal::Unanswered { chain: 1, asked: Asked::Declined { method: "eth_getLogs".into(), said: "{\"code\":-32000,\"message\":\"busy\"}".into(), width: None } };
         assert_eq!(declined.detail(), "chain 1 eth_getLogs {\"code\":-32000,\"message\":\"busy\"}");
         let late = Refusal::Unanswered {
             chain: 11155111,
@@ -1402,7 +2047,6 @@ mod window_tests {
             Refusal::Unanswered { chain: 1, asked: Asked::NotServed("eth_getLogs [..]".into()) },
             Refusal::Unanswered { chain: 1, asked: Asked::NotLogs },
             Refusal::Unanswered { chain: 1, asked: Asked::NoReceipt("0xab".into()) },
-            Refusal::Unanswered { chain: 1, asked: Asked::TooWide { span: 10, whole: 5000, asks: MAX_ASKS } },
             Refusal::Unanswered { chain: 1, asked: Asked::Short },
             Refusal::TxNotItself("0xab".into()),
             Refusal::Malformed(Shape::TxLacks { part: "input".into(), tx: "0xab".into() }),
@@ -1414,12 +2058,8 @@ mod window_tests {
         for r in &all {
             assert!(!r.detail().is_empty() && !cjk(&r.detail()), "{r:?}: {}", r.detail());
         }
-        assert_eq!(all[7].detail(), format!("chain 1 eth_getLogs TOO_WIDE span 10 whole 5000 asks {MAX_ASKS}"));
     }
 
-    /// A transaction the node says it does not have (`null`, a lawful empty answer) drops the log from the anchor
-    /// set without a failure and without a further question; a gateway's page never arrives here as `null` (the
-    /// reading of answers refuses it first).
     #[test]
     fn a_transaction_the_node_does_not_have_is_no_anchor() {
         let t0 = topic0();
@@ -1442,5 +2082,297 @@ mod window_tests {
         let got = registry_record(&mut chain, &window(1, 10), &log, &t0, &Known::default(), &mut Vec::new());
         assert!(matches!(got, Ok(None)));
         assert_eq!(node.methods, vec!["eth_getTransactionByHash".to_string()]);
+    }
+
+    struct Kept(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
+
+    impl crate::settled::Keep for Kept {
+        fn load(&self, part: &str) -> Option<Vec<u8>> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).get(part).cloned()
+        }
+        fn save(&self, part: &str, plain: &[u8]) -> Result<(), crate::settled::Unkept> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(part.to_string(), plain.to_vec());
+            Ok(())
+        }
+    }
+
+    struct Laid {
+        hashes: std::collections::BTreeMap<u64, String>,
+        logs: Vec<u64>,
+        posts: std::sync::Arc<std::sync::Mutex<usize>>,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<(String, Option<(u64, u64)>)>>>,
+    }
+
+    impl Laid {
+        fn answer(&self, method: &str, params: &Value) -> Result<W, Trouble> {
+            let first = params.as_arr().and_then(|p| p.first());
+            let n = |v: Option<&Value>| v.and_then(Value::as_str).and_then(|x| u64::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+            let range = (method == "eth_getLogs").then(|| (n(first.and_then(|f| f.member("fromBlock"))).unwrap_or(0), n(first.and_then(|f| f.member("toBlock"))).unwrap_or(0)));
+            self.asked.lock().unwrap().push((method.to_string(), range));
+            let text = match method {
+                "eth_getBlockByNumber" => {
+                    let b = n(first).unwrap_or(0);
+                    format!(r#"{{"hash":"{}","number":"0x{b:x}","timestamp":"0x1"}}"#, self.hashes.get(&b).cloned().unwrap_or_default())
+                }
+                "eth_getLogs" => {
+                    let (from, to) = range.unwrap_or((0, 0));
+                    let logs: Vec<String> = self
+                        .logs
+                        .iter()
+                        .filter(|b| (from..=to).contains(*b))
+                        .map(|b| format!(r#"{{"address":"0x{}","blockHash":"{}","blockNumber":"0x{b:x}","data":"0x","logIndex":"0x0","topics":[],"transactionHash":"0x{b:064x}","transactionIndex":"0x0"}}"#, "11".repeat(20), self.hashes.get(b).cloned().unwrap_or_default()))
+                        .collect();
+                    format!("[{}]", logs.join(","))
+                }
+                _ => "null".into(),
+            };
+            Ok(crate::wire::parse(text.as_bytes()).expect("json"))
+        }
+    }
+
+    impl Endpoint for Laid {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            *self.posts.lock().unwrap() += 1;
+            self.answer(method, params)
+        }
+        fn call_batch(&mut self, asks: &[crate::rpc::Ask<'_>]) -> Option<Result<crate::rpc::Batched, Trouble>> {
+            *self.posts.lock().unwrap() += 1;
+            Some(Ok(asks.iter().map(|(m, p)| Some(self.answer(m, p))).collect()))
+        }
+        fn name(&self) -> String {
+            "laid".into()
+        }
+        fn place(&self) -> String {
+            "laid".into()
+        }
+    }
+
+    #[test]
+    fn a_kept_reads_check_and_tail_go_together_and_a_replaced_block_reads_as_a_whole_read() {
+        no_pauses();
+        let keep: std::sync::Arc<dyn crate::settled::Keep> = std::sync::Arc::new(Kept(std::sync::Mutex::new(Default::default())));
+        let filter = LogFilter { addresses: vec![[0x11; 20]], topics: Vec::new() };
+        let hashes = |replaced_from: u64| (0..=300u64).map(|b| (b, format!("0x{}{b:062x}", if b >= replaced_from { "bb" } else { "aa" }))).collect::<std::collections::BTreeMap<u64, String>>();
+        let laid = |hashes, logs: Vec<u64>| Laid { hashes, logs, posts: Default::default(), asked: Default::default() };
+        let read = |node: Laid, keeper: Option<std::sync::Arc<dyn crate::settled::Keep>>| {
+            let (posts, asked) = (node.posts.clone(), node.asked.clone());
+            let got = {
+                let _action = crate::action::open(keeper);
+                let mut ep = crate::endpoints::remembering("laid", Box::new(node));
+                paged(&mut Chain { id: 1, ep: ep.as_mut() }, &filter, 0, 200, Over::Alone).expect("read")
+            };
+            let mut seen: Vec<(u64, String)> = got.iter().map(|l| (crate::settled::block_of(l).unwrap_or(0), l.member("blockHash").and_then(W::as_str).unwrap_or_default().to_string())).collect();
+            seen.sort();
+            let asked = asked.lock().unwrap().clone();
+            (seen, *posts.lock().unwrap(), asked)
+        };
+        let _ = read(laid(hashes(u64::MAX), vec![5, 7]), Some(keep.clone()));
+        let (seen, posts, asked) = read(laid(hashes(u64::MAX), vec![5, 7, 150]), Some(keep.clone()));
+        assert_eq!(seen.iter().map(|(b, _)| *b).collect::<Vec<_>>(), [5, 7, 150]);
+        assert_eq!(posts, 1, "the check and the tail in one post: {asked:?}");
+        assert_eq!(asked.iter().filter_map(|(_, r)| *r).collect::<Vec<_>>(), [(137, 200)], "the logs after the kept part, once");
+        let after = vec![5, 7, 50, 160];
+        let (kept_read, _, asked) = read(laid(hashes(7), after.clone()), Some(keep.clone()));
+        let (whole, _, _) = read(laid(hashes(7), after), None);
+        assert_eq!(kept_read, whole, "log for log, a read with nothing kept: {asked:?}");
+        assert!(asked.iter().any(|(_, r)| *r == Some((6, 200))), "read again from the block after the last that matched: {asked:?}");
+    }
+
+    fn at_seven(from: u64, to: u64) -> Result<W, Trouble> {
+        let log = "{\"address\":\"0x1111111111111111111111111111111111111111\",\"blockNumber\":\"0x7\",\"data\":\"0x\",\"logIndex\":\"0x0\",\"topics\":[]}";
+        Ok(crate::wire::parse(if (from..=to).contains(&7) { format!("[{log}]") } else { "[]".to_string() }.as_bytes()).expect("logs"))
+    }
+
+    #[test]
+    fn a_stretch_two_endpoints_bore_alike_is_served_to_a_table_of_three() {
+        no_pauses();
+        let keep: std::sync::Arc<dyn crate::settled::Keep> = std::sync::Arc::new(Kept(std::sync::Mutex::new(Default::default())));
+        let nodes = crate::settled::nodes_of(["http://a.test", "http://b.test", "rest://row.test"]);
+        let filter = anchor_filter(&window(0, 1000), &topic0());
+        let bounded = |f: u64, t: u64, _: usize| if t - f + 1 > 100 { Err(node_says(-32012, "getLogs request exceeded max allowed range")) } else { at_seven(f, t) };
+        {
+            let _action = crate::action::open(Some(keep.clone()));
+            let (mut a, mut row, mut b) = (logs(|f, t, _| at_seven(f, t)), logs(|f, t, _| at_seven(f, t)), logs(bounded));
+            let (mut by_a, mut by_row, mut by_b) = (Vec::new(), Vec::new(), Vec::new());
+            paged(&mut Chain { id: 1, ep: &mut a }, &filter, 0, 1000, Over::Agreed { nodes: &nodes, out: &mut by_a }).expect("the whole range");
+            paged(&mut Chain { id: 1, ep: &mut row }, &filter, 0, 1000, Over::Agreed { nodes: &nodes, out: &mut by_row }).expect("the whole range, in two parts");
+            assert!(paged(&mut Chain { id: 1, ep: &mut b }, &filter, 0, 1000, Over::Agreed { nodes: &nodes, out: &mut by_b }).is_err(), "the bounded node refuses it");
+            assert!(by_b.is_empty(), "a round that refused settles nothing");
+            crate::settled::settle(&[by_a, by_row], &[]);
+        }
+        let _next = crate::action::open(Some(keep));
+        let mut b = logs(bounded);
+        let mut out = Vec::new();
+        let got = paged(&mut Chain { id: 1, ep: &mut b }, &filter, 0, 1000, Over::Agreed { nodes: &nodes, out: &mut out }).expect("served, and the blocks after answered");
+        assert_eq!(b.asked, vec![(1000 - crate::settled::MARGIN + 1, 1000)], "only the blocks after what the table settled");
+        assert_eq!(got.len(), 1, "the settled log served");
+        assert!(out.iter().all(|s| !s.served_single), "served an agreed entry: not single-source");
+    }
+
+    #[test]
+    fn any_logs_are_read_in_one_agreed_round_and_kept_once_alike() {
+        no_pauses();
+        let keep: std::sync::Arc<dyn crate::settled::Keep> = std::sync::Arc::new(Kept(std::sync::Mutex::new(Default::default())));
+        let filter = LogFilter { addresses: vec![[0x22; 20]], topics: vec![Topic::One([0x33; 32])] };
+        let named = |mut n: Logs<fn(u64, u64, usize) -> Result<W, Trouble>>, place: &str| {
+            n.name = place.to_string();
+            n
+        };
+        let seven: fn(u64, u64, usize) -> Result<W, Trouble> = |f, t, _| at_seven(f, t);
+        {
+            let _action = crate::action::open(Some(keep.clone()));
+            let (a, b) = (named(logs(seven), "http://a.test"), named(logs(seven), "http://b.test"));
+            let got = logs_agreed(vec![Box::new(a), Box::new(b)], 1, &filter, 0, 1000);
+            assert!(got.agreed && got.answered == 2 && got.refused.is_empty() && got.logs.len() == 1, "{got:?}");
+        }
+        {
+            let _next = crate::action::open(Some(keep.clone()));
+            let a = Shared(std::sync::Arc::new(std::sync::Mutex::new(named(logs(seven), "http://a.test"))));
+            let b = named(logs(seven), "http://b.test");
+            let got = logs_agreed(vec![Box::new(a.clone()), Box::new(b)], 1, &filter, 0, 1000);
+            assert!(got.agreed && got.logs.len() == 1);
+            assert_eq!(a.0.lock().unwrap().asked, vec![(1000 - crate::settled::MARGIN + 1, 1000)], "served what was kept, asked only after");
+        }
+        let _other = crate::action::open(Some(keep));
+        let (a, odd, down) = (logs(|f, t, _| at_seven(f, t)), logs(|_, _, _| Ok(crate::wire::parse(b"[]").expect("none"))), logs(|_, _, _| Err(node_says(-32000, "down"))));
+        let filter2 = LogFilter { addresses: vec![[0x44; 20]], topics: Vec::new() };
+        let got = logs_agreed(vec![Box::new(a), Box::new(odd), Box::new(down)], 1, &filter2, 0, 1000);
+        assert!(!got.agreed && got.answered == 2 && got.refused.len() == 1 && got.logs.len() == 1, "{got:?}");
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    struct Book {
+        book: [u8; 20],
+        root: [u8; 20],
+        positioned: bool,
+    }
+
+    fn w(text: &str) -> W {
+        crate::wire::parse(text.as_bytes()).expect("json")
+    }
+
+    fn topic(a: &[u8; 20]) -> String {
+        format!("0x{}{}", "00".repeat(12), hexfmt::encode(a).trim_start_matches("0x"))
+    }
+
+    impl Endpoint for Book {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            let first = match params {
+                Value::Arr(ps) => ps.first().cloned(),
+                _ => None,
+            };
+            let t0 = hexfmt::encode(&cryptox::keccak256(crate::revoke::ACCEDED_SIGNATURE.as_bytes()));
+            Ok(match method {
+                "eth_chainId" => w("\"0x1\""),
+                "eth_getLogs" => {
+                    let log = |block: u64, tx: u8, root: &[u8; 20], positioned: bool| {
+                        let at = if positioned { format!(r#""blockNumber":"0x{block:x}","transactionIndex":"0x0","logIndex":"0x{tx:x}","#) } else { String::new() };
+                        format!(
+                            r#"{{"address":"{}",{at}"transactionHash":"0x{}","topics":["{t0}","{}","{}","{}"],"data":"0x"}}"#,
+                            hexfmt::encode(&self.book),
+                            format!("{tx:02x}").repeat(32),
+                            topic(&[0x31; 20]),
+                            topic(&[0x32; 20]),
+                            topic(root)
+                        )
+                    };
+                    let mut logs = vec![log(5, 1, &self.root, true), log(6, 2, &self.root, true), log(7, 3, &[0x99; 20], true)];
+                    if !self.positioned {
+                        logs.push(log(8, 4, &self.root, false));
+                    }
+                    w(&format!("[{}]", logs.join(",")))
+                }
+                "eth_getTransactionReceipt" => {
+                    let h = first.as_ref().and_then(Value::as_str).unwrap_or_default().to_string();
+                    w(if h.starts_with("0x02") { r#"{"status":"0x0"}"# } else { r#"{"status":"0x1"}"# })
+                }
+                "eth_getBlockByNumber" => {
+                    let n = first.as_ref().and_then(Value::as_str).and_then(|x| u64::from_str_radix(x.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+                    w(&format!(r#"{{"number":"0x{n:x}","timestamp":"0x{:x}"}}"#, 1000 + n))
+                }
+                _ => w("null"),
+            })
+        }
+        fn name(&self) -> String {
+            "book".into()
+        }
+        fn place(&self) -> String {
+            "book".into()
+        }
+    }
+
+    struct Batching {
+        inner: Book,
+        batches: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        singles: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Batching {
+        fn answer(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            let got = self.inner.call(method, params)?;
+            if method != "eth_getTransactionReceipt" {
+                return Ok(got);
+            }
+            let tx = params.as_arr().and_then(|p| p.first()).and_then(Value::as_str).unwrap_or_default().to_string();
+            let block = if tx.starts_with("0x02") { 6 } else { 5 };
+            let status = got.member("status").and_then(W::as_str).unwrap_or("0x0").to_string();
+            Ok(w(&format!(r#"{{"blockHash":"0x{}","blockNumber":"0x{block:x}","status":"{status}"}}"#, "cd".repeat(32))))
+        }
+    }
+
+    impl Endpoint for Batching {
+        fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
+            self.singles.lock().unwrap().push(method.to_string());
+            self.answer(method, params)
+        }
+        fn call_batch(&mut self, asks: &[crate::rpc::Ask<'_>]) -> Option<Result<crate::rpc::Batched, Trouble>> {
+            self.batches.lock().unwrap().push(asks.iter().map(|(m, _)| m.to_string()).collect());
+            Some(Ok(asks.iter().map(|(m, p)| Some(self.answer(m, p))).collect()))
+        }
+        fn name(&self) -> String {
+            "book".into()
+        }
+        fn place(&self) -> String {
+            "book".into()
+        }
+    }
+
+    #[test]
+    fn a_face_reading_asks_its_accessions_receipts_and_blocks_in_one_batch() {
+        let (book, root) = ([0x60; 20], [0x11; 20]);
+        let (batches, singles) = (std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let node = Batching { inner: Book { book, root, positioned: true }, batches: batches.clone(), singles: singles.clone() };
+        let _action = crate::action::open(None);
+        let mut ep = crate::endpoints::remembering("book", Box::new(node));
+        let got = accessions_under(ep.as_mut(), 1, &book, &root, 0, 100).expect("read");
+        assert_eq!(got.len(), 1);
+        let batches = batches.lock().unwrap().clone();
+        assert_eq!(batches.len(), 1, "one batch: {batches:?}");
+        let mut kinds = batches[0].clone();
+        kinds.sort();
+        assert_eq!(kinds, ["eth_getBlockByNumber", "eth_getBlockByNumber", "eth_getTransactionReceipt", "eth_getTransactionReceipt"], "two accessions under the root, each its receipt and its block");
+        assert_eq!(singles.lock().unwrap().clone(), ["eth_chainId", "eth_getLogs"], "nothing asked again alone");
+    }
+
+    #[test]
+    fn the_accessions_under_a_root_carry_nine_members_and_are_read_whole() {
+        let (book, root) = ([0x60; 20], [0x11; 20]);
+        let got = accessions_under(&mut Book { book, root, positioned: true }, 1, &book, &root, 0, 100).expect("read");
+        assert_eq!(got.len(), 1, "block 6 failed, block 7 is another root's: {got:?}");
+        let r = &got[0];
+        let Value::Obj(ms) = r else { panic!("an object") };
+        let names: Vec<&str> = ms.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, ["blockNumber", "blockTimestamp", "chainId", "holder", "logIndex", "root", "to", "tx", "txIndex"]);
+        assert_eq!(r.member("blockTimestamp").and_then(Value::as_int), Some(1005));
+        assert_eq!(r.member("root").and_then(Value::as_str), Some(hexfmt::encode(&root).as_str()));
+        assert_eq!(r.member("to").and_then(Value::as_str), Some(hexfmt::encode(&[0x32u8; 20]).as_str()));
+        assert_eq!(r.member("tx").and_then(Value::as_str), Some(format!("0x{}", "01".repeat(32)).as_str()));
+        let got = accessions_under(&mut Book { book, root, positioned: false }, 1, &book, &root, 0, 100);
+        assert!(matches!(got, Err(Refusal::Malformed(Shape::TxLacks { .. }))), "a log without its position: {got:?}");
+        assert_eq!(accessions_under(&mut Book { book, root, positioned: true }, 1, &book, &root, 0, 4).map(|v| v.len()), Ok(0), "outside the range");
     }
 }

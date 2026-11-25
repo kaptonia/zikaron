@@ -1,0 +1,12 @@
+[package]
+name = "zikaron-face"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+zikaron = { path = "../zikaron" }
+
+[[bin]]
+name = "zkf"
+path = "src/bin/zkf.rs"

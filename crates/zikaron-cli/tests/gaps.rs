@@ -1,7 +1,3 @@
-//! Command-line edge cases, on the real binary: the two `--registry` refusals told apart in the human-readable
-//! line; which environment variable sets its language; a key file that is not a key or is readable by other
-//! accounts; `audit --out` into an unwritable folder.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -22,7 +18,6 @@ impl Ran {
     }
 }
 
-/// Run in `dir` with the locale variables cleared, then `env` set.
 fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Ran {
     let mut c = Command::new(BIN);
     c.args(args).current_dir(dir).env(zikaron_os::HOME_VAR, own_home());
@@ -36,8 +31,6 @@ fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Ran {
     Ran { code: o.status.code().unwrap_or(-1), out: o.stdout, err: o.stderr }
 }
 
-/// A separate user home per run: `anchor` records what it sent under the user's home (`zikaron_cli::sent`), so
-/// runs never share a record or touch the real one.
 fn own_home() -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     std::env::temp_dir().join(format!("zk-cli-home-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
@@ -52,27 +45,22 @@ fn scratch(tag: &str) -> PathBuf {
 
 const EN: [(&str, &str); 1] = [("LANG", "en_US.UTF-8")];
 
-/// The two `--registry` refusals share the first line (`E_ARGS --registry`) and differ on the second:
-/// `--form registry` without it is "this flag is missing"; with `--form bare` it "goes with `--form registry`
-/// only".
 #[test]
-fn the_two_registry_refusals_are_told_apart_on_the_second_line() {
+fn the_registry_refusals_are_told_apart_on_the_second_line() {
     let w = scratch("d1");
     let hash = format!("0x{}", "11".repeat(32));
     let base = ["anchor", "--endpoint", "31337=http://127.0.0.1:1", "--key", KEY, "--hash", hash.as_str(), "--wait-secs", "1"];
     let mut missing = base.to_vec();
     missing.extend(["--form", "registry"]);
+    let r = run(&w, &missing, &EN);
+    assert_eq!((r.code, r.out.is_empty(), r.line(0).as_str(), r.line(1).as_str()), (2, true, "E_ARGS --registry", "this flag is missing"));
     let mut bare = base.to_vec();
     bare.extend(["--form", "bare", "--registry", "0x5fbdb2315678afecb367f032d93f642f64180aa3"]);
-    for (form, args, said) in [("registry without --registry", missing, "this flag is missing"), ("--registry with bare", bare, "--registry goes with --form registry only")] {
-        let r = run(&w, &args, &EN);
-        assert_eq!((r.code, r.out.is_empty(), r.line(0).as_str(), r.line(1).as_str()), (2, true, "E_ARGS --registry", said), "{form}");
-    }
+    let r = run(&w, &bare, &EN);
+    assert_eq!((r.code, r.out.is_empty(), r.line(1).as_str()), (2, true, "--form takes registry"));
     let _ = std::fs::remove_dir_all(&w);
 }
 
-/// Language precedence: a set `LANG` wins over `LANGUAGE` (LANG=en with LANGUAGE=zh is English); an empty
-/// variable is skipped (LC_ALL="" with LANG=zh is Chinese).
 #[test]
 fn the_language_is_the_first_variable_set_and_not_empty() {
     let w = scratch("d4");
@@ -87,7 +75,6 @@ fn the_language_is_the_first_variable_set_and_not_empty() {
     let _ = std::fs::remove_dir_all(&w);
 }
 
-/// A key file holding `bytes`, made owner-only, then opened to everyone when `open`.
 fn key_file(dir: &Path, name: &str, bytes: &[u8], open: bool) -> String {
     use std::io::Write;
     let p = dir.join(name);
@@ -100,13 +87,10 @@ fn key_file(dir: &Path, name: &str, bytes: &[u8], open: bool) -> String {
     p.display().to_string()
 }
 
-/// Five kinds of invalid key file (not hex, empty, over the size cap, not text, BOM before the key): each gives
-/// `E_KEY --key-file` with "not 64 hex digits", and stderr never contains the file's contents.
 #[test]
 fn a_key_file_that_is_not_a_key_is_said_without_its_contents() {
     let w = scratch("s1-hex");
     let bom = format!("\u{feff}{KEY}").into_bytes();
-    // Each form: its bytes and the part of them stderr must not hold.
     for (form, bytes, telltale) in [
         ("notHex", b"0xzzqq".to_vec(), b"zzqq".to_vec()),
         ("empty", Vec::new(), Vec::new()),
@@ -126,8 +110,6 @@ fn a_key_file_that_is_not_a_key_is_said_without_its_contents() {
     let _ = std::fs::remove_dir_all(&w);
 }
 
-/// A key file readable by other accounts (0644): `init` and `annotate` each answer `E_KEY`, naming the path by
-/// argument position and length only (never the path or the key).
 #[test]
 fn a_key_file_others_can_read_is_said_by_its_path_for_init_and_annotate() {
     let w = scratch("s1-open");
@@ -144,8 +126,6 @@ fn a_key_file_others_can_read_is_said_by_its_path_for_init_and_annotate() {
     let _ = std::fs::remove_dir_all(&w);
 }
 
-/// `audit --out` into an unwritable folder: `"detail":"E_IO: ` followed by the system's message (operation,
-/// path, OS text).
 #[test]
 fn audit_out_into_an_unwritable_folder_says_the_systems_words() {
     let w = scratch("p5-audit");

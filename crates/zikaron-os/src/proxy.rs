@@ -1,24 +1,3 @@
-//! System proxy settings, read only, where each system keeps the settings in force:
-//!
-//! - macOS: the network configuration's proxies for the primary service, as `scutil --proxy` prints them
-//!   (explicit proxies and the automatic configuration script).
-//! - Windows: the current user's settings as the system answers them (`WinHttpGetIEProxyConfigForCurrentUser`:
-//!   the configuration script, the proxy list and its bypass list); under the machine-wide policy
-//!   `ProxySettingsPerUser = 0`, the machine's settings instead; the user's registry values when the call answers
-//!   nothing.
-//! - Linux and other unix: the desktop's settings where they are stored on disk (KDE's `kioslaverc`; GNOME,
-//!   Cinnamon and MATE's GSettings, from the dconf database file or the keyfile backend; no program is run),
-//!   else the environment (`https_proxy`, `http_proxy`, `all_proxy`, `no_proxy`, lower or upper case).
-//!
-//! Automatic discovery (WPAD: a script looked for by the name `wpad` on whatever network the machine is on) is
-//! not read on any system: only a script at an address the person set is followed, so discovery switched on with
-//! nothing else set reads as nothing set.
-//!
-//! Credentials written into a proxy address (`user:pass@`) are kept for the proxy that asks for them. The
-//! parsers are plain functions, tested on every system.
-
-/// One proxy as a system names it: its scheme as written (lower case, empty when none), host, port, and the
-/// credentials given with it. The password is wiped when this is dropped and never printed.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Place {
     pub scheme: String,
@@ -42,8 +21,6 @@ impl Drop for Place {
     }
 }
 
-/// System proxy settings: the https, http and SOCKS proxies, the exception list and the automatic configuration
-/// script's address.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Proxies {
     pub https: Option<Place>,
@@ -53,7 +30,6 @@ pub struct Proxies {
     pub pac_url: Option<String>,
 }
 
-/// `%XX` decoded (credentials in a proxy address may be percent-encoded); a malformed escape stays as written.
 fn unpercent(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -72,8 +48,6 @@ fn unpercent(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Parse a proxy written as `host:port` or `scheme://[user[:pass]@]host:port[/]`. A missing port, a path, an
-/// empty user, or a space or control character is rejected.
 pub fn place_of(text: &str) -> Option<Place> {
     let t = text.trim();
     let (scheme, rest) = match t.split_once("://") {
@@ -111,9 +85,6 @@ fn is_connect(scheme: &str) -> bool {
     matches!(scheme, "" | "http" | "https")
 }
 
-/// Settings from the environment: `https_proxy`, `http_proxy`, `all_proxy` and `no_proxy`, lowercase taking
-/// precedence over uppercase. A SOCKS scheme sets the SOCKS proxy; `http`, `https` or none the proxy for its
-/// kind; `all_proxy` fills whatever the other two left. `no_proxy` is a comma-separated exception list.
 pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Proxies {
     let get = |name: &str| var(name).or_else(|| var(&name.to_ascii_uppercase())).filter(|v| !v.trim().is_empty());
     let (mut https, mut http, mut socks): (Option<Place>, Option<Place>, Option<Place>) = (None, None, None);
@@ -143,9 +114,6 @@ pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Proxies {
     }
 }
 
-/// A Windows proxy list (`ProxyServer`, or the list the system answers): one `host:port` (with or without
-/// `http://`) for every kind; or `kind=host:port` entries separated by `;` (`http=`, `https=`, `socks=`;
-/// `socks=` names a SOCKS5 proxy). Returns the https, http and SOCKS proxies.
 pub fn from_windows_server(server: &str) -> (Option<Place>, Option<Place>, Option<Place>) {
     let (mut https, mut http, mut socks) = (None, None, None);
     if server.contains('=') {
@@ -175,8 +143,6 @@ pub fn from_windows_server(server: &str) -> (Option<Place>, Option<Place>, Optio
     (https, http, socks)
 }
 
-/// Settings from Windows: whether a proxy list is in force and the list (`server`), the bypass list
-/// (`;`-separated, possibly including `<local>`) and the configuration script's address (empty when none).
 pub fn from_windows(enabled: bool, server: &str, overrides: &str, auto_config_url: &str) -> Proxies {
     let pac = auto_config_url.trim();
     let mut p = Proxies { pac_url: (!pac.is_empty()).then(|| pac.to_string()), ..Default::default() };
@@ -188,10 +154,6 @@ pub fn from_windows(enabled: bool, server: &str, overrides: &str, auto_config_ur
     p
 }
 
-/// Parse macOS `scutil --proxy` output (`Key : value` lines, `Key : <array> {` blocks of `N : value`): the
-/// https, http and SOCKS proxies when their `…Enable` is 1 with a host and port, `ExceptionsList`,
-/// `ExcludeSimpleHostnames` (as `<local>`) and the configuration script (`ProxyAutoConfigEnable` with
-/// `ProxyAutoConfigURLString`).
 pub fn from_scutil(text: &str) -> Proxies {
     let mut values: Vec<(String, String)> = Vec::new();
     let mut exceptions: Vec<String> = Vec::new();
@@ -236,9 +198,6 @@ pub fn from_scutil(text: &str) -> Proxies {
     }
 }
 
-// ───────────────────────── Linux desktops ─────────────────────────
-
-/// One KDE proxy value: `scheme://host:port`, `scheme://host port`, `host:port` or `host port`.
 fn kde_place(v: &str) -> Option<Place> {
     let v = v.trim();
     match v.rsplit_once(' ') {
@@ -247,11 +206,6 @@ fn kde_place(v: &str) -> Option<Place> {
     }
 }
 
-/// Settings from KDE's `kioslaverc` (group `[Proxy Settings]`): `ProxyType` 0 none, 1 manual (`httpProxy`,
-/// `httpsProxy`, `socksProxy`, `NoProxyFor`), 2 the configuration script (`Proxy Config Script`), 3 automatic
-/// discovery (not followed: read as nothing set). The SOCKS value is a SOCKS5 proxy whatever scheme it is
-/// written with (KDE writes `http://IP:PORT` there). `None` when the file names no type, type 4 (the
-/// environment), or another.
 pub fn from_kioslaverc(text: &str) -> Option<Proxies> {
     let mut group = String::new();
     let mut vals: Vec<(String, String)> = Vec::new();
@@ -284,7 +238,6 @@ pub fn from_kioslaverc(text: &str) -> Option<Proxies> {
     Some(p)
 }
 
-/// A GSettings value as stored on disk, of the types the proxy keys use.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum GValue {
     Str(String),
@@ -293,11 +246,6 @@ pub enum GValue {
     Strs(Vec<String>),
 }
 
-/// Settings from GSettings (`org.gnome.system.proxy`, also read by Cinnamon and MATE), keyed by dconf path
-/// (`/system/proxy/mode`, `/system/proxy/http/host` …): mode `none`; `manual` (each kind's host and port, the
-/// http proxy's credentials when `use-authentication` is on, `use-same-proxy`, `ignore-hosts`); `auto` (the
-/// script's address; none means automatic discovery, not followed: read as nothing set). `None` when no mode is
-/// stored (never set: the environment is read instead).
 pub fn from_gsettings(get: impl Fn(&str) -> Option<GValue>) -> Option<Proxies> {
     let s = |k: &str| match get(k) {
         Some(GValue::Str(v)) => Some(v),
@@ -342,8 +290,6 @@ fn u32_at(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
 }
 
-/// One serialized GVariant of a proxy key's type (`s`, `b`, `i`, `as`), little-endian; `None` for any other
-/// type or a malformed value.
 fn gvariant(data: &[u8], ty: &str) -> Option<GValue> {
     let text = |s: &[u8]| String::from_utf8(s.strip_suffix(&[0])?.to_vec()).ok();
     match ty {
@@ -355,7 +301,6 @@ fn gvariant(data: &[u8], ty: &str) -> Option<GValue> {
             if n == 0 {
                 return Some(GValue::Strs(Vec::new()));
             }
-            // The width of the framing offsets follows the container's size.
             let w = if n <= 0xff { 1 } else if n <= 0xffff { 2 } else { 4 };
             let off = |at: usize| -> Option<usize> {
                 let b = data.get(at..at + w)?;
@@ -378,9 +323,6 @@ fn gvariant(data: &[u8], ty: &str) -> Option<GValue> {
     }
 }
 
-/// The values of a dconf database file (the GVariant database, little-endian, in which dconf keeps a user's
-/// settings): each value's full key (its parents' names before its own) and the value, for the types the proxy
-/// keys use. `None` when the file is not one (a big-endian or later form included).
 pub fn gsettings_from_gvdb(b: &[u8]) -> Option<Vec<(String, GValue)>> {
     if b.get(..8)? != b"GVariant" {
         return None;
@@ -419,7 +361,6 @@ pub fn gsettings_from_gvdb(b: &[u8]) -> Option<Vec<(String, GValue)>> {
             full = format!("{pk}{full}");
             parent = pp;
         }
-        // A variant: the value's bytes, a zero, its type.
         let v = b.get(vs..ve)?;
         let nul = v.iter().rposition(|c| *c == 0)?;
         let ty = std::str::from_utf8(&v[nul + 1..]).ok()?;
@@ -430,8 +371,6 @@ pub fn gsettings_from_gvdb(b: &[u8]) -> Option<Vec<(String, GValue)>> {
     Some(out)
 }
 
-/// One GVariant text value as the keyfile backend writes it: `'text'`, a whole number, `true`/`false`, or
-/// `['a', 'b']`.
 fn gvariant_text(v: &str) -> Option<GValue> {
     let v = v.trim();
     let quoted = |s: &str| -> Option<String> {
@@ -453,8 +392,6 @@ fn gvariant_text(v: &str) -> Option<GValue> {
     }
 }
 
-/// The values of the GSettings keyfile backend (`[system/proxy/http]` groups of `key=value` lines), keyed by
-/// dconf path.
 pub fn gsettings_from_keyfile(text: &str) -> Vec<(String, GValue)> {
     let mut group = String::new();
     let mut out = Vec::new();
@@ -473,10 +410,6 @@ pub fn gsettings_from_keyfile(text: &str) -> Vec<(String, GValue)> {
     out
 }
 
-/// The Linux desktop's settings from the files under the user's configuration folder (`config`), for the
-/// desktop `XDG_CURRENT_DESKTOP` names: KDE's `kioslaverc`; any other, GSettings from the dconf database
-/// `dconf/user`, else the keyfile backend `glib-2.0/settings/keyfile`. `None` when nothing is set there (the
-/// environment is read instead).
 pub fn from_desktop_files(desktop: &str, config: &std::path::Path) -> Option<Proxies> {
     if desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE")) {
         return std::fs::read_to_string(config.join("kioslaverc")).ok().as_deref().and_then(from_kioslaverc);
@@ -488,23 +421,16 @@ pub fn from_desktop_files(desktop: &str, config: &std::path::Path) -> Option<Pro
     from_gsettings(|k| values.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
 }
 
-/// The current system proxy settings (`None` if they could not be read). Each call reads afresh; caching and
-/// timeouts are the transport's concern.
 pub fn system() -> Option<Proxies> {
     imp::read()
 }
 
-/// The proxy variables a terminal sets (`https_proxy`, `http_proxy`, `all_proxy`, lower or upper case; `no_proxy`
-/// alone sets no proxy).
 const TERMINAL_VARS: [&str; 3] = ["https_proxy", "http_proxy", "all_proxy"];
 
-/// The settings a command line follows, as programs in a terminal take them on every system: the terminal's
-/// proxy variables when any is set ([`from_env`]); else the system's settings ([`system`]).
 pub fn for_the_terminal() -> Option<Proxies> {
     terminal_or(|k| std::env::var(k).ok(), system)
 }
 
-/// [`for_the_terminal`] over a given environment and system reading.
 pub fn terminal_or(var: impl Fn(&str) -> Option<String>, otherwise: impl FnOnce() -> Option<Proxies>) -> Option<Proxies> {
     let set = TERMINAL_VARS.iter().any(|k| var(k).or_else(|| var(&k.to_ascii_uppercase())).is_some_and(|v| !v.trim().is_empty()));
     if set {
@@ -514,20 +440,15 @@ pub fn terminal_or(var: impl Fn(&str) -> Option<String>, otherwise: impl FnOnce(
     }
 }
 
-/// Maximum run time for the child process that reads system settings (macOS); after it the child is killed
-/// and the settings count as unread.
 pub const CHILD_CAP: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(target_os = "macos")]
 mod imp {
-    //! macOS: proxies from the network configuration as printed by `scutil --proxy`, parsed by
-    //! [`super::from_scutil`].
     use std::io::Read;
     use std::process::{Command, Stdio};
 
     pub fn read() -> Option<super::Proxies> {
         let mut child = crate::spawn(Command::new("/usr/sbin/scutil").arg("--proxy").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())).ok()?;
-        // Read the output while waiting, so long output cannot block the child on a full pipe.
         let mut out = child.stdout.take()?;
         let text = std::thread::spawn(move || {
             let mut b = Vec::new();
@@ -552,16 +473,12 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    //! Windows: under the machine-wide policy the machine's registry values; otherwise the user's settings as
-    //! the system answers them, the user's registry values when it answers nothing. The calls are the crate's
-    //! one declaration (`windows.rs`).
     use super::Proxies;
     use crate::windows::{ie_proxy_config, reg_dword, reg_text, Handle, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
     const PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     const POLICY: &str = r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings";
 
-    /// The registry's form under one root.
     fn registry(root: Handle) -> Proxies {
         let text = |name: &str| reg_text(root, PATH, name).unwrap_or_default();
         super::from_windows(reg_dword(root, PATH, "ProxyEnable").unwrap_or(0) != 0, &text("ProxyServer"), &text("ProxyOverride"), &text("AutoConfigURL"))
@@ -580,7 +497,6 @@ mod imp {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
-    //! Linux and other unix: the desktop's settings from its files, else the environment.
     pub fn read() -> Option<super::Proxies> {
         let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).or_else(|| crate::user_home().map(|h| h.join(".config")));
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
@@ -608,8 +524,6 @@ mod tests {
         move |k| values.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
     }
 
-    /// A proxy address parses with or without a scheme and with credentials (percent-decoded); a missing port, a
-    /// path, a space or an empty user is rejected; the password is never printed.
     #[test]
     fn a_proxy_place_is_read_or_left() {
         assert_eq!(hp(&place_of("127.0.0.1:7890")), sp("", "127.0.0.1", 7890));
@@ -624,8 +538,6 @@ mod tests {
         }
     }
 
-    /// Environment: lowercase before uppercase, SOCKS schemes to SOCKS, `all_proxy` fills the rest, credentials
-    /// and an `https://` proxy kept, `no_proxy` split on commas.
     #[test]
     fn the_environment_is_read() {
         let p = from_env(env(&[("https_proxy", "http://a:1"), ("HTTPS_PROXY", "http://b:2"), ("HTTP_PROXY", "c:3"), ("no_proxy", "localhost, .corp.example,,")]));
@@ -641,8 +553,6 @@ mod tests {
         assert_eq!(from_env(env(&[])), Proxies::default());
     }
 
-    /// The command line's reading: any of the terminal's three proxy variables, in either case, set and not blank,
-    /// is followed as the environment says; `no_proxy` alone, or blank values, leave the system's settings.
     #[test]
     fn the_terminal_comes_before_the_system_for_the_command_line() {
         let system = || Some(Proxies { pac_url: Some("http://127.0.0.1:1/pac".into()), ..Default::default() });
@@ -657,8 +567,6 @@ mod tests {
         }
     }
 
-    /// Windows: the list's forms (one place with or without `http://`, per-kind entries, `socks=` alone as
-    /// SOCKS5), the bypass list and the script address; disabled keeps only the script address.
     #[test]
     fn the_windows_forms_are_read() {
         let p = from_windows(true, "127.0.0.1:7890", "*.local;<local>;10.*", "");
@@ -674,8 +582,6 @@ mod tests {
         assert_eq!(p.pac_url.as_deref(), Some("http://127.0.0.1:10811/pac"));
     }
 
-    /// macOS: explicit proxies (one switched off), exceptions, simple host names excluded, the script address
-    /// (automatic discovery beside it not read); discovery alone reads as nothing set; nothing set.
     #[test]
     fn the_macos_configuration_is_read() {
         let on = "<dictionary> {\n  ExceptionsList : <array> {\n    0 : *.local\n    1 : 169.254/16\n  }\n  ExcludeSimpleHostnames : 1\n  HTTPEnable : 1\n  HTTPPort : 7890\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 1\n  HTTPSPort : 7890\n  HTTPSProxy : 127.0.0.1\n  SOCKSEnable : 0\n  SOCKSPort : 7891\n  SOCKSProxy : 127.0.0.1\n}\n";
@@ -692,8 +598,6 @@ mod tests {
         assert_eq!((nothing.https, nothing.socks, nothing.pac_url), (None, None, None));
     }
 
-    /// KDE: manual with each value form (the SOCKS value is SOCKS5 whatever its scheme), the script, discovery
-    /// (read as nothing set), none; the environment type and a file without a type are left to the environment.
     #[test]
     fn kde_settings_are_read() {
         let p = from_kioslaverc("[General]\nx=1\n[Proxy Settings]\nProxyType=1\nhttpProxy=http://127.0.0.1 7890\nhttpsProxy=http://127.0.0.1:7890\nsocksProxy=http://127.0.0.1:10808\nNoProxyFor=localhost,127.0.0.1\n").expect("manual");
@@ -707,8 +611,6 @@ mod tests {
         assert_eq!(from_kioslaverc("[Other]\nProxyType=1\n"), None);
     }
 
-    /// A dconf database in the shape dconf writes: each path segment an item naming its parent, values as
-    /// variants (no hash buckets: this reader walks the items).
     fn gvdb(pairs: &[(&str, GValue)]) -> Vec<u8> {
         let ser = |v: &GValue| -> (Vec<u8>, &'static str) {
             match v {
@@ -772,9 +674,6 @@ mod tests {
         out
     }
 
-    /// GNOME: the dconf database read back key by key; manual with credentials and the same proxy for https;
-    /// the script; discovery (`auto` without a script address, read as nothing set); nothing stored; the keyfile
-    /// backend.
     #[test]
     fn gnome_settings_are_read_from_the_dconf_database_and_the_keyfile() {
         let db = gvdb(&[
@@ -808,7 +707,6 @@ mod tests {
         assert_eq!((hp(&p.https), p.exceptions.len()), (sp("http", "10.0.0.1", 3128), 2));
     }
 
-    /// The files under a configuration folder: KDE's for KDE, GSettings otherwise, none when nothing is there.
     #[test]
     fn the_desktop_files_are_read_by_desktop() {
         let d = std::env::temp_dir().join(format!("zk-os-desktop-{}", std::process::id()));
@@ -822,7 +720,6 @@ mod tests {
         assert_eq!(from_desktop_files("GNOME", &d), None);
     }
 
-    /// Reading the real system settings completes on this system (whatever they are).
     #[test]
     fn the_system_is_read_without_writing() {
         let started = std::time::Instant::now();

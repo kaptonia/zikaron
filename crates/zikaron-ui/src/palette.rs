@@ -1,46 +1,29 @@
-//! Colors: one closed set of roles, each with a light and a dark value. Pages take colors only from here.
-//!
-//! Switching appearance blends the two tables: `skin` moves the blend from 0 (light) to 1 (dark) over
-//! `tokens::SLOW`, and every `c(role)` in between is the mix of its two values, so the whole window changes
-//! color at once instead of flashing.
-
 use egui::Color32;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Color roles. Closed; the order is the tables' index.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum C {
-    /// Page ground.
     Ground,
-    /// Cards, lists, inputs and keys.
     Surface,
-    /// Side rail.
     Rail,
-    /// Segmented track and switch track.
     Segment,
-    /// Hover, press and selected row grounds.
     Hover,
     Press,
     Sel,
-    /// Hairlines: borders and the fainter rules between rows.
     Line,
     Line2,
-    /// Three inks: body, secondary, quiet.
     Ink,
     Ink2,
     Ink3,
-    /// Blue: primary keys, links, focus.
     Accent,
     AccentPress,
     AccentWash,
     AccentInk,
     Focus,
-    /// Cinnabar: keys that commit to the ledger or chain.
     Pen,
     PenPress,
     PenEdge,
     PenWash,
-    /// Green, amber and red, each with a wash, a dark ink, an edge; green and red also a box ground.
     Ok,
     OkWash,
     OkInk,
@@ -55,48 +38,30 @@ pub enum C {
     BadInk,
     BadEdge,
     BadBox,
-    /// Type tags and neutral pills.
     Tag,
-    /// Dashed drop edges and empty status circles.
     Dash,
-    /// Drop zone ground at rest and hot.
     Drop,
     DropHot,
-    /// Skeleton shimmer, low and high.
     Skel,
     SkelHi,
-    /// The sheet scrim.
     Scrim,
-    /// Switch knob.
     Knob,
-    /// The drag veil over the whole window.
     Veil,
-    /// A flat grey tone laid over whatever is under it (fields, tags, segmented and switch tracks, quiet keys),
-    /// on hover and pressed.
     Tone,
     ToneHover,
     TonePress,
-    /// A white key's face at rest, on hover and pressed.
     KeyFace,
     KeyFaceHover,
     KeyFacePress,
-    /// A white key's half-point edge, at rest and lit.
     KeyEdge,
     KeyEdgeHover,
-    /// A white key's two drop shadows (the near one and the soft one).
     KeyDrop,
     KeyDrop2,
-    /// The faint accent wash in the page ground's top left corner.
     GroundTint,
-    /// A list row's ground under the pointer.
     RowHover,
-    /// The accent wash at the top of a glass surface (menus, toasts, sheets).
     GlassTint,
-    /// The half-point rim around raised surfaces.
     Ring,
-    /// The thread of light along a glass surface's top edge.
     Hi,
-    /// The translucent ground of menus, toasts and sheets.
     Glass,
 }
 
@@ -169,7 +134,6 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-/// Premultiplied from an unpremultiplied color with alpha `a` (0..=255).
 const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(
         ((r as u16 * a as u16 + 127) / 255) as u8,
@@ -179,7 +143,6 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     )
 }
 
-/// The light table, in `C::ALL` order.
 pub const LIGHT: [Color32; 60] = [
     rgb(0xfa, 0xfa, 0xfc),
     rgb(0xff, 0xff, 0xff),
@@ -243,7 +206,6 @@ pub const LIGHT: [Color32; 60] = [
     rgba(255, 255, 255, 247),
 ];
 
-/// The dark table, in `C::ALL` order.
 pub const DARK: [Color32; 60] = [
     rgb(0x17, 0x18, 0x1b),
     rgb(0x1f, 0x20, 0x24),
@@ -307,7 +269,6 @@ pub const DARK: [Color32; 60] = [
     rgba(36, 38, 44, 247),
 ];
 
-/// The blend between the two tables: 0 light, 1 dark, stored as `f32` bits. Set once per frame by `skin`.
 static BLEND: AtomicU32 = AtomicU32::new(0);
 
 pub fn set_blend(b: f32) {
@@ -318,12 +279,10 @@ pub fn blend() -> f32 {
     f32::from_bits(BLEND.load(Ordering::Relaxed))
 }
 
-/// One color, from the current blend of the two tables.
 pub fn c(k: C) -> Color32 {
     mix(LIGHT[k as usize], DARK[k as usize], blend())
 }
 
-/// Mix two colors channel by channel (premultiplied, as a CSS transition does).
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     if t <= 0.0 {
         return a;
@@ -335,23 +294,17 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
 }
 
-/// How many members of a table are pairwise distinct (complete is `C::ALL.len()`).
 pub fn distinct(table: &[Color32]) -> usize {
     table.iter().enumerate().filter(|(i, a)| !table[..*i].contains(a)).count()
 }
 
-/// The switch knob runs from its role's white at the top to this at its foot, in both appearances.
 pub const KNOB_FOOT: Color32 = Color32::from_rgb(0xf3, 0xf4, 0xf6);
 
-/// Text on solid blue, cinnabar, green and red grounds.
 pub const ON_SOLID: Color32 = Color32::WHITE;
-/// A QR code on its plate, the same in both appearances so any reader scans it: the dots in the light
-/// appearance's ink, the three finder patterns in its accent, on white.
 pub const QR_INK: Color32 = Color32::from_rgb(0x1d, 0x1d, 0x1f);
 pub const QR_FINDER: Color32 = Color32::from_rgb(0x3b, 0x82, 0xf6);
 pub const QR_PLATE: Color32 = Color32::WHITE;
 
-/// The status tones a pill can take.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
     Ok,
@@ -364,7 +317,6 @@ pub enum Tone {
 impl Tone {
     pub const ALL: [Tone; 5] = [Tone::Ok, Tone::Warn, Tone::Bad, Tone::Grey, Tone::Blue];
 
-    /// Ground of this tone.
     pub fn wash(self) -> Color32 {
         c(match self {
             Tone::Ok => C::OkWash,
@@ -375,7 +327,6 @@ impl Tone {
         })
     }
 
-    /// Text of this tone.
     pub fn ink(self) -> Color32 {
         c(match self {
             Tone::Ok => C::OkInk,
@@ -387,7 +338,6 @@ impl Tone {
     }
 }
 
-/// The canvas color the window is cleared to before anything is drawn (the page ground).
 pub fn canvas() -> [f32; 4] {
     c(C::Ground).to_normalized_gamma_f32()
 }

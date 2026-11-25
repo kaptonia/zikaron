@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s016_body_named_sig.bin",
+ "note": "sec 5.1: a member named sig inside body sits inside B6",
+ "predicted": {
+  "digest": "0x579de74f182e3b4ab54a26950f976455b66218cffdef555b43b6407d942285d8",
+  "presig": "0x5bfb8535ac22bc3c416fa4bd4b28988163b6926e88b408f1e25a031b6caa4f9a",
+  "sig": "0x85811bc1f33eacedda3829d1eb92410636a821685a4ebdd91f2bb07bc7b023923e2d89c9b73dd1e1676954543ff3182fb54276764e8bcb0dbb1aa33463b3a4f61c",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

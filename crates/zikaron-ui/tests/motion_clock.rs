@@ -1,10 +1,5 @@
-//! The clock motions read (`motion::now`) steps evenly from frame to frame though the frames come unevenly (two to
-//! one refresh, one at once and one late, as OpenGL draws on macOS), keeps close to the time, and is the time
-//! itself after a rest or a stall; a frame nothing moving asked for is a rest.
-
 use zikaron_ui::motion;
 
-/// One frame at `t` that asks for the next at once (as a frame with something moving does); what the clock read.
 fn frame(ctx: &egui::Context, t: f64) -> f64 {
     let mut shown = 0.0;
     let input = egui::RawInput { time: Some(t), ..Default::default() };
@@ -15,7 +10,6 @@ fn frame(ctx: &egui::Context, t: f64) -> f64 {
     shown
 }
 
-/// One frame at `t` that asks for nothing after it.
 fn quiet(ctx: &egui::Context, t: f64) -> f64 {
     let mut shown = 0.0;
     let input = egui::RawInput { time: Some(t), ..Default::default() };
@@ -57,12 +51,10 @@ fn after_a_rest_or_a_stall_it_is_the_time() {
 fn a_frame_nothing_moving_asked_for_teaches_it_no_refresh() {
     let ctx = egui::Context::default();
     let mut t = 1.0;
-    // A timer's frames every 40 ms with nothing moving: each is drawn at its time.
     for _ in 0..10 {
         t += 0.04;
         assert_eq!(quiet(&ctx, t), t);
     }
-    // Then a motion at 120 Hz: the clock keeps within a refresh of the time from its first frames.
     let mut worst: f64 = 0.0;
     for _ in 0..30 {
         t += 1.0 / 120.0;
@@ -71,8 +63,6 @@ fn a_frame_nothing_moving_asked_for_teaches_it_no_refresh() {
     assert!(worst < 0.0084, "the timer's spacing was not taken for the refresh: {worst}");
 }
 
-/// The refresh is read from every moving frame, the late with the early: after a run of frames that came close
-/// together, frames two to a refresh still read as one refresh each, and the clock steps evenly again.
 #[test]
 fn a_run_of_close_frames_does_not_lock_the_refresh_short() {
     let ctx = egui::Context::default();

@@ -1,17 +1,3 @@
-//! The system's automatic proxy settings and the proxies' own forms, against in-process stubs (no network: a
-//! stub resolves the node's name by piping to a local listener):
-//!
-//! - a configuration script served over HTTP names the ways, tried in order until one opens; one that cannot
-//!   be used is named and the route is the one without it;
-//! - credentials go to the proxy that asks for them (HTTP Basic, SOCKS5 user name and password, SOCKS4 user
-//!   id) and nowhere else;
-//! - an HTTPS proxy is its own TLS leg, the node keeps its own TLS inside it;
-//! - `SOCKS` tries SOCKS5, then SOCKS4 with the name for the proxy to resolve;
-//! - a manual proxy leaves local networks straight.
-//!
-//! Its own test binary: the proxy choice, the system reader and the test root are process-wide, so its tests
-//! take turns.
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -34,7 +20,6 @@ fn scene() -> Option<SystemProxies> {
     SCENE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The system's settings are these from now on (read afresh).
 fn system_is(s: SystemProxies) {
     *SCENE.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
     read_system_with(scene);
@@ -56,7 +41,6 @@ fn closed_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port()
 }
 
-/// Copy both ways between two streams until either side closes.
 fn pipe(a: TcpStream, b: TcpStream) {
     let (mut a2, mut b2) = (a.try_clone().expect("clone"), b.try_clone().expect("clone"));
     let (mut a, mut b) = (a, b);
@@ -96,7 +80,6 @@ fn listen(serve: impl Fn(TcpStream, Seen) + Send + Sync + 'static) -> (u16, Seen
     (port, seen)
 }
 
-/// A web server answering every GET with `status` and `body`; records the request lines.
 fn served(status: u16, body: String) -> (u16, Seen) {
     listen(move |mut s, seen| {
         if let Some(h) = read_head(&mut s) {
@@ -111,7 +94,6 @@ fn script(find: &str) -> String {
     format!("function FindProxyForURL(url, host) {{ {find} }}")
 }
 
-/// A node answering one JSON body; records each request head whole.
 fn node() -> (u16, Seen) {
     listen(|mut s, seen| {
         if let Some(h) = read_head(&mut s) {
@@ -133,7 +115,6 @@ fn tls_config(cert: &[u8], key: &[u8]) -> Arc<rustls::ServerConfig> {
     )
 }
 
-/// A TLS node for `node.invalid` answering one JSON body.
 fn tls_node() -> u16 {
     let config = tls_config(include_bytes!("fixtures/tls-proxy/node.crt.der"), include_bytes!("fixtures/tls-proxy/node.key.der"));
     listen(move |s, _| {
@@ -150,8 +131,6 @@ fn tls_node() -> u16 {
     .0
 }
 
-/// An HTTP CONNECT proxy routing every target to local port `to`; with `basic`, it answers 407 unless the
-/// request carries `Proxy-Authorization: Basic <basic>`. Records each CONNECT head whole.
 fn http_proxy(to: u16, basic: Option<&'static str>) -> (u16, Seen) {
     listen(move |mut s, seen| {
         let Some(h) = read_head(&mut s) else { return };
@@ -169,7 +148,6 @@ fn http_proxy(to: u16, basic: Option<&'static str>) -> (u16, Seen) {
     })
 }
 
-/// An HTTPS proxy (TLS with `localhost`'s certificate, then CONNECT inside) routing every target to `to`.
 fn https_proxy(to: u16, cert: &'static [u8], key: &'static [u8]) -> (u16, Seen) {
     let config = tls_config(cert, key);
     listen(move |s, seen| {
@@ -180,7 +158,6 @@ fn https_proxy(to: u16, cert: &'static [u8], key: &'static [u8]) -> (u16, Seen) 
         let _ = t.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
         let _ = t.flush();
         let Ok(mut up) = TcpStream::connect(("127.0.0.1", to)) else { return };
-        // Pump both ways on one thread, a short wait each side.
         let _ = t.sock.set_read_timeout(Some(Duration::from_millis(5)));
         let _ = up.set_read_timeout(Some(Duration::from_millis(5)));
         let mut buf = [0u8; 16 << 10];
@@ -210,8 +187,6 @@ fn https_proxy(to: u16, cert: &'static [u8], key: &'static [u8]) -> (u16, Seen) 
     })
 }
 
-/// A SOCKS5 proxy routing every target to `to`; with `need`, it offers only user name and password and checks
-/// them (RFC 1929). Records `method N`, `user U pass P` and `name:port` lines.
 fn socks5(to: u16, need: Option<(&'static str, &'static str)>) -> (u16, Seen) {
     listen(move |mut s, seen| {
         let mut g = [0u8; 2];
@@ -228,7 +203,6 @@ fn socks5(to: u16, need: Option<(&'static str, &'static str)>) -> (u16, Seen) {
         let _ = s.write_all(&[5, want]);
         seen.lock().unwrap().push(format!("method {want}"));
         if let Some((u, p)) = need {
-            // Only what arrived is recorded: a client that sends no credentials and closes leaves "no user".
             let got = (|| {
                 let mut v = [0u8; 2];
                 s.read_exact(&mut v).ok()?;
@@ -275,11 +249,8 @@ fn socks5(to: u16, need: Option<(&'static str, &'static str)>) -> (u16, Seen) {
     })
 }
 
-/// A SOCKS4 proxy (it closes on a SOCKS5 greeting) routing every target to `to`. Records `4 id=… name:port`
-/// (the 4a name, or the address when none).
 fn socks4_only(to: u16) -> (u16, Seen) {
     listen(move |mut s, seen| {
-        // The version first: a SOCKS5 greeting is closed on at once, as SOCKS4 servers do.
         let mut head = [0u8; 8];
         if s.read_exact(&mut head[..1]).is_err() || head[0] != 4 || s.read_exact(&mut head[1..]).is_err() {
             return;
@@ -311,8 +282,6 @@ fn reading(url: &str) -> zikaron_net::Reading {
     way_for(&parse(url).expect("address"), SYSTEM_READ_CAP + Duration::from_secs(10))
 }
 
-/// The script's ways, tried in order: a proxy that refuses passes to the next; a node the script sends direct
-/// goes direct; the script is asked with the node's scheme, host and port only, and fetched once.
 #[test]
 fn a_script_names_the_ways_and_the_next_is_tried_when_one_fails() {
     let _t = turn();
@@ -331,9 +300,6 @@ fn a_script_names_the_ways_and_the_next_is_tried_when_one_fails() {
     assert_eq!(fetched.lock().unwrap().clone(), vec!["GET /proxy.pac HTTP/1.1".to_string()], "fetched once, directly");
 }
 
-/// A script that throws, runs on, eats memory, defines no function or answers nothing that reads is named, and
-/// the route is the system's explicit proxies (or direct), within the run's limit; a script that cannot be
-/// fetched, is too long or is a file is named too.
 #[test]
 fn a_script_that_cannot_be_used_is_named_and_the_route_is_the_one_without_it() {
     let _t = turn();
@@ -368,7 +334,6 @@ fn a_script_that_cannot_be_used_is_named_and_the_route_is_the_one_without_it() {
     }
 }
 
-/// A script address that redirects is followed, absolute or a path on the same place, as browsers follow it.
 #[test]
 fn a_script_address_that_redirects_is_followed() {
     let _t = turn();
@@ -397,7 +362,6 @@ fn a_script_address_that_redirects_is_followed() {
     assert_eq!(reading("https://node.invalid/").way, Way::Through(px(Kind::Socks5, 1082)));
 }
 
-/// Credentials longer than SOCKS5 carries, wherever they came from, are refused by name, never sent cut.
 #[test]
 fn credentials_longer_than_socks5_carries_are_refused_by_name() {
     let _t = turn();
@@ -409,8 +373,6 @@ fn credentials_longer_than_socks5_carries_are_refused_by_name() {
         Err(Fail::Proxy(why)) => assert!(why.contains("longer than SOCKS5 carries"), "{why}"),
         other => panic!("{other:?}"),
     }
-    // The proxy's side of that exchange is read to its end (credentials, or none and the connection closed)
-    // before it is judged.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !seen.lock().unwrap().iter().any(|x| x.starts_with("user ") || x == "no user") && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -420,8 +382,6 @@ fn credentials_longer_than_socks5_carries_are_refused_by_name() {
     assert!(seen.iter().all(|x| !x.starts_with("user ")), "nothing cut was sent: {seen:?}");
 }
 
-/// HTTP Basic to a CONNECT proxy that asks (the node never sees it); a proxy that asks and gets none says so;
-/// SOCKS5's user name and password exchange, refused when wrong.
 #[test]
 fn credentials_go_to_the_proxy_that_asks_and_nowhere_else() {
     let _t = turn();
@@ -452,8 +412,6 @@ fn credentials_go_to_the_proxy_that_asks_and_nowhere_else() {
     }
 }
 
-/// An HTTPS proxy: TLS to it verified against its name, CONNECT inside, the node's own TLS inside that; a proxy
-/// whose certificate does not verify is named.
 #[test]
 fn an_https_proxy_is_its_own_tls_leg_and_the_node_keeps_its_own() {
     let _t = turn();
@@ -470,8 +428,6 @@ fn an_https_proxy_is_its_own_tls_leg_and_the_node_keeps_its_own() {
     }
 }
 
-/// `SOCKS` from a script tries SOCKS5, then SOCKS4 with the name in the 4a tail; a typed SOCKS4 proxy sends its
-/// user id.
 #[test]
 fn socks_tries_five_then_four_a_with_the_name_at_the_proxy() {
     let _t = turn();
@@ -487,7 +443,6 @@ fn socks_tries_five_then_four_a_with_the_name_at_the_proxy() {
     assert_eq!(seen.lock().unwrap().last().cloned(), Some(format!("4 id=me node.invalid:{n}")));
 }
 
-/// A manual proxy: private, link-local, loopback and `.local` nodes go straight; others through it.
 #[test]
 fn a_manual_proxy_leaves_local_networks_straight() {
     let _t = turn();

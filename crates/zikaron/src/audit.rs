@@ -1,8 +1,3 @@
-//! Audit (law §8): a pure function of five inputs that yields the fifteen-item report and a label.
-//!
-//! Input and report shapes follow `zk1 audit` in `base/zikaron-conformance/HARNESS.md`; the well-formedness
-//! tests of §9.4 and their no-label outcome are inside the §12 freeze.
-
 use crate::entry::{self, Entry};
 use crate::hexfmt;
 use crate::json::Value;
@@ -30,8 +25,6 @@ pub struct EvidenceRec {
     calldata: Vec<u8>,
 }
 
-/// The basis of law §9.4 as read through its three tables: the `chains` windows, the `bareTx` pairs, the
-/// `adoptionChains` chains.
 struct Basis {
     chains: Vec<ChainWindow>,
     bare: HashSet<(u64, String)>,
@@ -47,8 +40,6 @@ struct ChainWindow {
 }
 
 impl Basis {
-    /// Reach (law §9.4): an anchor record is within the basis when its `(chainId, tx)` is a bareTx pair, or
-    /// when a window of its chainId contains its blockNumber and lists its sender.
     fn reaches(&self, a: &AnchorRec) -> bool {
         if self.bare.contains(&(a.chain_id, a.tx.clone())) {
             return true;
@@ -72,8 +63,6 @@ struct Inputs {
     adoption_chains: Vec<u64>,
 }
 
-/// Every report object is built here: keys come only from [`Key`], so item names and row keys are members of
-/// a closed table.
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(
         members
@@ -87,7 +76,6 @@ fn s(v: &str) -> Value {
     Value::Str(v.to_string())
 }
 
-/// No label: the input is not a §9.4 `zikaron/1` audit input.
 pub fn no_label() -> Value {
     obj(vec![
         (Key::Ok, Value::Bool(false)),
@@ -117,9 +105,6 @@ fn as_int(v: Option<&Value>) -> Option<u64> {
     v?.as_int()
 }
 
-/// Law §9.4: a basis is an object with exactly `chains`, `bareTx` and `adoptionChains`, each table with its
-/// own order and uniqueness, so a scan has one spelling; §6.10 reaches no object here, so an extra member
-/// means it is not a basis.
 fn validate_basis(b: &Value) -> Option<Basis> {
     let ms = match b {
         Value::Obj(ms) => ms,
@@ -133,7 +118,6 @@ fn validate_basis(b: &Value) -> Option<Basis> {
         return None;
     }
 
-    // A hex20 table: every element hex20, strictly increasing in byte order (so no duplicates).
     let hex20_list = |v: Option<&Value>| -> Option<Vec<String>> {
         let mut out: Vec<String> = Vec::new();
         for a in v?.as_arr()? {
@@ -169,8 +153,6 @@ fn validate_basis(b: &Value) -> Option<Basis> {
         if w.from > w.to {
             return None;
         }
-        // Strictly increasing by (chainId, fromBlock); windows of one chain do not overlap; adjacent windows
-        // differ in registries or senders.
         if let Some(p) = chains.last() {
             if (p.chain_id, p.from) >= (w.chain_id, w.from) {
                 return None;
@@ -236,8 +218,6 @@ fn validate_basis(b: &Value) -> Option<Basis> {
     })
 }
 
-/// The five inputs of law §8 plus the basis, in the HARNESS audit-input shape; a mismatch gets no label. All
-/// six members must be present; the object is open and other members are not read.
 fn validate_inputs(v: &Value) -> Option<Inputs> {
     if !v.is_obj() {
         return None;
@@ -253,13 +233,9 @@ fn validate_inputs(v: &Value) -> Option<Inputs> {
         pile.push(hexfmt::decode(hx)?);
     }
 
-    // Read the basis first: anchor and evidence records are judged against it.
     let basis = v.member("basis")?.clone();
     let parsed = validate_basis(&basis)?;
 
-    // Law §9.4: at most one anchor record per (chainId, blockNumber, tx, hash); records equal in all seven
-    // members count as one, any other disagreement is not an audit input; records must be within the basis;
-    // the object is open.
     let mut anchors: Vec<AnchorRec> = Vec::new();
     let mut seen_anchor: HashMap<(u64, u64, String, String), usize> = HashMap::new();
     for x in v.member("anchors")?.as_arr()? {
@@ -305,8 +281,6 @@ fn validate_inputs(v: &Value) -> Option<Inputs> {
         }
     }
 
-    // Law §9.4: at most one adoption evidence record per (chainId, tx); calldata is `0x` plus an even number
-    // of lowercase digits; its chain must be named by an adoptionChains object; the object is open.
     let mut evidence: Vec<EvidenceRec> = Vec::new();
     let mut seen_evidence: HashMap<(u64, String), usize> = HashMap::new();
     for x in v.member("evidence")?.as_arr()? {
@@ -380,8 +354,6 @@ fn succession_to(e: &Entry) -> Option<String> {
     e.body.member("to")?.as_str().map(|x| x.to_string())
 }
 
-/// Whole-set lineage (law §7.4): seeded with the root; the `to` of every succession that passes §4.3 and is
-/// signed by a key in the set joins the set.
 fn whole_set_lineage(root: &str, entries: &[Entry]) -> Vec<String> {
     let mut set = vec![root.to_string()];
     let mut have: HashSet<String> = HashSet::new();
@@ -404,7 +376,6 @@ fn whole_set_lineage(root: &str, entries: &[Entry]) -> Vec<String> {
     }
 }
 
-/// Prefix lineage (law §7.4): only ledger successions with seq below k.
 fn prefix_lineage(root: &str, ledger: &[&Entry], k: u64) -> HashSet<String> {
     let mut set: HashSet<String> = HashSet::new();
     set.insert(root.to_string());
@@ -425,14 +396,10 @@ fn prefix_lineage(root: &str, ledger: &[&Entry], k: u64) -> HashSet<String> {
     }
 }
 
-/// Offset rule (law §9.1, §9.5): 32 consecutive bytes fully inside calldata, starting at a multiple of 32 or
-/// at 4 plus a multiple of 32.
 fn calldata_carries(calldata: &[u8], content: &[u8]) -> bool {
     if content.len() != 32 || calldata.len() < 32 {
         return false;
     }
-    // Visit only the offsets that can match (two per 32 bytes: 0 and 4); a byte-by-byte walk costs adoption
-    // elements times calldata length.
     let mut base = 0usize;
     while base + 32 <= calldata.len() {
         for off in [base, base + 4] {
@@ -445,11 +412,7 @@ fn calldata_carries(calldata: &[u8], content: &[u8]) -> bool {
     false
 }
 
-/// Law §8.2: walk ledger entries in (seq, entry_id) order, recording SEQ_GAP, PREV_MISMATCH,
-/// AUTHORITY_MISMATCH and ROOT_MISMATCH; authority changes only after every entry at a position has been
-/// visited.
 pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
-    // entry_id and the seq index are computed once; recomputing them in the inner loop grows with input size.
     let ids: Vec<String> = order.iter().map(|e| e.id_hex()).collect();
     let mut by_seq: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, e) in order.iter().enumerate() {
@@ -471,7 +434,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
         }
         for (n, e) in order[i..j].iter().enumerate() {
             let here = i + n;
-            // SEQ_GAP first: the entry that opens a gap is judged for authority with certain already false.
             if e.seq != expected && prev_seq != Some(e.seq) {
                 findings.push(Finding {
                     position: e.seq,
@@ -492,7 +454,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
             }
             prev_seq = Some(e.seq);
 
-            // PREV_MISMATCH: no entry at position s−1 has an entry_id equal to this entry's prev.
             if e.seq >= 1 {
                 let at_prev: &[usize] = by_seq.get(&(e.seq - 1)).map(|v| v.as_slice()).unwrap_or(&[]);
                 if !at_prev.is_empty()
@@ -509,7 +470,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
                 }
             }
 
-            // AUTHORITY_MISMATCH: author differs from the walk's authority; hard when certain.
             if e.seq >= 1 && e.author != auth {
                 findings.push(Finding {
                     position: e.seq,
@@ -521,8 +481,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
                 });
             }
 
-            // ROOT_MISMATCH: seq 0 with an author that is not the audited root; position 0 is judged by this
-            // finding only.
             if e.seq == 0 && e.author != root {
                 findings.push(Finding {
                     position: 0,
@@ -534,9 +492,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
                 });
             }
         }
-        // Every entry at position k visited: among successions signed by the sitting key (author equal to
-        // this position's authority), the `to` of the one with the smallest entry_id becomes the authority;
-        // with none, authority stays (a retired key's succession moves nothing, §8.2).
         let mut succs: Vec<&&Entry> = order[i..j]
             .iter()
             .filter(|e| e.kind == EntryType::Succession && e.author == auth)
@@ -552,8 +507,6 @@ pub fn walk(root: &str, order: &[&Entry]) -> (Vec<Finding>, bool) {
     (findings, gap_seen)
 }
 
-/// Law §8.4: two different entries with the same seq or the same non-null prev give one hard finding per
-/// unordered pair.
 pub fn equivocations(order: &[&Entry]) -> Vec<Finding> {
     let ids: Vec<String> = order.iter().map(|e| e.id_hex()).collect();
     let mut findings = Vec::new();
@@ -588,8 +541,6 @@ pub fn equivocations(order: &[&Entry]) -> Vec<Finding> {
     findings
 }
 
-/// Law §8.5: reconcile both ways. Forward MISSING (counted, not held, not unavailable); backward UNANCHORED
-/// (held, not counted). Both match entry_id exactly.
 pub fn reconcile(
     order: &[&Entry],
     counted_hashes: &[String],
@@ -614,9 +565,6 @@ pub fn reconcile(
     (missing, unanchored)
 }
 
-/// Law §9.5: an adoption element is proven by three conditions (the basis declares the chain and evidence has
-/// the record; calldata carries content at an aligned offset; the sender is in the prefix lineage at k, or a
-/// §6.6 cosignature exists and its attestor is that sender); otherwise it is unproven.
 pub fn adoption_unproven(
     root: &str,
     order: &[&Entry],
@@ -668,17 +616,11 @@ pub fn adoption_unproven(
     ordered(rows, |a, b| (a.0, a.1.as_bytes(), a.2).cmp(&(b.0, b.1.as_bytes(), b.2)))
 }
 
-/// Order rule (law §8.7): each item is sorted by the keys the law names, so any permutation of the same input
-/// yields a byte-identical report. All sorting goes through here: the ledger's (seq, entry_id) order and
-/// every item's row order.
 pub fn ordered<T>(mut rows: Vec<T>, by: impl Fn(&T, &T) -> Ordering) -> Vec<T> {
     rows.sort_by(by);
     rows
 }
 
-/// Law §8.7 item 15: one of four labels, decided in this order. The second branch of rule 2: an UNPROVEN
-/// record whose hash is neither the entry_id of any pile byte string nor the hash of any retained counted
-/// record.
 pub fn label_of(
     any_hard: bool,
     unavailable_empty: bool,
@@ -697,40 +639,29 @@ pub fn label_of(
     }
 }
 
-/// Everything an audit produces: the report plus the ledger, findings, anchor records, lineage and basis the
-/// reading layer uses. Kit law §1 `audit(I)` needs the report and the ledger, so this is public.
 pub struct Outcome {
     pub report: Value,
     pub label: Label,
     pub basis: Value,
-    /// The audited root (kit law §10.4 needs it for the ledger chain).
     pub root: String,
-    /// Ledger entries of law §8.1 in (seq, entry_id) order.
     pub ledger: Vec<Entry>,
-    /// Report findings flattened by name and entry (kit law §10.2 looks up AUTHORITY_MISMATCH per entry).
     pub findings: Vec<FindingRow>,
-    /// Anchor records counted after trimming (anchoring and bounds of kit law §8.2).
     pub counted: Vec<CountedAnchor>,
-    /// Anchor records judged UNPROVEN after trimming (check 4 of kit law §10.2).
     pub unproven: Vec<CountedAnchor>,
-    /// Whole-set lineage of law §7.4 (coverage in check 4 of kit law §10.2).
     pub lineage: Vec<String>,
 }
 
-/// One finding, flattened to the three fields the kit law needs.
 pub struct FindingRow {
     pub name: FindingName,
     pub entry_id: String,
     pub hard: bool,
 }
 
-/// One anchor record, flattened to the two fields kit law §8.2 needs.
 pub struct CountedAnchor {
     pub hash: String,
     pub block_timestamp: u64,
 }
 
-/// Audit: five inputs in, report out (law §8.7). An input outside the §9.4 shape gets no label.
 pub fn audit(input: &Value) -> Value {
     match audit_full(input) {
         Some(o) => o.report,
@@ -757,14 +688,10 @@ fn anchor_row(a: &AnchorRec, with_hash: bool, with_timestamp: bool, with_verdict
     obj(ms)
 }
 
-/// The same audit, returning the ledger and the reading layer's inputs too.
 pub fn audit_full(input: &Value) -> Option<Outcome> {
     trace::mark(trace::K1);
     let inp = validate_inputs(input)?;
 
-    // Law §8.1: each pile byte string is tested by §4.3; identical byte strings collapse to one. What fails
-    // §4.3 is no entry: only its entry_id is computed for trimming, and it is listed MALFORMED (§8.7 item
-    // 10).
     let mut pile_ids: HashSet<String> = HashSet::new();
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen_entry: HashSet<[u8; 32]> = HashSet::new();
@@ -792,8 +719,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
     let ledger: Vec<&Entry> = entries.iter().filter(|e| in_lineage.contains(e.author.as_str())).collect();
     let excluded: Vec<&Entry> = entries.iter().filter(|e| !in_lineage.contains(e.author.as_str())).collect();
 
-    // Law §8.1: anchor records whose sender is outside the whole-set lineage are discarded and listed in
-    // DISCARDED (item 14).
     let (trimmed, discarded): (Vec<&AnchorRec>, Vec<&AnchorRec>) = inp
         .anchors
         .iter()
@@ -807,8 +732,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
         }
     }
 
-    // Law §8.1: a hash that is no remaining counted record's hash, or is the entry_id of a pile byte string,
-    // leaves the unavailable set.
     let unavailable: Vec<String> = inp
         .unavailable
         .iter()
@@ -821,8 +744,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
     let (mut findings, gap_seen) = walk(&inp.root, &order);
     findings.extend(equivocations(&order));
 
-    // Law §8.7 item 3: sorted by (position, finding name, entry_id, second entry_id), each finding tuple
-    // once.
     let findings = ordered(findings, |p, q| {
         (p.position, p.name.as_str().as_bytes(), p.entry_id.as_bytes(), p.second.as_bytes()).cmp(&(
             q.position,
@@ -831,7 +752,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
             q.second.as_bytes(),
         ))
     });
-    // Already sorted on all four keys, so comparing neighbours suffices.
     let mut uniq: Vec<&Finding> = Vec::new();
     for f in &findings {
         match uniq.last() {
@@ -846,7 +766,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
 
     let (missing, unanchored) = reconcile(&order, &counted_hashes, &unavailable);
 
-    // Counted records indexed by hash; MISSING and ANCHORED list their records by (chainId, blockNumber, tx).
     let mut by_hash: HashMap<&str, Vec<&AnchorRec>> = HashMap::new();
     for a in &counted {
         by_hash.entry(a.hash.as_str()).or_default().push(a);
@@ -859,13 +778,11 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
         Value::Arr(rows.iter().map(|a| anchor_row(a, false, with_timestamp, false)).collect())
     };
 
-    // Item 4: MISSING, by hash byte order (reconcile sorted it).
     let missing_rows: Vec<Value> = missing
         .iter()
         .map(|h| obj(vec![(Key::Hash, s(h)), (Key::Anchors, records_of(h, false))]))
         .collect();
 
-    // Item 5: ANCHORED, ledger entries whose entry_id is counted, by entry_id byte order.
     let anchored_ids = ordered(
         order.iter().map(|e| e.id_hex()).filter(|h| counted_set.contains(h.as_str())).collect::<Vec<String>>(),
         |a, b| a.as_bytes().cmp(b.as_bytes()),
@@ -875,7 +792,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
         .map(|h| obj(vec![(Key::EntryId, s(h)), (Key::Anchors, records_of(h, true))]))
         .collect();
 
-    // Item 7: EXCLUDED, entries that pass §4.3 but are not ledger entries, by (seq, entry_id).
     let exc = ordered(excluded.clone(), |a, b| (a.seq, a.id).cmp(&(b.seq, b.id)));
     let excluded_rows: Vec<Value> = exc
         .iter()
@@ -888,7 +804,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
         })
         .collect();
 
-    // Item 8: ADOPTION_UNPROVEN (already sorted by (seq, entry_id, index)).
     let adoption_values: Vec<Value> =
         adoption_unproven(&inp.root, &order, &inp.adoption_chains, &inp.evidence)
             .iter()
@@ -901,7 +816,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
             })
             .collect();
 
-    // Item 9: UNKNOWN_TYPE, ledger entries of a type outside the seven, by (seq, entryType, entry_id).
     let unknown = ordered(
         order.iter().copied().filter(|e| e.kind == EntryType::Other).collect::<Vec<&Entry>>(),
         |a, b| (a.seq, a.entry_type.as_bytes(), &a.id).cmp(&(b.seq, b.entry_type.as_bytes(), &b.id)),
@@ -917,18 +831,14 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
         })
         .collect();
 
-    // Item 10: MALFORMED, by entry_id byte order.
     let malformed = ordered(malformed, |a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
     let malformed_rows: Vec<Value> = malformed
         .iter()
         .map(|(id, tok)| obj(vec![(Key::EntryId, s(id)), (Key::TokenKey, s(tok.as_str()))]))
         .collect();
 
-    // Item 11: the unavailable set, by byte order.
     let unavail_sorted = ordered(unavailable.clone(), |a, b| a.as_bytes().cmp(b.as_bytes()));
 
-    // Items 12 and 13: UNPROVEN and VOID, rows (hash, chainId, blockNumber, tx, sender), by the first four
-    // keys.
     let verdict_rows = |want: Verdict| -> Vec<&AnchorRec> {
         ordered(
             trimmed.iter().copied().filter(|a| a.verdict == want).collect::<Vec<&AnchorRec>>(),
@@ -947,7 +857,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
     let unproven_rows: Vec<Value> = unproven_recs.iter().map(|a| anchor_row(a, true, false, false)).collect();
     let void_rows: Vec<Value> = void_recs.iter().map(|a| anchor_row(a, true, false, false)).collect();
 
-    // Item 14: DISCARDED, seven members, by (sender, chainId, blockNumber, tx, hash).
     let discarded = ordered(discarded, |a, b| {
         (a.sender.as_bytes(), a.chain_id, a.block_number, a.tx.as_bytes(), a.hash.as_bytes()).cmp(&(
             b.sender.as_bytes(),
@@ -959,7 +868,6 @@ pub fn audit_full(input: &Value) -> Option<Outcome> {
     });
     let discarded_rows: Vec<Value> = discarded.iter().map(|a| anchor_row(a, true, true, true)).collect();
 
-    // Item 15, second branch of rule 2.
     let unproven_unbacked = unproven_recs
         .iter()
         .any(|a| !pile_ids.contains(&a.hash) && !counted_set.contains(a.hash.as_str()));

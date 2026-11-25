@@ -1,6 +1,3 @@
-//! Proxy routing against in-process HTTP CONNECT and SOCKS5 stubs (no network; a stub resolves the node's name
-//! by piping to a local listener). The proxy setting is process-wide, so tests run serially (`TURN`).
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zikaron_net::{parse, post_json, read_system_with, set_choice, Ask, Choice, Fail, Kind, Limits, Proxy, SystemProxies};
 
-/// Serializes tests: the proxy setting is process-wide.
 static TURN: Mutex<()> = Mutex::new(());
 
 fn turn() -> std::sync::MutexGuard<'static, ()> {
@@ -19,7 +15,6 @@ fn limits() -> Limits {
     Limits { deadline: Duration::from_secs(5), max_answer: 0 }
 }
 
-/// Copy both ways between two streams until either side closes.
 fn pipe(a: TcpStream, b: TcpStream) {
     let (mut a2, mut b2) = (a.try_clone().expect("clone"), b.try_clone().expect("clone"));
     let (mut a, mut b) = (a, b);
@@ -31,7 +26,6 @@ fn pipe(a: TcpStream, b: TcpStream) {
     let _ = a.shutdown(std::net::Shutdown::Write);
 }
 
-/// A node on a local port answering one JSON body to every request.
 fn node() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -49,7 +43,6 @@ fn node() -> u16 {
     port
 }
 
-/// A TLS server with a self-signed certificate (no root trusts it).
 fn untrusted_tls() -> u16 {
     let cert = rustls::pki_types::CertificateDer::from(include_bytes!("fixtures/self-signed-cert.der").to_vec());
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(include_bytes!("fixtures/self-signed-key.pk8.der").to_vec().into());
@@ -81,8 +74,6 @@ fn untrusted_tls() -> u16 {
     port
 }
 
-/// An HTTP CONNECT proxy that routes every target to local port `to`, or refuses with `refuse`; records the
-/// request lines it saw.
 fn connect_proxy(to: u16, refuse: Option<&'static str>) -> (u16, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -116,8 +107,6 @@ fn connect_proxy(to: u16, refuse: Option<&'static str>) -> (u16, Arc<Mutex<Vec<S
     (port, seen)
 }
 
-/// A SOCKS5 proxy (no authentication) that routes every target to `to`, or refuses with reply code `refuse`;
-/// records the host names requested.
 fn socks_proxy(to: u16, refuse: Option<u8>) -> (u16, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -189,25 +178,21 @@ fn a_connection_goes_the_way_the_choice_says() {
     let node = node();
     let ask = |url: &str| post_json(&parse(url).expect("address"), b"{}", &limits(), Ask::Read);
 
-    // CONNECT: the host name goes to the proxy (never resolved locally: `.invalid` would not resolve).
     let (p, seen) = connect_proxy(node, None);
     set_choice(manual(Kind::Http, p));
     assert_eq!(ask(&format!("http://node.invalid:{node}/")).map(|a| a.body).ok(), Some(b"{\"through\":true}".to_vec()));
     assert_eq!(seen.lock().expect("seen").first().cloned(), Some(format!("CONNECT node.invalid:{node} HTTP/1.1")));
 
-    // TLS is end to end with the node: an untrusted certificate behind the proxy is a certificate failure.
     let tls = untrusted_tls();
     let (p, _) = connect_proxy(tls, None);
     set_choice(manual(Kind::Http, p));
     assert!(matches!(ask(&format!("https://node.invalid:{tls}/")), Err(Fail::Certificate(_))));
 
-    // SOCKS5: the domain address type, for the proxy to resolve.
     let (p, seen) = socks_proxy(node, None);
     set_choice(manual(Kind::Socks5, p));
     assert_eq!(ask(&format!("http://node.invalid:{node}/")).map(|a| a.status).ok(), Some(200));
     assert_eq!(seen.lock().expect("seen").first().cloned(), Some(format!("node.invalid:{node}")));
 
-    // A refusing proxy or an absent one: a connection failure naming the proxy and its response.
     let (p, _) = connect_proxy(node, Some("HTTP/1.1 403 Forbidden"));
     set_choice(manual(Kind::Http, p));
     match ask(&format!("http://node.invalid:{node}/")) {
@@ -227,15 +212,12 @@ fn a_connection_goes_the_way_the_choice_says() {
         other => panic!("{:?}", other.err()),
     }
 
-    // Loopback goes direct whatever the setting (the proxy here does not even exist).
     assert_eq!(ask(&format!("http://127.0.0.1:{node}/")).map(|a| a.status).ok(), Some(200));
     assert_eq!(ask(&format!("http://localhost:{node}/")).map(|a| a.status).ok(), Some(200));
 
-    // No proxy: the name is resolved locally, and `.invalid` does not resolve.
     set_choice(Choice::Off);
     assert!(matches!(ask(&format!("http://node.invalid:{node}/")), Err(Fail::Name(_))));
 
-    // Following the system: the platform settings, read when the connection opens.
     let (p, seen) = socks_proxy(node, None);
     SYSTEM_SOCKS.store(p, std::sync::atomic::Ordering::SeqCst);
     read_system_with(system_with_socks);
@@ -246,7 +228,6 @@ fn a_connection_goes_the_way_the_choice_says() {
     assert!(matches!(ask(&format!("http://node.invalid:{node}/")), Err(Fail::Name(_))), "the system gives none: straight");
 }
 
-/// A stub proxy that runs `script` on every connection it accepts.
 fn scripted(script: fn(TcpStream)) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -258,7 +239,6 @@ fn scripted(script: fn(TcpStream)) -> u16 {
     port
 }
 
-/// Read a CONNECT request's head (to its blank line).
 fn read_head(s: &mut TcpStream) -> bool {
     let mut head = Vec::new();
     let mut one = [0u8; 1];
@@ -271,13 +251,11 @@ fn read_head(s: &mut TcpStream) -> bool {
     true
 }
 
-/// Read a SOCKS5 greeting (version, count, methods).
 fn read_greeting(s: &mut TcpStream) -> bool {
     let mut g = [0u8; 3];
     s.read_exact(&mut g).is_ok()
 }
 
-/// Read a SOCKS5 request with a domain-name address.
 fn read_socks_request(s: &mut TcpStream) -> bool {
     let mut head = [0u8; 5];
     if s.read_exact(&mut head).is_err() {
@@ -292,7 +270,6 @@ fn hold(s: TcpStream) {
     drop(s);
 }
 
-/// The result of a request through a proxy of `kind` on `port`, under a deadline of `ms`.
 fn through(kind: Kind, port: u16, ms: u64) -> Result<u16, Fail> {
     set_choice(manual(kind, port));
     let t = parse("http://node.invalid:8545/").expect("address");
@@ -306,7 +283,6 @@ fn connect_said(r: Result<u16, Fail>) -> String {
     }
 }
 
-/// A proxy asking for credentials when none were given: that failure, its words.
 fn asked_said(r: Result<u16, Fail>) -> String {
     match r {
         Err(Fail::ProxyCredentials { given: false, said }) => said,
@@ -314,14 +290,10 @@ fn asked_said(r: Result<u16, Fail>) -> String {
     }
 }
 
-/// Every way the proxy side of the tunnel can fail is reported distinctly: silence (the deadline), a partial
-/// response, an unreadable response, a credentials demand (its own failure, `Fail::ProxyCredentials`); connection
-/// failures name the proxy.
 #[test]
 fn each_failure_on_the_proxys_side_is_named() {
     let _turn = turn();
     read_system_with(nothing);
-    // Silent after accepting: the exchange deadline applies, not a hang, and it is the proxy's failure.
     let p = scripted(|mut s| {
         let _ = read_head(&mut s);
         hold(s)
@@ -335,7 +307,6 @@ fn each_failure_on_the_proxys_side_is_named() {
         }
     });
     assert!(matches!(through(Kind::Socks5, p, 400), Err(Fail::Proxy(ref s)) if s.contains("no answer within")), "SOCKS5 silent before its reply");
-    // A partial response, then closed.
     let p = scripted(|mut s| {
         if read_head(&mut s) {
             let _ = s.write_all(b"HTTP/1.1 200 Conn");
@@ -349,7 +320,6 @@ fn each_failure_on_the_proxys_side_is_named() {
         }
     });
     assert!(connect_said(through(Kind::Socks5, p, 3000)).contains("closed the connection"), "SOCKS5 reply cut");
-    // Unreadable responses.
     let p = scripted(|mut s| {
         if read_head(&mut s) {
             let _ = s.write_all(b"garbage\r\n\r\n");
@@ -393,7 +363,6 @@ fn each_failure_on_the_proxys_side_is_named() {
         });
         assert!(connect_said(through(Kind::Socks5, p, 3000)).contains("reply does not read"), "{form}");
     }
-    // Asks for credentials, and none are written with the proxy: reported as such.
     let p = scripted(|mut s| {
         if read_head(&mut s) {
             let _ = s.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n");
@@ -409,7 +378,6 @@ fn each_failure_on_the_proxys_side_is_named() {
     assert!(asked_said(through(Kind::Socks5, p, 3000)).contains("asks for authentication"));
 }
 
-/// A node that keeps connections open (HTTP/1.1, a length, no close), counting accepted connections.
 fn keeping_node() -> (u16, Arc<AtomicUsize>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -436,8 +404,6 @@ fn keeping_node() -> (u16, Arc<AtomicUsize>) {
     (port, conns)
 }
 
-/// Kept connections are keyed by route: after switching to another proxy, a connection opened through the first
-/// is not reused; after switching back, it is.
 #[test]
 fn a_kept_connection_is_kept_under_its_way_out() {
     let _turn = turn();

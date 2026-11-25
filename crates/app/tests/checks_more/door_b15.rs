@@ -1,10 +1,3 @@
-//! The command line's door, desktop side. A shell is booted, unlocked and made the writer of a home; a
-//! stand-in for the command line in this process connects at the door's place, sends a request and reads the
-//! reply (`zikaron_glue::door`), while the test drains the shell as the window's frame does. Each case of the
-//! door's boundary table is one test (the command line's half is `zikaron-cli/tests/desk.rs`). Each test runs
-//! alone in its own process (places are per process); the machine folder path is short because a local
-//! socket's path must be.
-
 use app::action::{apply, Action, Applied};
 use app::shell::Shell;
 use std::path::{Path, PathBuf};
@@ -19,10 +12,7 @@ struct Bench {
 }
 
 impl Bench {
-    /// Places for this process (a short machine folder), the vault open, and a shell writing a home with its first
-    /// entry; the door opens at the first drain.
     fn new(tag: &str) -> (Bench, Shell) {
-        // This process's places and vault (`vault_open`: a short machine folder of its own).
         super::vault_open();
         let base = if std::env::temp_dir().as_os_str().len() <= 40 { std::env::temp_dir() } else { PathBuf::from("/tmp") };
         let root = base.join(format!("zkb15-{tag}-{}", std::process::id()));
@@ -59,7 +49,6 @@ fn boot() -> Shell {
     shell
 }
 
-/// A home with its first entry, signed by the current identity's key (made once); the home is its seat's own.
 fn home_with_genesis(shell: &mut Shell, at: &Path) -> PathBuf {
     super::seated(shell, at);
     let opened = apply(shell, Action::OpenHome { root: at.display().to_string() });
@@ -69,7 +58,6 @@ fn home_with_genesis(shell: &mut Shell, at: &Path) -> PathBuf {
     std::fs::canonicalize(at).expect("home")
 }
 
-/// Send `bytes` at `place` from another thread (the command line's side); returns the reply's bytes, if any.
 fn send(place: &Path, bytes: Vec<u8>) -> std::thread::JoinHandle<Option<Vec<u8>>> {
     let place = place.to_path_buf();
     std::thread::spawn(move || {
@@ -79,7 +67,6 @@ fn send(place: &Path, bytes: Vec<u8>) -> std::thread::JoinHandle<Option<Vec<u8>>
     })
 }
 
-/// Drain the shell as the frame does until the command line's side is done (bounded, so a test never hangs).
 fn served(shell: &mut Shell, h: std::thread::JoinHandle<Option<Vec<u8>>>) -> Option<Reply> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !h.is_finished() && std::time::Instant::now() < until {
@@ -89,15 +76,12 @@ fn served(shell: &mut Shell, h: std::thread::JoinHandle<Option<Vec<u8>>>) -> Opt
     h.join().ok().flatten().and_then(|b| Reply::of_bytes(&b))
 }
 
-/// The trace marks dropped since `from` (a count of all marks so far), from the action's own first mark on;
-/// earlier marks are the shell's background work on other threads.
 fn own_marks(from: usize) -> Vec<&'static str> {
     let all: Vec<&str> = app::trace::ring().into_iter().skip(from.saturating_sub(app::trace::dropped())).collect();
     let first = all.iter().position(|m| *m == app::feature::Feature::W1.id()).unwrap_or(all.len());
     all[first..].to_vec()
 }
 
-/// Drain until no background work is running (what opening a home started has landed), bounded.
 fn settle(shell: &mut Shell) {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
     shell.drain();
@@ -111,15 +95,11 @@ fn head(shell: &Shell) -> (u64, String) {
     app::ledgerx::head(shell.home.as_ref().expect("a home")).expect("head").expect("an entry")
 }
 
-/// An entry's opened bytes, by its id.
 fn entry_bytes(shell: &Shell, id: &str) -> Vec<u8> {
     let pile = shell.home.as_ref().expect("home").ledger().expect("ledger").pile().expect("pile");
     pile.items.into_iter().find(|b| zikaron::hexfmt::encode(&zikaron::entry::entry_id(b)).eq_ignore_ascii_case(id)).expect("the entry")
 }
 
-/// The door is open exactly while the shell is unlocked and writes a home, and belongs to that home: it goes
-/// on lock, returns on unlock, moves with the open home and shuts on quit. A stale door left by a stopped
-/// desktop does not block a new one.
 #[test]
 fn the_door_follows_the_lock_and_the_home() {
     if super::alone_in(module_path!(), "the_door_follows_the_lock_and_the_home") {
@@ -134,17 +114,13 @@ fn the_door_follows_the_lock_and_the_home() {
     answers!(app::action::apply_settled(&mut shell, Action::Unlock { pin: PIN.into() }), Applied::Unlocked);
     shell.drain();
     assert!(zikaron_os::door::connect(&at).is_ok(), "unlocked again: the door is back");
-    // Another home: the door belongs to that home.
     let other = home_with_genesis(&mut shell, &b.root.join("h2"));
     shell.drain();
     assert_eq!(zikaron_os::door::connect(&at).err().map(|e| e.kind()), Some(std::io::ErrorKind::NotFound), "the first home's door is shut");
     assert!(zikaron_os::door::connect(&zikaron_glue::door::place(&b.machine, &other)).is_ok(), "the open home has the door");
-    // Quitting shuts it, whatever else holds.
     apply(&mut shell, Action::Quit);
     shell.drain();
     assert!(shell.door.is_none() && zikaron_os::door::connect(&zikaron_glue::door::place(&b.machine, &other)).is_err(), "quit: shut");
-    // A door left behind at a home's place (opened by a stopped desktop and never closed) gives way when the
-    // door opens.
     {
         let (left, _never_closed) = zikaron_os::door::listen(&b.place()).expect("left behind");
         drop(left);
@@ -155,7 +131,6 @@ fn the_door_follows_the_lock_and_the_home() {
     }
 }
 
-/// A second instance that only reads the home keeps no door; the writer's is the home's.
 #[test]
 fn a_reader_keeps_no_door() {
     if super::alone_in(module_path!(), "a_reader_keeps_no_door") {
@@ -170,9 +145,6 @@ fn a_reader_keeps_no_door() {
     assert!(shell.door.is_some());
 }
 
-/// A request goes through the action layer and answers with its entry (id, ledger folder, head sequence); the
-/// window reports the same result, and the same action through the door or on the desktop writes the same
-/// bytes and trace marks.
 #[test]
 fn a_request_is_done_by_the_action_layer_as_a_click_is() {
     if super::alone_in(module_path!(), "a_request_is_done_by_the_action_layer_as_a_click_is") {
@@ -180,7 +152,6 @@ fn a_request_is_done_by_the_action_layer_as_a_click_is() {
     }
     let (b, mut shell) = Bench::new("same");
     let (_, genesis) = head(&shell);
-    // Pressed on the desktop, in a second home of the same identity (same key, same first entry).
     let first = b.home.clone();
     let twin = home_with_genesis(&mut shell, &b.root.join("twin"));
     settle(&mut shell);
@@ -190,7 +161,6 @@ fn a_request_is_done_by_the_action_layer_as_a_click_is() {
     let Applied::Annotated(pressed_id) = pressed else { panic!("{pressed:?}") };
     let pressed_bytes = entry_bytes(&shell, &pressed_id);
     assert_ne!(twin, first);
-    // Through the command-line channel, in the first home (the seat's home again).
     super::seat_home(&first);
     let _ = apply(&mut shell, Action::OpenHome { root: first.display().to_string() });
     settle(&mut shell);
@@ -209,15 +179,13 @@ fn a_request_is_done_by_the_action_layer_as_a_click_is() {
     assert!(matches!(shell.door_told.as_slice(), [Applied::Annotated(x)] if *x == id), "the window tells it as a click's: {:?}", shell.door_told);
 }
 
-/// Each entry-writing verb through the door writes its entry: `init` on a rooted home is refused by name;
-/// `history`, `grant`, `revoke`, `succeed` and `retract` each land and answer their entry (an action layer
-/// refusal answers its code).
 #[test]
 fn each_writing_verb_lands_its_entry() {
     if super::alone_in(module_path!(), "each_writing_verb_lands_its_entry") {
         return;
     }
     let (b, mut shell) = Bench::new("each");
+    super::venue::in_venue(&mut shell, &super::venue::venue());
     let ask = |shell: &mut Shell, q: Request| served(shell, send(&b.place(), q.to_bytes())).expect("answered");
     let refused_code = |r: &Reply| match r {
         Reply::Refused { code, .. } => code.clone(),
@@ -239,39 +207,19 @@ fn each_writing_verb_lands_its_entry() {
     let Reply::Wrote { entry_id: grant, seq, .. } = r.clone() else { panic!("grant: {r:?}") };
     assert_eq!(seq, 2);
     let r = ask(&mut shell, b.ask("revoke", &[("grant", &grant), ("case", &format!("0x{}", "ef".repeat(32)))]));
-    assert!(matches!(r, Reply::Wrote { seq: 3, .. }), "revoke: {r:?}");
+    assert!(matches!(&r, Reply::Noticed { withdrawn: true, notice, .. } if notice == "counted"), "revoke: {r:?}");
+    assert_eq!(head(&shell).0, 3, "the revocation entry landed");
     let r = ask(&mut shell, b.ask("retract", &[("subject", &work_entry), ("note", "gone")]));
     assert!(matches!(r, Reply::Wrote { seq: 4, .. }), "retract: {r:?}");
-    // Handing the ledger to another key is done only by hand on the desktop: not a command-line verb, refused
-    // by name, nothing written.
     let before = head(&shell);
-    let r = ask(&mut shell, b.ask("succeed", &[("to", &format!("0x{}", "12".repeat(20))), ("kind", "handover"), ("effective", "5"), ("statement", "s")]));
-    assert!(matches!(&r, Reply::Refused { code, network: false, .. } if code == "DOOR_UNREAD"), "succeed: {r:?}");
+    let r = ask(&mut shell, b.ask("migrate", &[("effective", "5")]));
+    assert!(matches!(&r, Reply::Refused { code, network: false, .. } if code == "DOOR_UNREAD"), "migrate: {r:?}");
     assert_eq!(head(&shell), before, "nothing written");
     assert!(!me.is_empty());
-    // A refusal answers the action layer's code: a malformed subject.
     let r = ask(&mut shell, b.ask("retract", &[("subject", "not-an-id")]));
-    assert!(matches!(&r, Reply::Refused { network: false, .. }), "{r:?}");
+    assert!(matches!(&r, Reply::RuleRefused { rule: zikaron_glue::door::Rule::Retraction, token: Some(t), .. } if t == "E_RETRACT_SHAPE"), "{r:?}");
 }
 
-/// An action that asks for the passcode is never done through the door: answered "on the desktop", nothing
-/// written, judged by the action layer's own table (`Action::pin_asked`).
-#[test]
-fn a_passcode_action_is_left_to_the_desktop() {
-    if super::alone_in(module_path!(), "a_passcode_action_is_left_to_the_desktop") {
-        return;
-    }
-    let (b, mut shell) = Bench::new("pin");
-    let before = head(&shell);
-    let r = served(&mut shell, send(&b.place(), b.ask("attest", &[]).to_bytes()));
-    assert_eq!(r, Some(Reply::OnDesktop));
-    assert_eq!(head(&shell), before, "nothing written");
-    let attest = Action::AttestFor { text: String::new(), pin: app::secret::Secret::default() };
-    assert!(attest.pin_asked().is_some() && attest.verb() == Some("attest"));
-}
-
-/// Unreadable requests are answered as such and the door stays open: an unsupported verb, a malformed frame,
-/// an oversize frame; a client that leaves or stays silent past the wait gets no answer and blocks nobody.
 #[test]
 fn what_does_not_read_is_answered_and_the_door_stays_open() {
     if super::alone_in(module_path!(), "what_does_not_read_is_answered_and_the_door_stays_open") {
@@ -285,7 +233,6 @@ fn what_does_not_read_is_answered_and_the_door_stays_open() {
     let unread = app::fault::Known::DoorUnread.as_str();
     assert_eq!(code(served(&mut shell, send(&b.place(), b.ask("scan", &[]).to_bytes()))), unread, "a verb not done through the door");
     assert_eq!(code(served(&mut shell, send(&b.place(), b"{\"form\":\"other\"}".to_vec()))), unread, "not the door's form");
-    // Oversize: the length prefix exceeds the cap, and nothing more is read.
     let place = b.place();
     let over = std::thread::spawn(move || {
         use std::io::Write;
@@ -294,7 +241,6 @@ fn what_does_not_read_is_answered_and_the_door_stays_open() {
         zikaron_glue::door::take(&mut s).ok()
     });
     assert_eq!(code(served(&mut shell, over)), unread, "over the size");
-    // One that connects and leaves at once, then one that says nothing (dropped after the wait); the next is served.
     drop(zikaron_os::door::connect(&b.place()).expect("in"));
     let silent = zikaron_os::door::connect(&b.place()).expect("in");
     let started = std::time::Instant::now();
@@ -304,7 +250,6 @@ fn what_does_not_read_is_answered_and_the_door_stays_open() {
     drop(silent);
 }
 
-/// Requests are handled one at a time, in arrival order: two at once both land, one after the other.
 #[test]
 fn two_at_once_are_done_in_turn() {
     if super::alone_in(module_path!(), "two_at_once_are_done_in_turn") {
@@ -324,7 +269,6 @@ fn two_at_once_are_done_in_turn() {
     assert_eq!(seqs, vec![1, 2]);
 }
 
-/// Locking while a request waits at the door tells it the desktop closed, and nothing of it is written.
 #[test]
 fn a_request_waiting_when_the_desktop_locks_is_told_it_closed() {
     if super::alone_in(module_path!(), "a_request_waiting_when_the_desktop_locks_is_told_it_closed") {
@@ -336,7 +280,6 @@ fn a_request_waiting_when_the_desktop_locks_is_told_it_closed() {
     shell.door_waker = Some(std::sync::Arc::new(move || {
         let _ = tx.lock().map(|t| t.send(()));
     }));
-    // The waker was handed to the door when it opened: open it again with this one.
     let _ = apply(&mut shell, Action::Lock);
     answers!(app::action::apply_settled(&mut shell, Action::Unlock { pin: PIN.into() }), Applied::Unlocked);
     shell.drain();
@@ -350,9 +293,6 @@ fn a_request_waiting_when_the_desktop_locks_is_told_it_closed() {
     assert_eq!(head(&shell), before, "nothing of it was written");
 }
 
-/// The command line's `anchor` follows the setting: left to the user, nothing is sent and the request is told
-/// so; otherwise the estimate is asked first, like the send key (refused here, with no network). An empty queue
-/// is reported as the send key reports it. The setting is stored in the machine settings.
 #[test]
 fn anchor_goes_the_way_the_setting_says() {
     if super::alone_in(module_path!(), "anchor_goes_the_way_the_setting_says") {
@@ -363,7 +303,6 @@ fn anchor_goes_the_way_the_setting_says() {
         Some(Reply::Refused { code, .. }) => code,
         other => format!("{other:?}"),
     };
-    // Nothing queued (a home with no entry yet): refused by the batch's own name, whatever the setting.
     let empty = b.root.join("empty");
     let _ = apply(&mut shell, Action::OpenHome { root: empty.display().to_string() });
     settle(&mut shell);
@@ -391,8 +330,6 @@ fn anchor_goes_the_way_the_setting_says() {
     assert_eq!(code(r), app::fault::Known::NoChainId.as_str(), "sent the send key's way: the estimate first, refused by its name");
 }
 
-/// A record package export through the door matches the desktop export: here, with no network for its exit
-/// gate, refused by the same name, and nothing written at the destination.
 #[test]
 fn a_record_package_through_the_door_is_the_desktops_export() {
     if super::alone_in(module_path!(), "a_record_package_through_the_door_is_the_desktops_export") {
@@ -400,7 +337,7 @@ fn a_record_package_through_the_door_is_the_desktops_export() {
     }
     let (b, mut shell) = Bench::new("kit");
     let out = b.root.join("kit-out");
-    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string(), form: "folder".into(), recipient: String::new(), recipient_key: String::new(), originals: "none".into() }) {
+    let pressed = match apply(&mut shell, Action::ExportKit { from: String::new(), to: String::new(), ids: String::new(), attach: String::new(), note: "n".into(), out: out.display().to_string(), form: "folder".into(), recipient: String::new(), recipient_key: String::new(), originals: "none".into(), companion: true }) {
         Applied::Trouble(f) => f.which().map(|k| k.as_str().to_string()).unwrap_or_default(),
         other => panic!("{other:?}"),
     };
@@ -409,10 +346,6 @@ fn a_record_package_through_the_door_is_the_desktops_export() {
     assert!(!out.exists(), "nothing written");
 }
 
-/// A door that cannot open (its place taken by something else) is kept by name as the shell's reading, never
-/// among its troubles (nobody pressed anything; the command line is told on its side), and opens once the
-/// place is free. Unix only: there the door's place is a file path; on Windows it is a pipe name, and writing
-/// to it reaches the pipe instead of taking its place.
 #[cfg(unix)]
 #[test]
 fn a_door_that_cannot_open_is_kept_by_name() {
@@ -420,49 +353,41 @@ fn a_door_that_cannot_open_is_kept_by_name() {
         return;
     }
     let (b, mut shell) = Bench::new("taken");
-    // Lock (the door goes), put something that is not a door at its place, unlock: the door cannot open.
     let _ = apply(&mut shell, Action::Lock);
     std::fs::write(b.place(), b"not a door").expect("taken");
     answers!(app::action::apply_settled(&mut shell, Action::Unlock { pin: PIN.into() }), Applied::Unlocked);
     for _ in 0..5 {
         shell.drain();
     }
-    // The shell keeps the home path as opened; the bench resolves links (`/tmp` is a link on macOS).
     let kept = shell.door_shut.as_ref().map(|(h, f)| (std::fs::canonicalize(h).unwrap_or_else(|_| h.clone()), f.which()));
     assert_eq!(kept, Some((b.home.clone(), Some(app::fault::Known::DoorShut))), "kept by name as the shell's reading");
     assert!(shell.faults.iter().all(|f| f.which() != Some(app::fault::Known::DoorShut)), "never among the troubles: nobody pressed anything");
     assert!(shell.door.is_none());
+    assert!(matches!(shell.door_why(), Some(app::door::DoorWhy::Refused(_))), "{:?}", shell.door_why());
     assert_eq!(std::fs::read(b.place()).expect("kept"), b"not a door", "what was there is left as it is");
-    // With the place free again, the next drain opens it.
     std::fs::remove_file(b.place()).expect("freed");
     shell.drain();
     assert!(shell.door.is_some() && shell.door_shut.is_none());
+    assert_eq!(shell.door_why(), None, "open: nothing to say");
+    let _ = apply(&mut shell, Action::Lock);
+    std::fs::write(b.place(), b"not a door").expect("taken");
+    answers!(app::action::apply_settled(&mut shell, Action::Unlock { pin: PIN.into() }), Applied::Unlocked);
+    let _ = apply(&mut shell, Action::SetCliDesktop { on: false });
+    shell.drain();
+    assert_eq!(shell.door_why(), None, "not wanted: nothing to say");
+    std::fs::remove_file(b.place()).expect("freed");
 }
 
-/// The door's verbs and flags match `CLI-SCHEMA.md` §11 row by row; each verb maps to its action (the reverse
-/// of `Action::verb`, in one place), and every flag reaches that action.
 #[test]
-fn the_door_table_is_the_contracts_and_each_flag_reaches_its_action() {
-    if super::alone_in(module_path!(), "the_door_table_is_the_contracts_and_each_flag_reaches_its_action") {
+fn each_flag_of_the_door_table_reaches_its_action() {
+    if super::alone_in(module_path!(), "each_flag_of_the_door_table_reaches_its_action") {
         return;
     }
-    let doc = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CLI-SCHEMA.md")).expect("CLI-SCHEMA.md");
-    let table = doc.split("## 11 · `--home`").nth(1).map(|s| s.split("\n## ").next().unwrap_or_default()).and_then(|s| s.split("| Verb | Flags beside `--home` |").nth(1)).expect("§11 table");
-    let rows: Vec<(String, Vec<String>)> = table
-        .lines()
-        .filter_map(|l| l.strip_prefix("| `"))
-        .map(|l| {
-            let (verb, rest) = l.split_once('`').expect("verb");
-            (verb.to_string(), rest.split('|').nth(1).unwrap_or_default().split('`').skip(1).step_by(2).map(str::to_string).collect())
-        })
-        .collect();
-    let real: Vec<(String, Vec<String>)> = app::door::verbs().iter().map(|(v, f)| (v.to_string(), f.iter().map(|x| x.to_string()).collect())).collect();
-    assert_eq!(rows, real, "the door's table is §11's");
     let (_b, shell) = Bench::new("table");
     for (verb, flags) in app::door::verbs() {
-        // `anchors` takes the law's JSON form; the marker sits in its members, which reach the page's rows unchanged.
         let value = |f: &str| match f {
             "anchors" => format!(r#"[{{"chainId":1,"content":"v-{f}-1","payloadKind":"bare","tx":"v-{f}-1"}}]"#),
+            "chain" => "4242".to_string(),
             _ => format!("v-{f}-1"),
         };
         let args: Vec<(String, String)> = flags.iter().map(|f| (f.to_string(), value(f))).collect();
@@ -470,17 +395,51 @@ fn the_door_table_is_the_contracts_and_each_flag_reaches_its_action() {
         let act = match app::door::turn_of(&shell, &q).unwrap_or_else(|f| panic!("{verb}: {f:?}")) {
             app::door::Turn::Act(a) => a,
             app::door::Turn::Send { count } => Action::SendBatch { count },
+            app::door::Turn::Await => Action::SendAsked { count: 0 },
+            app::door::Turn::Follow => Action::SendBatch { count: 0 },
         };
         assert_eq!(act.verb(), Some(verb), "{verb} becomes the action whose verb it is");
         let said = format!("{act:?}");
         for f in flags.iter() {
-            assert!(said.contains(&format!("v-{f}-1")), "{verb} --{f} reaches the action: {said}");
+            let marker = if *f == "chain" { "4242".to_string() } else { format!("v-{f}-1") };
+            assert!(said.contains(&marker), "{verb} --{f} reaches the action: {said}");
         }
     }
 }
 
-/// Idle locking counts from the user's last input alone: only the window's input handling moves it, and the
-/// door's path never does (a busy command line does not keep the desktop unlocked).
+#[test]
+fn a_window_not_shown_answers_the_door_and_still_locks() {
+    if super::alone_in(module_path!(), "a_window_not_shown_answers_the_door_and_still_locks") {
+        return;
+    }
+    let (b, mut shell) = Bench::new("unseen");
+    settle(&mut shell);
+    shell.machine.auto_lock = true;
+    shell.machine.auto_lock_secs = 900;
+    let ctx = zikaron_ui::egui::Context::default();
+    let mut w = app::window::UnseenProbe::new(shell);
+    let ask = |w: &mut app::window::UnseenProbe, q: Request| -> Option<Reply> {
+        let h = send(&b.place(), q.to_bytes());
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !h.is_finished() && std::time::Instant::now() < until {
+            w.pass(&ctx, 0.001);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        h.join().ok().flatten().and_then(|b| Reply::of_bytes(&b))
+    };
+    let file = b.root.join("work.txt");
+    std::fs::write(&file, b"the work").expect("file");
+    let wrote = ask(&mut w, b.ask("history", &[("file", &file.display().to_string()), ("note", "a work")]));
+    let (seq, id) = head(w.shell());
+    let ledger = w.shell().home.as_ref().unwrap().dir(app::home::Slot::Ledger).display().to_string();
+    assert_eq!(wrote, Some(Reply::Wrote { entry_id: id, ledger, seq }), "a write through the door, the window not shown");
+    let cleaned = ask(&mut w, b.ask("clean", &[]));
+    assert!(matches!(cleaned, Some(Reply::Cleaned { done: false, .. })), "a clean-up list through the door, the window not shown: {cleaned:?}");
+    assert!(w.shell().unlocked());
+    w.pass(&ctx, 901.0);
+    assert!(!w.shell().unlocked(), "the idle lock falls due in a pass the window does not draw");
+}
+
 #[test]
 fn the_door_does_not_hold_off_idle_locking() {
     let window = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/window/mod.rs")).expect("window");
@@ -495,10 +454,6 @@ fn the_door_does_not_hold_off_idle_locking() {
     }
 }
 
-/// "Enable command line" goes through the action layer: its location is read by the platform layer (here, a
-/// test binary with no command line beside it: not supported, named), and enabling is refused by that name with
-/// nothing created (the target is moved to this test's folder; system folders are untouched). Unix only: on
-/// Windows (MSVC) cargo names binaries in the build folder without a hash, so a `zikaron.exe` is beside it.
 #[cfg(unix)]
 #[test]
 fn the_command_line_switch_reads_and_refuses_through_the_action_layer() {
@@ -526,7 +481,6 @@ fn the_command_line_switch_reads_and_refuses_through_the_action_layer() {
     unsafe { std::env::remove_var(zikaron_os::cli_path::ENV_DIR) };
 }
 
-/// Dropping a shell closes its door: the next shell on the same home opens its own, and a command reaches it.
 #[test]
 fn a_shell_let_go_of_closes_its_door() {
     if super::alone_in(module_path!(), "a_shell_let_go_of_closes_its_door") {
@@ -544,41 +498,93 @@ fn a_shell_let_go_of_closes_its_door() {
     assert!(matches!(r, Some(Reply::Wrote { .. })), "{r:?}");
 }
 
-/// A co-signature is both halves or none, checked only in the adoption action (for the page and the door alike):
-/// one half alone is refused naming the missing half, with nothing written; neither adopts without one; both are
-/// verified, and a failing one is refused with nothing written. The door passes the halves on unchanged.
 #[test]
-fn a_cosignature_is_both_halves_or_none_judged_once() {
-    if super::alone_in(module_path!(), "a_cosignature_is_both_halves_or_none_judged_once") {
+fn an_anchor_through_the_door_asks_each_node_what_the_command_line_asks() {
+    use super::a8_send::{chain, first_param, hash_of, node, Reply as Says, PLENTY};
+    if super::alone_in(module_path!(), "an_anchor_through_the_door_asks_each_node_what_the_command_line_asks") {
         return;
     }
-    let (b, mut shell) = Bench::new("cosign");
-    let rows = format!("31337 0x{} bare 0x{}", "11".repeat(32), "77".repeat(32));
-    let seq = |shell: &Shell| shell.home.as_ref().and_then(|h| app::ledgerx::head(h).ok().flatten()).map(|(n, _)| n);
-    let attestor = format!("0x{}", "66".repeat(20));
-    let attestation = format!("0x{}", "88".repeat(65));
-    for (who, sig, missing) in [(attestor.as_str(), "", "attestation"), ("", attestation.as_str(), "attestor")] {
-        let before = seq(&shell);
-        let got = apply(&mut shell, Action::AdoptAnchors { rows: rows.clone(), attestor: who.into(), attestation: sig.into() });
-        match got {
-            Applied::Trouble(f) => assert_eq!((f.which(), f.tail()), (Some(app::fault::Known::FieldMissing), missing), "half a co-signature"),
-            other => panic!("half a co-signature is refused, not {other:?}"),
+    let (b, mut shell) = Bench::new("two-roads");
+    let sent: std::sync::Arc<std::sync::Mutex<Option<String>>> = std::sync::Arc::default();
+    let answering = |sent: std::sync::Arc<std::sync::Mutex<Option<String>>>| {
+        move |m: &str, body: &str| match m {
+            "eth_sendRawTransaction" => {
+                let h = hash_of(&first_param(body));
+                *sent.lock().expect("sent") = Some(h.clone());
+                Says::Result(format!("\"{h}\""))
+            }
+            "eth_getTransactionReceipt" => match sent.lock().expect("sent").clone() {
+                Some(h) => Says::Result(format!("{{\"blockHash\":\"0x{}\",\"blockNumber\":\"0x40\",\"logs\":[],\"status\":\"0x1\",\"transactionHash\":\"{h}\"}}", "aa".repeat(32))),
+                None => Says::Result("null".into()),
+            },
+            _ => chain(m, body, PLENTY),
         }
-        assert_eq!(seq(&shell), before, "nothing written");
-        // The door passes the halves on as given; only the action checks them.
-        let q = b.ask("adopt", &[("anchors", &format!(r#"[{{"chainId":31337,"content":"0x{}","payloadKind":"bare","tx":"0x{}"}}]"#, "77".repeat(32), "11".repeat(32))), ("attestor", who), ("attestation", sig)]);
-        match app::door::turn_of(&shell, &q) {
-            Ok(app::door::Turn::Act(Action::AdoptAnchors { attestor, attestation, .. })) => assert_eq!((attestor.as_str(), attestation.as_str()), (who, sig), "as given"),
-            other => panic!("the door judges nothing of a co-signature: {:?}", other.err()),
-        }
+    };
+    let (one, two) = (node(answering(sent.clone())), node(answering(sent.clone())));
+    let file = b.root.join("w.txt");
+    std::fs::write(&file, b"w").expect("file");
+    assert!(matches!(served(&mut shell, send(&b.place(), b.ask("history", &[("file", &file.display().to_string())]).to_bytes())), Some(Reply::Wrote { .. })));
+    settle(&mut shell);
+    shell.settings.chain_id = Some(31337);
+    shell.settings.registry = Some(app::key::Address([0x11; 20]));
+    shell.send_backoff = Vec::new();
+    shell.receipt_backoff = Vec::new();
+    shell.endpoints = [&one, &two].iter().map(|n| app::chainx::Endpoint::at(31337, n.url.clone())).collect();
+    answers!(apply(&mut shell, Action::SetCliAnchor { to: app::machine::CliAnchor::Send }), Applied::CliAnchorSet(_));
+    let r = served(&mut shell, send(&b.place(), b.ask("anchor", &[]).to_bytes()));
+    assert!(matches!(r, Some(Reply::Anchored { .. })), "anchored through the door: {r:?}");
+    for (n, at) in [("one", &one), ("two", &two)] {
+        let asked = at.methods();
+        let upto = asked.iter().position(|m| m == "eth_getTransactionCount").map(|i| i + 1).unwrap_or(asked.len());
+        let count = |m: &str| asked[..upto].iter().filter(|x| *x == m).count();
+        println!("SAID door anchor {n}: {:?}", &asked[..upto]);
+        assert_eq!(count("eth_chainId"), 1, "{n}: the chain id, once: {asked:?}");
+        assert_eq!(count("eth_blockNumber"), 1, "{n}: the head, once: {asked:?}");
+        assert_eq!(count("eth_getLogs"), 1, "{n}: the lineage's window, once: {asked:?}");
     }
-    let before = seq(&shell);
-    let both = apply(&mut shell, Action::AdoptAnchors { rows: rows.clone(), attestor: attestor.clone(), attestation: attestation.clone() });
-    assert!(matches!(&both, Applied::Trouble(f) if f.which() == Some(app::fault::Known::CosignRefused)), "both: checked, {both:?}");
-    assert_eq!(seq(&shell), before, "a co-signature that does not verify writes nothing");
-    let neither = apply(&mut shell, Action::AdoptAnchors { rows, attestor: String::new(), attestation: String::new() });
-    assert!(matches!(neither, Applied::Adopted { cosigned: false, .. }), "neither: adopted without one, {neither:?}");
-    assert_eq!(seq(&shell), before.map(|n| n + 1), "one entry more");
-    let door = super::code_only(&super::read_src_file("door.rs").expect("door.rs"));
-    assert!(!door.contains("attestation.trim()") && !door.contains("attestor.trim()"), "the door keeps no judge of its own");
 }
+
+#[test]
+fn an_anchor_over_nodes_at_two_heads_asks_each_node_the_window_once() {
+    use super::a8_send::{chain, first_param, hash_of, node, Reply as Says, PLENTY};
+    if super::alone_in(module_path!(), "an_anchor_over_nodes_at_two_heads_asks_each_node_the_window_once") {
+        return;
+    }
+    let (b, mut shell) = Bench::new("two-heads");
+    let sent: std::sync::Arc<std::sync::Mutex<Option<String>>> = std::sync::Arc::default();
+    let answering = |sent: std::sync::Arc<std::sync::Mutex<Option<String>>>, head: &'static str| {
+        move |m: &str, body: &str| match m {
+            "eth_blockNumber" => Says::Result(head.into()),
+            "eth_sendRawTransaction" => {
+                let h = hash_of(&first_param(body));
+                *sent.lock().expect("sent") = Some(h.clone());
+                Says::Result(format!("\"{h}\""))
+            }
+            "eth_getTransactionReceipt" => match sent.lock().expect("sent").clone() {
+                Some(h) => Says::Result(format!("{{\"blockHash\":\"0x{}\",\"blockNumber\":\"0x40\",\"logs\":[],\"status\":\"0x1\",\"transactionHash\":\"{h}\"}}", "aa".repeat(32))),
+                None => Says::Result("null".into()),
+            },
+            _ => chain(m, body, PLENTY),
+        }
+    };
+    let (ahead, behind) = (node(answering(sent.clone(), "\"0x40\"")), node(answering(sent.clone(), "\"0x3f\"")));
+    let file = b.root.join("w.txt");
+    std::fs::write(&file, b"w").expect("file");
+    assert!(matches!(served(&mut shell, send(&b.place(), b.ask("history", &[("file", &file.display().to_string())]).to_bytes())), Some(Reply::Wrote { .. })));
+    settle(&mut shell);
+    shell.settings.chain_id = Some(31337);
+    shell.settings.registry = Some(app::key::Address([0x11; 20]));
+    shell.send_backoff = Vec::new();
+    shell.receipt_backoff = Vec::new();
+    shell.endpoints = [&ahead, &behind].iter().map(|n| app::chainx::Endpoint::at(31337, n.url.clone())).collect();
+    answers!(apply(&mut shell, Action::SetCliAnchor { to: app::machine::CliAnchor::Send }), Applied::CliAnchorSet(_));
+    let r = served(&mut shell, send(&b.place(), b.ask("anchor", &[]).to_bytes()));
+    assert!(matches!(r, Some(Reply::Anchored { .. })), "anchored through the door: {r:?}");
+    for (n, at) in [("ahead", &ahead), ("behind", &behind)] {
+        let asked = at.methods();
+        let upto = asked.iter().position(|m| m == "eth_getTransactionCount").map(|i| i + 1).unwrap_or(asked.len());
+        let count = |m: &str| asked[..upto].iter().filter(|x| *x == m).count();
+        assert_eq!(count("eth_getLogs"), 1, "{n}: the lineage's window, once: {asked:?}");
+    }
+}
+

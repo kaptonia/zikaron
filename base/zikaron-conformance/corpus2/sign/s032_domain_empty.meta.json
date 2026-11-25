@@ -1,0 +1,12 @@
+{
+ "domain": "",
+ "input": "s032_domain_empty.bin",
+ "note": "HARNESS: the empty string is a domain and is signed as given",
+ "predicted": {
+  "digest": "0xcb52a54544f2b1744b297bb052637f3e38a421e61e93e06cf91622abe023c8f3",
+  "presig": "0x6208d17798e7a5dce863e41247e25e87045dcc930f4102d0f9f737dd41202c4d",
+  "sig": "0x4b68dac7a47dfa1519778e364718d861def2e47200e54b193b7f69adb10b64d056ff3e84f1460656bb7740c56c5e1df6b73d1a667c60a4f4b395486d74507b301b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

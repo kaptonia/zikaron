@@ -1,10 +1,3 @@
-//! The side rail, 216 wide: the identity chip at the top (words only), the seat switch, the navigation items
-//! with a white block that slides lightly to the lit one (0.42 s, no stretch), and at the bottom settings, lock
-//! and the status line with the sync key. Navigation items and the two foot items are one item ([`item`]): the
-//! same height, width, gap, type, glyph and words places, lit by the same block, lit by the same light under
-//! the pointer. When the seat switches, items that stay slide to their new places, new ones open and fade in
-//! where they belong and the others close and fade out where they were ([`crate::flow::Group`]).
-
 use crate::icons::{self, Glyph};
 use crate::mark::{self, Count};
 use crate::motion::{self, Curve};
@@ -13,24 +6,19 @@ use crate::seg;
 use crate::tokens::{self, Type};
 use egui::{pos2, vec2, Rect};
 
-/// The rail panel's frame: rail ground, 10 across, 46 kept at the top for the window's buttons.
 pub fn panel_frame() -> egui::Frame {
     egui::Frame::new().fill(crate::material::rail_ground()).inner_margin(egui::Margin { left: tokens::RAIL_PAD as i8, right: tokens::RAIL_PAD as i8, top: tokens::RAIL_TOP as i8, bottom: tokens::RAIL_PAD as i8 })
 }
 
-/// The one-point line between the rail and the page.
 pub fn edge(ctx: &egui::Context, panel: Rect) {
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("zikaron-rail-edge")));
     p.vline(panel.right() - 0.5, panel.y_range(), egui::Stroke::new(1.0_f32, c(C::Line2)));
 }
 
-/// The page's frame: page ground, nothing inside.
 pub fn page_frame() -> egui::Frame {
     egui::Frame::new().fill(c(C::Ground))
 }
 
-/// The identity chip: name (13 semibold) over kind (11 quiet), a caret at the right. Returns its response
-/// (a click opens the identity menu).
 pub fn id_chip(ui: &mut egui::Ui, name: &str, kind: &str) -> egui::Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 44.0), egui::Sense::click());
@@ -50,7 +38,6 @@ pub fn id_chip(ui: &mut egui::Ui, name: &str, kind: &str) -> egui::Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The seat switch: two equal cells, the white thumb sliding between them.
 pub fn seat(ui: &mut egui::Ui, labels: [&str; 2], current: usize) -> Option<usize> {
     ui.add_space(10.0 - ui.spacing().item_spacing.y.min(10.0));
     let cells = [seg::Cell::from(labels[0]), seg::Cell::from(labels[1])];
@@ -59,30 +46,21 @@ pub fn seat(ui: &mut egui::Ui, labels: [&str; 2], current: usize) -> Option<usiz
     hit
 }
 
-/// One line of the navigation list.
 #[derive(Clone, Copy, Debug)]
 pub enum Line<'a> {
-    /// A group title (none for the first group: a 2-point gap).
     Group(Option<&'a str>),
     Item { glyph: Glyph, label: &'a str, count: usize },
 }
 
-/// How long the lit block takes to slide to another item.
 pub const BLOCK: f32 = 0.42 * crate::tokens::PACE;
 
-/// What an item shows at its right end.
 #[derive(Clone, Copy, Debug)]
 pub enum Trail<'a> {
     None,
-    /// A count (alerts): pops in and out, jumps when it changes.
     Count(usize),
-    /// A key hint ("⌘,").
     Kbd(&'a str),
 }
 
-/// One rail item in `r` (36 high): its hover ground, the light under the pointer, the glyph and the words, and
-/// what it shows at its right end. Navigation items and the foot items are drawn here alike. `on` is lit (the
-/// block under it is drawn by the caller).
 pub fn item(ui: &egui::Ui, id: egui::Id, r: Rect, glyph: Glyph, label: &str, on: bool, trail: Trail) -> egui::Response {
     let resp = ui.interact(r, id, egui::Sense::click());
     let p = ui.painter();
@@ -112,17 +90,13 @@ pub fn item(ui: &egui::Ui, id: egui::Id, r: Rect, glyph: Glyph, label: &str, on:
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A rail item's identity across frames: its glyph and which of the items with that glyph it is.
 fn item_key(glyph: Glyph, nth: usize) -> u64 {
     motion::key_of(&(format!("{glyph:?}"), nth))
 }
 
-/// The navigation list with the sliding block. `lit` is the index (among items only) of the lit one.
-/// Returns the clicked item's index.
 pub fn nav(ui: &mut egui::Ui, lines: &[Line], lit: Option<usize>) -> Option<usize> {
     let id = ui.id().with("zikaron-rail-nav");
     let w = ui.available_width();
-    // Lay out first: every item's rectangle.
     let top = ui.cursor().min.y + 4.0;
     let mut y = top;
     let mut rects: Vec<(Rect, Glyph, &str, usize)> = Vec::new();
@@ -143,7 +117,6 @@ pub fn nav(ui: &mut egui::Ui, lines: &[Line], lit: Option<usize>) -> Option<usiz
     let area = Rect::from_min_max(pos2(ui.cursor().min.x, top - 4.0), pos2(ui.cursor().min.x + w, y));
     ui.allocate_rect(area, egui::Sense::hover());
     let p = ui.painter().clone();
-    // The sliding block under the lit item, drawn first (under every item).
     let shown = motion::flag(ui.ctx(), id.with("hl-a"), lit.is_some(), tokens::FAST);
     let slot = p.add(egui::Shape::Noop);
     let mut group = crate::flow::Group::new(ui, id, area.min, w);
@@ -173,8 +146,6 @@ pub fn nav(ui: &mut egui::Ui, lines: &[Line], lit: Option<usize>) -> Option<usiz
     hit
 }
 
-/// The lit block: a white card under the item (every material alike), with a half-point rim, a short and a
-/// softer shadow, and a thread of light along its top.
 fn block_shapes(block: Rect, alpha: f32) -> Vec<egui::Shape> {
     if alpha <= 0.0 {
         return Vec::new();
@@ -193,14 +164,11 @@ fn paint_block(p: &egui::Painter, block: Rect, alpha: f32) {
     p.extend(block_shapes(block, alpha));
 }
 
-/// The 13 of room above the rail's foot: the foot is set apart by the room alone, without a rule.
 pub fn foot_rule(ui: &mut egui::Ui) {
     let w = ui.available_width();
     let _ = ui.allocate_exact_size(vec2(w, 13.0), egui::Sense::hover());
 }
 
-/// A foot item (settings, lock): the same item as the navigation's, lit by the same block when `on`; `kbd` at the
-/// right end.
 pub fn foot_item(ui: &mut egui::Ui, glyph: Glyph, label: &str, on: bool, kbd: &str) -> egui::Response {
     let w = ui.available_width();
     let (r, resp) = ui.allocate_exact_size(vec2(w, tokens::RAIL_ITEM_H), egui::Sense::hover());
@@ -209,33 +177,26 @@ pub fn foot_item(ui: &mut egui::Ui, glyph: Glyph, label: &str, on: bool, kbd: &s
     item(ui, resp.id.with("item"), r, glyph, label, on, Trail::Kbd(kbd))
 }
 
-/// What the status line says.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Voice {
     Quiet,
-    /// A task in progress: blue, clickable (goes back to the task's page).
     Task,
     Bad,
 }
 
-/// The sync key's three layers.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Sync {
     Idle,
     Busy,
-    /// Synced at frame time `at`: the check holds about 1 s.
     Done { at: f64 },
 }
 
-/// What the status line did this frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Status {
     pub line_clicked: bool,
     pub sync_clicked: bool,
 }
 
-/// The status line: words at the left (12, quiet; blue for a task, red when sync failed), a thin progress bar
-/// under a task, and the sync key at the right end.
 pub fn status(ui: &mut egui::Ui, words: &str, voice: Voice, progress: Option<Option<f32>>, sync: Sync, sync_tip: &str) -> Status {
     let w = ui.available_width();
     let (r, resp) = ui.allocate_exact_size(vec2(w, 32.0), if voice == Voice::Task { egui::Sense::click() } else { egui::Sense::hover() });
@@ -273,7 +234,6 @@ pub fn status(ui: &mut egui::Ui, words: &str, voice: Voice, progress: Option<Opt
             }
         }
     }
-    // The sync key: refresh glyph, turning ring, check, crossfading in place.
     let now = crate::motion::now(ui.ctx());
     let layer = match sync {
         Sync::Busy => 1u8,

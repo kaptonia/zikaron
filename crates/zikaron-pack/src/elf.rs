@@ -1,15 +1,3 @@
-//! Neutralize an ELF file's `.comment` section, which names the toolchains that built it (compiler, linker,
-//! and on a cross build the package manager they came from). It is not loaded at run time, so its bytes are
-//! zeroed in place: size and layout are unchanged and nothing reveals the build machine.
-//!
-//! Every offset and size comes from the file, so all arithmetic on them is checked: an overflow or a range past
-//! the end is refused by name and the file is left untouched (nothing is zeroed until every header is read).
-
-/// Zero the `.comment` section of the 64-bit little-endian ELF image `b`. Returns the number of bytes zeroed
-/// (0 with no such section or no section headers). Refused: shorter than the header; not ELF; not 64-bit
-/// little-endian; section header entries under 64 bytes; extended section numbering; the section header table,
-/// section name table, a name or a `.comment` body extending past the end (or offset plus size overflowing);
-/// a name table index that is not a section; an unterminated name.
 pub fn neutral_comment(b: &mut [u8]) -> Result<usize, String> {
     if b.len() < 64 || &b[0..4] != b"\x7fELF" {
         return Err("not an ELF file".into());
@@ -26,12 +14,10 @@ pub fn neutral_comment(b: &mut [u8]) -> Result<usize, String> {
     Ok(zeroed)
 }
 
-/// `at + len`, when it fits and stays within `limit`.
 fn within(at: usize, len: usize, limit: usize) -> Option<usize> {
     at.checked_add(len).filter(|end| *end <= limit)
 }
 
-/// The byte ranges of every `.comment` section with bytes in the file, every header read and checked first.
 fn comment_ranges(b: &[u8]) -> Result<Vec<(usize, usize)>, String> {
     let n = b.len();
     let field = |o: usize, w: usize| -> Result<u64, String> {
@@ -59,7 +45,6 @@ fn comment_ranges(b: &[u8]) -> Result<Vec<(usize, usize)>, String> {
     if shstrndx >= shnum {
         return Err(format!("the name table index {shstrndx} is not one of the {shnum} sections"));
     }
-    // Each header lies within the table (checked above), so these sums fit.
     let sh = |i: usize| shoff + i * shentsize;
     let names_off = size(field(sh(shstrndx) + 0x18, 8)?, "the name table offset")?;
     let names_size = size(field(sh(shstrndx) + 0x20, 8)?, "the name table size")?;
@@ -85,8 +70,6 @@ fn comment_ranges(b: &[u8]) -> Result<Vec<(usize, usize)>, String> {
 mod tests {
     use super::*;
 
-    /// A small ELF64 image: header, a `.comment` body, a name table, and three section headers (null, the name
-    /// table, `.comment`), laid out as a linker would.
     fn image() -> Vec<u8> {
         let mut b = vec![0u8; 64];
         b[0..4].copy_from_slice(b"\x7fELF");
@@ -132,23 +115,19 @@ mod tests {
         assert_eq!(neutral_comment(&mut b), Ok(21));
         assert_eq!(b.len(), len, "the size kept");
         assert!(!b.windows(5).any(|w| w == b"rustc"), "the toolchain words gone");
-        // No section headers: nothing to do.
         let mut none = image();
         set(&mut none, 0x28, &0u64.to_le_bytes());
         assert_eq!(neutral_comment(&mut none), Ok(0));
-        // A `.comment` with no bytes in the file (NOBITS) is skipped.
         let mut nobits = image();
         let at = shoff(&nobits) + 2 * 64 + 4;
         set(&mut nobits, at, &8u32.to_le_bytes());
         assert_eq!(neutral_comment(&mut nobits), Ok(0));
     }
 
-    /// Every refused form fails by name and leaves the file unchanged.
     #[test]
     fn every_offset_past_the_end_or_out_of_range_is_refused_and_nothing_is_touched() {
         let base = image();
         let sh = shoff(&base);
-        // The name table is the 20 bytes before the section headers; its last byte ends `.comment`.
         let names_off = sh - 20;
         let cases: Vec<(&str, Vec<u8>, &str)> = vec![
             ("short", base[..63].to_vec(), "not an ELF"),

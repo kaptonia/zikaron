@@ -1,6 +1,5 @@
 use super::*;
 
-/// The open home's main network (chain id, registry), if configured. A read-only network may not duplicate it.
 fn main_network(shell: &Shell) -> Option<(u64, Address)> {
     match (shell.settings.chain_id, shell.settings.registry) {
         (Some(c), Some(r)) => Some((c, r)),
@@ -12,8 +11,6 @@ fn registry_of(typed: &str) -> Result<Address, crate::fault::Fault> {
     Address::parse(typed).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::AddressShape, typed.trim().to_string()))
 }
 
-/// Adds or changes a read-only network: parses the fields (`readnets::cells`) and writes the table without
-/// contacting any chain. A changed network's last reading is dropped. Returns the number of networks.
 pub fn save_read_network(
     shell: &mut Shell,
     was: Option<(u64, String)>,
@@ -35,7 +32,6 @@ pub fn save_read_network(
     Ok(n)
 }
 
-/// Removes a read-only network. Returns the number of networks left.
 pub fn remove_read_network(shell: &mut Shell, chain: u64, registry: &str) -> Result<usize, crate::fault::Fault> {
     let r = registry_of(registry)?;
     let nets = crate::readnets::remove(&crate::home::machine_dir()?, chain, &r)?;
@@ -45,14 +41,9 @@ pub fn remove_read_network(shell: &mut Shell, chain: u64, registry: &str) -> Res
     Ok(n)
 }
 
-/// Reads one read-only network once in the background (`Kind::ReadNet`): its nodes and the code at its
-/// registry (`widex::gate`). The network is taken from the table as currently on disk.
 pub fn read_read_network(shell: &mut Shell, chain: u64, registry: &str) -> Result<Spawned, crate::fault::Fault> {
     let r = registry_of(registry)?;
-    // The on-disk table also becomes the shell's table; a reading is kept only for a row the shell still holds
-    // with the same nodes, so both sides read one source.
     let nets = read_nets_now()?;
-    // Drop the reading of any row whose nodes on disk differ from the nodes it was read with.
     let was = shell.read_nets.clone().unwrap_or_default();
     shell.net_reads.retain(|(c, x, _)| {
         let nodes_of = |t: &[crate::readnets::Net]| t.iter().find(|n| n.is(*c, x)).map(|n| n.nodes.clone());

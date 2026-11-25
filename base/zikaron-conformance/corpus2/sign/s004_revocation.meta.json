@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s004_revocation.bin",
+ "note": "sec 5.1: B6 of a revocation with a cited case",
+ "predicted": {
+  "digest": "0x2552e78774034dc1bbb789fc1a0144cee9ce0ba256deb276fd0f8596da54deb5",
+  "presig": "0x0396b1aae06e094078a2167d8dd6aa9d70fc595b307583c4bd95cade7257ceff",
+  "sig": "0xe996e467350df8945b6cc6b30266a22912302ad5a8d7524dc0ec8b299dfb5dac3cda433804d7de4926413055d411acbf8b1c3896c7e0d2c922e5d2237ac3a3951b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,28 +1,3 @@
-//! Exit codes, refusal tokens, output keys, the `contract` verb's member names and law field names, each
-//! spelled once.
-//!
-//! Every free name this crate prints (keys, refusals, exit names, field names) is written once in this file;
-//! everything else uses these `as_str()`. `CLI-SCHEMA.md` is the readable form of these tables.
-//!
-//! The law's own bytes are not copied: `zikaron/1` comes from [`zikaron::tokens::SPEC`], the seven type names
-//! from [`zikaron::tokens::EntryType::as_str`], signing domains from [`zikaron::tokens::Domain::as_str`], the
-//! three kit specs and `KIT_OK` / `BADGE_OK` from [`zikaron_kit::tokens`].
-
-/// Exit codes. Five, closed.
-///
-/// Two questions split them: was there an answer, and what was it.
-///
-/// | code | meaning | stdout |
-/// |---|---|---|
-/// | 0 | answered, affirmative (entry stands, GREEN, COMPLETE, KIT_OK, PAIRED) | one canonical JSON value |
-/// | 1 | answered, negative (the law refused the bytes, FAIL, BROKEN_CHAIN, NO_LABEL) | one canonical JSON value |
-/// | 2 | misuse: malformed arguments, unreadable path, a flag the verb does not know | zero bytes |
-/// | 3 | answered, neither: PARTIAL / GAPS / UNAVAILABLE, its own state, never merged into green | one canonical JSON value |
-/// | 4 | no answer: endpoint unreachable, readings disagree, scan declined (law §9.4: a scan failure is the absence of an answer, never an answer of absence) | one canonical JSON value with `reason` |
-///
-/// Codes 3 and 4 carry the weight of the table. Folding PARTIAL into 0 would let a buyer take an unanchored
-/// grant as a green light; folding an unreachable endpoint into 1 would make a network fault read as "this
-/// chain is fake".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Exit {
     Affirmed,
@@ -43,7 +18,6 @@ impl Exit {
         }
     }
 
-    /// The short name of each code: the one spelling the `contract` verb answers it by.
     pub fn name(self) -> &'static str {
         match self {
             Exit::Affirmed => "affirmed",
@@ -63,385 +37,6 @@ impl Exit {
     ];
 }
 
-/// This layer's own refusals. Tokens from the core are passed on unchanged and never renamed here; this table
-/// only covers what happened on the shell side.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Reason {
-    /// Malformed arguments (misuse, stderr only).
-    Args,
-    /// A file cannot be read (misuse, stderr only, subject named).
-    Unreadable,
-    /// The private key is not a scalar in [1, n−1].
-    Key,
-    /// The machine gives no randomness.
-    Random,
-    /// Storage refused (with the storage crate's own code).
-    Ledger,
-    /// The core refused the entry we built (with the core's token).
-    Entry,
-    /// This lineage has no entry yet: run `init` first.
-    TipAbsent,
-    /// The named entry is not in the pile (different from an empty lineage).
-    EntryAbsent,
-    /// More than one entry at the highest seq: the ledger forked, and this layer does not guess which to
-    /// follow.
-    TipForked,
-    /// The anchoring crate declined the scan (with its code).
-    Scan,
-    /// Multi-endpoint readings disagree.
-    EndpointsDisagree,
-    /// Endpoint unreachable, cannot send, or cannot wait.
-    Unreachable,
-    /// The transaction was included with a status other than 1.
-    TxStatus,
-    /// Not included by the deadline.
-    TxNotYet,
-    /// `anchor`: what was sent is void, no node holding it and its nonce used by another transaction, so it will
-    /// never be included; nothing new was sent by this answer (the desktop's entries are back in its queue; the
-    /// direct `anchor` sends afresh when run again).
-    TxVoid,
-    /// The kit core refused the document we built (with its token).
-    Doc,
-    /// The kit core judged the kit invalid (with the kit law verdict).
-    Kit,
-    /// The kit core refused encoding or decoding a payload (with its token).
-    Badge,
-    /// The fragment lacks one of anchors / basis / evidence and cannot become an audit input.
-    Fragment,
-    /// `init`: this ledger already has a root (the core recognizes exactly one seq 0 entry). One ledger, one
-    /// root.
-    AlreadyRooted,
-    /// `init`: the ledger is not empty and the core recognizes no root (unreadable stray files, entry-named
-    /// bytes the core refuses, entries without a root). Genesis is the first entry; with something already
-    /// there, a second root could not be ruled out, so nothing is written.
-    NotEmpty,
-    /// `retract`: the retraction convention's writing rule refused (with the convention's token,
-    /// `zikaron_glue::retraction`). A malformed subject, one not on this ledger's lineage, not a work record,
-    /// or already deleted each have a token; the ledger is unchanged.
-    Retraction,
-    /// The core's offline audit of this ledger with the entry about to be written finds a chain finding the
-    /// ledger did not already have (a key no longer the authority, a sequence gap, a broken link, an
-    /// equivocation, a second root): nothing is written, and the findings are named.
-    WouldBreak,
-    /// `check-grant`: `--grant` is a grant file (the app's single-file bundle) that does not open by the one
-    /// reading the app uses: its bundle shape, the kit inside, its grant code, or a hop the code names that the
-    /// bundle does not carry (with the refusing layer's token).
-    GrantFile,
-    /// `anchor`: the endpoint refused to estimate the transaction's gas (the call would revert), or estimated
-    /// it above the ceiling (it would run out of gas on chain with the fee paid): nothing is broadcast.
-    GasRefused,
-    /// `--home`: the desktop gave no answer for that home: it is locked, not open, has another home open, or is
-    /// not running; or its local endpoint could not be reached or broke off (`detail`, one of [`Door`]). Nothing
-    /// was done by this command.
-    Desktop,
-    /// `--home`: the action asks for the passcode, so it is done on the desktop, never through its local endpoint.
-    OnDesktop,
-    /// `--home` `anchor` with the desktop set to leave sending to the user: nothing was sent; the entries wait in
-    /// its queue (`count`) for the user to send them from the desktop.
-    Queued,
-    /// `--home`: the desktop's action layer refused (its code in `token`, its evidence in `detail`).
-    DesktopRefused,
-    /// Opening a sealed home: the command line's credential has expired (it was removed on the way out).
-    CredentialExpired,
-    /// Opening a sealed home: this machine has no command-line credential (writing alone is off).
-    CredentialMissing,
-    /// Opening a sealed home: the credential is not in its shape, does not open, or holds another master key
-    /// than this machine's vault's.
-    CredentialShape,
-    /// Writing a sealed home: the desktop (or another writer) holds the home's writer lock.
-    HomeHeld,
-    /// Opening a sealed home: the home's writer mark names another machine, or does not read.
-    HomeOtherMachine,
-    /// Writing a plain ledger that ZIKARON Desk has adopted (its root is on the desktop's adopted list): written
-    /// from now on through the desktop's sealed copy, never here.
-    Adopted,
-    /// `kit-verify`: not every record of the package holds (`state` says which way: an original that is not the
-    /// one recorded, or a record not anchored, not read on chain, or without its original).
-    Records,
-    /// Writing a ledger this machine handed off to another place (a ledger handoff) and has not taken back: it is
-    /// not written here (`handoff` names the handoff).
-    HandedOff,
-    /// `take-over`: the handoff is not taken (its `token` says why: the file does not read as a handoff, it is not
-    /// this place's own handoff coming back, this place holds an entry the handoff lacks, or its ledger is not one
-    /// line); nothing is written.
-    Handoff,
-    /// `anchor`: the chain already holds an anchor of a hash given, from this key through this registry (anchored
-    /// on another side, the desktop or another place): nothing is sent; `names` are those hashes, `tx` and
-    /// `blockNumber` the earliest such anchor.
-    OnChain,
-    /// `anchor` sending a home's queue, with the credential (`--ledger`) or through the desktop (`--home`): refused
-    /// before anything went out (`token` the code, spelled as the desktop's closed table spells it; `detail` its
-    /// evidence).
-    SendRefused,
-    /// Writing a home with the credential: the home is read-only, under its read-only mark (not fetched, or newer
-    /// entries elsewhere) or its ledger's own entries break its chain (`token` the code as the desktop spells it,
-    /// `detail` its evidence); nothing was written.
-    ReadOnly,
-    /// `kit-verify --originals-to`: the originals were not taken out (`token` says why, as `zikaron_glue::extract` codes it;
-    /// `names` the names already in the folder or clashing, `detail` the path or the system's words); nothing was written.
-    Extract,
-    /// A record package addressed to one key, refused (`token` the code in the addressed package's one table,
-    /// `zikaron_seal::addressed::Why`, as the desktop spells it; `detail` its evidence, never a recipient): opening it,
-    /// no key offered is its recipient, a segment fails, its head does not read; sealing one to an address, no anchor
-    /// the address signed is on any network read through, or (exit 4) some network was not read through; read where
-    /// packages are read but not opened. Nothing was written.
-    Addressed,
-}
-
-impl Reason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Reason::Args => "E_ARGS",
-            Reason::Unreadable => "E_UNREADABLE",
-            Reason::Key => "E_KEY",
-            Reason::Random => "E_RANDOM",
-            Reason::Ledger => "E_LEDGER",
-            Reason::Entry => "E_ENTRY",
-            Reason::TipAbsent => "E_TIP_ABSENT",
-            Reason::EntryAbsent => "E_ENTRY_ABSENT",
-            Reason::TipForked => "E_TIP_FORKED",
-            Reason::Scan => "E_SCAN",
-            Reason::EndpointsDisagree => "E_ENDPOINTS_DISAGREE",
-            Reason::Unreachable => "E_UNREACHABLE",
-            Reason::TxStatus => "E_TX_STATUS",
-            Reason::TxNotYet => "E_TX_NOT_YET",
-            Reason::TxVoid => "E_TX_VOID",
-            Reason::Doc => "E_DOC",
-            Reason::Kit => "E_KIT",
-            Reason::Badge => "E_BADGE",
-            Reason::Fragment => "E_FRAGMENT",
-            Reason::AlreadyRooted => "E_ALREADY_ROOTED",
-            Reason::NotEmpty => "E_NOT_EMPTY",
-            Reason::Retraction => "E_RETRACTION",
-            Reason::WouldBreak => "E_WOULD_BREAK",
-            Reason::GrantFile => "E_GRANT_FILE",
-            Reason::GasRefused => "E_GAS_REFUSED",
-            Reason::Desktop => "E_DESKTOP",
-            Reason::OnDesktop => "E_ON_DESKTOP",
-            Reason::Queued => "E_QUEUED",
-            Reason::DesktopRefused => "E_DESKTOP_REFUSED",
-            Reason::CredentialExpired => "E_CREDENTIAL_EXPIRED",
-            Reason::CredentialMissing => "E_CREDENTIAL_MISSING",
-            Reason::CredentialShape => "E_CREDENTIAL_SHAPE",
-            Reason::HomeHeld => "E_HOME_HELD",
-            Reason::HomeOtherMachine => "E_HOME_OTHER_MACHINE",
-            Reason::Adopted => "E_ADOPTED",
-            Reason::Records => "E_RECORDS",
-            Reason::HandedOff => "E_HANDED_OFF",
-            Reason::Handoff => "E_HANDOFF",
-            Reason::OnChain => "E_ON_CHAIN",
-            Reason::SendRefused => "E_SEND_REFUSED",
-            Reason::ReadOnly => "E_READ_ONLY",
-            Reason::Extract => "E_EXTRACT",
-            Reason::Addressed => "E_ADDRESSED",
-        }
-    }
-
-    pub const ALL: [Reason; 43] = [
-        Reason::Args,
-        Reason::Unreadable,
-        Reason::Key,
-        Reason::Random,
-        Reason::Ledger,
-        Reason::Entry,
-        Reason::TipAbsent,
-        Reason::EntryAbsent,
-        Reason::TipForked,
-        Reason::Scan,
-        Reason::EndpointsDisagree,
-        Reason::Unreachable,
-        Reason::TxStatus,
-        Reason::TxNotYet,
-        Reason::TxVoid,
-        Reason::Doc,
-        Reason::Kit,
-        Reason::Badge,
-        Reason::Fragment,
-        Reason::AlreadyRooted,
-        Reason::NotEmpty,
-        Reason::Retraction,
-        Reason::WouldBreak,
-        Reason::GrantFile,
-        Reason::GasRefused,
-        Reason::Desktop,
-        Reason::OnDesktop,
-        Reason::Queued,
-        Reason::DesktopRefused,
-        Reason::CredentialExpired,
-        Reason::CredentialMissing,
-        Reason::CredentialShape,
-        Reason::HomeHeld,
-        Reason::HomeOtherMachine,
-        Reason::Adopted,
-        Reason::Records,
-        Reason::HandedOff,
-        Reason::Handoff,
-        Reason::OnChain,
-        Reason::SendRefused,
-        Reason::ReadOnly,
-        Reason::Extract,
-        Reason::Addressed,
-    ];
-}
-
-/// Output object keys. Closed: every member name this crate prints is one of these, except the members of
-/// the `contract` verb's answer below `ok`, which are [`Contract`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Key {
-    Ok,
-    Reason,
-    Detail,
-    Dropped,
-    Token,
-    Index,
-    State,
-    EntryId,
-    EntryType,
-    Seq,
-    Prev,
-    Author,
-    Address,
-    Privkey,
-    Ledger,
-    Entries,
-    Files,
-    Proofs,
-    KitId,
-    Path,
-    Fragment,
-    Sources,
-    SingleSource,
-    SingleSourceChains,
-    Tx,
-    BlockNumber,
-    Attestor,
-    Attestation,
-    DocId,
-    Doc,
-    Payload,
-    Count,
-    Written,
-    Names,
-    Value,
-    Records,
-    Content,
-    Original,
-    Anchored,
-    FirstAt,
-    Originals,
-    LeftOut,
-    Handoff,
-    /// `kit-verify --originals-to`: the names the originals were taken out under, in order.
-    Taken,
-}
-
-impl Key {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Key::Ok => "ok",
-            Key::Reason => "reason",
-            Key::Detail => "detail",
-            Key::Dropped => "dropped",
-            Key::Token => "token",
-            Key::Index => "index",
-            Key::State => "state",
-            Key::EntryId => "entryId",
-            Key::EntryType => "entryType",
-            Key::Seq => "seq",
-            Key::Prev => "prev",
-            Key::Author => "author",
-            Key::Address => "address",
-            Key::Privkey => "privkey",
-            Key::Ledger => "ledger",
-            Key::Entries => "entries",
-            Key::Files => "files",
-            Key::Proofs => "proofs",
-            Key::KitId => "kitId",
-            Key::Path => "path",
-            Key::Fragment => "fragment",
-            Key::Sources => "sources",
-            Key::SingleSource => "singleSource",
-            Key::SingleSourceChains => "singleSourceChains",
-            Key::Tx => "tx",
-            Key::BlockNumber => "blockNumber",
-            Key::Attestor => "attestor",
-            Key::Attestation => "attestation",
-            Key::DocId => "docId",
-            Key::Doc => "doc",
-            Key::Payload => "payload",
-            Key::Count => "count",
-            Key::Written => "written",
-            Key::Names => "names",
-            Key::Value => "value",
-            Key::Records => "records",
-            Key::Content => "content",
-            Key::Original => "original",
-            Key::Anchored => "anchored",
-            Key::FirstAt => "firstAt",
-            Key::Originals => "originals",
-            Key::LeftOut => "leftOut",
-            Key::Handoff => "handoff",
-            Key::Taken => "taken",
-        }
-    }
-    /// The whole set; `CLI-SCHEMA.md` section 7 lists it cell by cell (checked by the tests).
-    pub const ALL: [Key; 44] = [
-        Key::Ok,
-        Key::Reason,
-        Key::Detail,
-        Key::Dropped,
-        Key::Token,
-        Key::Index,
-        Key::State,
-        Key::EntryId,
-        Key::EntryType,
-        Key::Seq,
-        Key::Prev,
-        Key::Author,
-        Key::Address,
-        Key::Privkey,
-        Key::Ledger,
-        Key::Entries,
-        Key::Files,
-        Key::Proofs,
-        Key::KitId,
-        Key::Path,
-        Key::Fragment,
-        Key::Sources,
-        Key::SingleSource,
-        Key::SingleSourceChains,
-        Key::Tx,
-        Key::BlockNumber,
-        Key::Attestor,
-        Key::Attestation,
-        Key::DocId,
-        Key::Doc,
-        Key::Payload,
-        Key::Count,
-        Key::Written,
-        Key::Names,
-        Key::Value,
-        Key::Records,
-        Key::Content,
-        Key::Original,
-        Key::Anchored,
-        Key::FirstAt,
-        Key::Originals,
-        Key::LeftOut,
-        Key::Handoff,
-        Key::Taken,
-    ];
-
-}
-
-/// The member names of the `contract` verb's answer (beside [`Key::Ok`]). Closed: the answer prints these and
-/// no other; `CLI-SCHEMA.md` section 10 lists them (checked by the tests).
-///
-/// The answer is one object: `exits` (each exit code as `{code, name}`, [`Exit::ALL`] in order, `name` from
-/// [`Exit::name`]), `reasons` ([`Reason::ALL`] as `as_str`, in order), `standsFor` (each flag that gives
-/// another flag's value another way as `{flag, for}`, from `args::STANDS_FOR`: a verb that takes `for` takes
-/// `flag` too) and `verbs` (each verb as `{name, flags}`, `verbs::VERBS` in order, `flags` that verb's closed
-/// list from `verbs::accepts`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Contract {
     Exits,
@@ -454,6 +49,7 @@ pub enum Contract {
     Verbs,
     Flags,
     HomeFlags,
+    Required,
 }
 
 impl Contract {
@@ -469,11 +65,11 @@ impl Contract {
             Contract::Verbs => "verbs",
             Contract::Flags => "flags",
             Contract::HomeFlags => "homeFlags",
+            Contract::Required => "required",
         }
     }
 
-    /// The whole set.
-    pub const ALL: [Contract; 10] = [
+    pub const ALL: [Contract; 11] = [
         Contract::Exits,
         Contract::Code,
         Contract::Name,
@@ -484,45 +80,18 @@ impl Contract {
         Contract::Verbs,
         Contract::Flags,
         Contract::HomeFlags,
+        Contract::Required,
     ];
 }
 
-/// The shell's own words: the flag values it recognizes. Closed, one spelling each for `--form` and the two
-/// `badge` sides.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Word {
-    Registry,
-    Bare,
-}
-
-impl Word {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Word::Registry => "registry",
-            Word::Bare => "bare",
-        }
-    }
-}
-
-/// Why the desktop gave no answer through its local IPC endpoint, the door (`E_DESKTOP`'s `detail`). Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Door {
-    /// No endpoint for that home: the desktop is locked, does not have that home open (or reads it while another
-    /// instance writes it), or is not running.
     NotOpen,
-    /// The desktop locked, closed the home or quit before it answered.
     Closed,
-    /// The endpoint's path is longer than this system's local channel allows.
     PathTooLong,
-    /// The endpoint belongs to another user.
     NotYou,
-    /// The connection broke off, or the answer is something this version does not read.
     Broken,
-    /// This machine's folder could not be found (the system says no home directory, or its pointer does not
-    /// read).
     NoMachine,
-    /// This machine writes alone: the desktop keeps its endpoint closed while that switch is on (write without
-    /// `--home`).
     Alone,
 }
 
@@ -542,120 +111,4 @@ impl Door {
     pub const ALL: [Door; 7] = [Door::NotOpen, Door::Closed, Door::PathTooLong, Door::NotYou, Door::Broken, Door::NoMachine, Door::Alone];
 }
 
-/// Law field names: the seven envelope members (law §4.1), the body members of the seven types (law §6), kit
-/// document members (kit law §4, §5) and kit manifest members (kit law §7.3).
-///
-/// These names belong to the law; the core and the kit core spell them only inside their `check_*` functions
-/// and export no constants, so the shell keeps them in this one closed table.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Field {
-    // Envelope (law §4.1).
-    Spec,
-    EntryType,
-    Author,
-    Seq,
-    Prev,
-    Body,
-    Sig,
-    // Bodies (law §6.1 to §6.8).
-    StatementMd,
-    Content,
-    Mode,
-    Mark,
-    Toolchain,
-    NoteMd,
-    Grantee,
-    Work,
-    Terms,
-    History,
-    Window,
-    From,
-    To,
-    ScopeMd,
-    Grant,
-    Case,
-    Anchors,
-    ChainId,
-    Tx,
-    PayloadKind,
-    Attestor,
-    Attestation,
-    Kind,
-    Effective,
-    Subject,
-    // The member the kit reading adds to a grant body (parent law §6.10 treats it as data).
-    Upstream,
-    // The three tables of a law §9.4 basis (the offline lineage reading uses a basis with all three empty).
-    AdoptionChains,
-    BareTx,
-    Chains,
-    // Kit documents (kit law §4, §5).
-    Rows,
-    Recipient,
-    Variant,
-    Fpm,
-    // Kit manifest (kit law §7.3).
-    Entries,
-    Files,
-    Contents,
-    Proofs,
-    Root,
-    Sha256,
-    Size,
-    Path,
-}
-
-impl Field {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Field::Spec => "spec",
-            Field::EntryType => "entryType",
-            Field::Author => "author",
-            Field::Seq => "seq",
-            Field::Prev => "prev",
-            Field::Body => "body",
-            Field::Sig => "sig",
-            Field::StatementMd => "statement_md",
-            Field::Content => "content",
-            Field::Mode => "mode",
-            Field::Mark => "mark",
-            Field::Toolchain => "toolchain",
-            Field::NoteMd => "note_md",
-            Field::Grantee => "grantee",
-            Field::Work => "work",
-            Field::Terms => "terms",
-            Field::History => "history",
-            Field::Window => "window",
-            Field::From => "from",
-            Field::To => "to",
-            Field::ScopeMd => "scope_md",
-            Field::Grant => "grant",
-            Field::Case => "case",
-            Field::Anchors => "anchors",
-            Field::ChainId => "chainId",
-            Field::Tx => "tx",
-            Field::PayloadKind => "payloadKind",
-            Field::Attestor => "attestor",
-            Field::Attestation => "attestation",
-            Field::Kind => "kind",
-            Field::Effective => "effective",
-            Field::Subject => "subject",
-            Field::Upstream => "upstream",
-            Field::AdoptionChains => "adoptionChains",
-            Field::BareTx => "bareTx",
-            Field::Chains => "chains",
-            Field::Rows => "rows",
-            Field::Recipient => "recipient",
-            Field::Variant => "variant",
-            Field::Fpm => "fpm",
-            Field::Entries => "entries",
-            Field::Files => "files",
-            Field::Contents => "contents",
-            Field::Proofs => "proofs",
-            Field::Root => "root",
-            Field::Sha256 => "sha256",
-            Field::Size => "size",
-            Field::Path => "path",
-        }
-    }
-}
+pub use crate::codes_own::{Field, Key, Reason, Word};

@@ -1,11 +1,3 @@
-//! Grant codes read the same whatever white space surrounds them; key files meet the backup floor; adoption
-//! through the door; home layout refusal in one place; node channels kept apart by place; numbered file landing;
-//! passcode hand-off; node addresses shown without their keys; keyed file naming.
-
-/// A code with surrounding or embedded white space (CRLF, spaces, no-break space, BOM, zero-width space, word
-/// joiner, soft hyphen) gives the same answer as the clean code, typed or in a file. The code decodes to a
-/// non-entry, so the expected answer is the kit's refusal; white space read as part of the code would fail
-/// differently. Runs alone because answers are localized and other tests switch the language.
 #[test]
 fn a_code_with_white_space_reads_as_the_clean_code_typed_or_in_a_file() {
     if super::alone_in(module_path!(), "a_code_with_white_space_reads_as_the_clean_code_typed_or_in_a_file") {
@@ -42,8 +34,6 @@ fn a_code_with_white_space_reads_as_the_clean_code_typed_or_in_a_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A key file backup is sealed at no less than `keystore::BACKUP_FLOOR` in memory and work cost, checked by
-/// reading the parameters back from the file. Shipped builds use the same floor for the vault.
 #[test]
 fn a_key_file_written_is_never_below_the_backup_floor() {
     if super::alone_in(module_path!(), "a_key_file_written_is_never_below_the_backup_floor") {
@@ -60,7 +50,6 @@ fn a_key_file_written_is_never_below_the_backup_floor() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
     let pw = "a backup password";
-    // The passcode opens the vault first (its own task), then the key file is written in the background.
     let answered = app::action::apply_settled(&mut shell, Action::BackupKey { pin: "27618394".into(), password: pw.into(), again: pw.into(), dir: dir.display().to_string() });
     let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while shell.tasks.in_flight(app::task::Kind::Keystore) && std::time::Instant::now() < until {
@@ -76,8 +65,6 @@ fn a_key_file_written_is_never_below_the_backup_floor() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The refusal of an incomplete home layout (`Known::CannotLay`) is made only in `home::lay`, which opening a
-/// home goes through.
 #[test]
 fn a_home_laid_incomplete_is_judged_in_one_place() {
     let makers: Vec<String> = super::shipped()
@@ -92,53 +79,6 @@ fn a_home_laid_incomplete_is_judged_in_one_place() {
     assert!(lay[at..].split("\n}\n").next().unwrap_or_default().contains("Known::CannotLay"), "inside lay");
 }
 
-/// An `adopt` door request becomes the adoption page's action: its anchors JSON is parsed into rows by the
-/// page's own reader, with each malformed shape refused by name; attestor and attestation pass through as given
-/// (a half co-signature is refused by the action, see `door_b15::a_cosignature_is_both_halves_or_none_judged_once`).
-#[test]
-fn an_adoption_through_the_door_is_the_adoption_pages_action() {
-    let ctx = zikaron_ui::egui::Context::default();
-    let shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
-    let tx = format!("0x{}", "11".repeat(32));
-    let content = format!("0x{}", "77".repeat(32));
-    let turn = |anchors: Option<&str>| {
-        let mut args = vec![("attestor".to_string(), "0xa".to_string()), ("attestation".to_string(), "0xs".to_string())];
-        if let Some(a) = anchors {
-            args.push(("anchors".to_string(), a.to_string()));
-        }
-        let q = zikaron_glue::door::Request { verb: "adopt".into(), home: "/h".into(), args };
-        match app::door::turn_of(&shell, &q) {
-            Ok(app::door::Turn::Act(app::action::Action::AdoptAnchors { rows, attestor, attestation })) => {
-                assert_eq!((attestor.as_str(), attestation.as_str()), ("0xa", "0xs"), "as given");
-                app::adoptx::rows_of(&rows).map(|r| r.len()).map_err(|f| f.which())
-            }
-            _ => panic!("adopt turns into the adoption page's action"),
-        }
-    };
-    let good = format!(r#"{{"chainId":31337,"content":"{content}","payloadKind":"bare","tx":"{tx}"}}"#);
-    assert_eq!(turn(Some(&format!("[{good},{good}]"))), Ok(2), "two rows, read as the page reads them");
-    let shape = Err(Some(app::fault::Known::SettingsShape));
-    assert_eq!(turn(Some(&format!(r#"[{good},{{"chainId":31337,"payloadKind":"bare","tx":"{tx}"}}]"#))), shape, "a member missing: refused by its line");
-    assert_eq!(turn(Some(&format!(r#"[{{"chainId":"x","content":"{content}","payloadKind":"bare","tx":"{tx}"}}]"#))), shape, "a chain id not whole");
-    assert_eq!(turn(Some(&good)), shape, "not an array: one line, refused");
-    assert_eq!(turn(Some("[{}]")), shape, "an element with nothing in it");
-    // An element must have exactly its four members, each a single word; nothing is reshaped.
-    let tx_kind = format!("{tx} bare");
-    assert_eq!(turn(Some(&format!(r#"[{{"chainId":31337,"content":"{content}","tx":"{tx_kind}"}}]"#))), shape, "white space in a value never fills the member missing beside it");
-    // The escaped `\n` decodes to a real line break in the value.
-    let two = format!("{content}\\n31337 {tx} bare {content}");
-    assert_eq!(turn(Some(&format!(r#"[{{"chainId":31337,"content":"{two}","payloadKind":"bare","tx":"{tx}"}}]"#))), shape, "a line break in a value never makes two anchors of one");
-    assert_eq!(turn(Some(&format!(r#"[{{"chainId":31337,"content":"{content}","note":"x","payloadKind":"bare","tx":"{tx}"}}]"#))), shape, "a member added is never dropped");
-    assert_eq!(turn(Some(&format!(r#"[{{"chainId":"31337","content":"{content}","payloadKind":"bare","tx":"{tx}"}}]"#))), shape, "a chain id written as text");
-    assert_eq!(turn(Some(&format!("[{good},{{\"chainId\":31337}}]"))), shape, "one bad element among good ones");
-    let none = Err(Some(app::fault::Known::FieldMissing));
-    assert_eq!(turn(Some("[]")), none, "no anchors at all");
-    assert_eq!(turn(None), none, "no --anchors");
-    assert!(app::door::verbs().iter().any(|(v, fl)| *v == "adopt" && *fl == ["anchors", "attestor", "attestation"]), "the door's table lists it");
-}
-
-/// Two nodes on one host with different paths display alike but are distinct places for per-place state,
-/// over http and https.
 #[test]
 fn the_apps_node_channels_are_kept_apart_by_place() {
     for scheme in ["http", "https"] {
@@ -149,9 +89,6 @@ fn the_apps_node_channels_are_kept_apart_by_place() {
     }
 }
 
-/// `land_numbered` never replaces an existing entry: it uses the plain name if free, otherwise the next free
-/// number (whether the name is held by a file, folder, read-only file or numbered files), leaving what was there
-/// untouched. An unwritable folder is refused and nothing lands.
 #[test]
 fn a_named_landing_never_covers_what_is_there() {
     let d = std::env::temp_dir().join(format!("zk-test-land-numbered-{}", std::process::id()));
@@ -176,7 +113,6 @@ fn a_named_landing_never_covers_what_is_there() {
     }
     assert_eq!(land(&d, "many").ok().as_deref(), Some("many-4.zikaron"), "several taken: the next free");
     assert_eq!(std::fs::read(d.join("many-2.zikaron")).expect("kept"), b"many-2.zikaron");
-    // Unix only: a read-only folder bars new files there.
     #[cfg(unix)]
     {
         let shut = d.join("shut");
@@ -198,8 +134,6 @@ fn a_named_landing_never_covers_what_is_there() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A backup whose same-day name is taken lands under the next number; the existing file is untouched and the
-/// settings record the new path.
 #[test]
 fn a_backup_never_covers_one_of_the_same_name() {
     if super::alone_in(module_path!(), "a_backup_never_covers_one_of_the_same_name") {
@@ -219,9 +153,6 @@ fn a_backup_never_covers_one_of_the_same_name() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
-/// Handing a passcode to its task moves it out: every action carrying one hands it once, whole, leaving its own
-/// cell empty, so no second copy lingers in memory after a failed or cancelled task. Actions without a passcode
-/// hand nothing.
 #[test]
 fn a_passcode_handed_is_moved_out_and_handed_once() {
     use app::action::{Action, RestoreHow};
@@ -230,7 +161,6 @@ fn a_passcode_handed_is_moved_out_and_handed_once() {
         Action::BackupKey { pin: typed(), password: typed(), again: typed(), dir: String::new() },
         Action::DeleteIdentity { id: String::new(), pin: typed() },
         Action::RevealWords { pin: typed() },
-        Action::AttestFor { text: String::new(), pin: typed() },
         Action::ExportBackup { pin: typed(), password: typed(), again: typed(), dir: String::new() },
         Action::SetPin { pin: typed(), again: typed() },
         Action::Unlock { pin: typed() },
@@ -252,9 +182,6 @@ fn a_passcode_handed_is_moved_out_and_handed_once() {
     assert!(Action::Lock.hand_pin().is_none(), "an action with no passcode hands none");
 }
 
-/// A node address is displayed without any key in its path, query, fragment or user part; IPv6 keeps its
-/// brackets, the default port is dropped, an unparseable address shows only its length, and addresses differing
-/// only by key display alike. Applies to `Display`, `Debug` and the endpoint's `Debug`.
 #[test]
 fn a_node_address_is_said_without_its_key() {
     use app::chainx::{Endpoint, NodeAddr};
@@ -281,12 +208,6 @@ fn a_node_address_is_said_without_its_key() {
     assert_eq!(NodeAddr::new("https://n.example/v3/aaaa").said(), NodeAddr::new("https://n.example/v3/bbbb").said(), "only the key differs: said alike");
 }
 
-/// The raw node address (which may carry a key) reaches no sentence: the field is private, what is said of it is
-/// its safe form, and the written form (`for_transport`, the place key `place`, the endpoint spelling `spec`) is
-/// read in a closed set of places only: the sender's transport (`node`, `agree`, `batch`), and on this side the
-/// person's own settings and node editor and the node lists kept as written (`archive`, `window/check`,
-/// `action/audit`, `deploy`). The type is the sender's (`zikaron_send::node`), so the closed set is read across
-/// both crates and the door.
 #[test]
 fn a_node_address_gives_its_written_form_to_nobody_outside() {
     let read = |f: &str| super::code_only(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zikaron-send/src").join(f)).expect("sender source"));
@@ -297,8 +218,15 @@ fn a_node_address_gives_its_written_form_to_nobody_outside() {
     let public: Vec<&str> = body.lines().map(str::trim).filter(|l| l.starts_with("pub fn")).collect();
     assert_eq!(
         public,
-        vec!["pub fn new(written: impl Into<String>) -> NodeAddr {", "pub fn said(&self) -> String {", "pub fn place(&self) -> String {", "pub fn for_transport(&self) -> &str {"],
-        "making one, saying it, and the two written readings"
+        vec![
+            "pub fn new(written: impl Into<String>) -> NodeAddr {",
+            "pub fn said(&self) -> String {",
+            "pub fn place(&self) -> String {",
+            "pub fn rest(base: &str, chain: u64) -> NodeAddr {",
+            "pub fn kind(&self) -> Kind {",
+            "pub fn for_transport(&self) -> &str {"
+        ],
+        "making one (a JSON-RPC node, a REST row), saying it, which list it came from, and the two written readings"
     );
     assert!(node.contains("pub url: NodeAddr,"), "an endpoint's address is the type, not a string");
     let readers = [".for_transport()", ".spec()", ".place()"];
@@ -310,7 +238,6 @@ fn a_node_address_gives_its_written_form_to_nobody_outside() {
         }
     }
     let app_ok = ["archive.rs", "check.rs", "audit.rs", "deploy.rs"];
-    // The product's sources always; the door's (`tools/app-drive`) where it is there: a public tree ships without it.
     let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     let door = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/app-drive/src");
     if door.is_dir() {
@@ -336,9 +263,6 @@ fn a_node_address_gives_its_written_form_to_nobody_outside() {
     }
 }
 
-/// Every keyed document kind gets an on-disk name that differs from its logical name and contains no id; other
-/// kinds keep their logical name; a keyed path of the wrong shape is refused rather than left revealing. A
-/// keyed kind without a sample here fails the test, so new kinds are covered.
 #[test]
 fn every_keyed_kind_is_renamed_by_the_one_naming() {
     if super::alone_in(module_path!(), "every_keyed_kind_is_renamed_by_the_one_naming") {
@@ -374,10 +298,6 @@ fn every_keyed_kind_is_renamed_by_the_one_naming() {
     }
 }
 
-/// Which kinds are keyed is judged once (`Doc::keyed`), and both sides that act on it agree with it by what they
-/// do: for every kind, the naming leaves a logical name as it is exactly when the kind is not keyed, and the
-/// reading takes a file at its logical, unkeyed name exactly when the kind is not keyed. A side that kept a list
-/// of its own would disagree on the kind it missed.
 #[test]
 fn which_kinds_are_renamed_is_judged_once() {
     use zikaron_seal::envelope::{disk_rel, envelope, unseal, Doc, Expect, Ident, Owner, NONCE};

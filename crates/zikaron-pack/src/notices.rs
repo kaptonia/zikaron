@@ -1,21 +1,7 @@
-//! Third-party notices: every registry crate linked into the given roots' dependency trees on one target, with
-//! its licence expression and the licence files it ships, generated from the workspace's `Cargo.lock` (via
-//! `cargo metadata --filter-platform <target> --locked --offline`). The app's build script embeds the list in
-//! the app; the packages ship it for everything they install, followed by the licences of embedded fonts. One
-//! generator serves both, so they never diverge.
-//!
-//! Workspace crates are this project's own and are not listed. A crate that ships no licence file is listed
-//! with its expression and a note saying so. A crate that names its licence by file (`license-file`) rather
-//! than by expression is listed under that file, whose text is included whatever its name; a named file
-//! missing from the crate is reported.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The notices text for `roots` (workspace package names) on `target`, followed by each file in `extra` (a
-/// licence beyond the crates', such as a font's) under its own name. `cargo` is the cargo binary to run;
-/// `manifest` the workspace's `Cargo.toml`.
 pub fn make(cargo: &str, manifest: &Path, target: &str, roots: &[&str], extra: &[PathBuf]) -> Result<String, String> {
     let out = Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", target, "--manifest-path"])
@@ -42,14 +28,11 @@ struct Pkg {
     name: String,
     version: String,
     license: String,
-    /// The `license-file` the crate's manifest names (relative to its directory), if any.
     license_file: Option<String>,
     dir: PathBuf,
     registry: bool,
 }
 
-/// The notices text: one line per crate (name, version, licence expression), then each distinct licence
-/// text once under the crates that ship it.
 fn notices_of(meta: &json::Value, roots: &[&str]) -> Result<String, String> {
     let packages: BTreeMap<String, Pkg> = meta
         .get("packages")
@@ -71,7 +54,6 @@ fn notices_of(meta: &json::Value, roots: &[&str]) -> Result<String, String> {
         .iter()
         .map(|n| {
             let id = n.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            // Normal dependencies only: build scripts and test helpers are not in the shipped binary.
             let deps = n
                 .get("deps")
                 .and_then(|d| d.as_array())
@@ -103,7 +85,6 @@ fn notices_of(meta: &json::Value, roots: &[&str]) -> Result<String, String> {
     for p in &third {
         let mut files = licence_files(&p.dir);
         let tag = format!("{} {}", p.name, p.version);
-        // The file the manifest names: included whatever its name (once, even if also found at the root).
         let named = p.license_file.as_ref().map(|f| (f, p.dir.join(f)));
         let named_there = named.as_ref().map(|(_, at)| at.is_file()).unwrap_or(false);
         if let Some((_, at)) = named.as_ref().filter(|_| named_there) {
@@ -141,7 +122,6 @@ fn notices_of(meta: &json::Value, roots: &[&str]) -> Result<String, String> {
     Ok(out)
 }
 
-/// The licence files a crate ships at its root (LICENSE*, LICENCE*, COPYING*, NOTICE*, UNLICENSE), by name.
 fn licence_files(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
@@ -159,7 +139,6 @@ fn licence_files(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// A small JSON reader for the metadata output (the build script uses no external crates).
 mod json {
     #[derive(Debug)]
     pub enum Value {
@@ -348,9 +327,6 @@ mod json {
 mod tests {
     use super::*;
 
-    /// One registry crate per case, each in its own directory: an expression with a root licence file; only
-    /// `license-file` (a name no root pattern matches); both, the named file also a root one (included once);
-    /// `license-file` naming a file in a subdirectory; `license-file` naming a missing file; neither.
     #[test]
     fn a_licence_named_by_file_is_listed_and_carried() {
         let root = std::env::temp_dir().join(format!("zk-pack-notices-{}", std::process::id()));

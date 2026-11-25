@@ -1,7 +1,3 @@
-//! A figure card: its name (13, second ink) at the top, one large figure (26, semibold), and at its foot a
-//! line saying how it stands (a mark or glyph and 13 words), spread over the card's height (22 × 24 inside).
-//! A card that does something when clicked lifts on hover and presses like an opening card.
-
 use crate::icons::{self, Glyph};
 use crate::mark::{self, Mark};
 use crate::material::{self, Level};
@@ -11,12 +7,9 @@ use crate::palette::{c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2};
 
-/// The figure's size and line.
 const FIGURE: f32 = 26.0;
 const FIGURE_LINE: f32 = 34.0;
 
-/// Draw the card `min_h` high at least, as wide as the room; `foot` is the line at its foot (none: the figure
-/// sits at the foot). Returns the card's response (clicks only when `clickable`).
 pub fn figure_card(ui: &mut egui::Ui, label: &str, figure: &str, foot: Option<(Option<Mark>, &str)>, min_h: f32, clickable: bool) -> egui::Response {
     let w = ui.available_width();
     let pad = vec2(tokens::CARD_PAD_X, tokens::CARD_PAD_Y);
@@ -54,7 +47,6 @@ pub fn figure_card(ui: &mut egui::Ui, label: &str, figure: &str, foot: Option<(O
                     mark::paint_mark(ui.ctx(), p, pos2(x + 7.0, ly), m, 14.0);
                     14.0 + 6.0
                 }
-                // Words alone (what a press on the card does).
                 None => 0.0,
             };
             paint::at(p, ui, pos2(x + lead, ly), egui::Align2::LEFT_CENTER, words, Type::Small, ink, (inner.width() - lead).max(0.0));

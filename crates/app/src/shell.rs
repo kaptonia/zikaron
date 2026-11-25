@@ -1,6 +1,3 @@
-//! Shell state, shared by the window and the test hooks. This layer does not know the zikaron/1 law: it
-//! knows the build, fonts, channels and pages, plus identities and the archive.
-
 use crate::queue::Kept as _;
 use crate::fault::{Fault, Known};
 use crate::feature::Feature;
@@ -16,52 +13,42 @@ use crate::task::{Outcome, Tasks};
 use crate::trace;
 use zikaron_ui::fonts;
 
-/// One self-audit reading. Every field comes back from the background task; nothing is recomputed in the
-/// frame.
 #[derive(Clone, Debug)]
 pub struct AuditRead {
-    /// The core's label, unchanged.
     pub label: String,
     pub complete: bool,
-    /// Whether the chain broke. The app-wide write lock rests on this field.
     pub broken: bool,
     pub entries: usize,
-    /// The core's report, unchanged; the screen lays out its fifteen items.
     pub report: zikaron::json::Value,
-    /// Which endpoints did not answer this pass.
     pub unanswered: Vec<String>,
+    pub unproven: Vec<crate::chainx::Why>,
     pub asked: usize,
     pub single_source: bool,
-    /// The fragment this pass used, unchanged.
     pub fragment: zikaron::json::Value,
-    /// When it ran (the interface clock; only for scheduling, never for a decision).
     pub at: f64,
-    /// Which ledger mark this report was computed for ([`Shell::book_mark`]).
     pub mark: u64,
-    /// The table generation this report's lamps go with ([`Shell::rows_gen`] once the report landed): where the
-    /// ledger's state needs the table, it is judged only against a table read at that generation
-    /// ([`Shell::ledger_ok`]).
+    pub seen: Option<usize>,
     pub rows_gen: u64,
+    pub nodes: Vec<crate::chainx::Endpoint>,
 }
 
-/// The bar at the top of every page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CliAloneNow {
+    Off,
+    Keyless,
+    Keyed(usize),
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Banner {
-    /// Nothing shown.
     None,
-    /// Broken chain: the whole desk is read-only; recover first.
     Broken,
-    /// Cannot write (a reader, or the lock not yet taken), with who the writer is.
     ReadOnly(String),
-    /// Read-only because the home's writer mark names another machine; the person may write from this one
-    /// (`Action::TakeWriter`).
     OtherMachine,
-    /// Read-only because this version cannot read the home's writer mark (`lock::Mark::Unread`: a read error,
-    /// a wrong shape, a later version's format); the person may write from this machine (`Action::TakeWriter`),
-    /// which replaces the mark with this machine's.
     MarkUnread,
-    /// Already handed over by succession, with the new key.
     Handed(String),
+    HandedOff,
+    Unfetched(crate::restorex::State),
 }
 
 impl Banner {
@@ -73,19 +60,17 @@ impl Banner {
             Banner::OtherMachine => "other_machine",
             Banner::MarkUnread => "mark_unread",
             Banner::Handed(_) => "handed",
+            Banner::HandedOff => "handed_off",
+            Banner::Unfetched(_) => "unfetched",
         }
     }
 }
 
-/// The pages: this product's page table (`crate::nav`), named here as the shell records the page shown.
 pub use crate::nav::Page;
 
-/// Whether this pass actually got an answer from the chain. Only results that carry chain readings count;
-/// those that turn unreachability into "unknown" (a review with an empty fragment, a check whose basis was
-/// refused by name) do not.
 fn chain_answered(d: &Done) -> bool {
     match d {
-        Done::Chain { .. } | Done::Audited { .. } | Done::Sighting { .. } | Done::Book { .. } => true,
+        Done::Chain { .. } | Done::Audited { .. } | Done::Book { .. } => true,
         Done::Anchored { confirmed, .. } => *confirmed,
         Done::Diligence(_) => true,
         Done::Verified(v) => v.review.is_ok(),
@@ -95,10 +80,6 @@ fn chain_answered(d: &Done) -> bool {
     }
 }
 
-/// The key store as the shell holds it: the store's own state (`keybox::State`), or a store file that exists
-/// but cannot be read (`keybox::state` returns `KEYBOX_SHAPE`, kept here for display). `Damaged` exists only
-/// in the shell: a damaged file is never read as "no store yet", which would open the first-run wizard over the
-/// keys it holds. A damaged store keeps the gate up and no key is ready.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Vault {
     Read(crate::keybox::State),
@@ -106,7 +87,6 @@ pub enum Vault {
 }
 
 impl Vault {
-    /// The store's answer, as the shell holds it.
     pub fn of(read: Result<crate::keybox::State, Fault>) -> Vault {
         match read {
             Ok(s) => Vault::Read(s),
@@ -114,7 +94,6 @@ impl Vault {
         }
     }
 
-    /// Whether the lock gate covers the window: per the store's own state, and always for a damaged store.
     pub fn gate_up(&self) -> bool {
         match self {
             Vault::Read(s) => s.gate_up(),
@@ -122,7 +101,6 @@ impl Vault {
         }
     }
 
-    /// Whether a key can be had now: only from an open store.
     pub fn keys_ready(&self) -> bool {
         match self {
             Vault::Read(s) => s.keys_ready(),
@@ -130,17 +108,14 @@ impl Vault {
         }
     }
 
-    /// Whether this machine has no store yet (first run). A damaged store is a store.
     pub fn absent(&self) -> bool {
         matches!(self, Vault::Read(crate::keybox::State::Absent))
     }
 
-    /// Whether the store reads as `s`.
     pub fn is(&self, s: crate::keybox::State) -> bool {
         matches!(self, Vault::Read(x) if *x == s)
     }
 
-    /// Its name: the store's own word, or `damaged`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Vault::Read(s) => s.as_str(),
@@ -149,35 +124,28 @@ impl Vault {
     }
 }
 
-/// Fetching found this home at odds with the fetched ledger (see `Done::FetchConflict`).
 #[derive(Clone, Debug)]
 pub struct Conflict {
     pub root: std::path::PathBuf,
     pub offline: usize,
     pub fetched: usize,
-    /// This home's entries the fetched ledger lacks, with when each was queued.
     pub rows: Vec<(crate::ledgerx::Row, Option<u64>)>,
 }
 
-/// Old data on this machine: a home set aside after a conflict.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OldData {
     pub path: std::path::PathBuf,
-    /// When it was set aside (Unix seconds).
     pub at: u64,
     pub entries: usize,
-    /// Its entries never anchored (still in its queue).
     pub queued: usize,
 }
 
-/// What opening a home reads of it and of this machine for the shell's copies: read anywhere (a worker reads it
-/// before the window installs it, `Shell::install`), touching nothing of the shell. A file that does not read
-/// either refuses the opening (the settings) or is read as empty with its trouble kept to show.
 pub struct Hydrated {
     pub settings: Settings,
     pub endpoints: Vec<Endpoint>,
     pub seen_entries: usize,
     pub seen_queue: Option<[u8; 32]>,
+    pub seen_seq: u64,
     pub queue: crate::queue::Queue,
     pub rooted: bool,
     pub remembered: Option<crate::lastread::Anchored>,
@@ -186,26 +154,20 @@ pub struct Hydrated {
     pub kits_index: Option<Vec<crate::kitsindex::Row>>,
     pub read_nets: Option<Vec<crate::readnets::Net>>,
     pub unfetched: Option<crate::restorex::State>,
+    pub handed_off: Option<String>,
+    pub pens: Option<[u8; 32]>,
     pub aside: Vec<OldData>,
     pub troubles: Vec<Fault>,
 }
 
 impl Hydrated {
-    /// Read a home for the shell's copies.
     pub fn read(home: &crate::home::Home) -> Result<Hydrated, Fault> {
         let mut troubles = Vec::new();
-        // Unreadable settings mean the home cannot open: endpoints, basis and registrations live there, and
-        // continuing with empty ones would make the screen show something else entirely.
         let settings = Settings::read(home)?;
-        let endpoints = settings.endpoints.iter().filter_map(|spec| Endpoint::parse(spec)).collect();
-        // What the disk holds is marked as seen before it is read (`follow_disk`): another writer's change after this
-        // moment differs from the mark, so the next look reads it again; marked after the read, a change landing in
-        // between would be taken as seen and never read.
+        let endpoints = crate::chainx::nodes_of(&settings);
+        let seen_seq = crate::task::next_seen();
         let seen_entries = entry_files(home);
         let seen_queue = queue_mark(home);
-        // A malformed anchor queue does not block opening, but the problem is shown. Reading it as empty silently
-        // would lose queued entries; refusing to open would block the broken-chain recovery path, which needs the
-        // home open. So the fault goes to the screen and an empty queue is used.
         let queue = match crate::queue::Queue::read(home) {
             Ok(q) => q,
             Err(f) => {
@@ -213,14 +175,8 @@ impl Hydrated {
                 crate::queue::Queue::default()
             }
         };
-        // Whether the home has a genesis: one read of the ledger head (opening already walks the disk).
-        let rooted = crate::ledgerx::head(home).map(|h| h.is_some()).unwrap_or(false);
-        // Load what the last pass knew first: the audit set and grant verdicts show at start while the
-        // background audits again (`audit_stale` stays true for this home). A malformed cache is reported and
-        // does not block opening.
+        let rooted = crate::ledgerx::rooted(home);
         let remembered = match crate::lastread::load_anchored(home) {
-            // Keep only rows anchored on this home's current chain (old rows from another network do not
-            // claim "checked last time").
             Ok(a) => {
                 let chain = settings.chain_id;
                 a.map(|mut x| {
@@ -237,20 +193,19 @@ impl Hydrated {
         troubles.extend(bad);
         let (kits_root, kits_index, read_nets, more) = kits_now(Some(home));
         troubles.extend(more);
-        // The read-only mark of a restored identity. Unreadable counts as "not fetched yet" and still refuses
-        // writes (never treated as absent); the fault goes to the trouble panel.
-        let unfetched = match crate::restorex::read(home) {
+        let unfetched = match crate::restorex::standing(home) {
             Ok(s) => s,
             Err(f) => {
                 troubles.push(f);
                 Some(crate::restorex::State::Unfetched)
             }
         };
-        Ok(Hydrated { settings, endpoints, seen_entries, seen_queue, queue, rooted, remembered, verdicts, kits_root, kits_index, read_nets, unfetched, aside: aside_now(), troubles })
+        let pens = pens_mark();
+        let handed_off = handed_off(home, &mut troubles);
+        Ok(Hydrated { settings, endpoints, seen_entries, seen_queue, seen_seq, queue, rooted, remembered, verdicts, kits_root, kits_index, read_nets, unfetched, handed_off, pens, aside: aside_now(), troubles })
     }
 }
 
-/// The old data on this machine (`Shell::reread_aside`), read.
 fn aside_now() -> Vec<OldData> {
     let room = crate::home::machine_dir().map(|m| m.join(crate::local::ASIDE_HOMES)).ok();
     let machine = crate::machine::read().unwrap_or_default();
@@ -269,8 +224,6 @@ fn aside_now() -> Vec<OldData> {
         .collect()
 }
 
-/// The kit index and the read-only network table (`Shell::reread_kits`), read for `home`: its ledger's root, the
-/// index, the table, and what did not read (the screen says it was not read).
 fn kits_now(home: Option<&crate::home::Home>) -> (Option<String>, Option<Vec<crate::kitsindex::Row>>, Option<Vec<crate::readnets::Net>>, Vec<Fault>) {
     let mut troubles = Vec::new();
     let root = home.and_then(|h| crate::ledgerx::root_of(h).ok());
@@ -291,15 +244,12 @@ fn kits_now(home: Option<&crate::home::Home>) -> (Option<String>, Option<Vec<cra
     (root, index, nets, troubles)
 }
 
-/// Old data open to read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OldView {
-    /// The home open before it (where "back" returns).
     pub back: std::path::PathBuf,
     pub at: u64,
 }
 
-/// Build kind.
 pub fn build_kind() -> &'static str {
     if cfg!(debug_assertions) {
         "debug"
@@ -308,26 +258,56 @@ pub fn build_kind() -> &'static str {
     }
 }
 
-
-/// A home reading. Every field is computed by a background disk walk; nothing is recomputed in the frame.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ArchiveRead {
     pub bytes: u64,
     pub items: usize,
     pub skipped: usize,
-    /// What the last written bundle looks like now.
     pub mirror: crate::mirror::Mirrored,
-    /// Records (`history` entries) in this home's ledger.
     pub records: usize,
+    pub backed: Option<(usize, usize)>,
+    pub mark: u64,
 }
 
-/// The scope of a source change (see `Shell::source_changed`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
-    /// The ledger in the same home was replaced (adoption in place, mirror restore).
     Ledger,
-    /// Another home.
     Home,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reread {
+    Wrote,
+    Noticed,
+    WroteGrant,
+    Issued,
+    Files,
+    Landed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stale {
+    Rows,
+    Grants,
+}
+
+impl crate::reads::Cause for Reread {
+    type Reading = Stale;
+    const ALL: &'static [Reread] = &[Reread::Wrote, Reread::Noticed, Reread::WroteGrant, Reread::Issued, Reread::Files, Reread::Landed];
+    fn stales(self) -> &'static [Stale] {
+        match self {
+            Reread::Wrote | Reread::Files | Reread::Landed => &[Stale::Rows],
+            Reread::WroteGrant => &[Stale::Grants, Stale::Rows],
+            Reread::Issued | Reread::Noticed => &[Stale::Grants],
+        }
+    }
+}
+
+struct GatesShown {
+    root: std::path::PathBuf,
+    role: crate::roles::Role,
+    moved: u64,
+    said: Result<(), Fault>,
 }
 
 pub struct Shell {
@@ -336,327 +316,186 @@ pub struct Shell {
     pub fonts: fonts::Found,
     pub font_missing: Vec<fonts::Role>,
     pub last: Option<Report>,
-    /// Home reading, computed in the background: walking the disk never happens in the frame.
     pub archive: Option<ArchiveRead>,
-    /// Chain reading, asked in the background: network calls never happen in the frame.
     pub chain: Option<crate::task::Done>,
-    /// The last reconciliation: the core's label unchanged.
     pub reconciled: Option<(String, bool, usize)>,
-    /// Who holds the pen. Held after a restore until a reconciliation reports COMPLETE.
     pub pen: Pen,
-    /// Configured chain endpoints.
     pub endpoints: Vec<Endpoint>,
-    /// The folder a sheet that takes a place starts at until one is chosen: the documents folder, else the
-    /// person's home folder. Looked for once at start: the frame never asks the disk.
     pub documents: String,
-    /// Set when resuming a submitted anchor finds no node for its chain (the queue page says so).
     pub resume_blocked: Option<u64>,
     pub faults: Vec<Fault>,
     pub skinned: bool,
-    // Identity and keys.
-    /// The anchor key's address. The private key is not here; it lives in the local key vault.
     pub anchor: Option<Address>,
-    /// The anchor key's public key (compressed), read with its address: what someone sealing a record package to
-    /// this key fills in.
     pub anchor_public: Option<[u8; 33]>,
-    /// Identities on this machine (the registry, or the existing slot). Read by the action layer, never in
-    /// the frame.
     pub identities: Option<crate::identity::Registry>,
-    /// Words just generated and not yet confirmed (memory only).
     pub new_words: Option<crate::identity::Fresh>,
-    /// The note for a new or imported identity (written to the registry when it lands).
     pub new_label: Option<String>,
-    /// The twelve words shown after the passcode check (memory only; each in the secret type, zeroed when hidden,
-    /// on locking and on quitting).
     pub words: Option<Vec<crate::secret::Secret>>,
-    // Archive and single writer.
     pub home: Option<Home>,
     pub lock: Option<Lock>,
     pub settings: Settings,
-    // Ledger, anchoring and queue.
-    /// The ledger table, read in the background: walking the ledger directory never happens in the frame.
+    pub moved: u64,
+    gates_shown: std::sync::Mutex<Option<GatesShown>>,
     pub rows: Option<(Vec<crate::ledgerx::Row>, usize)>,
-    /// Table generation: incremented on every invalidation; a read in flight returns with the generation it
-    /// started with and is dropped on mismatch.
     pub rows_gen: u64,
-    /// The generation the table held in `rows` was read at. A stale table stays shown until the new reading
-    /// lands ([`Self::rows_current`]): "not read" belongs only to a table never read.
     pub rows_at: u64,
+    pub faces_read: crate::reads::Cell<(u64, Option<std::path::PathBuf>), crate::action::LedgerFaces>,
+    pub seat_chains: std::collections::BTreeMap<String, u64>,
+    pub places_read: crate::reads::Cell<(u64, u64, Option<std::path::PathBuf>), std::collections::BTreeMap<String, zikaron_seal::queue::Place>>,
+    pub rows_wanted: std::sync::atomic::AtomicBool,
     pub grants_gen: u64,
-    /// The generation the register held in `grants` was read at, as `rows_at`.
     pub grants_at: u64,
-    /// The ledger's state ("normal / problems") as last judged from the last report, with the table of its
-    /// generation where unknown types need it ([`Self::judge_ledger`]). Between judgements the last conclusion
-    /// stands. `None` until this home's first judgement.
     pub ledger_ok: Option<bool>,
-    /// The key vault state now. Read once at start and changed by each passcode action; the frame only reads
-    /// this field, so the window never touches the disk for it.
+    pub ledger_handed_on: Option<usize>,
     pub vault: Vault,
-    /// Whether the vault still holds anything to lose (any recovery seal or key slot). Read with `vault`.
-    /// Decides whether the lock screen offers "reset the vault" and whether `keybox::reset_empty` refuses.
     pub vault_recoverable: bool,
-    /// The answer of a passcode task: key derivation runs in the background, and when its result arrives the
-    /// frame-side half finishes and writes its answer here. The window and the test hooks each take it
-    /// (taking clears it).
     pub vault_said: Option<crate::action::Applied>,
-    /// The answer of an export whose exit gate passed in the background (`action::gate_landed`). Kept
-    /// separate so passcode and export answers never overwrite each other. The window and the test hooks each
-    /// take it (taking clears it).
     pub gate_said: Option<crate::action::Applied>,
-    /// Answers of actions whose slow half runs in the background and answers when it lands (gas estimate,
-    /// taking a content hash, recording files, moving the home: `action::landed`), by kind; separate from the
-    /// passcode and exit-gate answers. The window and the test hooks each take theirs (taking clears it).
     pub said: std::collections::BTreeMap<crate::task::Kind, crate::action::Applied>,
-    /// This machine's settings (`machine.json`). Read once at start; reread after each change.
     pub machine: crate::machine::Machine,
-    /// Other results received while the test hooks waited for a passcode task, kept for the next receive.
     held_back: Vec<Outcome>,
-    /// The last self-audit.
     pub audit: Option<AuditRead>,
-    /// The ledger's mark now. Incremented when an entry is written, when a batch of anchors lands, and when
-    /// the ledger's source changes. A report describes the ledger at one mark; once the mark moves, the
-    /// anchor lamps describe an older ledger.
+    pub upgrade: Option<crate::upgradex::Stage>,
+    pub upgrade_read: bool,
+    pub rotation: Option<Vec<crate::rotatex::Chain>>,
+    pub rotation_said: Option<String>,
+    pub rot_left: Option<Vec<crate::rotatex::Left>>,
+    pub rot_left_of: Option<crate::key::Address>,
+    pub rot_vetted: Option<crate::key::Address>,
+    pub rot_given: Option<crate::key::Address>,
+    pub rot_written: Option<(String, String)>,
+    pub rot_sending: Option<u64>,
+    pub rot_home: Option<std::path::PathBuf>,
+    pub rot_sweep_out: Option<(u64, u128)>,
+    pub rot_sweep_held: Option<(u64, u128, String)>,
+    pub rot_short: Option<crate::rotatex::Short>,
+    pub rot_fresh: Vec<(u64, u128)>,
+    pub rot_sweep_to: Option<crate::key::Address>,
+    pub rot_reverted: Option<crate::rotatex::Reverted>,
+    pub rot_looking: bool,
+    pub rot_unread: Option<Fault>,
+    pub upgrade_cost: Option<(crate::upgradex::Stage, usize, u128)>,
+    pub office_trouble: Option<Fault>,
     pub book_mark: u64,
-    /// The mark the last self-audit started from (success or failure). `None` when this home has not run one.
-    /// It prevents spinning: with endpoints down, a failed pass is not redialed every frame; it waits for the
-    /// ledger to change or a period to pass.
     pub audit_asked: Option<u64>,
-    /// The ledger mark the last tail check started from (success or failure; `action::check_tail`). `None`
-    /// when this home has not run one, or its nodes or basis changed since.
+    pub audit_lag_since: Option<(f64, std::collections::BTreeSet<String>)>,
     pub tail_asked: Option<u64>,
-    /// Whether the one task of the fetch kind in flight is a tail check (it shares the fetch kind's single
-    /// flight with fetching, so the two never run together); the window names it by what it does.
+    pub tail_wanted: bool,
+    pub tail_again: bool,
     pub fetch_checks_tail: bool,
-    /// The anchor queue (read from disk when the home opens, written after every change).
+    pub unwritten_asked: Vec<std::path::PathBuf>,
     pub queue: crate::queue::Queue,
-    /// The last anchoring reading.
     pub sent: Option<crate::task::Done>,
-    /// The registered repository's passive indicator. Computed once per page open, no resident polling.
     pub repo_since: Option<(String, Option<usize>)>,
-    /// The last content hash taken (from one of the three anchoring entry points).
     pub content: Option<crate::anchorx::Content>,
-    /// The current color of each of sign, record, queue.
     pub flow: crate::anchorx::Flow,
-    /// The grant table, read in the background.
     pub grants: Option<Vec<crate::grantx::Row>>,
-    /// The last depth reading.
-    pub depth: Option<(String, zikaron::json::Value)>,
-    /// The last kit written.
     pub kit: Option<crate::task::Done>,
-    /// How many entries the last pick chose and which were pulled in.
     pub picked: Option<(usize, Vec<String>)>,
-    /// What the double-sale guard hit this pass (listed in a dialog).
     pub clash: Vec<crate::grantx::Row>,
-    /// Who writes this ledger from now on. Present means this desk handed it over by succession, and the
-    /// whole app is read-only.
+    pub clash_unsettled: usize,
+    pub noticed_at: u64,
     pub handed: Option<String>,
-    /// Per-row results of checking adoption anchors.
-    pub proofs: Option<Vec<crate::adoptx::Proof>>,
-    /// The table of existing anchors to adopt: (which key was asked, empty for this key; the rows).
-    pub key_anchors: Option<(String, Vec<crate::adoptx::KeyAnchor>)>,
-    /// Attesting for someone: the claim text as read, and each anchor's block.
-    pub claim: Option<(crate::adoptx::Claim, Vec<Option<u64>>)>,
-    /// Attesting for someone: the signed (attestor, signature).
-    pub attested: Option<(String, String)>,
-    /// The succession scan of the new key: (address, anchors found, endpoints asked).
-    pub sighting: Option<(String, usize, usize)>,
-    /// The last ledger of someone else read.
     pub book: Option<crate::task::Done>,
-    /// Three-part story: (the grant asked, its row, the revocations citing it).
+    pub persona: crate::facex::State,
+    pub face_books: Option<crate::facex::Books>,
+    pub face_pair: Option<crate::facex::Pair>,
+    pub reroot_fee: Option<crate::action::FeeReading>,
+    pub face_joined: Option<crate::facex::Joined>,
     pub story: Option<(String, Option<crate::grantx::Row>, Vec<(String, Option<String>)>)>,
-    /// Whether the current identity's backup file is on disk now (read by the action layer; the frame only
-    /// reads this field). It changes with the identity table.
     pub backup_seen: Option<crate::identity::BackupSeen>,
-    /// The last gas estimate: (anchors in this batch, gas). Sending checks it: a count mismatch blocks the
-    /// batch, so what is shown is what is sent.
     pub gas: Option<(usize, u64)>,
-    /// This batch's two fee fields: computed from the chain's base fee during estimation; the confirmation
-    /// card and the balance check before sending read the same values.
+    pub gas_lane: Option<(u64, Vec<String>)>,
+    pub door_followed: bool,
     pub fees: Option<zikaron_anchor::send::Fees>,
-    /// The nodes the fee reading left out because they serve another chain, each named (shown with the fees).
     pub fees_left: Vec<String>,
-    /// The batch whose transaction the last receipt wait did not see included: its transactions, the latest as
-    /// the chain holds it, and what may be done (a resend at which fees). Cleared once one is included, when a
-    /// resend is taken (a new wait starts), and when the source changes.
     pub stuck: Option<crate::task::Stuck>,
-    /// The two readings above belong to one chain, registry contract and node set; whenever those change
-    /// (`commit_settings`, a source change) the readings are voided (`gas_void`) and this count advances.
     pub gas_epoch: u64,
-    /// The count when the pending estimate started: it lands only if nothing it depends on has changed since
-    /// (`gas_out_of_date`); otherwise it is dropped like a reading of an earlier source.
     pub gas_asked: Option<u64>,
-    /// Backoff delays when the chain rate-limits: retry after each, then move to the next endpoint. Default
-    /// `chainx::SEND_BACKOFF`; tests set zeros so they never wait on the wall clock.
     pub send_backoff: Vec<std::time::Duration>,
-    /// The pauses between rounds of asking for a receipt (`zikaron_anchor::send::RECEIPT_BACKOFF` in the
-    /// product; test hooks inject their own so no wall clock is waited).
     pub receipt_backoff: Vec<std::time::Duration>,
-    /// How long to wait for an anchor to be included ([`crate::action::ANCHOR_WAIT`] in the product; tests inject
-    /// the deadline).
     pub anchor_wait: std::time::Duration,
-    /// Interface time of the last resume of a submitted anchor (the frame asks again after a while).
     pub resumed_at: f64,
-    // Cached readings, restore, old data, kits and grantee checks.
-    /// The `anchored` set of the last audit (disk cache, loaded when the home opens). It only gives a
-    /// "checked last time" lamp and never stands in for this pass's report.
     pub remembered: Option<crate::lastread::Anchored>,
-    /// The last verdict of each held grant (disk cache, loaded when the home opens). Cards show it until
-    /// re-checked.
     pub verdicts: Vec<(String, crate::lastread::Verdict)>,
-    /// The read-only mark of a restored identity (`settings/unfetched.json` of this home, loaded when it
-    /// opens). While present, the ledger-writing and anchoring actions are refused.
     pub unfetched: Option<crate::restorex::State>,
-    /// Fetching found this home at odds with the fetched ledger; waiting for the person to confirm
-    /// (`Action::FetchAside`) or decline. Its rows are this home's entries that would stay in the old data.
+    pub handed_off: Option<String>,
+    pub seen_pens: Option<[u8; 32]>,
     pub fetch_conflict: Option<Conflict>,
-    /// The old data on this machine (homes set aside after a conflict), read at opening.
     pub aside: Vec<OldData>,
-    /// Old data open to read, and where to come back to.
     pub old_view: Option<OldView>,
-    /// The old data the last fetch set aside (announced once after fetching, with a "view" link).
     pub last_aside: Option<std::path::PathBuf>,
-    /// Digests of export attachments by path: the content digests it may have been signed under (`kitx::digest_of`)
-    /// or the error, computed in the background. Kept across homes, since a digest belongs to the file.
     pub vetted: std::collections::BTreeMap<String, Result<Vec<String>, Fault>>,
-    /// The kit index (machine directory `kits/index.json`); `None` when not read yet or unreadable (the
-    /// trouble is recorded).
+    pub peeks: Vec<(crate::peekx::Ask, crate::peekx::Got)>,
+    pub keeps: Vec<Keep>,
+    pub keep_inline: bool,
     pub kits_index: Option<Vec<crate::kitsindex::Row>>,
-    /// The read-only network table (the machine directory's); `None` when not read yet or unreadable (the
-    /// trouble is recorded). The paths that read it take it from disk when they run.
     pub read_nets: Option<Vec<crate::readnets::Net>>,
-    /// The last reading of each read-only network (chain id, registry), from its "read the chain" key.
     pub net_reads: Vec<(u64, crate::key::Address, crate::widex::Reading)>,
-    /// The main network's custom fields as last checked when saving (chain, registry, reading), shown beside
-    /// them; written to settings only when accepted (`action::basis_read`).
     pub basis_read: Option<(u64, crate::key::Address, Option<crate::widex::Reading>)>,
-    /// The root of this home's ledger (the export page lists only its kits; read with `reread_kits`, never in
-    /// the frame).
     pub kits_root: Option<String>,
-    /// Wall clock in seconds: both caches stamp times and judge staleness with it. The system clock in the
-    /// product ([`crate::lastread::now_secs`]); tests inject fixed values.
     pub clock: fn() -> u64,
-    /// The last due-diligence panels, computed in the background.
     pub diligence: Option<crate::diligx::Read>,
-    /// The last record verification.
+    pub others_asked: Option<crate::action::OthersAsk>,
+    pub others_whole: std::sync::Arc<std::sync::Mutex<Option<(crate::sendx::behind::Key, crate::diligx::Read)>>>,
     pub verified: Option<crate::verifyx::Verified>,
-    /// The last delivery check.
+    pub cleaned: Option<(zikaron_seal::exports::Plan, bool)>,
     pub delivery: Option<crate::deliveryx::Checked>,
-    // Grant vault, sentinel and notices.
-    /// Vault cards (from the last review), with that pass's chain time.
     pub cards: Option<(Vec<crate::vaultx::Card>, Option<u64>)>,
-    /// Whether the home has a genesis. Read once when the home opens, set after genesis, adoption or restore;
-    /// the self-audit clock runs only on a home with a genesis (without a ledger there is nothing to ask the
-    /// chain).
     pub rooted: bool,
-    /// Which grants the vault holds (read in the background after opening and after imports).
     pub held: Option<Vec<crate::vaultx::Held>>,
-    /// Files in the vault directory with entry names that fail acceptance; empty when all pass.
     pub held_rejected: Vec<crate::verifyx::Rejected>,
-    /// The vault changed while a listing was in flight: list again after it lands.
     pub held_dirty: bool,
-    /// Alarms the sentinel raised this session (newest first).
+    pub vault_changed: bool,
     pub alarms: Vec<crate::sentinelx::Alarm>,
-    /// Alarms just raised and not yet shown (cleared when read).
     pub rung: Vec<crate::sentinelx::Alarm>,
-    /// Whether to request the system's attention this frame (the sentinel just rang). Cleared when the window
-    /// reads it.
     pub attention: bool,
-    /// The last badge.
     pub badge: Option<crate::badgex::Made>,
-    /// The last grant check.
     pub checked: Option<crate::checkx::Checked>,
-    /// The last publication check: which address and the reading.
+    pub check_asked: Option<crate::action::CheckAsk>,
+    pub audits: std::sync::Arc<crate::checkx::Audits>,
     pub published: Option<(String, crate::fetchx::Published)>,
-    /// Notices raised this session; raised keys are stored in settings `alarmed` (the same record as the
-    /// sentinel's).
     pub notices: Vec<crate::watchx::Notice>,
-    /// Notices just raised and not yet shown (cleared when read).
     pub fresh: Vec<crate::watchx::Notice>,
-    /// Status line: the latest sentence for it (network errors go here, not to notices).
     pub status: Option<(crate::lang::Key, String)>,
-    /// The last failure of each kind of background task (cleared on success). A page reads its own kind's
-    /// failure instead of guessing from the shared fault table.
     pub failed: std::collections::BTreeMap<crate::task::Kind, Fault>,
-    /// When a real chain answer last arrived (interface clock). Recorded only when a pass actually read a
-    /// block header, fragment or balance; a landed task that did not reach the chain does not count.
     pub chain_read_at: Option<f64>,
-    /// Which adoption text `proofs` checked.
-    pub proofs_rows: Option<String>,
-    /// Chain time read back on a chain round trip (see `note_chain_time`).
     pub chain_time: Option<u64>,
-    /// The primary identity and its kind (the vault header, readable while locked; read with `vault`, never in
-    /// the frame). The lock screen offers words or a key file by it; the identity menus mark it.
     pub primary: Option<(String, crate::keybox::PrimaryKind)>,
-    /// A master key change is in flight (making another identity primary, restoring from a backup): the screen
-    /// says it is resealing and every other action waits (`action::apply`).
     pub rekeying: bool,
-    /// A fetch and replace is swapping this home for a fresh one (`Action::FetchAside`), or a move is copying it
-    /// (`Action::MigrateHome`): the home is frozen (`action::held_back`) until that task lands.
     pub swapping: bool,
-    /// The seat a switch is going to while it runs in the background (`Action::SwitchRole`, `Kind::Seat`): the seat
-    /// control shows it at once; a press while it runs turns it round, and the last one stands when the switch lands.
     pub seat_wish: Option<crate::roles::Role>,
-    /// The identity a switch is to go to next, asked for while a switch runs in the background
-    /// (`Action::SwitchIdentity`, `Kind::Seat`): the last one asked stands, and the switch goes on to it when the one
-    /// running lands.
     pub identity_wish: Option<String>,
-    /// A lock asked for while a task that writes local data was running: the gate is up and the shell reads as
-    /// locked; the master key is wiped and the home closed when those tasks have landed (`drain_at`).
     pub lock_pending: bool,
-    /// The last whole-machine backup written this session (path and what it held).
     pub backup_made: Option<(String, crate::backup::Summary)>,
-    /// The last backup opened with its password (the confirmation card reads it).
-    pub backup_peek: Option<crate::backup::Summary>,
-    /// Ledger entries and held grants on this machine now (measured in the background; the "after the last
-    /// backup" count reads it).
+    pub backup_peek: Option<(String, crate::backup::Summary)>,
     pub items_now: Option<u64>,
-    /// The command-line channel (`door`): open while unlocked with a writable home, bound to that home.
     pub door: Option<crate::door::Door>,
-    /// The command-line request in progress, waiting for its slow half to land.
     pub door_doing: Option<crate::door::Doing>,
-    /// Results of command-line requests, for the window to report as it reports a click's.
+    pub door_acting: bool,
     pub door_told: Vec<crate::action::Applied>,
-    /// Wakes the frame when a request arrives (set by the window; without it, the next drain picks it up).
     pub door_waker: Option<crate::door::Waker>,
-    /// The home whose channel would not open, and why (retried at every drain; not listed among the troubles).
     pub door_shut: Option<(std::path::PathBuf, Fault)>,
-    /// Quitting: the channel stays closed from now on.
+    pub door_too_long: bool,
+    pub door_place: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub door_off: bool,
-    /// How many requests this shell answered through the channel (counted where each reply is sent).
     pub door_answered: usize,
-    /// "Enable command line": what is at its install path, as last read (`Action::ReadCliPath`, and after
-    /// turning it on or off); `None` until read.
     pub cli_path: Option<zikaron_os::cli_path::State>,
-    /// What an AI app is given to start the command line's MCP server (`action::ai_config`), read with
-    /// [`Shell::cli_path`]; `None` when there is no command line beside this program to point at, or it cannot be
-    /// reached from outside the app.
     pub ai_config: Option<String>,
-    /// The command line's credential as last read or issued (`None`: none on this machine), for its expiry line
-    /// and the expiry check at every drain ([`Shell::credential_tick`]).
     pub credential: Option<zikaron_seal::credential::Term>,
-    /// How many entry files this home's ledger had when this instance last accounted for it (`None`: not counted
-    /// yet): when it let its writer lock go, when it moved the ledger itself, and at each look at the disk. A
-    /// different count means another writer (the command line) wrote meanwhile, and the copies are read again
-    /// ([`Shell::take_turn`], [`Shell::follow_disk`]).
+    pub passes: Vec<zikaron_seal::credential::Row>,
     pub seen_entries: Option<usize>,
-    /// The queue file as this instance last accounted for it, by the digest of its bytes on disk (`None`: not
-    /// looked at yet; `Some(None)`: no file), at the same moments as [`Shell::seen_entries`]. Another writer may
-    /// change the queue alone (mark a batch sent, put entries on chain, follow the chain) without writing an
-    /// entry; a different digest reads the queue again ([`Shell::follow_disk`]).
     pub seen_queue: Option<Option<[u8; 32]>>,
-    /// When this instance last looked at the disk for another writer's entries (the interface clock).
     pub followed_at: f64,
-    /// The ledger's mark when the home's reading (`archive`) last landed or was asked again: a moved mark makes
-    /// it due again where it is shown ([`Shell::take_measure_due`]).
+    pub seen_gen: u64,
+    pub copies: crate::reads::Held,
+    pub regain_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub looks_dropped: u64,
     pub archive_mark: Option<u64>,
-    /// The entry this instance last wrote, as written (its id and sequence number): what a toast names.
     pub landed: Option<(String, u64)>,
-    /// Another writer's entries were seen on the disk and read in since the window last looked: the window does
-    /// with them what it does after a write of its own (with "auto anchor" on, the send card opens).
     pub followed: bool,
 }
 
-/// The documents folder in the person's home, else the home itself (empty when there is no home).
 fn documents_folder() -> String {
     let home = crate::platform::home_dir();
     let docs = home.as_ref().map(|h| h.join("Documents")).filter(|d| d.is_dir());
@@ -664,22 +503,17 @@ fn documents_folder() -> String {
 }
 
 impl Shell {
-    /// Start the shell. Skin and fonts are applied by the control library's `skin::dress`; this takes its
-    /// result, opens the trace channel, emits the first trace mark and prepares the background tasks. The
-    /// window and the test hooks start the same way.
     pub fn boot(dressed: zikaron_ui::skin::Dressed) -> Shell {
         let found = dressed.found;
         let missing = dressed.missing;
 
-        // Open the trace channel before any mark is emitted.
         trace::open();
+        crate::chainx::speak();
+        let _ = crate::chainx::keys_file();
         let mut faults: Vec<Fault> = Vec::new();
         if let Some(f) = trace::trouble() {
             faults.push(f);
         }
-        // Unreadable machine settings fall back to the default lock (fifteen minutes), with the refusal on
-        // screen; never silently "never lock". Locked at start, only the plain part is in hand; the sealed part
-        // is read once unlocked (`after_unlock`).
         let machine = match crate::machine::read_face() {
             Ok(m) => m,
             Err(f) => {
@@ -717,12 +551,19 @@ impl Shell {
             home: None,
             lock: None,
             settings: Settings::default(),
+            moved: 0,
+            gates_shown: std::sync::Mutex::new(None),
             rows: None,
             rows_gen: 0,
             rows_at: 0,
+            faces_read: crate::reads::Cell::new(),
+            seat_chains: std::collections::BTreeMap::new(),
+            places_read: crate::reads::Cell::new(),
+            rows_wanted: std::sync::atomic::AtomicBool::new(false),
             grants_gen: 0,
             grants_at: 0,
             ledger_ok: None,
+            ledger_handed_on: None,
             vault: Vault::of(crate::keybox::state()),
             vault_recoverable: crate::keybox::recoverable().unwrap_or(true),
             vault_said: None,
@@ -731,9 +572,33 @@ impl Shell {
             machine,
             held_back: Vec::new(),
             audit: None,
+            upgrade: None,
+            upgrade_read: false,
+            rotation: None,
+            rotation_said: None,
+            rot_left: None,
+            rot_left_of: None,
+            rot_vetted: None,
+            rot_given: None,
+            rot_written: None,
+            rot_sending: None,
+            rot_home: None,
+            rot_sweep_out: None,
+            rot_sweep_held: None,
+            rot_short: None,
+            rot_fresh: Vec::new(),
+            rot_sweep_to: None,
+            rot_reverted: None,
+            rot_looking: false,
+            rot_unread: None,
+            upgrade_cost: None,
+            office_trouble: None,
             book_mark: 0,
             audit_asked: None,
+            audit_lag_since: None,
             tail_asked: None,
+            tail_wanted: false,
+            tail_again: false,
             fetch_checks_tail: false,
             queue: crate::queue::Queue::default(),
             sent: None,
@@ -741,6 +606,8 @@ impl Shell {
             content: None,
             flow: crate::anchorx::Flow::default(),
             gas: None,
+            gas_lane: None,
+            door_followed: false,
             send_backoff: crate::chainx::SEND_BACKOFF.to_vec(),
             receipt_backoff: zikaron_anchor::send::RECEIPT_BACKOFF.to_vec(),
             anchor_wait: crate::action::ANCHOR_WAIT,
@@ -751,17 +618,18 @@ impl Shell {
             gas_asked: None,
             resumed_at: 0.0,
             grants: None,
-            depth: None,
             kit: None,
             picked: None,
             clash: Vec::new(),
+            clash_unsettled: 0,
+            noticed_at: 0,
             handed: None,
-            proofs: None,
-            key_anchors: None,
-            claim: None,
-            attested: None,
-            sighting: None,
             book: None,
+            persona: crate::facex::State::Unread,
+            face_books: None,
+            face_pair: None,
+            reroot_fee: None,
+            face_joined: None,
             story: None,
             backup_seen: None,
             remembered: None,
@@ -773,17 +641,27 @@ impl Shell {
             basis_read: None,
             kits_root: None,
             unfetched: None,
+            handed_off: None,
+            seen_pens: None,
             fetch_conflict: None,
             aside: Vec::new(),
             old_view: None,
             last_aside: None,
             vetted: std::collections::BTreeMap::new(),
+            peeks: Vec::new(),
+            keeps: Vec::new(),
+            keep_inline: false,
+            unwritten_asked: Vec::new(),
             diligence: None,
+            others_asked: None,
+            others_whole: Default::default(),
             verified: None,
+            cleaned: None,
             delivery: None,
             cards: None,
             held_rejected: Vec::new(),
             held_dirty: false,
+            vault_changed: false,
             rooted: false,
             held: None,
             alarms: Vec::new(),
@@ -791,13 +669,14 @@ impl Shell {
             attention: false,
             badge: None,
             checked: None,
+            check_asked: None,
+            audits: std::sync::Arc::new(crate::checkx::Audits::new(Some(std::sync::Arc::new(crate::checkx::AuditStore)))),
             published: None,
             notices: Vec::new(),
             fresh: Vec::new(),
             status: None,
             failed: std::collections::BTreeMap::new(),
             chain_read_at: None,
-            proofs_rows: None,
             chain_time: None,
             primary: primary_reading(),
             rekeying: false,
@@ -810,39 +689,37 @@ impl Shell {
             items_now: None,
             door: None,
             door_doing: None,
+            door_acting: false,
             door_told: Vec::new(),
             door_waker: None,
             door_shut: None,
+            door_too_long: false,
+            door_place: None,
             door_off: false,
             door_answered: 0,
             cli_path: None,
             ai_config: None,
             credential: None,
+            passes: Vec::new(),
             seen_entries: None,
             seen_queue: None,
             followed_at: f64::NEG_INFINITY,
+            seen_gen: 0,
+            copies: crate::reads::Held::default(),
+            regain_stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            looks_dropped: 0,
             archive_mark: None,
             landed: None,
             followed: false,
         }
     }
 
-    /// The block time a held grant was anchored at in its issuer's ledger: this run's re-check first, else the
-    /// cached verdict (so a date range filter still works after a restart). `None` while neither has read it.
-    /// The vault's date range filter uses only this.
     pub fn held_anchored_at(&self, id: &str) -> Option<u64> {
-        // A card of this run that has no time yet does not hide the cached one.
         let card = self.cards.as_ref().and_then(|(cs, _)| cs.iter().find(|c| c.id.eq_ignore_ascii_case(id)).and_then(|c| c.anchored_at));
         card.or_else(|| self.verdicts.iter().find(|(g, _)| g.eq_ignore_ascii_case(&crate::lastread::grant_form(id))).and_then(|(_, v)| v.anchored_at))
     }
 
-    /// Whether the anchor key is in the vault, recording its address for display. Checked each time, not
-    /// cached.
     pub fn refresh_anchor(&mut self) -> Result<bool, Fault> {
-        // A closed vault reads as "no key available now", not an error. This runs on every path into a home
-        // (open, switch seat, switch identity); as an error, those paths would fail after writing the registry
-        // and settings, leaving the disk changed while the screen reported failure. While locked the screen
-        // says "no signing key yet", which is true.
         if !self.unlocked() {
             self.anchor = None;
             self.anchor_public = None;
@@ -862,26 +739,16 @@ impl Shell {
         }
     }
 
-    /// After the vault opens: this seat's key is available; the address and identity table are reread, with
-    /// failures in the trouble panel (the unlock itself still counts as done).
     pub fn after_unlock(&mut self) {
-        // Unlocked before a pending lock completed: the lock is off (the key never left).
         self.lock_pending = false;
         self.reread_vault();
-        // What the passes right after opening found (`local::after_open`, run in the unlock's own task).
         if let Some(o) = crate::local::take_opened() {
             self.faults.extend(o.troubles);
         }
-        // Local data opens only now: the home is closed while locked, so land on the seat and open its home as
-        // the window does at start.
         let opened_now = self.home.is_none() && self.unlocked();
-        // The sealed machine settings (auto-lock, proxy, the command line's switches, backup records) are in
-        // hand only now.
         if self.unlocked() {
             match crate::machine::read() {
                 Ok(m) => {
-                    // The count since the last backup was measured against the record in hand: another record (a
-                    // restore's) makes it unknown until measured again, never an old number against a new record.
                     if m.backup != self.machine.backup {
                         self.items_now = None;
                     }
@@ -896,34 +763,44 @@ impl Shell {
             if let Some(l) = self.settings.lang {
                 crate::lang::set(l);
             }
-            crate::when::set(self.settings.zone.unwrap_or(crate::when::Zone::Utc));
+            crate::when::set(crate::when::chosen(self.settings.zone));
         }
         if let Err(f) = self.refresh_anchor() {
             self.faults.push(f);
         }
         match crate::register::view() {
-            Ok(v) => self.seat_identities(Some(v)),
+            Ok(v) => {
+                let v = match crate::action::words_settle(&v) {
+                    Ok(settled) => settled.unwrap_or(v),
+                    Err(f) => {
+                        self.faults.push(f);
+                        v
+                    }
+                };
+                self.seat_identities(Some(v))
+            }
             Err(f) => self.faults.push(f),
         }
-        // Background work stopped while locked: catch up once now (`Action::CatchUp`).
         if opened_now {
             let _ = crate::action::apply(self, crate::action::Action::CatchUp);
         }
     }
 
-    /// Read the command line's credential against the vault now open: one that expired, or that holds another
-    /// master key than this vault's (a new master key took effect), is removed and writing alone turned off with
-    /// the reason said; with writing alone on and no credential left (the command line removed an expired one),
-    /// the switch goes off too.
     pub fn reread_credential(&mut self) {
         use crate::keybox::Credential;
         match crate::keybox::credential_now(crate::lastread::now_secs()) {
-            Ok(Credential::Live(t)) => self.credential = Some(t),
+            Ok(Credential::Live(st)) => {
+                self.credential = Some(st.term);
+                self.passes = st.rows;
+            }
             Ok(Credential::Expired) => crate::action::cli_alone_ended(self, Known::CredentialExpired),
-            Ok(Credential::Stale) => crate::action::cli_alone_ended(self, Known::CliAloneDropped),
+            Ok(Credential::Unformed) => crate::action::cli_alone_ended(self, Known::CredentialReclaimed),
             Ok(Credential::None) => {
                 self.credential = None;
-                if self.machine.cli_alone.is_some() {
+                self.passes.clear();
+                if crate::keybox::take_credential_dropped() {
+                    crate::action::alone_ended(self, Known::CliAloneDropped, true);
+                } else if self.machine.cli_alone.is_some() {
                     crate::action::cli_alone_ended(self, Known::CredentialMissing);
                 }
             }
@@ -931,10 +808,14 @@ impl Shell {
         }
     }
 
-    /// Take the home's writer lock for a write while the command line writes alone: with that off, as a reader,
-    /// or already holding the lock, nothing to do. Once taken, the ledger is counted first: if the command line
-    /// wrote meanwhile, the ledger, queue and settings are read again before this write. If it cannot be taken,
-    /// the write is not done and the person is told the command line is writing (`CLI_WRITING`).
+    pub fn cli_alone_now(&self) -> CliAloneNow {
+        match (self.machine.cli_alone.is_some() && self.credential.is_some(), self.passes.len()) {
+            (false, _) => CliAloneNow::Off,
+            (true, 0) => CliAloneNow::Keyless,
+            (true, n) => CliAloneNow::Keyed(n),
+        }
+    }
+
     pub fn take_turn(&mut self) -> Result<(), Fault> {
         if self.machine.cli_alone.is_none() {
             return Ok(());
@@ -948,9 +829,10 @@ impl Shell {
         if !lock.regain(&home)? {
             return Err(match lock.mode() {
                 crate::lock::Mode::Writer => Fault::known(Known::CliWriting, root.display().to_string()),
-                _ => Fault::known(Known::ReadOnly, crate::lang::filln(crate::lang::Key::Tail006, &[&lock.holder().to_string()])),
+                _ => Fault::known(Known::ReadOnly, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail006, &[&lock.holder().to_string()]))),
             });
         }
+        self.tasks.count_under(Some(root));
         if self.seen_entries != Some(entry_files(&home)) {
             self.reread_home_files(&home);
         } else if self.seen_queue != Some(queue_mark(&home)) {
@@ -959,12 +841,12 @@ impl Shell {
         Ok(())
     }
 
-    /// The copies of what the command line writes (the ledger, the queue) and the settings, read again from the
-    /// disk: the ledger's rows are reloaded, the queue and settings read now.
     fn reread_home_files(&mut self, home: &crate::home::Home) {
-        self.stale_rows();
+        self.reread(Reread::Files);
         self.book_changed();
-        self.rooted = crate::ledgerx::head(home).map(|h| h.is_some()).unwrap_or(false);
+        self.count_here();
+        self.tail_again |= self.unfetched.is_some();
+        self.rooted = crate::ledgerx::rooted(home);
         self.reread_queue(home);
         match Settings::read(home) {
             Ok(s) => self.settings = s,
@@ -972,57 +854,50 @@ impl Shell {
         }
     }
 
-    /// The queue read again from the disk (its lamps follow it), and accounted for.
     fn reread_queue(&mut self, home: &crate::home::Home) {
+        self.copies.raise(crate::reads::Copies::Baseline, crate::task::next_seen());
         self.seen_queue = Some(queue_mark(home));
+        self.seen_gen = self.seen_gen.wrapping_add(1);
         match crate::queue::Queue::read(home) {
             Ok(q) => self.queue = q,
             Err(f) => self.faults.push(f),
         }
-        self.stale_rows();
+        self.reread(Reread::Files);
     }
 
-    /// At every drain: while the command line writes alone, a writer lets the lock go once nothing in flight
-    /// holds its turn (a send's receipt wait does not: it settles under the lock on its own, `lock::settling`),
-    /// counting the ledger as it leaves it; with writing alone off, it takes the lock again and keeps it (the
-    /// command line holding it a moment longer is retried at the next drain).
     pub fn turn_sync(&mut self) {
         let alone = self.machine.cli_alone.is_some();
         let writing = self.tasks.holds_turn();
-        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
-        let home = crate::home::Home::bare(root);
-        let Some(lock) = self.lock.as_mut() else { return };
-        if !lock.mode().writable() {
+        let root = self.home.as_ref().map(|h| h.root().to_path_buf());
+        let writable = self.lock.as_ref().is_some_and(|l| l.mode().writable());
+        let (Some(root), true) = (root, writable) else {
+            self.tasks.count_under(None);
             return;
-        }
+        };
         if alone {
-            if lock.held() && !writing {
+            self.regain_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(lock) = self.lock.as_mut().filter(|l| l.held() && !writing) {
                 lock.release();
-                self.seen_entries = Some(entry_files(&home));
-                self.seen_queue = Some(queue_mark(&home));
             }
-        } else if !lock.held() {
-            if let Err(f) = lock.regain(&home) {
-                self.faults.push(f);
+        } else if !self.lock.as_ref().is_some_and(|l| l.held()) && !self.tasks.in_flight(crate::task::Kind::Regain) {
+            self.regain_stop.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Some(hand) = self.lock.as_ref().map(crate::lock::Lock::hand) {
+                let (stop, at) = (self.regain_stop.clone(), root.clone());
+                let _ = crate::action::behind(self, crate::task::Kind::Regain, move || crate::lock::regain_behind(&hand, &at, &stop).map(|r| Done::Regained { root: at.clone(), took: r }));
             }
         }
+        let held = self.lock.as_ref().is_some_and(|l| l.held());
+        self.tasks.count_under(held.then_some(root));
     }
 
-    /// At every drain while unlocked: a credential whose time is up is removed and writing alone turned off, said
-    /// once. While locked the command line removes an expired one itself, and the unlock reads where it stands.
     pub fn credential_tick(&mut self) {
         if self.unlocked() && self.credential.is_some_and(|t| t.expired(crate::lastread::now_secs())) {
             crate::action::cli_alone_ended(self, Known::CredentialExpired);
         }
     }
 
-    /// First half of a lock requested while local data is being written (`Action::Lock`): the vault reads as
-    /// locked on screen and in every gate and key-related readings are cleared, but the home stays open so
-    /// in-flight tasks can land.
     pub fn begin_lock(&mut self) {
         self.lock_pending = true;
-        // From here the vault itself answers locked (one source, so every reread sees it); the key stays in
-        // memory until in-flight writes land.
         crate::keybox::begin_lock();
         self.reread_vault();
         self.anchor = None;
@@ -1031,11 +906,13 @@ impl Shell {
         self.new_words = None;
     }
 
-    /// After the vault locks: the key is unavailable, so key-related readings are cleared (address, shown
-    /// words, new words not yet confirmed). Key-using actions are refused earlier by the action layer's table;
-    /// this only clears readings.
+    pub fn peeked(&self, path: &str) -> Option<&crate::backup::Summary> {
+        self.backup_peek.as_ref().filter(|(p, _)| p.trim() == path.trim()).map(|(_, s)| s)
+    }
+
     pub fn after_lock(&mut self) {
         self.reread_vault();
+        self.backup_peek = None;
         self.anchor = None;
         self.anchor_public = None;
         self.words = None;
@@ -1043,8 +920,6 @@ impl Shell {
         self.unload();
     }
 
-    /// Locked means no local data in hand: the home closes (its writer lock is released) and every copy read
-    /// from local data is dropped; unlocking opens the home again and reads it anew (`after_unlock`).
     pub fn unload(&mut self) {
         self.close_home();
         self.seat_identities(None);
@@ -1053,6 +928,7 @@ impl Shell {
         self.kits_index = None;
         self.kits_root = None;
         self.vetted.clear();
+        self.peeks.clear();
         self.content = None;
         self.book = None;
         self.story = None;
@@ -1060,71 +936,57 @@ impl Shell {
         self.verified = None;
         self.delivery = None;
         self.checked = None;
-        self.depth = None;
         self.kit = None;
         self.picked = None;
         self.clash.clear();
-        self.proofs = None;
-        self.proofs_rows = None;
-        self.key_anchors = None;
-        self.claim = None;
-        self.attested = None;
-        self.sighting = None;
+        self.clash_unsettled = 0;
         self.badge = None;
         self.published = None;
         self.new_label = None;
         self.remembered = None;
         self.verdicts.clear();
         self.unfetched = None;
+        self.handed_off = None;
         self.cards = None;
         self.held = None;
         self.held_rejected.clear();
         self.grants = None;
         self.rows = None;
+        self.seat_chains.clear();
         self.audit = None;
         self.ledger_ok = None;
+        self.ledger_handed_on = None;
         self.reconciled = None;
         self.handed = None;
     }
 
-    /// Reread the vault state (after passcode actions and after opening a home; never in the frame).
     pub fn reread_vault(&mut self) {
         let v = Vault::of(crate::keybox::state());
         if let Vault::Damaged(f) = &v {
             self.faults.push(f.clone());
         }
         self.vault = v;
-        // Unreadable counts as "still holds something": the reset option is withheld whenever the reading is
-        // uncertain.
         self.vault_recoverable = crate::keybox::recoverable().unwrap_or(true);
         self.primary = primary_reading();
     }
 
-    /// Set the identity table together with its disk reading.
-    ///
-    /// Whether the current identity's backup file exists is a disk read, so it is updated in the same step as
-    /// the table; every update goes through here and the frame only reads the shell field.
-    ///
-    /// `None` covers "the registry cannot be read": both fields become empty. Nothing else in the shell writes
-    /// `identities`.
     pub fn seat_identities(&mut self, reg: Option<crate::identity::Registry>) {
         self.backup_seen = reg
             .as_ref()
             .and_then(|r| r.now())
             .map(|(row, _)| crate::identity::backup_seen(row));
         self.identities = reg;
+        self.primary = primary_reading();
     }
 
-    /// Whether the identity table in hand has a current row (read from the copy in hand, no disk).
+    pub fn peek_landed(&self, ask: &crate::peekx::Ask) -> Option<&crate::peekx::Got> {
+        self.peeks.iter().find(|(a, _)| a == ask).map(|(_, g)| g)
+    }
+
     pub fn identity_listed(&self) -> bool {
         self.identities.as_ref().and_then(|r| r.now()).is_some()
     }
 
-    /// Whether this seat is empty (an existing key holds only one seat): the current identity has no address
-    /// on this seat.
-    ///
-    /// The single source for the identity card's text and three buttons, "domains this seat can sign", and the
-    /// data card's home and key buttons. Without an identity it returns `false` (that state has its own text).
     pub fn seat_unseated(&self) -> bool {
         self.identities
             .as_ref()
@@ -1133,114 +995,214 @@ impl Shell {
             .unwrap_or(false)
     }
 
-    /// This seat has no home. An empty seat has no home, and the shell reflects it: the home and its lock are
-    /// released, readings tied to the home are invalidated (`source_changed`), and queue and ledger head are
-    /// cleared, so every page shows "no home". Otherwise the other seat's home and ledger would show as this
-    /// seat's.
-    ///
-    /// Releasing the lock gives up the writer role for that home; returning to that seat, `open_home_at` takes
-    /// the lock again as writer.
+    pub fn seal_rows(&mut self) {
+        use crate::ledgerx::Lamp;
+        let crate::facex::State::Read(b) = &self.persona else { return };
+        if zikaron_glue::facegate::sealed(&b.table).is_ok() {
+            return;
+        }
+        let seated = zikaron_glue::facegate::seated_ids(&b.table);
+        let Some((rows, _)) = self.rows.as_mut() else { return };
+        let mut held: Vec<String> = Vec::new();
+        for r in rows.iter_mut().filter(|r| r.kind == zikaron_glue::book::Kind::Face && !seated.contains(&r.id.to_ascii_lowercase())) {
+            if matches!(r.lamp, Lamp::Landed | Lamp::Queued | Lamp::Refused | Lamp::Reverted) {
+                r.lamp = Lamp::Sealed;
+                held.push(r.id.clone());
+            }
+        }
+        let queued: Vec<String> = held.into_iter().filter(|id| self.queue.items.iter().any(|q| q.id.eq_ignore_ascii_case(id) && !q.step.in_flight())).collect();
+        if queued.is_empty() || !self.lock.as_ref().is_some_and(|l| l.mode().writable()) {
+            return;
+        }
+        if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+            self.leave(Keep::Seal { root, ids: queued });
+        }
+    }
+
     pub fn close_home(&mut self) {
         self.source_changed(Source::Home);
         self.home = None;
+        self.persona = crate::facex::State::Unread;
+        self.face_books = None;
+        self.face_pair = None;
+        self.reroot_fee = None;
         self.lock = None;
         self.queue = crate::queue::Queue::default();
         self.rooted = false;
-        // No home, no command-line channel.
         self.door_sync();
     }
 
-    /// The interface language now: the home's own choice once readable, else the last choice on this machine
-    /// (used at the passcode gate before unlocking); `None` means neither was ever chosen.
     pub fn speaks(&self) -> Option<crate::lang::Lang> {
         self.settings.lang.or(self.machine.lang)
     }
 
-    /// Whether the vault is open. The lock screen and the action layer's table both ask this.
+    pub fn sendable_now(&self) -> usize {
+        self.next_batch(usize::MAX).len()
+    }
+
+    pub fn sendable_reading(&self) -> bool {
+        self.next_lane(usize::MAX).is_none() && !self.queue.items.is_empty() && !self.placed_now() && !self.failed.contains_key(&crate::task::Kind::Ledger)
+    }
+
+    fn placed_now(&self) -> bool {
+        let rows = self.rows.as_ref().map(|(r, _)| r.as_slice());
+        let placed = crate::queue::place_in(rows, &self.seat_chains);
+        self.queue.items.iter().all(|q| placed(&q.id).is_some()) || self.places_read.get(&(self.book_mark, self.rows_gen, self.home.as_ref().map(|h| h.root().to_path_buf()))).is_some()
+    }
+
+    pub fn sendable_here(&self) -> usize {
+        self.next_batch_here(usize::MAX).len()
+    }
+
+    pub fn next_batch_here(&self, n: usize) -> Vec<String> {
+        self.next_lane_here(n).map(|(_, ids)| ids).unwrap_or_default()
+    }
+
+    pub fn next_lane_here(&self, n: usize) -> Option<(u64, Vec<String>)> {
+        if let Some(lane) = self.next_lane(n) {
+            return Some(lane);
+        }
+        let key = (self.book_mark, self.rows_gen, self.home.as_ref().map(|h| h.root().to_path_buf()));
+        self.places_read.get_or(key, || {
+            let pile = self.home.as_ref().and_then(|h| h.ledger().ok()).and_then(|l| l.pile().ok()).map(|p| p.items).unwrap_or_default();
+            zikaron_seal::queue::places_of(&pile)
+        });
+        self.next_lane(n)
+    }
+
+    pub fn next_batch(&self, n: usize) -> Vec<String> {
+        self.next_lane(n).map(|(_, ids)| ids).unwrap_or_default()
+    }
+
+    pub fn next_lane(&self, n: usize) -> Option<(u64, Vec<String>)> {
+        let rows = self.rows.as_ref().map(|(r, _)| r.as_slice());
+        let placed = crate::queue::place_in(rows, &self.seat_chains);
+        let anchoring = |(c, ids): (u64, Vec<String>)| (if c == 0 { self.settings.chain_id.unwrap_or(0) } else { c }, ids);
+        if self.queue.items.iter().all(|q| placed(&q.id).is_some()) {
+            return self.queue.next_batch(n, placed).map(anchoring);
+        }
+        let key = (self.book_mark, self.rows_gen, self.home.as_ref().map(|h| h.root().to_path_buf()));
+        let Some(places) = self.places_read.get(&key) else {
+            self.rows_wanted.store(true, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        };
+        self.queue.next_batch(n, |id| places.get(&id.to_ascii_lowercase()).copied()).map(anchoring)
+    }
+
+    pub fn carried_on(&self, id: &str) -> Option<Option<u64>> {
+        let id = id.to_ascii_lowercase();
+        if let Some((rows, _)) = self.rows.as_ref() {
+            if let Some(r) = rows.iter().find(|r| r.id.eq_ignore_ascii_case(&id)) {
+                return Some((r.kind == zikaron_glue::book::Kind::Face).then(|| self.seat_chains.get(&id).copied()).flatten());
+            }
+        }
+        let key = (self.book_mark, self.rows_gen, self.home.as_ref().map(|h| h.root().to_path_buf()));
+        self.places_read.get(&key).and_then(|p| p.get(&id).copied()).map(|p| p.carried_on)
+    }
+
+    pub fn basis_chains(&self) -> Vec<(u64, crate::key::Address, u64)> {
+        let (Some(chain), Some(registry)) = (self.settings.chain_id, self.settings.registry) else { return Vec::new() };
+        let mut out = vec![(chain, registry, self.settings.from_block)];
+        for e in &self.settings.earlier {
+            if !out.iter().any(|(c, _, _)| *c == e.chain_id) {
+                out.push((e.chain_id, crate::key::Address(e.registry), e.from_block));
+            }
+        }
+        out
+    }
+
+    pub fn rest_key_tail(&self, base: &str) -> Option<String> {
+        self.machine.rest_keys.tail(&zikaron_anchor::rest::service_key(base)?)
+    }
+
+    pub fn rest_key_said(&self, base: &str) -> String {
+        use crate::lang::{fill1, t, Key};
+        match self.rest_key_tail(base) {
+            Some(k) => fill1(Key::NetRestKeyTail, &k),
+            None if zikaron_anchor::rest::service_key(base).is_some_and(|s| zikaron_anchor::rest::file_gives(&s)) => t(Key::NetRestKeyFromFile).to_string(),
+            None => t(Key::NetRestNoKey).to_string(),
+        }
+    }
+
+    pub fn lanes(&self) -> Vec<crate::chainx::Lane> {
+        self.basis_chains()
+            .into_iter()
+            .map(|(chain, registry, from_block)| crate::chainx::Lane {
+                chain,
+                registry: registry.0,
+                urls: self.endpoints.iter().filter(|e| e.chain == chain).map(|e| e.url.clone()).collect(),
+                from_block,
+            })
+            .collect()
+    }
+
     pub fn unlocked(&self) -> bool {
         self.vault.keys_ready()
     }
 
-    /// Whether settings can be saved now. Saving asks it, and so does anything that needs to know it can be
-    /// recorded before doing the work (see `action::export_mirror`), so a mirror is never written to disk
-    /// only to fail at recording it.
     pub fn may_save_settings(&self) -> Result<(), Fault> {
         if self.home.is_none() {
-            return Err(Fault::known(Known::NoHome, crate::lang::t(crate::lang::Key::Tail211).to_string()));
+            return Err(Fault::known(Known::NoHome, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail211).to_string())));
         }
-        if !self.writable() {
+        if !self.settings_writable() {
             return Err(Fault::known(
                 Known::ReadOnly,
-                match self.lock.as_ref() {
+                crate::lang::both_of(|| match self.lock.as_ref() {
                     Some(l) => crate::lang::filln(crate::lang::Key::Tail006, &[&(l.holder()).to_string()]),
                     None => crate::lang::t(crate::lang::Key::Tail212).to_string(),
-                },
+                }),
             ));
         }
         Ok(())
     }
 
-    /// Save settings. Without an open home this returns an error; it never drops the change silently.
     pub fn save_settings(&self) -> Result<(), Fault> {
         self.may_save_settings()?;
         let h = self.home.as_ref().expect("上一句已经问过家在不在");
         self.settings.write(h)
     }
 
-    /// Change settings: write to disk first; only a successful write counts. The change applies to a copy that
-    /// replaces the shell's settings only after writing, so on failure the shell is unchanged. Changing memory
-    /// first would show a new seat or node that disappears after restart when the write failed (a read-only
-    /// second instance, a full disk).
     pub fn commit_settings(&mut self, f: impl FnOnce(&mut Settings)) -> Result<(), Fault> {
         self.may_save_settings()?;
         let mut next = self.settings.clone();
         f(&mut next);
         let h = self.home.as_ref().expect("上一句已经问过家在不在");
         next.write(h)?;
-        // A gas estimate and its fees belong to one chain, registry contract and node set; saved settings that
-        // change any of them void those readings, whichever key was saved (nodes, chain fields, a network
-        // chosen or cleared).
         let moved = gas_source(&self.settings) != gas_source(&next);
-        let nodes_moved = self.settings.endpoints != next.endpoints;
+        let nodes_moved = crate::chainx::nodes_of(&self.settings) != crate::chainx::nodes_of(&next);
+        let chain_moved = crate::restorex::On::of(&self.settings) != crate::restorex::On::of(&next);
         self.settings = next;
+        if chain_moved {
+            self.retake_mark();
+        }
         if moved {
             self.gas_void();
         }
-        // Which chain each node serves is asked once per process and cached (`chainx::serving`); saved nodes
-        // are asked again, so a node restarted on another chain is not judged by what it served before.
         if nodes_moved {
             crate::chainx::forget_serving();
         }
         Ok(())
     }
 
-    /// Void the gas estimate and its fees: clear them, so an estimate still in flight lands as out of date.
     pub fn gas_void(&mut self) {
         self.gas = None;
+        self.gas_lane = None;
         self.fees = None;
         self.fees_left.clear();
         self.gas_epoch += 1;
     }
 
-    /// Whether a gas estimate landing now was started before what it came from changed.
     pub fn gas_out_of_date(&self) -> bool {
         self.gas_asked != Some(self.gas_epoch)
     }
 
-    /// Whether this ledger's chain broke. Reads the label the last reconciliation returned (from the core),
-    /// never comparing prev itself. Before any reconciliation, "unknown" does not lock.
-    ///
-    /// The label has three sources (offline reconciliation, the self-audit clock, the self-audit after
-    /// adoption) and all land in the same field (`reconciled`), so the lock does not depend on the path.
     pub fn broken(&self) -> bool {
         self.reconciled
             .as_ref()
-            .map(|(l, _, _)| l == zikaron::tokens::Label::BrokenChain.as_str())
+            .map(|(l, _, _)| l == zikaron::v2::tokens::Label::BrokenChain.as_str())
             .unwrap_or(false)
     }
 
-    /// What the bar at the top of each page says. The window only turns it into text and a color; tests read
-    /// which bar is up.
     pub fn banner(&self) -> Banner {
         if let Some(to) = self.handed.as_ref() {
             return Banner::Handed(to.clone());
@@ -1248,8 +1210,10 @@ impl Shell {
         if self.broken() {
             return Banner::Broken;
         }
+        if self.home.is_some() && self.handed_off.is_some() {
+            return Banner::HandedOff;
+        }
         if self.home.is_some() && self.lock.as_ref().map(|l| l.mode() == crate::lock::Mode::OtherMachine).unwrap_or(false) {
-            // Which of the two: an unreadable mark says so, never claims that another machine writes.
             return match self.lock.as_ref().and_then(|l| l.mark_trouble()) {
                 Some(_) => Banner::MarkUnread,
                 None => Banner::OtherMachine,
@@ -1261,108 +1225,277 @@ impl Shell {
                 None => String::new(),
             });
         }
+        if let (true, Some(s)) = (self.home.is_some(), self.unfetched.as_ref()) {
+            return Banner::Unfetched(s.clone());
+        }
         Banner::None
     }
 
-    /// The ledger moved one step. Writing an entry, a batch of anchors landing, and a source change all come
-    /// here: once the mark changes, the last report describes an older ledger and `audit_stale` becomes true.
     pub fn book_changed(&mut self) {
         self.book_mark = self.book_mark.wrapping_add(1);
-        // Accounted for: the disk's count now is this instance's, not news at the next look (`follow_disk`).
-        if let Some(h) = self.home.as_ref() {
-            self.seen_entries = Some(entry_files(h));
-        }
     }
 
-    /// At every drain, at most once a [`FOLLOW_EVERY`]: what the disk holds now is what this instance shows,
-    /// whoever wrote it and by whichever way. Another writer's entries (the command line writing alone) change
-    /// the ledger's count of entry files; seen, the ledger, the queue and the settings are read again, so the
-    /// table, the pending count, the cards and the anchoring that follows them move with the disk. Only names are
-    /// listed; nothing is read while nothing changed.
-    pub fn follow_disk(&mut self, now: f64) {
-        if now - self.followed_at < FOLLOW_EVERY || self.swapping || !self.unlocked() {
+    pub fn count_here(&mut self) {
+        let Some(h) = self.home.as_ref() else { return };
+        let seen = crate::task::Seen::of(h.root());
+        self.rooted = seen.entries > 0 && (self.rooted || crate::ledgerx::rooted(h));
+        self.seen_entries = Some(seen.entries);
+        self.seen_queue = Some(seen.queue);
+        self.copies.raise(crate::reads::Copies::Baseline, seen.seq);
+        self.seen_gen = self.seen_gen.wrapping_add(1);
+    }
+
+    pub fn leave(&mut self, k: Keep) {
+        self.keeps.push(k);
+    }
+
+    pub fn keep_turn(&mut self) {
+        if self.keep_inline || self.keeps.is_empty() || self.tasks.in_flight(crate::task::Kind::Keep) {
             return;
         }
-        self.followed_at = now;
-        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
-        let home = crate::home::Home::bare(root);
-        let count = entry_files(&home);
-        let queue = queue_mark(&home);
-        match self.seen_entries {
-            Some(seen) if seen != count => {
-                self.reread_home_files(&home);
-                self.followed |= count > seen;
-            }
-            // Only the queue changed (another writer sent, or followed the chain): it alone is read again.
-            Some(_) if self.seen_queue.is_some_and(|was| was != queue) => self.reread_queue(&home),
-            _ => {}
-        }
-        self.seen_entries = Some(count);
-        self.seen_queue = Some(queue);
+        let all = std::mem::take(&mut self.keeps);
+        let hand = self.lock.as_ref().map(crate::lock::Lock::hand);
+        let writer = self.settings_writable();
+        let _ = crate::action::behind(self, crate::task::Kind::Keep, move || Ok(Done::Kept(keep(all, hand, writer))));
     }
 
-    /// When the next look at the disk ([`Shell::follow_disk`]) falls due, in seconds from `now`, while the window
-    /// is to wake for it: a home open, unlocked, and the command line writing alone (another writer then writes
-    /// while this window may be idle). At other times `None`: no frame is asked for the disk's sake (the window still
-    /// looks at the disk at the frames it draws for anything else).
+    pub fn kept(&mut self, all: &[Kept]) {
+        use crate::reads::Copies;
+        let here = |shell: &Shell, root: &std::path::Path| shell.home.as_ref().is_some_and(|h| h.root() == root);
+        for k in all {
+            match k {
+                Kept::Machine(Ok(m), at) => {
+                    if self.copies.takes(Copies::Machine, *at) {
+                        self.machine = m.clone();
+                    } else {
+                        self.leave(Keep::Machine);
+                    }
+                }
+                Kept::Machine(Err(f), _) | Kept::Wrote(Err(f)) | Kept::Settings { settings: Err(f), .. } => self.faults.push(f.clone()),
+                Kept::Wrote(Ok(())) => {}
+                Kept::Settings { root, settings, at } => {
+                    if here(self, root) {
+                        self.take_settings(root, settings, *at);
+                    }
+                }
+                Kept::Kits { open, root, index, nets, troubles } => {
+                    if self.home.as_ref().map(|h| h.root().to_path_buf()) == *open {
+                        self.kits_root = root.clone();
+                        self.kits_index = index.clone();
+                        self.read_nets = nets.clone();
+                    }
+                    self.faults.extend(troubles.iter().cloned());
+                }
+                Kept::Register(Ok(v), at) => {
+                    if self.copies.takes(Copies::Register, *at) {
+                        self.seat_identities(Some(v.clone()));
+                    } else {
+                        self.leave(Keep::Register);
+                    }
+                }
+                Kept::Register(Err(f), _) => self.faults.push(f.clone()),
+                Kept::Queue { root, queue, at } => {
+                    if here(self, root) {
+                        self.take_queue(root, queue, *at);
+                        self.reread(Reread::Landed);
+                    }
+                }
+                Kept::Followed { root, queue: Some(Ok(q)), owed, at } => {
+                    if here(self, root) && self.take_queue(root, &Ok(q.clone()), *at) {
+                        if let Some((rows, _)) = self.rows.as_mut() {
+                            for r in rows.iter_mut().filter(|r| owed.iter().any(|id| id == &r.id)) {
+                                r.lamp = crate::ledgerx::lamp_of(&r.id, false, q);
+                            }
+                        }
+                    }
+                }
+                Kept::Followed { queue: Some(Err(f)), .. } => self.faults.push(f.clone()),
+                Kept::Followed { queue: None, .. } => {}
+                Kept::Sealed { root, queue, held, at } => match queue {
+                    Ok(q) if here(self, root) => {
+                        self.take_queue(root, &Ok(q.clone()), *at);
+                        self.faults.push(Fault::known(crate::fault::Known::FaceSealed, format!("held {held}")));
+                    }
+                    Ok(_) => {}
+                    Err(f) => self.faults.push(f.clone()),
+                },
+                Kept::Tail { root, mark } => match mark {
+                    Ok(s) if here(self, root) => {
+                        self.unfetched = s.clone();
+                        if s.is_none() && self.retake_mark() {
+                            if let Some(h) = self.home.as_ref() {
+                                if let Err(f) = crate::restorex::forget_on(h) {
+                                    self.faults.push(f);
+                                }
+                            }
+                        }
+                        self.reread(Reread::Landed);
+                    }
+                    Ok(_) => {}
+                    Err(f) => self.faults.push(f.clone()),
+                },
+            }
+        }
+    }
+
+    pub fn follow_disk(&mut self, now: f64) {
+        if now - self.followed_at < FOLLOW_EVERY || self.swapping || !self.unlocked() || self.tasks.in_flight(crate::task::Kind::Look) {
+            return;
+        }
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
+        self.followed_at = now;
+        let base = Base { r#gen: self.seen_gen, entries: self.seen_entries, queue: self.seen_queue, pens: self.seen_pens, rooted: self.rooted };
+        let _ = crate::action::behind(self, crate::task::Kind::Look, move || Ok(Done::Looked(Box::new(look(&root, base)))));
+    }
+
+    fn take_queue(&mut self, root: &std::path::Path, q: &Result<crate::queue::Queue, Fault>, at: u64) -> bool {
+        match q {
+            Ok(q) if self.copies.takes(crate::reads::Copies::Queue, at) => {
+                self.queue = q.clone();
+                true
+            }
+            Ok(_) => {
+                self.leave(Keep::Queue { root: root.to_path_buf() });
+                false
+            }
+            Err(e) => {
+                self.faults.push(e.clone());
+                false
+            }
+        }
+    }
+
+    fn take_settings(&mut self, root: &std::path::Path, st: &Result<Settings, Fault>, at: u64) {
+        match st {
+            Ok(st) if self.copies.takes(crate::reads::Copies::Settings, at) => self.settings = st.clone(),
+            Ok(_) => self.leave(Keep::Settings { root: root.to_path_buf() }),
+            Err(e) => self.faults.push(e.clone()),
+        }
+    }
+
+    pub fn looked(&mut self, l: &Looked) -> bool {
+        let here = self.home.as_ref().is_some_and(|h| h.root() == l.root.as_path());
+        if l.base.r#gen != self.seen_gen || !here || !self.unlocked() || self.swapping {
+            self.looks_dropped += 1;
+            return false;
+        }
+        let mut moved = false;
+        if let Some((handed, troubles)) = &l.handed {
+            self.seen_pens = l.pens;
+            self.handed_off = handed.clone();
+            self.faults.extend(troubles.iter().cloned());
+            moved = true;
+        }
+        if let (Some(seen), Some(f)) = (l.base.entries, l.files.as_ref()) {
+            self.reread(Reread::Files);
+            self.book_changed();
+            let on_disk = match &f.mark {
+                Ok((m, there)) => {
+                    self.unfetched = m.clone();
+                    *there
+                }
+                Err(e) => {
+                    self.faults.push(e.clone());
+                    self.unfetched = Some(crate::restorex::State::Unfetched);
+                    true
+                }
+            };
+            if on_disk && self.unfetched.is_none() {
+                self.tail_wanted = true;
+            }
+            self.tail_again |= self.unfetched.is_some() || on_disk;
+            self.rooted = f.rooted;
+            self.take_queue(&l.root, &f.queue, l.queue_at);
+            self.take_settings(&l.root, &f.settings, l.settings_at);
+            self.followed |= l.now.entries > seen;
+            moved = true;
+        } else if let Some(q) = &l.queue {
+            self.take_queue(&l.root, q, l.queue_at);
+            self.reread(Reread::Files);
+            moved = true;
+        }
+        self.seen_entries = Some(l.now.entries);
+        self.seen_queue = Some(l.now.queue);
+        self.copies.raise(crate::reads::Copies::Baseline, l.now.seq);
+        moved
+    }
+
     pub fn follow_wake(&self, now: f64) -> Option<f64> {
         let wanted = self.home.is_some() && self.unlocked() && !self.swapping && self.machine.cli_path() == crate::machine::CliPath::Alone;
         wanted.then(|| (self.followed_at + FOLLOW_EVERY - now).max(0.0))
     }
 
-    /// Whether the home's reading (sizes, counts, the mirror's state) describes an older ledger: the ledger's mark
-    /// moved since it landed, whoever moved it. What shows that reading (the local data page, the backup card)
-    /// asks for it again (`Action::Measure`) when this says so; taking it records the attempt, so it is not due
-    /// again until the ledger moves once more (one at a time; the walk runs in the background).
     pub fn take_measure_due(&mut self) -> bool {
-        let due = self.home.is_some() && self.archive_mark.is_some_and(|at| at != self.book_mark) && !self.tasks.in_flight(crate::task::Kind::Archive) && !self.swapping;
+        let due = self.home.is_some() && self.archive_mark != Some(self.book_mark) && !self.tasks.in_flight(crate::task::Kind::Archive) && !self.swapping;
         if due {
             self.archive_mark = Some(self.book_mark);
         }
         due
     }
 
-    /// The anchor queue is exactly the ledger's entries the chain does not hold yet, whoever wrote them, by
-    /// whichever way, and whoever put them on chain. Read off the table just landed, against its report: entries
-    /// the report finds on chain that still wait here, none of their transactions out (the command line anchored
-    /// them), leave the queue recorded as anchored; with a report about this very ledger, every node answering,
-    /// entries neither queued, nor on chain, nor kept local (an adopted ledger's, written before it came here)
-    /// join it. Written under the writer's turn; not this time when the turn is the command line's or this home
-    /// is only read (the next table tries again).
+    pub fn archive_now(&self) -> Option<&ArchiveRead> {
+        self.archive.as_ref().filter(|a| a.mark == self.book_mark)
+    }
+
+    pub fn backup_carries(&self) -> Option<(usize, usize, usize)> {
+        let ids = self.identities.as_ref().map(|r| r.rows.len()).unwrap_or(0);
+        self.archive_now().and_then(|a| a.backed).map(|(items, records)| (ids, items, records))
+    }
+
     fn queue_follows_ledger(&mut self) {
-        use crate::ledgerx::Lamp;
+        let fresh = self.audit_in_step();
         let Some((rows, _)) = self.rows.as_ref() else { return };
-        let fresh = self.audit.as_ref().is_some_and(|a| a.mark == self.book_mark && crate::auditx::whole(&a.label, a.asked, &a.unanswered));
-        let on_chain: Vec<String> = rows
-            .iter()
-            .filter(|r| r.lamp == Lamp::Anchored && self.queue.step_of(&r.id).is_some_and(|s| !s.in_flight()))
-            .map(|r| r.id.clone())
-            .collect();
-        let owed: Vec<String> = if fresh { rows.iter().filter(|r| r.lamp == Lamp::Landed).map(|r| r.id.clone()).collect() } else { Vec::new() };
+        let on_chain = crate::own::on_chain(self, rows);
+        let owed: Vec<(String, bool)> = if fresh { crate::own::owed(self, rows) } else { Vec::new() };
+        let faces = owed.iter().any(|(id, _)| rows.iter().any(|r| r.id == *id && r.kind == zikaron_glue::book::Kind::Face));
         if on_chain.is_empty() && owed.is_empty() {
             return;
         }
-        if !self.lock.as_ref().is_some_and(|l| l.mode().writable()) || self.take_turn().is_err() {
+        if !self.lock.as_ref().is_some_and(|l| l.mode().writable()) {
             return;
         }
         let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
-        match crate::queue::follow(&crate::home::Home::bare(root), &on_chain, &owed, (self.clock)()) {
-            Ok(q) => {
-                // The table in hand stays: an entry found on chain already shows anchored (the report comes
-                // first), and one that joined the queue now shows queued, as `ledgerx::lamp_of` would read it.
-                if let Some((rows, _)) = self.rows.as_mut() {
-                    for r in rows.iter_mut().filter(|r| owed.contains(&r.id)) {
-                        r.lamp = crate::ledgerx::lamp_of(&r.id, false, &q);
-                    }
-                }
-                self.queue = q;
-            }
-            Err(f) => self.faults.push(f),
-        }
+        let others: Vec<u64> = self.basis_chains().into_iter().skip(1).map(|(c, _, _)| c).collect();
+        let at = (self.clock)();
+        self.leave(Keep::Follow { root, on_chain, owed, faces, others, at });
     }
 
-    /// Whether a self-audit can start: home open, a root, basis and endpoints configured, none of its kind in
-    /// flight. The periodic and stale questions both build on it.
+    fn published_ids(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.audit.as_ref().map(|a| crate::auditx::entry_ids(&a.report, zikaron::v2::tokens::Key::Anchored).into_iter().collect()).unwrap_or_default();
+        out.extend(self.remembered.iter().flat_map(|r| r.rows.iter().map(|(id, _)| id.to_ascii_lowercase())));
+        out
+    }
+
+    pub fn queue_uncovered_now(&self) -> bool {
+        let Some(pile) = self.home.as_ref().and_then(|h| h.ledger().ok()).and_then(|l| l.pile().ok()) else { return false };
+        !crate::queue::uncovered(&self.queue, &pile.items, &self.published_ids()).is_empty()
+    }
+
+    pub fn catch_up_from_report(&mut self) -> bool {
+        use zikaron::v2::tokens::Key;
+        if !self.audit_in_step() {
+            return false;
+        }
+        let (Some(a), Some(root), Some(chain)) = (self.audit.as_ref(), self.home.as_ref().map(|h| h.root().to_path_buf()), self.settings.chain_id) else { return false };
+        let unanchored: Vec<String> = crate::auditx::entry_ids(&a.report, Key::Unanchored).into_iter().collect();
+        let mut entries: Vec<String> = crate::auditx::entry_ids(&a.report, Key::Anchored).into_iter().collect();
+        entries.extend(unanchored.iter().cloned());
+        let owed = crate::queue::Owed { entries, unanchored, complete: a.label == zikaron::v2::tokens::Label::Complete.as_str() };
+        let others: Vec<u64> = self.basis_chains().into_iter().skip(1).map(|(c, _, _)| c).collect();
+        let at = (self.clock)();
+        let published = self.published_ids();
+        self.leave(Keep::CatchUp { root, chain, others, at, published, owed });
+        true
+    }
+
+    pub fn catching_up(&self) -> bool {
+        self.keeps.iter().any(|k| matches!(k, Keep::CatchUp { .. })) || self.tasks.in_flight(crate::task::Kind::Keep)
+    }
+
+    pub fn chain_set(&self) -> bool {
+        self.settings.chain_id.is_some() && self.settings.registry.is_some() && !self.endpoints.is_empty()
+    }
+
     fn audit_possible(&self) -> bool {
         if self.home.is_none() || !self.rooted {
             return false;
@@ -1373,24 +1506,10 @@ impl Shell {
         !self.tasks.in_flight(crate::task::Kind::Audit)
     }
 
-    /// Whether this home's report is stale.
-    ///
-    /// Two cases: this home has not run one yet (after a key or seat change, restore, adoption or reopening),
-    /// or the ledger changed since (entries written, anchors landed). Neither waits for the period; the next
-    /// frame audits.
-    ///
-    /// The period (`audit_due`) governs repeated checks; this governs whether the report at hand is stale. The
-    /// start mark is recorded on success or failure (`audit_asked`), so with endpoints down this does not
-    /// redial every frame.
     pub fn audit_stale(&self) -> bool {
-        // Even with a period of zero: "does not run by itself" is about repetition, and the anchor lamps come
-        // from the report, so a report about an older ledger would make them lie.
         self.audit_possible() && self.audit_asked != Some(self.book_mark)
     }
 
-    /// [`Shell::tail_due`], recording the attempt for this ledger state before anything is asked: whatever the
-    /// answer (including a refusal before the check starts), it is not due again on the next frame. A ledger
-    /// change, new nodes or basis, or another home make it due again.
     pub fn take_tail_due(&mut self) -> bool {
         let due = self.tail_due();
         if due {
@@ -1399,13 +1518,53 @@ impl Shell {
         due
     }
 
-    /// Whether this identity's tail is due to be checked against the chain (`Action::CheckTail`): the open
-    /// home holds the not-fetched mark (either state), basis and nodes are set, no fetch is in flight, and the
-    /// ledger as it is now has not been checked since its nodes or basis last changed (`tail_asked`). A pure
-    /// decision without disk or network, used by the window's clock and the places that make it due.
+    pub fn set_up(&self) -> Option<SetUp> {
+        if self.settings.role != crate::roles::Role::Author {
+            return None;
+        }
+        self.set_up_seat()
+    }
+
+    pub fn set_up_seat(&self) -> Option<SetUp> {
+        if self.rooted {
+            return None;
+        }
+        Some(if self.unfetched.is_some() { SetUp::Fetch } else { SetUp::Create })
+    }
+
+    pub fn take_unwritten_due(&mut self) -> bool {
+        let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) else { return false };
+        let due = !self.rooted
+            && self.unfetched.is_none()
+            && self.chain_set()
+            && self.settings_writable()
+            && !self.tasks.in_flight(crate::task::Kind::Fetch)
+            && !self.unwritten_asked.iter().any(|r| crate::home::same_place(r, &root));
+        if due {
+            self.unwritten_asked.push(root);
+        }
+        due
+    }
+
+    pub fn retake_mark(&mut self) -> bool {
+        if self.rooted || self.unfetched.is_some() || !self.settings_writable() {
+            return false;
+        }
+        let Some(home) = self.home.as_ref() else { return false };
+        if !crate::restorex::moved(home, crate::restorex::On::of(&self.settings)) {
+            return false;
+        }
+        if let Err(f) = crate::restorex::mark(home) {
+            self.faults.push(f);
+        }
+        self.unfetched = Some(crate::restorex::State::Unfetched);
+        self.tail_asked = None;
+        true
+    }
+
     pub fn tail_due(&self) -> bool {
         self.home.is_some()
-            && self.unfetched.is_some()
+            && (self.unfetched.is_some() || self.tail_wanted)
             && self.settings.chain_id.is_some()
             && self.settings.registry.is_some()
             && !self.endpoints.is_empty()
@@ -1413,17 +1572,52 @@ impl Shell {
             && self.tail_asked != Some(self.book_mark)
     }
 
-    /// Whether the self-audit clock is due. A pure decision without disk or network: a zero period never
-    /// runs; missing basis or endpoints do not start; in flight does not start; less than a period since the
-    /// last does not start.
+    pub fn audit_lags(&self, now: f64) -> bool {
+        self.audit_possible() && self.audit_lag_at().is_some_and(|at| now >= at)
+    }
+
+    pub fn audit_lag_at(&self) -> Option<f64> {
+        let a = self.audit.as_ref()?;
+        if self.audit_behind().is_empty() {
+            return None;
+        }
+        let tried = self.tasks.landed_at(crate::task::Kind::Audit).map_or(a.at, |t| t.max(a.at));
+        let at = tried + AUDIT_LAG_AGAIN;
+        match &self.audit_lag_since {
+            Some((since, _)) if at > since + AUDIT_LAG_BOUND => None,
+            _ => Some(at),
+        }
+    }
+
+    pub fn audit_behind(&self) -> Vec<String> {
+        crate::own::receipts_behind(self)
+    }
+
+    pub fn audit_lag_stopped(&self) -> Option<Vec<String>> {
+        let behind = self.audit_behind();
+        (!behind.is_empty() && self.audit_lag_since.is_some() && self.audit_lag_at().is_none()).then_some(behind)
+    }
+
+    fn note_audit_lag(&mut self, now: f64) {
+        let behind: std::collections::BTreeSet<String> = self.audit_behind().into_iter().collect();
+        if behind.is_empty() {
+            self.audit_lag_since = None;
+            return;
+        }
+        let fresh = match &self.audit_lag_since {
+            Some((_, seen)) => !behind.is_subset(seen),
+            None => true,
+        };
+        if fresh {
+            self.audit_lag_since = Some((now, behind));
+        }
+    }
+
     pub fn audit_due(&self, now: f64, last_tick: f64) -> bool {
         let every = self.settings.audit_every;
         if every == 0 || self.home.is_none() {
             return false;
         }
-        // A home without a genesis does not run the clock: grantee homes often have no ledger, and asking the
-        // chain would only add NO_GENESIS to the trouble panel. `rooted` is read when the home opens and set at
-        // genesis.
         if !self.rooted {
             return false;
         }
@@ -1436,8 +1630,6 @@ impl Shell {
         if self.tasks.in_flight(crate::task::Kind::Audit) {
             return false;
         }
-        // When the last pass started is recorded by `Tasks`, success or failure. Reading `self.audit.at`,
-        // written only on success, would let failed passes leave the clock unmoved and redial every frame.
         let last = self
             .tasks
             .landed_at(crate::task::Kind::Audit)
@@ -1445,10 +1637,6 @@ impl Shell {
         now - last >= every as f64
     }
 
-    /// Whether this instance may write: the lock, plus the broken-chain and handed-over gates.
-    ///
-    /// After a broken chain the whole app is read-only (appending would deepen the damage). Every write
-    /// (settings, entries, moving, bundles) asks this one predicate.
     pub fn writable(&self) -> bool {
         if self.broken() || self.handed.is_some() {
             return false;
@@ -1456,70 +1644,115 @@ impl Shell {
         self.lock.as_ref().map(|l| l.mode().writable()).unwrap_or(false)
     }
 
-    /// Whether this ledger can take new entries now: both the lock and the pen are needed.
-    pub fn may_write_entries(&self) -> Result<(), Fault> {
-        // Distinct refusals: "no home open" and "another writer has this home" differ, and sharing `READ_ONLY`
-        // would point at a second instance that does not exist. Succession comes first: once handed over, the
-        // writer should hear that the ledger belongs to the new key (law §7.3: the new key writes this ledger
-        // from then on).
+    pub fn settings_writable(&self) -> bool {
+        self.lock.as_ref().map(|l| l.mode().writable()).unwrap_or(false)
+    }
+
+    pub fn pen_here(&self) -> bool {
+        self.writable() && self.handed_off.is_none() && self.office_trouble.is_none()
+    }
+
+    pub fn may_send(&self) -> bool {
+        !self.broken() && self.lock.as_ref().map(|l| l.mode().writable()).unwrap_or(false)
+    }
+
+    pub fn may_hold_entries(&self) -> Result<(), Fault> {
+        if let Some(f) = self.office_trouble.as_ref() {
+            return Err(f.clone());
+        }
         if let Some(to) = self.handed.as_ref() {
             return Err(Fault::known(Known::HandedOver, to.clone()));
         }
-        // Broken chain before the lock: after a break the lock is still held, and the person should see that
-        // the ledger is broken, not who holds it.
-        if self.broken() {
-            return Err(Fault::known(
-                Known::Broken,
-                match self.audit.as_ref() {
-                    Some(a) => crate::lang::filln(crate::lang::Key::Tail213, &[&(a.label).to_string()]),
-                    None => String::new(),
-                },
-            ));
-        }
         let Some(l) = self.lock.as_ref() else {
-            return Err(Fault::known(Known::NoHome, crate::lang::t(crate::lang::Key::Tail005).to_string()));
+            return Err(Fault::known(Known::NoHome, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail005).to_string())));
         };
         if !l.mode().writable() {
-            return Err(Fault::known(
-                Known::ReadOnly,
-                crate::lang::filln(crate::lang::Key::Tail006, &[&(l.holder()).to_string()]),
-            ));
-        }
-        if !self.pen.writable() {
-            return Err(Fault::known(
-                Known::PenHeld,
-                match &self.reconciled {
-                    Some((label, _, _)) => crate::lang::filln(crate::lang::Key::Tail214, &[&(label).to_string()]),
-                    None => crate::lang::t(crate::lang::Key::Tail215).to_string(),
-                },
-            ));
-        }
-        // A ledger handed off to another place is not written here until a handoff after it comes back
-        // (`zikaron_seal::pens`, read from disk at each write: the command line hands it off and takes it back).
-        if let Some(home) = self.home.as_ref() {
-            if let Some(root) = crate::ledgerx::root_of(home).ok().and_then(|r| zikaron::hexfmt::decode(&r)).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) {
-                zikaron_seal::pens::may_write(&crate::home::machine_dir()?, &root)?;
-            }
+            return Err(Fault::known(Known::ReadOnly, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail006, &[&(l.holder()).to_string()]))));
         }
         Ok(())
     }
 
-    /// The only place the shell's copies of disk state are loaded; opening a home comes here: read off the
-    /// window's thread or on it ([`Hydrated::read`]), then installed ([`Shell::install`]).
+    pub fn may_write_entries(&self) -> Result<(), Fault> {
+        self.seat_gates()?;
+        if let Some(home) = self.home.as_ref() {
+            crate::sendx::write_gates(home.root())?;
+        }
+        self.writer_lock()?;
+        if let Some(home) = self.home.as_ref() {
+            crate::sendx::lift_met(home.root())?;
+        }
+        Ok(())
+    }
+
+    fn seat_gates(&self) -> Result<(), Fault> {
+        let door = self.door_acting || self.door_doing.is_some();
+        if let (Some(f), false) = (self.office_trouble.as_ref(), door) {
+            return Err(f.clone());
+        }
+        if let (Some(to), false) = (self.handed.as_ref(), door) {
+            return Err(Fault::known(Known::HandedOver, to.clone()));
+        }
+        Ok(())
+    }
+
+    pub fn may_write_entries_shown(&self) -> Result<(), Fault> {
+        self.seat_gates()?;
+        if let Some(home) = self.home.as_ref() {
+            let role = self.settings.role;
+            let mut held = self.gates_shown.lock().unwrap_or_else(|p| p.into_inner());
+            if !held.as_ref().is_some_and(|g| g.moved == self.moved && g.role == role && g.root == home.root()) {
+                *held = Some(GatesShown { root: home.root().to_path_buf(), role, moved: self.moved, said: crate::sendx::write_gates(home.root()) });
+            }
+            if let Some(Err(f)) = held.as_ref().map(|g| &g.said) {
+                return Err(f.clone());
+            }
+        }
+        self.writer_lock()
+    }
+
+    pub fn may_send_entries(&self) -> Result<(), Fault> {
+        match self.may_write_entries() {
+            Err(f) if f.which() == Some(Known::HandedOver) => {
+                if let Some(home) = self.home.as_ref() {
+                    crate::sendx::write_gates(home.root())?;
+                }
+                self.writer_lock()
+            }
+            asked => asked,
+        }
+    }
+
+    pub fn may_move_funds(&self) -> Result<(), Fault> {
+        self.writer_lock()
+    }
+
+    fn writer_lock(&self) -> Result<(), Fault> {
+        let Some(l) = self.lock.as_ref() else {
+            return Err(Fault::known(Known::NoHome, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail005).to_string())));
+        };
+        if !l.mode().writable() {
+            return Err(Fault::known(
+                Known::ReadOnly,
+                crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail006, &[&(l.holder()).to_string()])),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn hydrate(&mut self, home: &crate::home::Home) -> Result<(), Fault> {
         let read = Hydrated::read(home)?;
         self.install(read);
         Ok(())
     }
 
-    /// Install what [`Hydrated::read`] read of a home: its copies replace the shell's, its troubles go to the
-    /// trouble panel. Touches no disk.
     pub fn install(&mut self, h: Hydrated) {
-        let Hydrated { settings, endpoints, seen_entries, seen_queue, queue, rooted, remembered, verdicts, kits_root, kits_index, read_nets, unfetched, aside, troubles } = h;
+        let Hydrated { settings, endpoints, seen_entries, seen_queue, seen_seq, queue, rooted, remembered, verdicts, kits_root, kits_index, read_nets, unfetched, handed_off, pens, aside, troubles } = h;
         self.settings = settings;
         self.endpoints = endpoints;
         self.seen_entries = Some(seen_entries);
         self.seen_queue = Some(seen_queue);
+        self.copies.raise(crate::reads::Copies::Baseline, seen_seq);
+        self.seen_gen = self.seen_gen.wrapping_add(1);
         self.queue = queue;
         self.rooted = rooted;
         self.remembered = remembered;
@@ -1528,18 +1761,16 @@ impl Shell {
         self.kits_index = kits_index;
         self.read_nets = read_nets;
         self.unfetched = unfetched;
+        self.handed_off = handed_off;
+        self.seen_pens = pens;
         self.aside = aside;
         self.faults.extend(troubles);
     }
 
-    /// The old data on this machine: each home set aside after a conflict, when, how many entries it holds and
-    /// how many of them were never anchored (its queue). Read where the home is loaded, never in the frame.
     pub fn reread_aside(&mut self) {
         self.aside = aside_now();
     }
 
-    /// Reread the kit index (in the machine directory). Read errors go to the trouble panel and the screen
-    /// says it was not read.
     pub fn reread_kits(&mut self) {
         let (root, index, nets, troubles) = kits_now(self.home.as_ref());
         self.kits_root = root;
@@ -1548,7 +1779,6 @@ impl Shell {
         self.faults.extend(troubles);
     }
 
-    /// Reread the read-only network table (in the machine directory). Read errors go to the trouble panel.
     pub fn reread_nets(&mut self) {
         match crate::action::read_nets_now() {
             Ok(n) => self.read_nets = Some(n),
@@ -1559,10 +1789,10 @@ impl Shell {
         }
     }
 
-    /// Whether the periodic vault review should start (card checks need the basis): not with a zero period,
-    /// missing endpoints or basis, one in flight, or less than a period since the last. A pure decision, no
-    /// disk.
     pub fn review_due(&self, now: f64, last_tick: f64) -> bool {
+        if self.vault_changed && self.home.is_some() && !self.tasks.in_flight(crate::task::Kind::Review) {
+            return true;
+        }
         let every = self.settings.review_every;
         if every == 0 || self.home.is_none() || self.endpoints.is_empty() {
             return false;
@@ -1577,10 +1807,6 @@ impl Shell {
         now - last >= every as f64
     }
 
-    /// Mark this table stale: a new generation, and a new read allowed. The table held stays shown until the new
-    /// reading lands (a refresh never empties it); moving the generation and allowing the read happen together,
-    /// since `Tasks` records "started" (not reset by failure, which prevents spinning). Every refresh of the table
-    /// goes through here (`grants` likewise).
     pub fn stale_rows(&mut self) {
         self.rows_gen += 1;
         self.tasks.forget(crate::task::Kind::Ledger);
@@ -1591,28 +1817,30 @@ impl Shell {
         self.tasks.forget(crate::task::Kind::Grants);
     }
 
-    /// Whether the table held is the reading of the current generation (no read is due).
     pub fn rows_current(&self) -> bool {
         self.rows.is_some() && self.rows_at == self.rows_gen
     }
 
-    /// Whether the register held is the reading of the current generation.
     pub fn grants_current(&self) -> bool {
         self.grants.is_some() && self.grants_at == self.grants_gen
     }
 
-    /// Judge the ledger's state from the last report. A broken chain, and every problem the report names by
-    /// itself (findings, missing, malformed, void, unproven), is a problem on the report alone, judged the moment
-    /// it lands. Only unknown types need the table: this desk's own deletions are recognized there, not counted
-    /// as unknown types. That count is taken from a table of the report's generation, and only while the report
-    /// is of the ledger as it stands (its mark is the book's); with no such pair in hand the last conclusion
-    /// stands until the next report. Entries awaiting anchoring are not faults.
+    pub fn reread(&mut self, why: Reread) {
+        for s in crate::reads::Cause::stales(why) {
+            match s {
+                Stale::Rows => self.stale_rows(),
+                Stale::Grants => self.stale_grants(),
+            }
+        }
+    }
+
     fn judge_ledger(&mut self) {
-        use zikaron::tokens::Key as T;
+        use zikaron::v2::tokens::Key as T;
         let Some(a) = self.audit.as_ref() else { return };
         let items = crate::auditx::items(&a.report);
         let n = |k: T| items.iter().find(|i| i.key == k.as_str()).and_then(|i| i.count).unwrap_or(0);
-        let alone = n(T::Findings) + n(T::Missing) + n(T::Malformed) + n(T::Void) + n(T::AdoptionUnproven) + n(T::Unproven);
+        let alone = n(T::Findings) + n(T::Missing) + n(T::Malformed) + n(T::Void) + n(T::Unproven);
+        self.ledger_handed_on = handed_on(&a.report, a.broken, self.handed.as_deref());
         if a.broken || alone > 0 {
             self.ledger_ok = Some(false);
             return;
@@ -1623,26 +1851,62 @@ impl Shell {
             return;
         }
         let Some((rows, _)) = self.rows.as_ref().filter(|_| self.rows_at == a.rows_gen && a.mark == self.book_mark) else { return };
-        let convention = crate::retractx::read(rows).count;
-        self.ledger_ok = Some(unknown.saturating_sub(convention) == 0);
+        self.ledger_ok = Some(crate::auditx::unknown_of(&a.report, rows).left == 0);
     }
 
-    /// The ledger's source changed. `Source::Ledger`: the ledger in the same home was replaced (adoption in
-    /// place, mirror restore), invalidating everything read from it. `Source::Home`: another home, also
-    /// invalidating settings, vault, chain readings, pen and alarms. Background tasks tied to the source move
-    /// to a new epoch, and results from the old epoch deliver only their faults (`Tasks::new_epoch`).
-    ///
-    /// The destructuring has no `..`, so every new shell field must be assigned a scope here. The pen and
-    /// alarms clear only on a home change: a failed adoption or restore in the same home keeps the
-    /// broken-chain bar and read-only state.
+    pub fn ledger_verdict(&self) -> Option<Verdict> {
+        self.audit.as_ref()?;
+        Some(match self.ledger_ok? {
+            true => Verdict::Normal,
+            false => self.ledger_handed_on.map_or(Verdict::Abnormal, Verdict::HandedOn),
+        })
+    }
+
+    pub fn audit_in_step(&self) -> bool {
+        let Some(a) = self.audit.as_ref() else { return false };
+        if !crate::auditx::whole(&a.label, a.asked, &a.unanswered) {
+            return false;
+        }
+        if a.mark == self.book_mark {
+            return true;
+        }
+        let on = self.on_chain();
+        self.written_since(a).is_some_and(|ids| ids.iter().all(|id| on.anywhere(id)))
+    }
+
+    fn written_since(&self, a: &AuditRead) -> Option<Vec<String>> {
+        let (then, now) = (a.seen?, self.seen_entries?);
+        let more = now.checked_sub(then)?;
+        if more == 0 {
+            return Some(Vec::new());
+        }
+        if !self.rows_current() {
+            return None;
+        }
+        let rows = &self.rows.as_ref()?.0;
+        (rows.len() >= more).then(|| rows[..more].iter().map(|r| r.id.clone()).collect())
+    }
+
+    pub fn on_chain(&self) -> crate::chainx::OnChain {
+        let read: Vec<(Option<u64>, String)> = match self.audit.as_ref() {
+            Some(a) => self.basis_chains().into_iter().flat_map(|(c, _, _)| crate::auditx::anchored_on(&a.report, c).into_iter().map(move |id| (Some(c), id))).collect(),
+            None => Vec::new(),
+        };
+        crate::chainx::OnChain::of(read, &self.queue)
+    }
+
+    pub fn audit_report_in_step(&self) -> Option<&zikaron::json::Value> {
+        self.audit.as_ref().filter(|_| self.audit_in_step()).map(|a| &a.report)
+    }
+
     pub fn source_changed(&mut self, scope: Source) {
         self.tasks.new_epoch();
         let home = scope == Source::Home;
         let Shell {
-            // Tied to the machine, the person and this session, not to the ledger's source:
             page: _,
             documents: _,
-            // Names the fetch kind's in-flight task, which a source change does not stop (its result is set aside).
+            moved: _,
+            gates_shown: _,
             fetch_checks_tail: _,
             resume_blocked: _,
             tasks: _,
@@ -1655,8 +1919,6 @@ impl Shell {
             anchor: _,
             anchor_public: _,
             identities: _,
-            // The backup reading is read from `identities`: it changes with the identity table
-            // (`seat_identities`) and not with the ledger.
             backup_seen: _,
             new_words: _,
             new_label: _,
@@ -1674,7 +1936,13 @@ impl Shell {
             basis_read: _,
             kits_root: _,
             unfetched,
+            handed_off,
+            seen_pens,
             vetted: _,
+            peeks: _,
+            keeps: _,
+            keep_inline: _,
+            unwritten_asked: _,
             vault: _,
             vault_recoverable: _,
             primary: _,
@@ -1686,31 +1954,32 @@ impl Shell {
             backup_made: _,
             backup_peek: _,
             items_now: _,
-            // The command-line channel follows the home by its own rule (`door_sync`), not by a source change.
             door: _,
             door_doing: _,
+            door_acting: _,
             door_told: _,
             door_waker: _,
             door_shut: _,
+            door_too_long: _,
+            door_place: _,
             door_off: _,
             door_answered: _,
-            // What is at the command-line install path belongs to the machine, not to a ledger's source.
             cli_path: _,
             ai_config: _,
-            // The command line's credential belongs to the machine.
             credential: _,
-            // Counted against the home whose lock is held; a new home starts uncounted (cleared below).
+            passes: _,
             seen_entries,
             seen_queue,
             followed_at: _,
+            seen_gen: _,
+            copies: _,
+            regain_stop: _,
+            looks_dropped: _,
             archive_mark,
             landed,
             followed,
-            // The passcode answer and machine settings follow the machine; results held while the test hooks
-            // wait follow the session.
             vault_said: _,
             gate_said: _,
-            // These kinds follow the source: one started for the earlier source lands stale and writes nothing here.
             said: _,
             machine: _,
             held_back: _,
@@ -1719,41 +1988,74 @@ impl Shell {
             content: _,
             flow: _,
             book: _,
+            persona,
+            face_books,
+            face_pair,
+            reroot_fee,
+            face_joined: _,
             diligence: _,
+            others_asked: _,
+            others_whole: _,
             verified: _,
+            cleaned: _,
             delivery,
             checked: _,
+            check_asked: _,
+            audits: _,
             attention: _,
-            // Reread from the new source by `hydrate` (opening a home); adoption and restore do not replace
-            // the settings file:
             settings: _,
             queue: _,
             rooted: _,
-            // Read from the ledger (cleared in both scopes):
             rows,
             rows_gen,
             rows_at: _,
+            faces_read: _,
+            seat_chains: _,
+            places_read: _,
+            rows_wanted: _,
             grants_gen,
             grants_at: _,
             ledger_ok,
+            ledger_handed_on,
             audit,
+            upgrade,
+            upgrade_read,
+            rotation,
+            rotation_said,
+            rot_left,
+            rot_left_of,
+            rot_vetted,
+            rot_given,
+            rot_written,
+            rot_sending,
+            rot_home: _,
+            rot_sweep_out,
+            rot_sweep_held,
+            rot_short,
+            rot_fresh,
+            rot_sweep_to,
+            rot_reverted,
+            rot_looking,
+            rot_unread,
+            upgrade_cost,
+            office_trouble,
             audit_asked,
+            audit_lag_since,
             tail_asked,
+            tail_wanted,
+            tail_again,
             sent,
             repo_since,
             grants,
-            depth,
             kit,
             picked,
             clash,
-            proofs,
-            proofs_rows,
-            key_anchors,
-            claim,
-            attested,
-            sighting,
+            clash_unsettled,
+            noticed_at: _,
             story,
             gas,
+            gas_lane,
+            door_followed: _,
             fees,
             fees_left,
             stuck,
@@ -1762,7 +2064,6 @@ impl Shell {
             resumed_at: _,
             failed,
             archive,
-            // Following this home (cleared only on a home change):
             chain,
             reconciled,
             pen,
@@ -1771,6 +2072,7 @@ impl Shell {
             held,
             held_rejected,
             held_dirty,
+            vault_changed,
             alarms,
             rung,
             badge,
@@ -1780,12 +2082,8 @@ impl Shell {
             status,
             chain_read_at,
             chain_time,
-            // The old data on this machine and the one being read follow the machine, not the home.
             aside: _,
-            // Opening old data and coming back set this after their change of home (`view_old`, `leave_old`);
-            // any other change of home leaves it.
             old_view,
-            // What fetching left belongs to that home.
             fetch_conflict,
             last_aside,
         } = self;
@@ -1796,42 +2094,60 @@ impl Shell {
         *rows_gen += 1;
         *grants_gen += 1;
         *audit = None;
+        *upgrade = None;
+        *upgrade_read = false;
+        *rotation = None;
+        *rotation_said = None;
+        *rot_left = None;
+        *rot_left_of = None;
+        *rot_vetted = None;
+        *rot_given = None;
+        *rot_written = None;
+        *rot_sending = None;
+        *rot_sweep_out = None;
+        *rot_sweep_held = None;
+        *rot_short = None;
+        *rot_fresh = Vec::new();
+        *rot_sweep_to = None;
+        *rot_reverted = None;
+        *rot_looking = false;
+        *rot_unread = None;
+        *upgrade_cost = None;
+        *office_trouble = None;
         *ledger_ok = None;
-        // A source change means this home has no report yet: the next frame audits (without waiting for the
-        // period).
+        *ledger_handed_on = None;
         *audit_asked = None;
+        *audit_lag_since = None;
         *tail_asked = None;
+        *tail_wanted = false;
+        *tail_again = false;
         *sent = None;
         *repo_since = None;
         *grants = None;
-        *depth = None;
         *kit = None;
         *picked = None;
         clash.clear();
-        *proofs = None;
-        *proofs_rows = None;
-        *key_anchors = None;
-        *claim = None;
-        *attested = None;
-        *sighting = None;
+        *clash_unsettled = 0;
         *story = None;
         *gas = None;
+        *gas_lane = None;
         *fees = None;
         fees_left.clear();
         *stuck = None;
         *gas_epoch += 1;
         failed.clear();
-        // The usage reading includes the entry count: invalidated when the ledger changes; the caller
-        // measures again.
         *archive = None;
         *archive_mark = None;
-        // Another home's count says nothing about this one: counted afresh at the first look.
         if home {
             *seen_entries = None;
             *seen_queue = None;
         }
         *landed = None;
         *followed = false;
+        *persona = crate::facex::State::Unread;
+        *face_books = None;
+        *face_pair = None;
+        *reroot_fee = None;
         if !home {
             return;
         }
@@ -1839,20 +2155,20 @@ impl Shell {
         *reconciled = None;
         *pen = Pen::Granted;
         *handed = None;
-        // The two caches belong to that home: cleared on a home change, and `hydrate` reads the new home's.
         *remembered = None;
         verdicts.clear();
         *unfetched = None;
-        // The last delivery conclusion belongs to that home's grant: cleared on a home change.
+        *handed_off = None;
+        *seen_pens = None;
         *delivery = None;
         *cards = None;
         *held = None;
         held_rejected.clear();
         *held_dirty = false;
+        *vault_changed = false;
         alarms.clear();
         rung.clear();
         *badge = None;
-        // The publication check was against a kit of this home: invalidated when the source changes.
         *published = None;
         notices.clear();
         fresh.clear();
@@ -1861,47 +2177,26 @@ impl Shell {
         *chain_time = None;
     }
 
-    /// Record a fault and return it to the screen. There is no silent path.
     pub fn trouble(&mut self, f: Fault) -> crate::action::Applied {
         self.faults.push(f.clone());
         crate::action::Applied::Trouble(f)
     }
 
-    /// A fetched ledger landed in the home at `root` (a fetch, or a fetch after setting a home aside): update
-    /// the mark from the tail check, on the home the fetch started in (even if another is open now).
-    fn fetch_landed(&mut self, root: &std::path::Path, tail: &crate::restorex::Tail) {
-        let r = crate::home::Home::open(root).and_then(|h| match tail {
-            crate::restorex::Tail::Pass { .. } => crate::restorex::clear(&h).map(|_| None),
-            crate::restorex::Tail::NewerElsewhere { missing, .. } => {
-                let s = crate::restorex::State::NewerElsewhere { missing: *missing };
-                crate::restorex::write(&h, s).map(|_| Some(s))
-            }
-        });
+    fn fetch_landed(&mut self, root: &std::path::Path, tail: &crate::restorex::Tail, landed: Option<(usize, usize)>, on: Option<crate::restorex::On>) {
         let here = self.home.as_ref().map(|h| crate::home::same_place(h.root(), root)).unwrap_or(false);
-        match r {
-            Ok(s) if here => {
-                self.unfetched = s;
-                // The ledger grew (from empty): record the root and advance the ledger mark (the self-audit
-                // follows the new ledger); the table is invalidated.
-                if let Some(h) = self.home.as_ref() {
-                    self.rooted = crate::ledgerx::head(h).map(|x| x.is_some()).unwrap_or(false);
-                }
+        if here {
+            self.tail_wanted = false;
+            if let Some((_, entries)) = landed.filter(|(n, _)| *n > 0) {
                 self.book_changed();
-                // The answer is about the ledger as it now is, so the tail is not due again until the ledger,
-                // its nodes or basis, or the home change (a "newer entries elsewhere" answer is not re-asked
-                // every frame).
-                self.tail_asked = Some(self.book_mark);
-                // With a root, the export page lists kits of this ledger.
-                self.reread_kits();
+                self.rooted = entries > 0;
             }
-            Ok(_) => {}
-            Err(f) => self.faults.push(f),
+            self.tail_asked = Some(self.book_mark);
         }
-        self.stale_rows();
+        let open = self.home.as_ref().map(|h| h.root().to_path_buf());
+        self.leave(Keep::Tail { root: root.to_path_buf(), tail: tail.clone(), open, on });
+        self.reread(Reread::Landed);
     }
 
-    /// An export refused because the chain holds anchors this home lacks: the gate left the read-only mark on
-    /// disk (`exitgate::pass`); the shell picks it up now so writing waits for a fetch immediately.
     pub fn gate_refused(&mut self, f: &crate::fault::Fault) {
         if f.which() == Some(crate::fault::Known::NewerElsewhere) {
             if let Some(home) = self.home.as_ref() {
@@ -1912,23 +2207,103 @@ impl Shell {
         }
     }
 
-    /// Receive results and record them.
     pub fn drain(&mut self) -> Vec<Outcome> {
-        self.drain_at(0.0)
+        self.keep_inline = true;
+        let mut got = self.drain_at(0.0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while self.tasks.in_flight(crate::task::Kind::Keep) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            got.extend(self.drain_at(0.0));
+        }
+        self.keep_inline = false;
+        self.keep_now();
+        got
     }
 
-    /// As [`Shell::drain`], with the arrival time from the caller (the interface clock). The self-audit clock
-    /// schedules by it; this layer never asks the system time.
+    pub fn keep_now(&mut self) {
+        if self.keeps.is_empty() {
+            return;
+        }
+        let all = std::mem::take(&mut self.keeps);
+        let hand = self.lock.as_ref().map(crate::lock::Lock::hand);
+        let out = keep(all, hand, self.settings_writable());
+        self.kept(&out);
+        self.moved += 1;
+    }
+
     pub fn drain_at(&mut self, now: f64) -> Vec<Outcome> {
-        // The trace file reached its cap: say so once when writing stops.
         if let Some(f) = trace::take_full() {
             self.faults.push(f);
         }
         self.credential_tick();
+        let noticed = crate::reads::last_write(crate::reads::Copies::Noticed);
+        if noticed != self.noticed_at {
+            self.noticed_at = noticed;
+            self.reread(Reread::Noticed);
+        }
         let mut got = self.tasks.drain_at(now);
+        if got.iter().any(|o| !matches!(o.kind, crate::task::Kind::Look | crate::task::Kind::Regain)) {
+            self.moved += 1;
+        }
+        let unkept = zikaron_anchor::settled::unkept();
+        if !unkept.is_empty() {
+            self.faults.push(crate::fault::Fault::known(crate::fault::Known::ReadsUnkept, unkept.join("; ")));
+        }
+        let audited = got.iter().any(|o| o.kind == crate::task::Kind::Audit);
         for o in got.iter_mut() {
-            // Passcode tasks: the frame-side half runs here and its answer goes to `vault_said`; a refusal is
-            // recorded there (`Shell::trouble`), not again below.
+            if let Some(seen) = o.seen.as_ref().filter(|s| self.copies.newer(crate::reads::Copies::Baseline, s.seq) && self.home.as_ref().is_some_and(|h| h.root() == s.root.as_path())) {
+                self.copies.raise(crate::reads::Copies::Baseline, seen.seq);
+                self.seen_entries = Some(seen.entries);
+                self.seen_queue = Some(seen.queue);
+                self.seen_gen = self.seen_gen.wrapping_add(1);
+            }
+            let short = |chain: Option<u64>, fresh: &[(u64, u128)]| match &o.result {
+                Err(f) if f.which() == Some(crate::fault::Known::InsufficientFunds) => Some(crate::rotatex::Short::of(chain, crate::action::funds_of(f.tail()), fresh)),
+                _ => None,
+            };
+            if o.kind == crate::task::Kind::Rotate {
+                let sending = self.rot_sending.take();
+                let sweep = self.rot_sweep_out.take();
+                if let Some(other) = self.rot_home.take().filter(|h| self.home.as_ref().map(|x| x.root()) != Some(h.as_path())) {
+                    match &o.result {
+                        Ok(Done::Rotation { settled, unread, .. }) => {
+                            self.keep_swept_in(other, settled);
+                            if let Some(f) = unread {
+                                self.faults.push(f.clone());
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(f) => self.faults.push(f.clone()),
+                    }
+                    continue;
+                }
+                if let (Some((chain, value)), Err(f)) = (sweep, &o.result) {
+                    if f.which() == Some(crate::fault::Known::NotIncluded) {
+                        self.rot_sweep_held = Some((chain, value, f.tail().to_string()));
+                    }
+                }
+                if sending.is_some() && sweep.is_none() {
+                    self.rot_short = short(sending, &self.rot_fresh);
+                }
+                if sending.is_some() {
+                    self.rot_reverted = match &o.result {
+                        Ok(Done::Rotation { reverted, .. }) => reverted.clone(),
+                        _ => None,
+                    };
+                }
+                if std::mem::take(&mut self.rot_looking) {
+                    self.rot_unread = o.result.as_ref().err().cloned();
+                    if self.rot_unread.is_some() {
+                        self.rotation = None;
+                    }
+                }
+            }
+            if o.kind == crate::task::Kind::Anchor {
+                self.rot_short = short(None, &self.rot_fresh);
+            }
+            if o.renoded {
+                continue;
+            }
             if crate::landing::goes_back(o.kind, crate::landing::Back::Vault) {
                 let got = o.result.clone().map(|d| match d {
                     Done::Vault(v) => v,
@@ -1938,48 +2313,66 @@ impl Shell {
                 self.vault_said = Some(said);
                 continue;
             }
-            // An export's exit gate passed: the export runs now and its answer goes to `gate_said`, separate
-            // from passcode answers. A refused gate takes the common path below (recorded, and the read-only
-            // mark picked up). A pass holds only for the home and source it started on (`o.stale` says whether
-            // the source moved); `gate_landed` checks that before anything runs.
             if let (crate::task::Kind::Gate, Ok(Done::GatePassed { root, then, pass })) = (o.kind, &o.result) {
                 if let Some(said) = crate::action::gate_landed(self, root.clone(), (**then).clone(), pass, o.stale) {
                     self.gate_said = Some(said);
                 }
                 continue;
             }
-            // Actions whose slow half ran in the background: their frame-side half runs here (`action::landed`)
-            // and the answer goes to `said`, bypassing the common path below. One started for an earlier source
-            // lands nothing. A move ends the home freeze whatever its outcome.
+            if matches!(o.result, Ok(Done::Issued { .. }) | Ok(Done::Withdrew { .. })) {
+                self.failed.remove(&o.kind);
+            }
+            if let (crate::task::Kind::Gate, Ok(Done::Issued { root, then, member })) = (o.kind, &o.result) {
+                if let Some(said) = crate::action::issued(self, root.clone(), (**then).clone(), *member, o.stale) {
+                    self.gate_said = Some(said);
+                }
+                continue;
+            }
+            if let (crate::task::Kind::Gate, Ok(Done::FaceCleared { root, then })) = (o.kind, &o.result) {
+                self.failed.remove(&o.kind);
+                if let Some(said) = crate::action::face_cleared(self, root.clone(), (**then).clone()) {
+                    self.gate_said = Some(said);
+                }
+                continue;
+            }
+            if let (crate::task::Kind::Gate, Ok(Done::Withdrew { root, entry, grant, chain, noticed })) = (o.kind, &o.result) {
+                if let Some(said) = crate::action::withdrew(self, root.clone(), entry.clone(), grant.clone(), *chain, noticed.clone()) {
+                    self.gate_said = Some(said);
+                }
+                continue;
+            }
             if crate::action::lands_said(o.kind) {
                 if o.kind == crate::task::Kind::Migrate {
                     self.swapping = false;
                 }
-                // An estimate started before its chain, registry or nodes changed describes the old setup: it is
-                // answered as one, by name (the batch has no estimate for the setup now), never dropped.
                 let behind = o.kind == crate::task::Kind::Gas && self.gas_out_of_date();
                 if behind && !o.stale {
-                    let f = crate::fault::Fault::known(crate::fault::Known::GasNotShown, crate::lang::t(crate::lang::Key::TailGasBehind).to_string());
+                    let f = crate::fault::Fault::known(crate::fault::Known::GasNotShown, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::TailGasBehind).to_string()));
                     self.said.insert(o.kind, crate::action::Applied::Trouble(f));
                 } else if o.stale {
                     if let Err(f) = &o.result {
                         self.faults.push(f.clone());
                     }
                 } else {
+                    match &o.result {
+                        Ok(_) => {
+                            self.failed.remove(&o.kind);
+                        }
+                        Err(f) => {
+                            self.failed.insert(o.kind, f.clone());
+                        }
+                    }
                     let said = crate::action::landed(self, o.kind, o.result.clone());
                     self.said.insert(o.kind, said);
                 }
                 continue;
             }
-            // Results from an earlier source deliver only their fault: a failed task the person started must
-            // show, but the reading describes the previous source and is not kept.
             if o.stale {
                 if let Err(f) = &o.result {
                     self.faults.push(f.clone());
                 }
                 continue;
             }
-            // The swap's fetch landed (the only fetch possible while swapping): the home is unfrozen.
             if o.kind == crate::task::Kind::Fetch {
                 self.swapping = false;
             }
@@ -1990,18 +2383,10 @@ impl Shell {
                 Err(f) => {
                     self.failed.insert(o.kind, f.clone());
                     self.gate_refused(f);
-                    // A failed backup is recorded in the machine settings (`backup_failed`, the lamp's red):
-                    // reread them, as after a successful backup.
                     if o.kind == crate::task::Kind::Backup {
-                        match crate::machine::read() {
-                            Ok(m) => self.machine = m,
-                            Err(e) => self.faults.push(e),
-                        }
+                        self.leave(Keep::Machine);
                     }
-                    // A fetch that failed after swapping this home (completed forward in its own run): the
-                    // old-data list grew and a different home is now at this path, so reopen it. Any other
-                    // failure changed nothing here.
-                    if o.kind == crate::task::Kind::Fetch && !crate::local::is_cut(f) {
+                    if o.kind == crate::task::Kind::Fetch && !self.fetch_checks_tail && !crate::local::is_cut(f) {
                         let before = self.aside.len();
                         self.reread_aside();
                         if self.aside.len() != before {
@@ -2014,10 +2399,6 @@ impl Shell {
                     }
                 }
             }
-            // The status line clears when the network is back. The evidence is a pass that actually got a
-            // chain answer (header, fragment, balance), not merely `Ok`: reviews and checks that cannot reach
-            // the chain also return `Ok` (turning unreachability into "unknown"), which does not mean the
-            // network is back.
             if let Ok(d) = &o.result {
                 if chain_answered(d) {
                     self.status = None;
@@ -2025,43 +2406,48 @@ impl Shell {
                 }
             }
             match &o.result {
-                // Passcode tasks were taken above (`vault_landed`) and never reach here.
                 Ok(Done::Vault(_)) => {}
-                // A file dialog's answer goes back to the requester (the window's path mailbox).
                 Ok(Done::Path(_)) => {}
-                // What is at the command-line install path now, read after turning it on or off.
+                Ok(Done::Kept(all)) => self.kept(all),
+                Ok(Done::Looked(l)) => {
+                    if self.looked(l) {
+                        self.moved += 1;
+                    }
+                }
+                Ok(Done::Regained { root, took }) => {
+                    if self.home.as_ref().is_some_and(|h| h.root() == root.as_path()) {
+                        let home = crate::home::Home::bare(root.clone());
+                        if let Some(l) = self.lock.as_mut() {
+                            l.regained(took, &home);
+                        }
+                    }
+                }
                 Ok(Done::CliPath(s)) => self.cli_path = Some(s.clone()),
-                // Taken above (`gate_landed`) and never reaches here.
-                Ok(Done::GatePassed { .. }) => {}
-                // Taken above (`action::landed`) and never reach here.
+                Ok(Done::GatePassed { .. }) | Ok(Done::Issued { .. }) | Ok(Done::Withdrew { .. }) | Ok(Done::FaceCleared { .. }) => {}
                 Ok(Done::Gas { .. }) | Ok(Done::Took { .. }) | Ok(Done::Hashed { .. }) | Ok(Done::Copied { .. }) | Ok(Done::Seated(_)) => {}
-                // The originals taken out: the toast says how many; nothing of the shell follows them.
                 Ok(Done::Extracted { .. }) => {}
+                Ok(Done::Cleaned { plan, done }) => self.cleaned = Some((plan.clone(), *done)),
                 Ok(Done::Check(r)) => self.last = Some(r.clone()),
-                Ok(Done::Archive { bytes, items, skipped, mirror, records, machine_items }) => {
-                    self.archive_mark = Some(self.book_mark);
+                Ok(Done::Archive { bytes, items, skipped, mirror, records, machine_items, backed, mark }) => {
                     self.archive = Some(ArchiveRead {
                         bytes: *bytes,
                         items: *items,
                         skipped: *skipped,
                         mirror: mirror.clone(),
                         records: *records,
+                        backed: *backed,
+                        mark: *mark,
                     });
-                    // Not counted: the count since the last backup is unknown (never an old number), and the
-                    // reason is shown.
                     match machine_items {
                         Ok(n) => self.items_now = Some(*n),
                         Err(f) => {
                             self.items_now = None;
-                            // Reported once while it persists: the measure runs after every ledger change, and
-                            // the same fault is not news each time.
                             if !self.faults.iter().any(|x| x.said() == f.said()) {
                                 self.faults.push(f.clone());
                             }
                         }
                     }
                 }
-                // The chain's time alone (a new grant's start): it joins chain time; nothing else changes.
                 Ok(Done::ChainTime(t)) => self.note_chain_time(*t),
                 Ok(d @ Done::Chain { .. }) => {
                     if let Done::Chain { head_time: Some(t), .. } = d {
@@ -2076,10 +2462,16 @@ impl Shell {
                     entries,
                     report,
                     unanswered,
+                    unproven,
                     asked,
                     single_source,
                     fragment,
+                    recounted,
                 }) => {
+                    let at = match (&self.audit, recounted) {
+                        (Some(before), true) => before.at,
+                        _ => now,
+                    };
                     self.audit = Some(AuditRead {
                         label: label.clone(),
                         complete: *complete,
@@ -2087,67 +2479,98 @@ impl Shell {
                         entries: *entries,
                         report: report.clone(),
                         unanswered: unanswered.clone(),
+                        unproven: unproven.clone(),
                         asked: *asked,
                         single_source: *single_source,
                         fragment: fragment.clone(),
-                        at: now,
+                        at,
                         mark: self.audit_asked.unwrap_or(self.book_mark),
+                        seen: if self.audit_asked.is_none_or(|m| m == self.book_mark) { self.seen_entries } else { None },
                         rows_gen: self.rows_gen,
+                        nodes: self.endpoints.clone(),
                     });
-                    // Save this pass's `anchored` set: the next start says "checked last time" from it.
-                    if let Some(h) = self.home.as_ref() {
+                    if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
                         let rows = crate::ledgerx::anchored_of(report);
                         let at = (self.clock)();
                         let whole = crate::auditx::whole(label, *asked, unanswered);
-                        match crate::lastread::save_anchored(h, &rows, at, whole) {
-                            Ok(()) => self.remembered = Some(crate::lastread::Anchored { rows, at, whole }),
-                            Err(f) => self.faults.push(f),
-                        }
+                        self.remembered = Some(crate::lastread::Anchored { rows: rows.clone(), at, whole });
+                        self.leave(Keep::Anchored { root, rows, at, whole });
                     }
-                    // Self-audit and reconciliation give the same label: the pen follows it (as for
-                    // `Reconciled`).
                     self.reconciled = Some((label.clone(), *complete, *entries));
                     self.pen = if *complete { Pen::Granted } else { Pen::Held };
-                    // The anchor lamps' source changed, so the table is stale. Green comes only from the
-                    // report's `anchored` item; a new report with an unrefreshed table would show the
-                    // previous report's lamps, a silent staleness. The report goes with the table of the new
-                    // generation, and the ledger's state is judged once that table lands.
-                    self.stale_rows();
+                    let lacks = label == zikaron::v2::tokens::Label::Unproven.as_str() || !crate::auditx::rows_of(report, zikaron::v2::tokens::Key::Missing).is_empty();
+                    if lacks {
+                        self.tail_wanted = true;
+                        self.tail_asked = None;
+                    }
+                    if *complete && !lacks && self.unfetched.is_some() {
+                        self.tail_asked = None;
+                        self.tail_again = true;
+                    }
+                    self.reread(Reread::Landed);
                     let r#gen = self.rows_gen;
                     if let Some(a) = self.audit.as_mut() {
                         a.rows_gen = r#gen;
                     }
                     self.judge_ledger();
                 }
-                // A read started from a source that has since been invalidated (a new report, new entries, a
-                // queue change) describes the earlier state and is dropped: leave it empty, clear "started",
-                // and the next frame reads again.
-                Ok(Done::Ledger { rows, strays, handed, r#gen }) => {
+                Ok(Done::Ledger { rows, strays, handed, office, upgrade, upgrade_read, seats, faces, places, r#gen }) => {
                     if *r#gen == self.rows_gen {
                         self.rows = Some((rows.clone(), *strays));
+                        self.seat_chains = seats.clone();
                         self.rows_at = *r#gen;
+                        let root = self.home.as_ref().map(|h| h.root().to_path_buf());
+                        self.faces_read.put((*r#gen, root.clone()), faces.clone());
+                        self.places_read.put((self.book_mark, *r#gen, root), places.clone());
                         self.handed = handed.clone();
+                        if crate::action::follow_office(self, office.as_ref()) {
+                            self.handed = None;
+                        }
+                        self.upgrade = Some(upgrade.clone());
+                        self.upgrade_read = *upgrade_read;
+                        self.seal_rows();
                         self.queue_follows_ledger();
                         self.judge_ledger();
                     } else {
                         self.tasks.forget(crate::task::Kind::Ledger);
                     }
                 }
-                Ok(Done::Adopt { proofs, rows }) => {
-                    self.proofs = Some(proofs.clone());
-                    self.proofs_rows = Some(rows.clone());
+                Ok(Done::UpgradeCost { stage, txs, wei }) => self.upgrade_cost = Some((stage.clone(), *txs, *wei)),
+                Ok(Done::Rotation { chains, said, unread, left, settled, gone, fresh, .. }) => {
+                    self.rotation = Some(chains.clone());
+                    if !fresh.is_empty() {
+                        self.rot_fresh = fresh.clone();
+                    }
+                    if *gone {
+                        self.rot_sweep_held = None;
+                    }
+                    self.rotation_said = said.clone();
+                    if let Some(f) = unread {
+                        self.faults.push(f.clone());
+                    }
+                    if let Some(l) = left {
+                        self.rot_left = Some(l.left.clone());
+                        self.rot_left_of = Some(l.old);
+                    }
+                    self.keep_swept(settled);
                 }
-                Ok(Done::KeyAnchors { address, rows }) => self.key_anchors = Some((address.clone(), rows.clone())),
-                Ok(Done::Claim { claim, blocks }) => self.claim = Some((claim.clone(), blocks.clone())),
-                Ok(Done::Sighting { to, anchors, asked }) => {
-                    self.sighting = Some((to.clone(), *anchors, *asked))
+                Ok(Done::RotateVetted { to }) => self.rot_vetted = Some(*to),
+                Ok(d @ Done::Book { .. }) => {
+                    if let Done::Book { audit_key, .. } = d {
+                        self.audits.recall(*audit_key);
+                    }
+                    self.book = Some(d.clone());
+                    crate::action::behind_turn(self);
                 }
-                Ok(d @ Done::Book { .. }) => self.book = Some(d.clone()),
-                // A reading speaks only for the row it asked: when the row was changed or removed while it was
-                // in flight, the reading is dropped (the row shows no mark, as after any change).
+                Ok(Done::Persona(state, pair)) => {
+                    self.persona = state.clone();
+                    self.face_pair = pair.clone();
+                    self.seal_rows();
+                }
+                Ok(Done::RerootFee(f)) => self.reroot_fee = Some(f.clone()),
+                Ok(Done::FaceJoined(j)) => self.face_joined = Some(j.as_ref().clone()),
+                Ok(Done::FaceBooks(b)) => self.face_books = Some(b.clone()),
                 Ok(Done::BasisRead { chain, registry, from_block, reading, said, after_nodes, asked }) => {
-                    // The field or its chain's nodes changed since it was asked: the reading is void and lands
-                    // as from an earlier source (reported nowhere); the check runs again for the current values.
                     if !crate::action::basis_read(self, *chain, *registry, *from_block, *reading, said.clone(), *after_nodes, *asked) {
                         o.stale = true;
                     }
@@ -2159,69 +2582,60 @@ impl Shell {
                         self.net_reads.push((*chain_id, *registry, *reading));
                     }
                 }
-                // Broadcast landed: the queue file records those entries as submitted; the shell's copy
-                // follows the disk, the table is invalidated (lamps now "waiting to be anchored"), and the
-                // receipt wait starts.
-                // An anchoring started before the source changed continued for its own home (its queue file
-                // records it); here the current home's queue is reread from disk, and no wait, offer or result
-                // from that other home is taken (the periodic resume follows this disk).
                 Ok(Done::Submitted { .. }) | Ok(Done::Anchored { .. }) if o.earlier => {
-                    if let Some(Ok(q)) = self.home.as_ref().map(crate::queue::Queue::read) {
-                        self.queue = q;
+                    if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+                        self.leave(Keep::Queue { root });
                     }
                     self.stuck = None;
-                    self.stale_rows();
+                    self.reread(Reread::Landed);
                 }
                 Ok(Done::Submitted { tx, chain, url, ids, gas, queue }) => {
                     self.queue = queue.clone();
+                    if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+                        self.leave(Keep::Queue { root });
+                    }
                     self.gas = None;
-                    // A new transaction is out (a send, or a resend): its own wait decides what is offered next.
+                    self.gas_lane = None;
                     self.stuck = None;
-                    self.stale_rows();
-                    // Receipt watching is background work that stops while locked; `CatchUp` resumes it.
+                    self.reread(Reread::Landed);
                     if !self.lock_pending {
                         crate::action::wait_submitted(self, tx.clone(), *chain, url.clone(), ids.clone(), *gas);
                     }
                 }
                 Ok(d @ Done::Anchored { .. }) => {
-                    // Reload the queue table from disk. Dequeuing happens on a background thread, and a stale
-                    // shell copy would send the same batch again (paying gas twice). It is read from the
-                    // current home's disk: if the home changed since anchoring started, the table sent back
-                    // belongs to the old home.
-                    if let Done::Anchored { queue, .. } = d {
-                        match self.home.as_ref().map(crate::queue::Queue::read) {
-                            Some(Ok(q)) => self.queue = q,
-                            Some(Err(f)) => {
-                                // The disk copy cannot be read: show the entries the background returned for
-                                // now. The "anchored before" field comes only from the file on disk, so it
-                                // stays empty until the file reads again; it is never guessed.
-                                self.queue = crate::queue::Queue { items: queue.clone(), anchored: Vec::new(), blocks: Vec::new() };
-                                self.faults.push(f);
+                    if let Done::Anchored { queue, whole, .. } = d {
+                        let root = self.home.as_ref().map(|h| h.root().to_path_buf());
+                        match whole {
+                            Some((Ok(q), at)) => {
+                                if let Some(root) = root {
+                                    self.take_queue(&root, &Ok(q.clone()), *at);
+                                }
                             }
-                            None => self.queue = crate::queue::Queue { items: queue.clone(), anchored: Vec::new(), blocks: Vec::new() },
+                            Some((Err(f), _)) => {
+                                self.queue = crate::queue::Queue { chain: self.settings.chain_id.unwrap_or(0), items: queue.clone(), anchored: Vec::new(), blocks: Vec::new(), passed: Vec::new() };
+                                self.faults.push(f.clone());
+                            }
+                            None => {
+                                self.queue = crate::queue::Queue { chain: self.settings.chain_id.unwrap_or(0), items: queue.clone(), anchored: Vec::new(), blocks: Vec::new(), passed: Vec::new() };
+                                if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+                                    self.leave(Keep::Queue { root });
+                                }
+                            }
                         }
                     }
-                    // The gas estimate is void: it was for this batch, which is gone; keeping it would let
-                    // the next "check gas before sending" gate pass on an old reading.
                     self.gas = None;
-                    // Not included by the end of this wait: record what may be done now; if included, nothing.
+                    self.gas_lane = None;
                     if let Done::Anchored { stuck, confirmed, .. } = d {
                         self.stuck = if *confirmed { None } else { stuck.clone() };
                     }
-                    // Voided (held by no node, its nonce used by another transaction): the entries are back in
-                    // the queue; reported once.
                     if let Done::Anchored { voided: true, tx, .. } = d {
                         self.faults.push(crate::fault::Fault::known(crate::fault::Known::BatchVoided, tx.clone()));
                     }
                     self.sent = Some(d.clone());
-                    // The queued color's source (the queue table) changed, so the table is invalidated.
-                    self.stale_rows();
-                    // A batch of anchors landed, so the ledger no longer matches the report.
+                    self.reread(Reread::Landed);
                     self.book_changed();
-                    // Confirmed on chain: the chain is read again at once by the self-audit (a fork the send
-                    // did not see shows there, and the pen follows its label).
                     if matches!(d, Done::Anchored { confirmed: true, .. }) {
-                        crate::action::audit_after_send(self);
+                        crate::action::audit_after_send(self, d);
                     }
                 }
                 Ok(Done::Vetted(rows)) => {
@@ -2229,47 +2643,26 @@ impl Shell {
                         self.vetted.insert(p.clone(), d.clone());
                     }
                 }
-                Ok(Done::Depth { work, value }) => {
-                    self.depth = Some((work.clone(), value.clone()))
+                Ok(Done::Peeked(got)) => {
+                    let (ask, read) = (**got).clone();
+                    self.peeks.retain(|(a, _)| a.which() != ask.which());
+                    self.peeks.push((ask, read));
                 }
                 Ok(d @ Done::Kit { .. }) => {
-                    // A landed kit adds a row to the index: kit id, time, this ledger's root, the kit's
-                    // absolute path, the facts the export read from the plain package (original digests, notes,
-                    // a sealed package's one-time key), and `link` (kept if set by hand, else built from this
-                    // home's publication base).
                     if let Done::Kit { root, publish, path, kit_id, facts, .. } = d {
-                        let at = std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
-                        let now = (self.clock)();
-                        let r = crate::home::Home::open(root).and_then(|h| crate::home::machine_dir().and_then(|m| crate::kitsindex::add(&m, &h, &at, kit_id, now, publish.as_deref(), facts.clone())));
-                        if let Err(f) = r {
-                            self.faults.push(f);
-                        }
+                        let open = self.home.as_ref().map(|h| h.root().to_path_buf());
+                        self.leave(Keep::Kit { root: root.clone(), path: path.clone(), kit_id: kit_id.clone(), at: (self.clock)(), publish: publish.clone(), facts: facts.clone(), open });
                     }
-                    self.reread_kits();
                     self.kit = Some(d.clone())
                 }
                 Ok(Done::Keystore(crate::task::Keystore::BackedUp { id, path, .. })) => {
-                    // The location is recorded with the flag: the flag says it was done, the location says
-                    // where, so whether the backup is really on disk can be asked (`identity::backup_seen`).
-                    if let Some(id) = id {
-                        if let Err(f) = crate::register::change(|reg| crate::identity::mark(reg, id, false, true, Some(path))) {
-                            self.faults.push(f);
-                        }
-                    }
-                    match crate::register::view() {
-                        Ok(v) => self.seat_identities(Some(v)),
-                        Err(f) => self.faults.push(f),
-                    }
+                    self.leave(Keep::BackedUp { id: id.clone(), path: path.clone() });
                 }
                 Ok(Done::BackupMade { path, summary }) => {
                     self.backup_made = Some((path.clone(), summary.clone()));
-                    // The last backup is recorded in the machine settings: read them again.
-                    match crate::machine::read() {
-                        Ok(m) => self.machine = m,
-                        Err(f) => self.faults.push(f),
-                    }
+                    self.leave(Keep::Machine);
                 }
-                Ok(Done::BackupSeen { summary }) => self.backup_peek = Some(summary.clone()),
+                Ok(Done::BackupSeen { path, summary }) => self.backup_peek = Some((path.clone(), summary.clone())),
                 Ok(Done::Grants { rows, r#gen }) => {
                     if *r#gen == self.grants_gen {
                         self.grants = Some(rows.clone());
@@ -2278,44 +2671,39 @@ impl Shell {
                         self.tasks.forget(crate::task::Kind::Grants);
                     }
                 }
-                Ok(Done::Diligence(r)) => self.diligence = Some((**r).clone()),
+                Ok(Done::Diligence(r)) => {
+                    self.audits.recall(r.audit_key);
+                    self.diligence = Some((**r).clone());
+                    crate::action::behind_turn(self);
+                }
                 Ok(Done::Verified(v)) => self.verified = Some((**v).clone()),
                 Ok(Done::Delivery(c)) => self.delivery = Some(c.clone()),
                 Ok(Done::Reviewed { cards, now }) => {
                     if let Some(t) = now {
                         self.note_chain_time(*t);
                     }
-                    // The sentinel reads this pass's cards: a revocation and a change of hands each alert once,
-                    // and alerted keys are saved in settings.
                     let (fresh, keys) = crate::sentinelx::alarms(cards, &self.settings.alarmed, *now);
                     if !fresh.is_empty() {
                         self.rung.extend(fresh.iter().cloned());
                         for a in fresh.into_iter().rev() {
                             self.alarms.insert(0, a);
                         }
-                        self.settings.alarmed.extend(keys);
+                        self.settings.alarmed.extend(keys.iter().cloned());
                         self.attention = true;
-                        if let Some(h) = self.home.as_ref() {
-                            if let Err(f) = self.settings.write(h) {
-                                self.faults.push(f);
-                            }
+                        if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+                            self.leave(Keep::Alarmed { root, keys });
                         }
                     }
-                    // Save each grant's verdict and check time (`grants-held/<id>.verdict.json`); the next
-                    // start shows them first.
-                    if let Some(h) = self.home.as_ref() {
+                    if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
                         let at = (self.clock)();
-                        for c in cards.iter() {
-                            let checks = crate::vaultx::states(&c.checks);
-                            let v = crate::lastread::Verdict { verdict: c.verdict.clone(), checks, at, upstream_label: c.upstream_label.clone(), chain_now: *now, anchored_at: c.anchored_at };
-                            match crate::lastread::save_verdict(h, &c.id, &v) {
-                                Ok(()) => {
-                                    self.verdicts.retain(|(id, _)| !id.eq_ignore_ascii_case(&c.id));
-                                    self.verdicts.push((c.id.clone(), v));
-                                }
-                                Err(f) => self.faults.push(f),
-                            }
+                        let mut rows = Vec::with_capacity(cards.len());
+                        for c in cards.iter().filter(|c| c.told()) {
+                            let v = crate::lastread::of_card(c, at, *now);
+                            self.verdicts.retain(|(id, _)| !id.eq_ignore_ascii_case(&c.id));
+                            self.verdicts.push((c.id.clone(), v.clone()));
+                            rows.push((c.id.clone(), v));
                         }
+                        self.leave(Keep::Verdicts { root, rows });
                     }
                     self.cards = Some((cards.clone(), *now));
                 }
@@ -2325,19 +2713,17 @@ impl Shell {
                 }
                 Ok(Done::Badge(b)) => self.badge = Some((**b).clone()),
                 Ok(Done::Published { url, read }) => self.published = Some((url.clone(), read.clone())),
-                // A fetched ledger landed: a checked tail removes the mark and allows writing; an anchor on
-                // chain missing from this copy becomes "newer entries elsewhere".
-                Ok(Done::Fetched { root, tail, .. }) => {
+                Ok(Done::Fetched { root, tail, landed, entries, on, .. }) => {
                     self.fetch_conflict = None;
                     self.last_aside = None;
-                    self.fetch_landed(root, tail);
+                    self.fetch_landed(root, tail, Some((*landed, *entries)), *on);
                 }
-                // The tail of each marked seat home was checked: each is handled like a fetch; a home whose
-                // chain could not be read keeps its mark and reports why, without holding up the others.
-                Ok(Done::TailChecked { checked }) => {
-                    for (root, tail) in checked {
+                Ok(Done::TailChecked { checked, unwritten }) => {
+                    for (root, tail, on) in checked {
                         match tail {
-                            Ok(tail) => self.fetch_landed(root, tail),
+                            Ok(t @ crate::restorex::Tail::NewerElsewhere { .. }) => self.fetch_landed(root, t, None, *on),
+                            Ok(_) | Err(_) if *unwritten => {}
+                            Ok(tail) => self.fetch_landed(root, tail, None, *on),
                             Err(f) => self.faults.push(f.clone()),
                         }
                     }
@@ -2347,15 +2733,13 @@ impl Shell {
                 }
                 Ok(Done::FetchedAside { aside, fetched }) => {
                     self.fetch_conflict = None;
-                    if let Done::Fetched { root, tail, .. } = &**fetched {
-                        // The home at this path is a fresh one now: reopen it, then the fetch lands as any
-                        // other (mark, ledger step).
+                    if let Done::Fetched { root, tail, landed, entries, on, .. } = &**fetched {
                         if self.home.as_ref().map(|h| crate::home::same_place(h.root(), root)).unwrap_or(false) {
                             if let Err(f) = crate::action::reopen_here(self, root) {
                                 self.faults.push(f);
                             }
                         }
-                        self.fetch_landed(root, tail);
+                        self.fetch_landed(root, tail, Some((*landed, *entries)), *on);
                     }
                     self.last_aside = Some(aside.clone());
                     self.reread_aside();
@@ -2364,20 +2748,19 @@ impl Shell {
                     if let (Some(t), crate::checkx::NowFrom::Chain) = (c.now, &c.now_from) {
                         self.note_chain_time(t);
                     }
-                    self.checked = Some((**c).clone())
+                    self.audits.recall(c.audit_key);
+                    self.checked = Some((**c).clone());
+                    crate::action::behind_turn(self);
+                }
+                Ok(Done::Behind { .. }) => {
+                    crate::action::behind_turn(self);
                 }
                 Ok(Done::Reconciled { label, complete, entries }) => {
                     self.reconciled = Some((label.clone(), *complete, *entries));
-                    // The only rule for the pen: the core's label is COMPLETE. The shell does not lean toward
-                    // green, and the reverse holds: when the core says incomplete the pen is withdrawn;
-                    // "complete last time" is not this time's answer.
                     self.pen = if *complete { Pen::Granted } else { Pen::Held };
                 }
-                // A failed read of the chain's time is told on the grant form alone (`failed`, above).
                 Err(_) if o.kind == crate::task::Kind::ChainTime => {}
                 Err(f) => {
-                    // Network errors go to the status line, not notices: only the status sentence changes;
-                    // the fault table still records them.
                     if crate::watchx::is_network(f) {
                         self.status = Some((crate::lang::Key::StatusNet, f.evidence()));
                     }
@@ -2385,29 +2768,28 @@ impl Shell {
                 }
             }
         }
-        // The watch table is recomputed from readings; each notice alerts once.
         if !got.is_empty() {
             self.sweep();
         }
-        // A lock waiting for local writes completes once they have all landed.
         if self.lock_pending && !self.tasks.flying().into_iter().any(|k| k.writes_local()) {
             self.lock_pending = false;
             crate::keybox::lock();
             self.after_lock();
         }
-        // The vault changed while a listing was in flight: list again now that it landed.
         if self.held_dirty && !self.tasks.in_flight(crate::task::Kind::Held) {
             self.held_dirty = false;
             self.tasks.forget(crate::task::Kind::Held);
             let _ = crate::action::apply(self, crate::action::Action::ListHeld);
         }
-        // The writer lock follows the command line's switch: let go between writes while it writes alone, held
-        // again once it does not.
         self.turn_sync();
-        // What is shown follows the disk: another writer's entries are read in.
         self.follow_disk(now);
-        // The command-line channel: the request in progress advances with what landed, and newly arrived
-        // requests are handled in this turn.
+        if audited {
+            self.note_audit_lag(now);
+        }
+        if std::mem::take(&mut self.tail_again) && !self.rekeying && !self.swapping && self.take_tail_due() {
+            let _ = crate::action::apply(self, crate::action::Action::CheckTail);
+        }
+        self.keep_turn();
         self.door_turn(&got);
         if !self.held_back.is_empty() {
             let mut all = std::mem::take(&mut self.held_back);
@@ -2417,32 +2799,26 @@ impl Shell {
         got
     }
 
-    /// Receive once and hold (used while the test hooks wait for a passcode task): recorded as usual,
-    /// delivered at the next `drain_at`.
     pub fn drain_hold(&mut self) {
         let got = self.drain_at(0.0);
         self.held_back = got;
     }
 
-    /// Idle lock: the last human input was at `last`, now is `now` (same clock, seconds); at this machine's
-    /// configured time, take the lock path (the same as pressing lock; the master key is wiped byte by byte).
-    /// Returns whether it locked. The window asks every frame; tests inject both times.
+    pub(crate) fn keep_back(&mut self, got: Vec<Outcome>) {
+        self.held_back = got;
+    }
+
     pub fn idle_tick(&mut self, last: f64, now: f64) -> bool {
-        // Resealing refuses every other action and a pending lock is already locking: nothing to ask then.
         if self.rekeying || self.lock_pending || !self.unlocked() || !crate::machine::idle_locks(&self.machine, last, now) {
             return false;
         }
         matches!(crate::action::apply(self, crate::action::Action::Lock), crate::action::Applied::LockedUp)
     }
 
-    /// Record chain time read back on a chain round trip. Whoever reads the chain writes it (chain read, gas
-    /// estimate, review, check); it only moves forward.
     pub fn note_chain_time(&mut self, t: u64) {
         self.chain_time = Some(self.chain_time.map(|x| x.max(t)).unwrap_or(t));
     }
 
-    /// The chain reading as it stands (the only accessor): `Err` with the fault when the last read failed
-    /// (the chain kind keeps no reading over a failure, `landing::Kept::Failed`), else the last reading.
     pub fn chain_reading(&self) -> Result<Option<&Done>, &Fault> {
         match (crate::landing::of(crate::task::Kind::Chain).kept, self.failed.get(&crate::task::Kind::Chain)) {
             (crate::landing::Kept::Failed, Some(f)) => Err(f),
@@ -2451,16 +2827,14 @@ impl Shell {
     }
 
     pub fn chain_now(&self) -> Option<u64> {
-        // Chain time has one reading: the latest of the time recorded on chain round trips (`chain_time`),
-        // the block times of this ledger's anchors, and the chain time the last vault review brought back.
         let vault = self.cards.as_ref().and_then(|(_, n)| *n);
         let ledger = self.audit.as_ref().and_then(|a| {
-            crate::auditx::rows_of(&a.report, zikaron::tokens::Key::Anchored)
+            crate::auditx::rows_of(&a.report, zikaron::v2::tokens::Key::Anchored)
                 .iter()
                 .filter_map(|r| match r {
                     zikaron::json::Value::Obj(m) => m
                         .iter()
-                        .find(|(k, _)| k == zikaron::tokens::Key::Anchors.as_str())
+                        .find(|(k, _)| k == zikaron::v2::tokens::Key::Anchors.as_str())
                         .and_then(|(_, x)| match x {
                             zikaron::json::Value::Arr(a) => a.first().cloned(),
                             _ => None,
@@ -2470,7 +2844,7 @@ impl Shell {
                 .filter_map(|one| match &one {
                     zikaron::json::Value::Obj(m) => m
                         .iter()
-                        .find(|(k, _)| k == zikaron::tokens::Key::BlockTimestamp.as_str())
+                        .find(|(k, _)| k == zikaron::v2::tokens::Key::BlockTimestamp.as_str())
                         .and_then(|(_, x)| match x {
                             zikaron::json::Value::Int(n) => Some(*n),
                             _ => None,
@@ -2482,7 +2856,10 @@ impl Shell {
         [ledger, vault, self.chain_time].into_iter().flatten().max()
     }
 
-    /// This seat's watch table. Pure readings, no disk. The seat comes from the role.
+    pub fn rot_short_said(&self) -> bool {
+        self.rot_short.as_ref().is_some_and(|s| crate::rotatex::short_now(s, &self.rot_fresh))
+    }
+
     pub fn watch_rows(&self) -> Vec<crate::watchx::Row> {
         match self.settings.role {
             crate::roles::Role::Author => crate::watchx::author(
@@ -2491,6 +2868,7 @@ impl Shell {
                 self.grants.as_deref(),
                 (self.machine.backup.as_ref(), self.items_now, self.machine.backup_failed),
                 self.audit.as_ref().map(|a| (a.label.as_str(), &a.report, a.unanswered.as_slice())),
+                self.ledger_verdict(),
                 self.chain_now(),
             ),
             crate::roles::Role::Grantee => crate::watchx::grantee(
@@ -2502,30 +2880,52 @@ impl Shell {
         }
     }
 
-    /// One watch sweep: compute the table, pick what should alert, drop what already alerted, record, and
-    /// hand to the screen. Alerted keys share a record with the sentinel (`settings.alarmed`); a failed save
-    /// goes to the fault table (only with a home).
+    pub fn keep_swept(&mut self, settled: &[(String, u64, crate::rotatex::Settled)]) {
+        let mut lines = Vec::new();
+        for (id, chain, how) in settled {
+            if crate::rotatex::settled_of(&self.settings.swept, id).iter().any(|(c, _)| c == chain) {
+                continue;
+            }
+            let line = how.line(id, *chain);
+            self.settings.swept.push(line.clone());
+            lines.push(line);
+            if self.rot_sweep_held.as_ref().is_some_and(|(c, _, _)| c == chain) {
+                self.rot_sweep_held = None;
+            }
+            if self.rot_reverted.as_ref().is_some_and(|r| r.chain == *chain) {
+                self.rot_reverted = None;
+            }
+        }
+        if lines.is_empty() {
+            return;
+        }
+        if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+            self.leave(Keep::Swept { root, lines });
+        }
+    }
+
+    fn keep_swept_in(&mut self, root: std::path::PathBuf, settled: &[(String, u64, crate::rotatex::Settled)]) {
+        let lines: Vec<String> = settled.iter().map(|(id, chain, how)| how.line(id, *chain)).collect();
+        if !lines.is_empty() {
+            self.leave(Keep::Swept { root, lines });
+        }
+    }
+
     pub fn sweep(&mut self) {
         let rows = self.watch_rows();
         let (fresh, keys) = crate::watchx::fresh(crate::watchx::to_ring(rows), &self.settings.alarmed);
         if fresh.is_empty() {
             return;
         }
-        self.settings.alarmed.extend(keys);
+        self.settings.alarmed.extend(keys.iter().cloned());
         self.notices.extend(fresh.iter().cloned());
         self.fresh.extend(fresh);
         self.attention = true;
-        if let Some(h) = self.home.as_ref() {
-            if self.writable() {
-                if let Err(f) = self.settings.write(h) {
-                    self.faults.push(f);
-                }
-            }
+        if let Some(root) = self.home.as_ref().map(|h| h.root().to_path_buf()) {
+            self.leave(Keep::Alarmed { root, keys });
         }
     }
 
-    /// The status line's parts. This layer writes no text: the screen builds it from the string table, so the
-    /// status line follows the language.
     pub fn note_parts(&self) -> (&'static str, crate::lang::Key, usize, usize, usize) {
         (
             build_kind(),
@@ -2546,8 +2946,6 @@ impl Shell {
     }
 }
 
-/// The primary identity as the shell holds it: id and kind while unlocked. While locked, the store keeps the
-/// id sealed and only the kind is read (the lock screen offers words or a key file by it; the id reads empty).
 fn primary_reading() -> Option<(String, crate::keybox::PrimaryKind)> {
     match crate::keybox::primary() {
         Ok(p) => p,
@@ -2555,19 +2953,307 @@ fn primary_reading() -> Option<(String, crate::keybox::PrimaryKind)> {
     }
 }
 
-/// What a gas estimate and its fees are read from: this home's chain, registry contract and nodes (as a set).
-fn gas_source(s: &Settings) -> (Option<u64>, Option<crate::key::Address>, std::collections::BTreeSet<&str>) {
-    (s.chain_id, s.registry, s.endpoints.iter().map(String::as_str).collect())
+fn gas_source(s: &Settings) -> (Option<u64>, Option<crate::key::Address>, std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) {
+    let rest = if s.rest_on { s.rest.iter().map(String::as_str).collect() } else { std::collections::BTreeSet::new() };
+    (s.chain_id, s.registry, s.endpoints.iter().map(String::as_str).collect(), rest)
 }
 
-/// How often, at most, this instance looks at the disk for another writer's entries (seconds of the interface
-/// clock): a name listing of one directory.
 pub const FOLLOW_EVERY: f64 = 1.0;
 
-/// How many entry files a home's ledger holds now (names only, nothing opened): what the writer turn and the look
-/// at the disk compare.
-/// The queue file's bytes on disk, by their digest (`None`: no file, or one that does not read); only compared,
-/// never opened.
+pub const AUDIT_LAG_AGAIN: f64 = 15.0;
+
+pub const AUDIT_LAG_BOUND: f64 = 600.0;
+
+#[derive(Clone, Debug)]
+pub enum Keep {
+    Machine,
+    Settings { root: std::path::PathBuf },
+    Register,
+    Alarmed { root: std::path::PathBuf, keys: Vec<String> },
+    Swept { root: std::path::PathBuf, lines: Vec<String> },
+    Verdicts { root: std::path::PathBuf, rows: Vec<(String, crate::lastread::Verdict)> },
+    Anchored { root: std::path::PathBuf, rows: Vec<(String, (u64, String))>, at: u64, whole: bool },
+    Kit { root: std::path::PathBuf, path: String, kit_id: String, at: u64, publish: Option<String>, facts: crate::kitsindex::RowFacts, open: Option<std::path::PathBuf> },
+    BackedUp { id: Option<String>, path: String },
+    Queue { root: std::path::PathBuf },
+    Follow { root: std::path::PathBuf, on_chain: Vec<(String, u64)>, owed: Vec<(String, bool)>, faces: bool, others: Vec<u64>, at: u64 },
+    CatchUp { root: std::path::PathBuf, chain: u64, others: Vec<u64>, at: u64, published: Vec<String>, owed: crate::queue::Owed },
+    Seal { root: std::path::PathBuf, ids: Vec<String> },
+    Tail { root: std::path::PathBuf, tail: crate::restorex::Tail, open: Option<std::path::PathBuf>, on: Option<crate::restorex::On> },
+}
+
+#[derive(Clone, Debug)]
+pub enum Kept {
+    Machine(Result<crate::machine::Machine, Fault>, u64),
+    Settings { root: std::path::PathBuf, settings: Result<Settings, Fault>, at: u64 },
+    Wrote(Result<(), Fault>),
+    Kits { open: Option<std::path::PathBuf>, root: Option<String>, index: Option<Vec<crate::kitsindex::Row>>, nets: Option<Vec<crate::readnets::Net>>, troubles: Vec<Fault> },
+    Register(Result<crate::identity::Registry, Fault>, u64),
+    Queue { root: std::path::PathBuf, queue: Result<crate::queue::Queue, Fault>, at: u64 },
+    Followed { root: std::path::PathBuf, queue: Option<Result<crate::queue::Queue, Fault>>, owed: Vec<String>, at: u64 },
+    Sealed { root: std::path::PathBuf, queue: Result<crate::queue::Queue, Fault>, held: usize, at: u64 },
+    Tail { root: std::path::PathBuf, mark: Result<Option<crate::restorex::State>, Fault> },
+}
+
+pub fn keep(all: Vec<Keep>, hand: Option<crate::lock::Hand>, writer: bool) -> Vec<Kept> {
+    use crate::reads::{ticket, Copies};
+    let under = |root: &std::path::Path, f: &mut dyn FnMut() -> Result<(), Fault>| -> Result<(), Fault> {
+        if writer {
+            crate::lock::settling(hand.as_ref(), root, f)?
+        } else {
+            f()
+        }
+    };
+    let kits = |open: &Option<std::path::PathBuf>| {
+        let home = open.as_ref().map(|r| crate::home::Home::bare(r.clone()));
+        let (root, index, nets, troubles) = kits_now(home.as_ref());
+        Kept::Kits { open: open.clone(), root, index, nets, troubles }
+    };
+    let mut out = Vec::new();
+    for k in all {
+        let mut one: Vec<Kept> = Vec::new();
+        match k {
+            Keep::Machine => {
+                let at = ticket(Copies::Machine);
+                one.push(Kept::Machine(crate::machine::read(), at));
+            }
+            Keep::Settings { root } => {
+                let at = ticket(Copies::Settings);
+                one.push(Kept::Settings { settings: Settings::read(&crate::home::Home::bare(root.clone())), root, at });
+            }
+            Keep::Register => {
+                let at = ticket(Copies::Register);
+                one.push(Kept::Register(crate::register::view(), at));
+            }
+            Keep::Alarmed { .. } | Keep::Swept { .. } if !writer => {}
+            Keep::Alarmed { root, keys } => {
+                let h = crate::home::Home::bare(root.clone());
+                one.push(Kept::Wrote(under(&root, &mut || Settings::amend(&h, |s| {
+                    for k in &keys {
+                        if !s.alarmed.contains(k) {
+                            s.alarmed.push(k.clone());
+                        }
+                    }
+                }).map(|_| ()))));
+            }
+            Keep::Swept { root, lines } => {
+                let h = crate::home::Home::bare(root.clone());
+                one.push(Kept::Wrote(under(&root, &mut || Settings::amend(&h, |s| {
+                    for l in &lines {
+                        let mut w = l.split(' ');
+                        let (id, chain) = (w.next().unwrap_or_default(), w.next().and_then(|c| c.parse::<u64>().ok()));
+                        let settled = chain.is_some_and(|c| crate::rotatex::settled_of(&s.swept, id).iter().any(|(x, _)| *x == c));
+                        if !settled && !s.swept.contains(l) {
+                            s.swept.push(l.clone());
+                        }
+                    }
+                }).map(|_| ()))));
+            }
+            Keep::Verdicts { root, rows } => {
+                let h = crate::home::Home::bare(root.clone());
+                for (id, v) in rows {
+                    one.push(Kept::Wrote(under(&root, &mut || crate::lastread::save_verdict(&h, &id, &v))));
+                }
+            }
+            Keep::Anchored { root, rows, at, whole } => {
+                let h = crate::home::Home::bare(root.clone());
+                one.push(Kept::Wrote(under(&root, &mut || crate::lastread::save_anchored(&h, &rows, at, whole))));
+            }
+            Keep::Kit { root, path, kit_id, at, publish, facts, open } => {
+                let kit = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
+                let r = crate::home::Home::open(&root).and_then(|h| crate::home::machine_dir().and_then(|m| crate::kitsindex::add(&m, &h, &kit, &kit_id, at, publish.as_deref(), facts.clone())));
+                one.push(Kept::Wrote(r.map(|_| ())));
+                one.push(kits(&open));
+            }
+            Keep::BackedUp { id, path } => {
+                if let Some(id) = id {
+                    if let Err(f) = crate::register::change(|reg| crate::identity::mark(reg, &id, false, true, Some(&path))) {
+                        one.push(Kept::Wrote(Err(f)));
+                    }
+                }
+                let at = ticket(Copies::Register);
+                one.push(Kept::Register(crate::register::view(), at));
+            }
+            Keep::Queue { root } => {
+                let at = ticket(Copies::Queue);
+                one.push(Kept::Queue { queue: crate::queue::Queue::read(&crate::home::Home::bare(root.clone())), root, at });
+            }
+            Keep::Follow { root, on_chain, owed, faces, others, at } => {
+                let h = crate::home::Home::bare(root.clone());
+                let places = if faces { crate::home::Home::open(&root).ok().and_then(|h| h.ledger().ok()).and_then(|l| l.pile().ok()).map(|p| zikaron_seal::queue::places_of(&p.items)).unwrap_or_default() } else { Default::default() };
+                let owed3: Vec<(String, bool, Option<u64>)> = owed.into_iter().map(|(id, alone)| {
+                    let seated = places.get(&id.to_ascii_lowercase()).and_then(|p| p.carried_on);
+                    (id, alone, seated)
+                }).collect();
+                let mut q = None;
+                let mut read_at = 0;
+                let took = under(&root, &mut || {
+                    q = Some(crate::queue::follow(&h, &on_chain, &owed3, &others, at));
+                    read_at = ticket(Copies::Queue);
+                    Ok(())
+                });
+                let queue = took.ok().and(q);
+                one.push(Kept::Followed { root, queue, owed: owed3.into_iter().map(|(id, _, _)| id).collect(), at: read_at });
+            }
+            Keep::CatchUp { root, chain, others, at, published, owed } => {
+                let h = crate::home::Home::bare(root.clone());
+                let mut q = None;
+                let mut read_at = 0;
+                let took = under(&root, &mut || {
+                    q = Some(crate::queue::caught_up(&h, chain, &others, at, &published, owed.clone()));
+                    read_at = ticket(Copies::Queue);
+                    Ok(())
+                });
+                let queue = took.ok().and(q);
+                one.push(Kept::Followed { root, queue, owed: Vec::new(), at: read_at });
+            }
+            Keep::Seal { root, ids } => {
+                let h = crate::home::Home::bare(root.clone());
+                let mut q = None;
+                let mut read_at = 0;
+                let took = under(&root, &mut || {
+                    q = Some(crate::queue::amend(&h, |q| q.drop_ids(&ids)).map(|(_, q)| q));
+                    read_at = ticket(Copies::Queue);
+                    Ok(())
+                });
+                let queue = match (took, q) {
+                    (Ok(()), Some(r)) => r,
+                    (Err(f), _) => Err(f),
+                    (Ok(()), None) => Err(Fault::unknown(String::new())),
+                };
+                one.push(Kept::Sealed { root, queue, held: ids.len(), at: read_at });
+            }
+            Keep::Tail { root, tail, open, on } => {
+                let mark = crate::home::Home::open(&root).and_then(|h| match &tail {
+                    crate::restorex::Tail::Pass { .. } => {
+                        if crate::ledgerx::rooted(&h) {
+                            crate::restorex::forget_on(&h)?;
+                        } else if let Some(on) = on {
+                            crate::restorex::passed_on(&h, on)?;
+                        }
+                        crate::restorex::clear(&h).map(|_| None)
+                    }
+                    crate::restorex::Tail::NewerElsewhere { lacks, .. } => {
+                        let s = crate::restorex::State::lacking(lacks);
+                        crate::restorex::write(&h, &s).map(|_| Some(s))
+                    }
+                });
+                one.push(Kept::Tail { root, mark });
+                one.push(kits(&open));
+            }
+        }
+        if !one.is_empty() && !crate::task::land_part(Done::Kept(one.clone())) {
+            out.extend(one);
+        }
+    }
+    out
+}
+
+pub fn handed_on(report: &zikaron::json::Value, broken: bool, to: Option<&str>) -> Option<usize> {
+    use zikaron::v2::tokens::Key as T;
+    let to = to?;
+    let items = crate::auditx::items(report);
+    let n = |k: T| items.iter().find(|i| i.key == k.as_str()).and_then(|i| i.count).unwrap_or(0);
+    if broken || n(T::Findings) + n(T::Malformed) + n(T::Void) + n(T::Unproven) > 0 {
+        return None;
+    }
+    let missing = crate::auditx::rows_of(report, T::Missing);
+    let by_successor = |row: &zikaron::json::Value| match row.member(T::Anchors.as_str()) {
+        Some(zikaron::json::Value::Arr(a)) => !a.is_empty() && a.iter().all(|x| x.member(T::Sender.as_str()).and_then(zikaron::json::Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case(to))),
+        _ => false,
+    };
+    (!missing.is_empty() && missing.iter().all(by_successor)).then_some(missing.len())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Normal,
+    HandedOn(usize),
+    Abnormal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetUp {
+    Create,
+    Fetch,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Base {
+    pub r#gen: u64,
+    pub entries: Option<usize>,
+    pub queue: Option<Option<[u8; 32]>>,
+    pub pens: Option<[u8; 32]>,
+    pub rooted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Looked {
+    pub root: std::path::PathBuf,
+    pub base: Base,
+    pub now: crate::task::Seen,
+    pub pens: Option<[u8; 32]>,
+    pub handed: Option<(Option<String>, Vec<Fault>)>,
+    pub files: Option<Files>,
+    pub queue: Option<Result<crate::queue::Queue, Fault>>,
+    pub queue_at: u64,
+    pub settings_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Files {
+    pub rooted: bool,
+    pub queue: Result<crate::queue::Queue, Fault>,
+    pub settings: Result<Settings, Fault>,
+    pub mark: Result<(Option<crate::restorex::State>, bool), Fault>,
+}
+
+pub fn look(root: &std::path::Path, base: Base) -> Looked {
+    let (queue_at, settings_at) = (crate::reads::ticket(crate::reads::Copies::Queue), crate::reads::ticket(crate::reads::Copies::Settings));
+    let home = crate::home::Home::bare(root.to_path_buf());
+    let now = crate::task::Seen::of(root);
+    let pens = pens_mark();
+    let handed = (pens != base.pens).then(|| {
+        let mut troubles = Vec::new();
+        let h = handed_off(&home, &mut troubles);
+        (h, troubles)
+    });
+    let files = match base.entries {
+        Some(seen) if seen != now.entries => Some(Files {
+            rooted: now.entries > 0 && (base.rooted || crate::ledgerx::rooted(&home)),
+            queue: crate::queue::Queue::read(&home),
+            settings: Settings::read(&home),
+            mark: crate::restorex::standing(&home).and_then(|s| Ok((s, crate::restorex::read(&home)?.is_some()))),
+        }),
+        _ => None,
+    };
+    let queue = (files.is_none() && base.entries.is_some() && base.queue.is_some_and(|was| was != now.queue)).then(|| crate::queue::Queue::read(&home));
+    Looked { root: root.to_path_buf(), base, now, pens, handed, files, queue, queue_at, settings_at }
+}
+
+fn pens_mark() -> Option<[u8; 32]> {
+    crate::reads::touch();
+    let machine = crate::home::machine_dir().ok()?;
+    std::fs::read(machine.join(zikaron_seal::pens::FILE)).ok().map(|b| zikaron::cryptox::sha256(&b))
+}
+
+fn handed_off(home: &crate::home::Home, troubles: &mut Vec<Fault>) -> Option<String> {
+    let machine = crate::home::machine_dir().ok()?;
+    if !machine.join(zikaron_seal::pens::FILE).exists() {
+        return None;
+    }
+    let root = crate::ledgerx::root_of(home).ok()?;
+    let root: [u8; 32] = zikaron::hexfmt::decode(&root).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())?;
+    match zikaron_seal::pens::may_write(&machine, &root) {
+        Ok(()) => None,
+        Err(t) if t.code == zikaron_seal::Code::HandedOff => Some(t.tail),
+        Err(t) => {
+            troubles.push(t.into());
+            None
+        }
+    }
+}
+
 fn queue_mark(home: &crate::home::Home) -> Option<[u8; 32]> {
     std::fs::read(home.dir(crate::home::Slot::Settings).join(crate::queue::FILE)).ok().map(|b| zikaron::cryptox::sha256(&b))
 }

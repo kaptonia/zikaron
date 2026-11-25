@@ -1,18 +1,8 @@
-//! Fields with their names above them: a form card (22 × 24 inside, fields 20 apart, its keys at the foot on the
-//! right) and the plain stack a sheet lays its fields in (14 apart). A field is its name (14, medium; an optional
-//! word after it, quiet), 8 below it the control as wide as the column, and under the control a line that says
-//! what is wrong (red) or what holds now.
-//!
-//! The controls fields take: the joined input (38 high, corner 10, a flat tone; an icon before the words, small
-//! keys inside its right end after a hairline), and the small input a row takes at its right (34 high, corner 9,
-//! figures to the right).
-
 use crate::icons::{self, Glyph};
 use crate::palette::{c, C};
 use crate::tokens::{self, Type};
 use egui::{pos2, vec2, Color32, Rect};
 
-/// The flat tone of a field at rest, under the pointer and pressed.
 fn tone(step: u8) -> Color32 {
     c(match step {
         0 => C::Tone,
@@ -21,9 +11,7 @@ fn tone(step: u8) -> Color32 {
     })
 }
 
-/// A form card: fields 20 apart inside 22 × 24, on the card ground.
 pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &mut Stack) -> R) -> R {
-    // Rows laid in it light within this card, by its corner.
     let id = crate::sheet::rows_corner_id();
     let was = ui.ctx().data(|d| d.get_temp::<f32>(id));
     ui.ctx().data_mut(|d| d.insert_temp(id, crate::tokens::Radius::Card.px()));
@@ -38,13 +26,11 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &mut Stack) ->
     r
 }
 
-/// A sheet's fields: 14 apart, on the sheet.
 pub fn stack<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &mut Stack) -> R) -> R {
     stack_gap(ui, 14.0, add)
 }
 
 fn stack_gap<R>(ui: &mut egui::Ui, gap: f32, add: impl FnOnce(&mut egui::Ui, &mut Stack) -> R) -> R {
-    // What rows ending in a fold noted before this stack is not this stack's ([`Stack::foot`] reads its own).
     ui.ctx().data_mut(|d| d.remove::<(f32, f32)>(crate::sheet::trailing()));
     ui.vertical(|ui| {
         ui.set_width(ui.available_width());
@@ -55,7 +41,6 @@ fn stack_gap<R>(ui: &mut egui::Ui, gap: f32, add: impl FnOnce(&mut egui::Ui, &mu
     .inner
 }
 
-/// Two columns laid in a region made here, `lw` and `rw` wide and 14 apart, as tall as the taller.
 fn side_by_side<A, B>(ui: &mut egui::Ui, gap: f32, lw: f32, rw: f32, left: impl FnOnce(&mut egui::Ui, &mut Stack) -> A, right: impl FnOnce(&mut egui::Ui, &mut Stack) -> B) -> (A, B) {
     let at = ui.cursor().min;
     let column = |ui: &mut egui::Ui, x: f32, w: f32, salt: &str| {
@@ -72,46 +57,56 @@ fn side_by_side<A, B>(ui: &mut egui::Ui, gap: f32, lw: f32, rw: f32, left: impl 
     (a, b)
 }
 
-/// The fields of a form or sheet being laid.
 pub struct Stack {
     gap: f32,
 }
 
 impl Stack {
-    /// A field: its name (with `optional`'s word after it when the field may stay empty), the control `add` draws
-    /// (given its width), and under it `line` (its words, and whether they say something is wrong). A name that
-    /// says again the title of the sheet it is in is not drawn, nor the room it takes (`sheet::echoes_title`).
     pub fn field<R>(&mut self, ui: &mut egui::Ui, label: &str, optional: Option<&str>, line: Option<(&str, bool)>, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
-            if !crate::sheet::echoes_title(ui.ctx(), label) {
-                name(ui, label, optional);
-                ui.add_space(name_gap() - 8.0);
-            }
             let w = ui.available_width();
-            let r = add(ui, w);
-            if let Some((s, bad)) = line.filter(|(s, _)| !s.is_empty()) {
-                ui.add_space(-4.0);
-                crate::paint::line(ui, s, Type::Small, if bad { c(C::BadInk) } else { c(C::Ink2) }, w);
+            let left = ui.cursor().left();
+            let at = if crate::sheet::echoes_title(ui.ctx(), label) {
+                crate::sheet::title_line(ui.ctx())
+            } else {
+                let row = Rect::from_min_size(ui.cursor().min, vec2(w, Type::Note.line()));
+                let ends = name_at(ui, label, optional);
+                ui.add_space(name_gap() - 8.0);
+                Some((row, ends))
+            };
+            let said = line.filter(|(s, _)| !s.is_empty());
+            let on_line = match (said, at) {
+                (Some((s, _)), Some((row, ends))) => crate::width::width_in(ui, s, Type::Small.font()) <= row.right() - ends - tokens::S3,
+                _ => true,
+            };
+            if let (Some((s, bad)), false) = (said, on_line) {
+                let ink = if bad { c(C::BadInk) } else { c(C::Ink2) };
+                let g = crate::paint::wrapped(ui, s, Type::Small.font(), ink, Type::Small.line(), w);
+                let (r, _) = ui.allocate_exact_size(vec2(w, g.size().y), egui::Sense::hover());
+                ui.painter().galley(r.left_top(), g, ink);
+            }
+            let top = ui.cursor().top();
+            let r = crate::input::telling(ui, line.is_some_and(|(_, bad)| bad), |ui| add(ui, w));
+            let control = Rect::from_min_max(pos2(left, top), pos2(left + w, ui.min_rect().bottom()));
+            if let (Some((s, bad)), Some((row, ends)), true) = (said, at, on_line) {
+                said_at(ui, pos2(row.right(), row.center().y), row.right() - ends - tokens::S3, s, bad, control);
             }
             r
         })
         .inner
     }
 
-    /// Two fields side by side, 14 apart (the chain id and the start block).
     pub fn pair<A, B>(&mut self, ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui, &mut Stack) -> A, right: impl FnOnce(&mut egui::Ui, &mut Stack) -> B) -> (A, B) {
         let cw = ((ui.available_width() - 14.0) / 2.0).max(0.0);
         side_by_side(ui, self.gap, cw, cw, left, right)
     }
 
-    /// Two fields side by side, 14 apart, the right one `right_w` wide (the proxy's host and port).
     pub fn pair_w<A, B>(&mut self, ui: &mut egui::Ui, right_w: f32, left: impl FnOnce(&mut egui::Ui, &mut Stack) -> A, right: impl FnOnce(&mut egui::Ui, &mut Stack) -> B) -> (A, B) {
         let lw = (ui.available_width() - 14.0 - right_w).max(0.0);
         side_by_side(ui, self.gap, lw, right_w, left, right)
     }
 
-    /// Lines under the fields (what is wrong, what holds): a mark and words each, 6 apart.
     pub fn says(&mut self, ui: &mut egui::Ui, lines: &[(crate::mark::Mark, &str)]) {
         if lines.is_empty() {
             return;
@@ -130,9 +125,6 @@ impl Stack {
         }
     }
 
-    /// The form's keys at its foot, on the right, 8 apart. Rows ending in a fold just above the keys stand off them
-    /// as a field does: the blank under the fold's words comes off the room above the keys (the rows note where they
-    /// end and that blank as they end, `card::form`; a sheet's keys take it the same way, `sheet::show`).
     pub fn foot<R>(&mut self, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         let ends = ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32)>(crate::sheet::trailing()));
         let top = ui.cursor().top();
@@ -146,24 +138,43 @@ impl Stack {
     }
 }
 
-/// From a field's name to the control under it, the one measure for every name over its control: what the
-/// credential sheet's validity row leaves between its name (centred on a key's height, the switch beside it) and
-/// the box under it.
 pub fn name_gap() -> f32 {
     (tokens::KEY_H - Type::Note.line()) / 2.0 + tokens::S2
 }
 
-/// A field's name: 14 medium, and the quiet word after it.
 pub fn name(ui: &mut egui::Ui, label: &str, optional: Option<&str>) {
+    let _ = name_at(ui, label, optional);
+}
+
+fn name_at(ui: &mut egui::Ui, label: &str, optional: Option<&str>) -> f32 {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), Type::Note.line()), egui::Sense::hover());
+    let font = egui::FontId::new(14.0, crate::fonts::medium());
+    let quiet = optional.map(|o| (o, ui.painter().layout_no_wrap(o.to_string(), Type::Small.font(), c(C::Ink3)).size().x + 8.0));
+    let left = if ui.layout().horizontal_align() == egui::Align::Center {
+        let w = ui.painter().layout_no_wrap(label.to_string(), font.clone(), c(C::Ink)).size().x + quiet.map(|(_, w)| w).unwrap_or(0.0);
+        r.center().x - w / 2.0
+    } else {
+        r.left()
+    };
     let p = ui.painter();
-    let named = p.text(pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(14.0, crate::fonts::medium()), c(C::Ink));
-    if let Some(o) = optional {
-        p.text(pos2(named.right() + 8.0, r.center().y), egui::Align2::LEFT_CENTER, o, Type::Small.font(), c(C::Ink3));
+    let named = p.text(pos2(left, r.center().y), egui::Align2::LEFT_CENTER, label, font, c(C::Ink));
+    match quiet {
+        Some((o, _)) => p.text(pos2(named.right() + 8.0, r.center().y), egui::Align2::LEFT_CENTER, o, Type::Small.font(), c(C::Ink3)).right(),
+        None => named.right(),
     }
 }
 
-/// How the joined input's words are set.
+pub(crate) fn said_at(ui: &egui::Ui, end: egui::Pos2, room: f32, s: &str, bad: bool, control: Rect) {
+    let ink = if bad { c(C::BadInk) } else { c(C::Ink2) };
+    let fit = crate::width::elide_to(ui, s, Type::Small.font(), room.max(0.0));
+    let drawn = ui.painter().text(end, egui::Align2::RIGHT_CENTER, &fit, Type::Small.font(), ink);
+    if fit != s {
+        let id = ui.id().with(("zikaron-said-at", control.min.x.to_bits(), control.min.y.to_bits()));
+        let _ = crate::layer::tip(ui.interact(drawn, id.with("words"), egui::Sense::hover()), s);
+        let _ = crate::layer::tip(ui.interact(control, id.with("control"), egui::Sense::hover()), s);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Look {
     pub mono: bool,
@@ -172,9 +183,6 @@ pub struct Look {
     pub read_only: bool,
 }
 
-/// The joined input: a 38-high tone field as wide as `w`, its words (or `hint`), an icon before them when given,
-/// and what `inner` draws at its right end after a hairline (small keys: [`inner_key`], [`inner_face`]). Focused,
-/// it turns to the surface with the accent's ring. Returns the words' response and `inner`'s answer.
 pub fn joined<R>(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Look, inner: Option<impl FnOnce(&mut egui::Ui) -> R>) -> (egui::Response, Option<R>) {
     let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
     let slot = ui.painter().add(egui::Shape::Noop);
@@ -199,33 +207,29 @@ pub fn joined<R>(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look:
     }
     let font = if look.mono { Type::MonoSmall.font() } else { egui::FontId::new(14.0, egui::FontFamily::Proportional) };
     let edit_rect = Rect::from_min_max(pos2(x + if look.icon.is_some() { 0.0 } else { 12.0 }, rect.top()), pos2(right - 8.0, rect.bottom()));
-    // Named as every field is (`input::field_id`), so it keeps its focus while what is above it comes and goes.
     let id = crate::input::field_id(ui, "zikaron-joined", hint);
-    let resp = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            crate::compose::around(ui, id, text, |ui, text| {
-                ui.add(
-                    egui::TextEdit::singleline(text)
-                        .id(id)
-                        .frame(egui::Frame::NONE)
-                        .font(font.clone())
-                        .text_color(c(C::Ink))
-                        .hint_text(egui::RichText::new(hint).font(font.clone()).color(c(C::Ink3)))
-                        .desired_width(edit_rect.width())
-                        .interactive(!look.read_only),
-                )
-            })
-        })
-        .inner;
+    let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let resp = crate::compose::around(&mut edit, id, text, |ui, text| {
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .font(font.clone())
+                .text_color(c(C::Ink))
+                .hint_text(egui::RichText::new(hint).font(font.clone()).color(c(C::Ink3)))
+                .desired_width(edit_rect.width())
+                .interactive(!look.read_only),
+        )
+    });
     let hot = resp.hovered();
     let focus = resp.has_focus();
-    // Red wins over blue, as on every field (`input::frame_shape`): a wrong value is said while it is typed.
-    let shape: egui::Shape = if focus && !look.bad {
+    let bad = look.bad || crate::input::told(ui);
+    let shape: egui::Shape = if focus && !bad {
         egui::Shape::Vec(vec![
             egui::epaint::RectShape::filled(rect.expand(3.0), egui::CornerRadius::same(13), c(C::Focus)).into(),
             egui::epaint::RectShape::new(rect, egui::CornerRadius::same(10), c(C::Surface), egui::Stroke::new(1.5_f32, c(C::Accent).gamma_multiply(0.7)), egui::StrokeKind::Inside).into(),
         ])
-    } else if look.bad {
+    } else if bad {
         egui::epaint::RectShape::new(rect, egui::CornerRadius::same(10), tone(0), egui::Stroke::new(1.5_f32, c(C::Bad)), egui::StrokeKind::Inside).into()
     } else {
         egui::epaint::RectShape::filled(rect, egui::CornerRadius::same(10), tone(if hot { 1 } else { 0 })).into()
@@ -234,9 +238,6 @@ pub fn joined<R>(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look:
     (resp, answer)
 }
 
-/// A control greyed and taking nothing while `off` (the field beside it was filled instead): drawn as it is, faint
-/// (`tokens::OFF`), in a region of its own that takes no input; as it is otherwise. The one place a field is greyed
-/// so (the cells box and the span box grey themselves the same way).
 pub fn off<R>(ui: &mut egui::Ui, off: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.scope(|ui| {
         if off {
@@ -248,17 +249,14 @@ pub fn off<R>(ui: &mut egui::Ui, off: bool, add: impl FnOnce(&mut egui::Ui) -> R
     .inner
 }
 
-/// The joined input with nothing inside its right end: returns the words' response.
 pub fn line(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, look: Look) -> egui::Response {
     joined::<()>(ui, text, hint, w, look, None::<fn(&mut egui::Ui)>).0
 }
 
-/// A small key inside a joined input: 30 high, corner 8, no face until the pointer is on it.
 pub fn inner_key(ui: &mut egui::Ui, label: &str, glyph: Option<Glyph>) -> egui::Response {
     inner(ui, label, glyph, false)
 }
 
-/// A small key inside a joined input with a key's face and edge ("change").
 pub fn inner_face(ui: &mut egui::Ui, label: &str) -> egui::Response {
     inner(ui, label, None, true)
 }
@@ -281,30 +279,25 @@ fn inner(ui: &mut egui::Ui, label: &str, glyph: Option<Glyph>, face: bool) -> eg
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The small input a row takes at its right end (an interval, a limit): `w` wide, 34 high, corner 9, a flat
-/// tone, monospace figures to the right; `hint` (quiet) when empty.
 pub fn small(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, bad: bool) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::KEY_H), egui::Sense::hover());
     let slot = ui.painter().add(egui::Shape::Noop);
     let font = Type::MonoSmall.font();
-    let inner = rect.shrink2(vec2(10.0, 0.0));
+    let inner = rect.shrink2(vec2(SMALL_PAD_X, 0.0));
     let id = crate::input::field_id(ui, "zikaron-small", hint);
-    let resp = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-            crate::compose::around(ui, id, text, |ui, text| {
-                ui.add(
-                    egui::TextEdit::singleline(text)
-                        .id(id)
-                        .frame(egui::Frame::NONE)
-                        .font(font.clone())
-                        .text_color(c(C::Ink))
-                        .horizontal_align(egui::Align::Max)
-                        .hint_text(egui::RichText::new(hint).font(Type::Small.font()).color(c(C::Ink3)))
-                        .desired_width(inner.width()),
-                )
-            })
-        })
-        .inner;
+    let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let resp = crate::compose::around(&mut edit, id, text, |ui, text| {
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .font(font.clone())
+                .text_color(c(C::Ink))
+                .hint_text(egui::RichText::new(hint).font(Type::Small.font()).color(c(C::Ink3)))
+                .desired_width(inner.width()),
+        )
+    });
+    let bad = bad || crate::input::told(ui);
     let shape: egui::Shape = if resp.has_focus() && !bad {
         egui::Shape::Vec(vec![
             egui::epaint::RectShape::filled(rect.expand(3.0), egui::CornerRadius::same(12), c(C::Focus)).into(),
@@ -319,13 +312,57 @@ pub fn small(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, bad: bool
     resp
 }
 
-/// The flat tone of a field (for a page's own wells: the words grid, the date tiles).
+pub fn small_said(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, said: Option<&str>) -> egui::Response {
+    small_told(ui, text, hint, w, said.map(|s| (s, true)))
+}
+
+pub fn small_told(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32, said: Option<(&str, bool)>) -> egui::Response {
+    let bad = said.is_some_and(|(_, bad)| bad);
+    let resp = crate::input::telling(ui, bad, |ui| small(ui, text, hint, w, false));
+    if let Some((s, bad)) = said.filter(|(s, _)| !s.is_empty()) {
+        let room = (ui.available_width() - tokens::LABEL_W).max(0.0);
+        let fit = crate::width::elide_to(ui, s, Type::Small.font(), room);
+        let wide = ui.painter().layout_no_wrap(fit, Type::Small.font(), c(C::BadInk)).size().x;
+        let _ = ui.allocate_exact_size(vec2(wide + SAID_GAP, Type::Small.line()), egui::Sense::hover());
+        said_at(ui, pos2(resp.rect.left() - SMALL_PAD_X - SAID_GAP, resp.rect.center().y), wide + 0.5, s, bad, resp.rect);
+    }
+    resp
+}
+
+const SAID_GAP: f32 = 8.0;
+
+const SMALL_PAD_X: f32 = 10.0;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedEdit {
+    pub typed: Option<String>,
+    pub landed: bool,
+}
+
+impl SavedEdit {
+    pub fn shown(&self, stored: &str) -> String {
+        self.typed.clone().unwrap_or_else(|| stored.to_string())
+    }
+
+    pub fn dirty(&self, stored: &str) -> bool {
+        self.typed.as_deref().is_some_and(|t| t.trim() != stored.trim())
+    }
+
+    pub fn edited(&mut self, now: String, stored: &str) {
+        self.typed = if now.trim() == stored.trim() { None } else { Some(now) };
+        self.landed = false;
+    }
+
+    pub fn land(&mut self) {
+        self.typed = None;
+        self.landed = true;
+    }
+}
+
 pub fn field_tone() -> Color32 {
     tone(0)
 }
 
-/// The rows under a column of fields (a form card's or a sheet's): no ground of their own, 48 high, their words
-/// level with the fields' left edge. Returns what `add` answers.
 pub fn rows<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &mut crate::card::Form) -> R) -> R {
     let flag = crate::sheet::inside_id();
     let was = crate::sheet::inside(ui.ctx());

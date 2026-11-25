@@ -1,22 +1,13 @@
-//! Where this machine keeps the pen of each ledger it has handed over or taken (`handover`, the family's handoff
-//! rules): one list in the machine directory ([`FILE`]), each ledger keyed blind as the adopted list keys it,
-//! `sha256(salt ‖ root id)` under the machine's one salt (`adopted::salt_made`), so the list names no ledger.
-//! The command line (a plain ledger folder, or a home it writes with the credential) and the desktop read it
-//! before each write ([`may_write`]); only a handoff step writes it.
-
 use crate::handover::{Pen, Pens};
 use crate::trouble::{Code, Trouble};
 use std::path::Path;
 
-/// The list's file name, in the machine directory.
 pub const FILE: &str = "handed-pens";
 
-/// The key of the ledger whose root (genesis entry) id is `root`.
 pub fn key_of(machine_dir: &Path, root: &[u8; 32]) -> Result<[u8; 32], Trouble> {
     Ok(crate::adopted::blind(&crate::adopted::salt_made(machine_dir)?, root))
 }
 
-/// The list (empty when there is none). A list out of its shape is refused by name, never read past.
 pub fn read(machine_dir: &Path) -> Result<Pens, Trouble> {
     let at = machine_dir.join(FILE);
     match std::fs::read(&at) {
@@ -26,22 +17,17 @@ pub fn read(machine_dir: &Path) -> Result<Pens, Trouble> {
     }
 }
 
-/// Write the list whole (atomic replacement).
 pub fn write(machine_dir: &Path, pens: &Pens) -> Result<(), Trouble> {
     crate::land::put_at(machine_dir, FILE, &pens.render())
 }
 
-/// The pen of the ledger whose root id is `root`, on this machine.
 pub fn pen(machine_dir: &Path, root: &[u8; 32]) -> Result<Pen, Trouble> {
-    // No list yet: no ledger was handed here, and no salt need be made to say so.
     if !machine_dir.join(FILE).exists() {
         return Ok(Pen::Holds { took: None });
     }
     Ok(read(machine_dir)?.pen(&key_of(machine_dir, root)?))
 }
 
-/// Whether the ledger whose root id is `root` may be written on this machine: refused (`HandedOff`, the handoff's
-/// id) while it is handed over.
 pub fn may_write(machine_dir: &Path, root: &[u8; 32]) -> Result<(), Trouble> {
     match crate::handover::may_write(&pen(machine_dir, root)?) {
         Ok(()) => Ok(()),

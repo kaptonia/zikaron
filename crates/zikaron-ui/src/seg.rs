@@ -1,14 +1,8 @@
-//! Segmented controls and tabs. A segmented control is a capsule of grey tone; its white thumb slides to the
-//! chosen cell like a drop (0.32 s): its leading edge gets there first and its trailing edge follows, so it
-//! stretches on the way (by six tenths of the distance, at most 56) and lands at its own size, without bouncing.
-//! The blue underline of the tabs slides to the chosen tab over 200 ms. Under reduced motion both arrive at once.
-
 use crate::motion::{self, Curve};
 use crate::palette::{c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// One segment: its words and an optional count after them (in monospace).
 #[derive(Clone, Copy, Debug)]
 pub struct Cell<'a> {
     pub text: &'a str,
@@ -31,19 +25,16 @@ fn cell_w(ui: &egui::Ui, cell: &Cell) -> f32 {
     (t + n + 28.0).max(56.0)
 }
 
-/// Paint the sliding thumb: the surface with a half-point rim and one short shadow.
 fn thumb(p: &egui::Painter, r: Rect) {
     p.add(crate::material::drop(r, Radius::Thumb.egui(), 1.0, 2.0, crate::material::ink(15.0)));
     p.rect_filled(r, Radius::Thumb.egui(), c(C::Surface));
     p.add(crate::material::rim(r, Radius::Thumb.egui(), c(C::Ring)));
 }
 
-/// A segmented control sized to its words; returns the clicked index when it differs from `current`.
 pub fn seg(ui: &mut egui::Ui, id_salt: &str, cells: &[Cell], current: usize) -> Option<usize> {
     seg_high(ui, id_salt, cells, current, tokens::SEG_H)
 }
 
-/// The small one (30 high), for tabs on a sheet's title line.
 pub fn seg_small(ui: &mut egui::Ui, id_salt: &str, cells: &[Cell], current: usize) -> Option<usize> {
     seg_high(ui, id_salt, cells, current, tokens::SEG_SM_H)
 }
@@ -59,7 +50,6 @@ fn seg_high(ui: &mut egui::Ui, id_salt: &str, cells: &[Cell], current: usize, h:
     hit
 }
 
-/// A segmented control over a given width, cells sharing it equally (the rail's seat switch).
 pub fn seg_fill(ui: &mut egui::Ui, id_salt: &str, cells: &[Cell], current: usize, height: f32) -> Option<usize> {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, height), egui::Sense::hover());
@@ -83,7 +73,6 @@ fn paint_seg(ui: &mut egui::Ui, id_salt: &str, rect: Rect, cells: &[Cell], width
     let want_l = lefts.get(cur).copied().unwrap_or(inner.left()) - rect.left();
     let want_w = widths.get(cur).copied().unwrap_or(0.0);
     let (tl, tw) = slide(ui.ctx(), id, want_l, want_w);
-    // The stretch never takes the thumb outside its track.
     thumb(&p, Rect::from_min_size(pos2(rect.left() + tl, inner.top()), vec2(tw, inner.height())).intersect(inner));
     let mut hit = None;
     for (i, cell) in cells.iter().enumerate() {
@@ -107,22 +96,16 @@ fn paint_seg(ui: &mut egui::Ui, id_salt: &str, rect: Rect, cells: &[Cell], width
             p.galley(pos2(x0 + gw + 4.0, r.center().y - h / 2.0 + 0.5), n, colour);
         }
         if on {
-            // Already chosen: nothing to press.
             crate::hand::sink(ui.ctx(), resp.id);
         }
     }
     hit
 }
 
-/// How long the thumb takes to slide, how much of the distance it stretches by, and at most how much.
 pub const SLIDE: f32 = 0.32 * crate::tokens::PACE;
 const STRETCH: f32 = 0.6;
 const STRETCH_MAX: f32 = 56.0;
 
-/// The thumb's left edge and width now, on its way to `want_l` and `want_w` (from the control's left edge). Its
-/// centre and its own width ease over [`SLIDE`], interruptibly; on the way it is wider by the stretch, most at
-/// half way and nothing at either end, laid on the side it moves toward: the leading edge runs ahead and the
-/// trailing edge catches up.
 pub fn slide(ctx: &egui::Context, id: egui::Id, want_l: f32, want_w: f32) -> (f32, f32) {
     let want_c = want_l + want_w / 2.0;
     let span_id = id.with("thumb-span");
@@ -130,7 +113,6 @@ pub fn slide(ctx: &egui::Context, id: egui::Id, want_l: f32, want_w: f32) -> (f3
     let before = ctx.data(|d| d.get_temp::<(f32, f32)>(span_id));
     let c = motion::glide(ctx, cid, want_c, SLIDE, Curve::Ease);
     let w = motion::glide(ctx, id.with("thumb-w"), want_w, SLIDE, Curve::Ease);
-    // The run's span: from where the centre stood when the target changed.
     let (span, target) = match before {
         Some((span, target)) if (target - want_c).abs() < 0.01 => (span, target),
         _ => {
@@ -142,14 +124,10 @@ pub fn slide(ctx: &egui::Context, id: egui::Id, want_l: f32, want_w: f32) -> (f3
     let p = if span > 0.5 { (1.0 - (target - c).abs() / span).clamp(0.0, 1.0) } else { 1.0 };
     let stretch = (span * STRETCH).min(STRETCH_MAX) * (std::f32::consts::PI * p).sin() * motion::travel(ctx);
     let dir = if target >= c { 1.0 } else { -1.0 };
-    // The stretch lies ahead: the left edge stays with the centre's run when moving right, and moves ahead when
-    // moving left.
     let left = c - w / 2.0 - if dir < 0.0 { stretch } else { 0.0 };
     (left, w + stretch)
 }
 
-/// Tabs: 24 apart over a one-point line, the chosen one in body ink and heavier with a two-point blue
-/// underline that slides. Returns the clicked index when it differs from `current`.
 pub fn tabs(ui: &mut egui::Ui, id_salt: &str, labels: &[&str], current: usize) -> Option<usize> {
     let id = ui.id().with(("zikaron-tabs", id_salt));
     let w = ui.available_width();
@@ -181,7 +159,6 @@ pub fn tabs(ui: &mut egui::Ui, id_salt: &str, labels: &[&str], current: usize) -
         let font = if on { font_on.clone() } else { Type::Body.font() };
         p.text(pos2(r.left() + 1.0, r.top() + 6.0 + Type::Body.line() / 2.0), egui::Align2::LEFT_CENTER, *l, font, colour);
         if on {
-            // Already chosen: nothing to press.
             crate::hand::sink(ui.ctx(), resp.id);
         }
     }

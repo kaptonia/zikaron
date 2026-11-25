@@ -1,23 +1,9 @@
-//! A node that takes its time: real nodes often answer after 300 ms to 2 s, longer than one read slice
-//! (`SLICE`). An answer that comes several slices after the question, or arrives in two parts with several
-//! slices between them, is read whole and byte for byte as sent, over plain HTTP, over TLS and through a proxy
-//! tunnel; slicing the reads only bounds how long each wait sleeps.
-//!
-//! A peer that trickles, a byte at a time and never a slice apart, is cut at the deadline wherever it trickles:
-//! a TLS answer's record, a TLS handshake flight, an HTTP CONNECT proxy's answer, a SOCKS5 proxy's reply. A
-//! SOCKS5 tunnel cut while the answer comes through it is a named stream failure, at once. The deadline is
-//! given directly (a few slices), so no test here waits on the wall clock past it.
-//!
-//! Its own test binary: it trusts a test root (`drive_trust_root`, once per process) and sets the proxy choice,
-//! both process-wide, so its tests take turns.
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use zikaron_net::{parse, post_json, set_choice, Ask, Choice, Fail, Kind, Limits, Proxy, SLICE};
 
-/// One test at a time (the proxy choice is process-wide), the test root trusted before the first handshake.
 fn turn() -> MutexGuard<'static, ()> {
     static TURN: Mutex<()> = Mutex::new(());
     static ROOT: OnceLock<bool> = OnceLock::new();
@@ -27,28 +13,23 @@ fn turn() -> MutexGuard<'static, ()> {
     held
 }
 
-/// How long the node waits before answering: three slices and a little more.
 fn pause() -> Duration {
     SLICE * 3 + Duration::from_millis(50)
 }
 
-/// A deadline far beyond the pause, so only reading can fail.
 fn limits() -> Limits {
     Limits { deadline: Duration::from_secs(20), max_answer: 0 }
 }
 
-/// The answer the node gives: a body long enough to span several reads.
 fn body() -> Vec<u8> {
     (0..40_000u32).map(|i| b"0123456789abcdef"[(i % 16) as usize]).collect()
 }
 
-/// The node's whole answer, head and body.
 fn answer() -> (Vec<u8>, Vec<u8>) {
     let b = body();
     (format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len()).into_bytes(), b)
 }
 
-/// Read one request head (the requests here have small bodies sent with it).
 fn take_request(s: &mut impl Read) {
     let mut seen = Vec::new();
     let mut buf = [0u8; 4096];
@@ -60,7 +41,6 @@ fn take_request(s: &mut impl Read) {
     }
 }
 
-/// Answer slowly on `s`: wait, then the head; when `split`, wait again before the body.
 fn answer_slowly(s: &mut impl Write, split: bool) {
     let (head, body) = answer();
     std::thread::sleep(pause());
@@ -73,7 +53,6 @@ fn answer_slowly(s: &mut impl Write, split: bool) {
     let _ = s.flush();
 }
 
-/// A plain node answering every connection slowly.
 fn slow_node(split: bool) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -89,7 +68,6 @@ fn slow_node(split: bool) -> u16 {
     port
 }
 
-/// The TLS server configuration: a certificate for `localhost` under the test root.
 fn server_config() -> Arc<rustls::ServerConfig> {
     let cert = rustls::pki_types::CertificateDer::from(include_bytes!("fixtures/tls/localhost.crt.der").to_vec());
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(include_bytes!("fixtures/tls/localhost.key.der").to_vec().into());
@@ -103,7 +81,6 @@ fn server_config() -> Arc<rustls::ServerConfig> {
     )
 }
 
-/// A TLS node answering every connection slowly.
 fn slow_tls_node(split: bool) -> u16 {
     let config = server_config();
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -124,7 +101,6 @@ fn slow_tls_node(split: bool) -> u16 {
     port
 }
 
-/// An HTTP CONNECT proxy that pipes every tunnel to local port `to`.
 fn connect_proxy(to: u16) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -155,7 +131,6 @@ fn connect_proxy(to: u16) -> u16 {
     port
 }
 
-/// Ask `url` once and return the answer's body.
 fn ask(url: &str) -> Vec<u8> {
     let t = parse(url).expect("address");
     match post_json(&t, b"{}", &limits(), Ask::Once) {
@@ -175,23 +150,17 @@ fn an_answer_slower_than_a_slice_is_read_whole() {
         assert_eq!(ask(&format!("http://127.0.0.1:{}/", slow_node(split))), body(), "plain HTTP, {form}");
         assert_eq!(ask(&format!("https://localhost:{}/", slow_tls_node(split))), body(), "TLS, {form}");
         set_choice(Choice::Manual(Proxy { kind: Kind::Http, host: "127.0.0.1".into(), port: connect_proxy(slow_node(split)), auth: None }));
-        // A name that is not this machine, so the proxy is taken (this machine is always reached straight).
         assert_eq!(ask("http://node.invalid:8545/"), body(), "through a proxy tunnel, {form}");
         set_choice(Choice::Off);
     }
 }
 
-// ───────────────────────── Trickling peers ─────────────────────────
-
-/// The deadline the trickle tests give: two slices.
 fn short() -> Limits {
     Limits { deadline: SLICE * 2, max_answer: 0 }
 }
 
-/// The gap between two trickled bytes: well inside a slice, so no read ever waits a whole slice.
 const DRIP: Duration = Duration::from_millis(10);
 
-/// Write `bytes` one at a time, [`DRIP`] apart, until done or the client goes.
 fn drip(s: &mut TcpStream, bytes: &[u8]) {
     for b in bytes {
         if s.write_all(&[*b]).and_then(|_| s.flush()).is_err() {
@@ -201,7 +170,6 @@ fn drip(s: &mut TcpStream, bytes: &[u8]) {
     }
 }
 
-/// What TLS has queued to send, taken out as bytes.
 fn queued(conn: &mut rustls::ServerConnection) -> Vec<u8> {
     let mut out = Vec::new();
     while conn.wants_write() {
@@ -212,7 +180,6 @@ fn queued(conn: &mut rustls::ServerConnection) -> Vec<u8> {
     out
 }
 
-/// A local listener serving every connection with `serve`.
 fn serving(serve: impl Fn(TcpStream) + Send + Sync + 'static) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
@@ -226,8 +193,6 @@ fn serving(serve: impl Fn(TcpStream) + Send + Sync + 'static) -> u16 {
     port
 }
 
-/// A TLS node that trickles: with `in_handshake`, its own handshake flight after the client's hello; otherwise,
-/// after a whole handshake and the request, its answer as one record. Either way it would take seconds.
 fn trickling_tls_node(in_handshake: bool) -> u16 {
     let config = server_config();
     serving(move |mut s| {
@@ -247,7 +212,6 @@ fn trickling_tls_node(in_handshake: bool) -> u16 {
         let mut tls = rustls::StreamOwned::new(conn, s);
         take_request(&mut tls);
         let rustls::StreamOwned { mut conn, mut sock } = tls;
-        // The whole answer in one write, so it is one record: nothing of it decrypts until its last byte.
         let body = [b'x'; 300];
         let mut whole = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
         whole.extend_from_slice(&body);
@@ -259,7 +223,6 @@ fn trickling_tls_node(in_handshake: bool) -> u16 {
     })
 }
 
-/// Ask `url` once under the short deadline; the result and how long it took.
 fn ask_short(url: &str) -> (Result<u16, Fail>, Duration) {
     let t = parse(url).expect("address");
     let began = Instant::now();
@@ -267,29 +230,23 @@ fn ask_short(url: &str) -> (Result<u16, Fail>, Duration) {
     (got, began.elapsed())
 }
 
-/// Ended by the deadline, and soon after it: within a slice, with room for a loaded machine; the peer's
-/// trickle would have run many seconds longer.
 fn late_at_the_deadline(form: &str, (got, took): (Result<u16, Fail>, Duration)) {
     assert_eq!(got, Err(Fail::Late(short().deadline)), "{form}: ended by the deadline");
     assert!(took < short().deadline + SLICE + Duration::from_secs(1), "{form}: at the deadline, not when the peer stops ({took:?})");
 }
 
-/// A TLS answer trickled a byte at a time: each socket read is one step, so the deadline cuts it mid-record.
 #[test]
 fn a_tls_answer_trickled_is_cut_at_the_deadline() {
     let _turn = turn();
     late_at_the_deadline("TLS answer trickled", ask_short(&format!("https://localhost:{}/", trickling_tls_node(false))));
 }
 
-/// A TLS handshake flight trickled a byte at a time: the handshake takes one socket step per turn, so the
-/// deadline cuts it mid-flight, as a deadline (not a handshake failure).
 #[test]
 fn a_tls_handshake_trickled_is_cut_at_the_deadline() {
     let _turn = turn();
     late_at_the_deadline("TLS handshake trickled", ask_short(&format!("https://localhost:{}/", trickling_tls_node(true))));
 }
 
-/// Read a CONNECT request's head (to its blank line), byte by byte.
 fn read_connect(s: &mut TcpStream) -> bool {
     let mut head = Vec::new();
     let mut one = [0u8; 1];
@@ -302,13 +259,11 @@ fn read_connect(s: &mut TcpStream) -> bool {
     true
 }
 
-/// Read a SOCKS5 greeting (version, count, one method).
 fn read_greeting(s: &mut TcpStream) -> bool {
     let mut g = [0u8; 3];
     s.read_exact(&mut g).is_ok()
 }
 
-/// Read a SOCKS5 CONNECT request by name.
 fn read_request(s: &mut TcpStream) -> bool {
     let mut head = [0u8; 5];
     if s.read_exact(&mut head).is_err() {
@@ -318,9 +273,6 @@ fn read_request(s: &mut TcpStream) -> bool {
     s.read_exact(&mut rest).is_ok()
 }
 
-/// A proxy that is slow to answer, trickling its answer a byte at a time: an HTTP CONNECT proxy's answer head,
-/// a SOCKS5 proxy's reply (its longest answer: a bound name of 255 bytes). Each is cut at the deadline, as a
-/// deadline. (A proxy silent before it answers is `proxy.rs`'s.)
 #[test]
 fn a_proxy_trickling_its_answer_is_cut_at_the_deadline() {
     let _turn = turn();
@@ -342,8 +294,6 @@ fn a_proxy_trickling_its_answer_is_cut_at_the_deadline() {
     });
     for (form, kind, port) in [("CONNECT answer trickled", Kind::Http, connect), ("SOCKS5 reply trickled", Kind::Socks5, reply)] {
         set_choice(Choice::Manual(Proxy { kind, host: "127.0.0.1".into(), port, auth: None }));
-        // A name that is not this machine, so the proxy is taken. The deadline passes on the proxy's leg: the
-        // proxy's failure, named as such.
         let (got, took) = ask_short("http://node.invalid:8545/");
         assert!(matches!(&got, Err(Fail::Proxy(s)) if s.contains("no answer within")), "{form}: ended by the deadline on the proxy's leg: {got:?}");
         assert!(took < short().deadline + SLICE + Duration::from_secs(1), "{form}: at the deadline, not when the proxy stops ({took:?})");
@@ -351,9 +301,6 @@ fn a_proxy_trickling_its_answer_is_cut_at_the_deadline() {
     set_choice(Choice::Off);
 }
 
-/// A SOCKS5 tunnel cut while the answer comes through it: the answer's head and part of its body arrive, then
-/// the proxy closes both sides. The exchange ends at once with a stream failure (the answer is not whole),
-/// never a success with half a body, never a wait for the deadline; a request sent once is not sent again.
 #[test]
 fn a_socks_tunnel_cut_mid_answer_is_a_stream_failure() {
     let _turn = turn();
@@ -376,7 +323,6 @@ fn a_socks_tunnel_cut_mid_answer_is_a_stream_failure() {
         if s.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80]).is_err() {
             return;
         }
-        // The request through, then the answer's first part back, then the tunnel cut.
         let mut buf = [0u8; 4096];
         let Ok(n) = s.read(&mut buf) else { return };
         if up.write_all(&buf[..n]).is_err() {
@@ -402,9 +348,29 @@ fn a_socks_tunnel_cut_mid_answer_is_a_stream_failure() {
     assert_eq!(*asked.lock().unwrap_or_else(|e| e.into_inner()), 1, "sent once, not again");
 }
 
-/// A peer that takes no writes: the connection (and, over TLS, the handshake) is made, then the peer reads
-/// nothing, so a request larger than the socket buffers cannot be written whole. The write is bounded by the
-/// time left, as every step is: the exchange ends at the deadline, as a deadline, over TLS and plain alike.
+#[test]
+fn a_tls_error_after_the_handshake_is_the_streams_not_the_handshakes() {
+    let _turn = turn();
+    let config = server_config();
+    let port = serving(move |s| {
+        let Ok(conn) = rustls::ServerConnection::new(config.clone()) else { return };
+        let mut tls = rustls::StreamOwned::new(conn, s);
+        take_request(&mut tls);
+        let mut record = vec![0x17, 0x03, 0x03, 0x00, 0x20];
+        record.extend_from_slice(&[0u8; 32]);
+        let _ = tls.sock.write_all(&record);
+        let _ = tls.sock.flush();
+        std::thread::sleep(Duration::from_millis(500));
+    });
+    let t = parse(&format!("https://localhost:{port}/")).expect("address");
+    for how in [Ask::Once, Ask::Read] {
+        match post_json(&t, b"{}", &limits(), how) {
+            Err(Fail::Stream(said)) => assert!(said.starts_with("TLS: "), "{how:?}: named as TLS: {said}"),
+            other => panic!("{how:?}: the stream's failure, not {:?}", other.err()),
+        }
+    }
+}
+
 #[test]
 fn a_peer_that_takes_no_writes_is_cut_at_the_deadline() {
     let _turn = turn();
@@ -417,14 +383,12 @@ fn a_peer_that_takes_no_writes_is_cut_at_the_deadline() {
                 return;
             }
         }
-        // Handshake done; read nothing more, hold the connection until the client goes.
         std::thread::sleep(Duration::from_secs(10));
     });
     let plain = serving(|s| {
         std::thread::sleep(Duration::from_secs(10));
         drop(s);
     });
-    // Far larger than any socket buffer on a loopback connection.
     let body = vec![b'x'; 64 << 20];
     for (form, url) in [("TLS", format!("https://localhost:{tls}/")), ("plain", format!("http://127.0.0.1:{plain}/"))] {
         let t = parse(&url).expect("address");

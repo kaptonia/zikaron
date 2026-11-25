@@ -84,7 +84,7 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
 name = "app"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "bip39",
  "eframe",
@@ -95,6 +95,8 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "sha2",
+ "smithay-client-toolkit 0.19.2",
+ "wayland-client",
  "wgpu",
  "winit",
  "zikaron",
@@ -3785,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "zikaron"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "k256",
  "sha2",
@@ -3794,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "zikaron-anchor"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "zikaron",
  "zikaron-net",
@@ -3802,7 +3804,7 @@ dependencies = [
 
 [[package]]
 name = "zikaron-cli"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "zikaron",
  "zikaron-anchor",
@@ -3815,10 +3817,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "zikaron-glue"
-version = "0.1.5"
+name = "zikaron-face"
+version = "0.2.0"
 dependencies = [
  "zikaron",
+]
+
+[[package]]
+name = "zikaron-glue"
+version = "0.2.0"
+dependencies = [
+ "unicode-normalization",
+ "zikaron",
+ "zikaron-anchor",
+ "zikaron-face",
  "zikaron-kit",
  "zikaron-os",
  "zikaron-store",
@@ -3826,14 +3838,14 @@ dependencies = [
 
 [[package]]
 name = "zikaron-kit"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "zikaron",
 ]
 
 [[package]]
 name = "zikaron-net"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "rquickjs",
  "rustls",
@@ -3843,15 +3855,15 @@ dependencies = [
 
 [[package]]
 name = "zikaron-os"
-version = "0.1.5"
+version = "0.2.0"
 
 [[package]]
 name = "zikaron-pack"
-version = "0.1.5"
+version = "0.2.0"
 
 [[package]]
 name = "zikaron-seal"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aes",
  "chacha20poly1305",
@@ -3870,8 +3882,9 @@ dependencies = [
 
 [[package]]
 name = "zikaron-send"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
+ "rustls",
  "zikaron",
  "zikaron-anchor",
  "zikaron-glue",
@@ -3882,14 +3895,14 @@ dependencies = [
 
 [[package]]
 name = "zikaron-store"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "zikaron-os",
 ]
 
 [[package]]
 name = "zikaron-ui"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "egui",
  "zikaron-os",

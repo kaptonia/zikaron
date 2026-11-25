@@ -1,11 +1,3 @@
-//! Every window click and every test-hook command goes through here.
-//!
-//! Actions are one closed enum applied by one function, so tests (through the test hooks) and people (through
-//! the window) run the same code.
-//!
-//! `verb()` names the command-line verb a legal action is equivalent to (`CLI-SCHEMA.md` §6). Tests check that
-//! every action with `is_legal()` true has a `verb()`, and that every named verb is in the table.
-
 use crate::feature::Feature;
 use crate::key::Address;
 use crate::keystore::Params;
@@ -13,18 +5,13 @@ use crate::shell::{Page, Shell};
 use crate::task::{Done, Kind, Reaped, Spawned};
 use crate::trace;
 
-/// The three forms of identity import. `Debug` prints no secrets: words, private keys and passwords never reach
-/// a log line.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ImportForm {
     Words(crate::secret::Secret),
-    /// A bare private key, plus the key file it is written as in the same pass (`keyfile`). Required when the
-    /// import creates the primary identity: without a key file the primary cannot recover a forgotten passcode.
     PrivateKey { key: crate::secret::Secret, keyfile: Option<KeyFileOut> },
     Keystore { path: String, password: crate::secret::Secret },
 }
 
-/// A key file to write: its password twice and the output folder (the "export key file" fields).
 #[derive(Clone, PartialEq, Eq)]
 pub struct KeyFileOut {
     pub password: crate::secret::Secret,
@@ -42,18 +29,14 @@ impl std::fmt::Debug for ImportForm {
     }
 }
 
-/// Declares `Action` as written and lists each variant's name in declaration order in [`Action::NAMES`], so the
-/// variant count is known at compile time and the name list is never copied by hand.
 macro_rules! closed_actions {
     ($(#[$em:meta])* pub enum $closed:ident { $( $(#[$m:meta])* $name:ident $( ( $($tup:tt)* ) )? $( { $($body:tt)* } )? ),* $(,)? }) => {
         $(#[$em])*
         pub enum $closed { $( $(#[$m])* $name $( ( $($tup)* ) )? $( { $($body)* } )? ),* }
 
         impl $closed {
-            /// Each member's name, in declaration order.
             pub const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
 
-            /// This member's name (the same spelling as in [`Self::NAMES`]).
             pub fn name(&self) -> &'static str {
                 match self {
                     $( $closed::$name { .. } => stringify!($name), )*
@@ -63,400 +46,178 @@ macro_rules! closed_actions {
     };
 }
 
+pub fn recount_audit(shell: &mut Shell) -> bool {
+    audit::recount(shell)
+}
+
 closed_actions! {
-/// What the shell can do. Closed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
-    // ── Shell ──
-    /// Go to a page.
     Show(Page),
-    /// Run a self-check (background).
     SelfCheck,
-    /// Measure the home once (background): walk the disk and read the ledger. The UI thread never touches the
-    /// disk.
     Measure,
-    /// Shut down: reap every background task.
     Quit,
-    // ── Identity and keys ──
-    /// Switch seat. An existing-key identity switches view only (key and home unchanged); a recovery-word
-    /// identity switches derived key and that seat's home.
     SwitchRole,
-    // Identities.
-    /// Read the identities on this machine once (the registry; without one, the existing slot).
     ReadIdentities,
-    /// Generate twelve new words (in memory only, until the person confirms the copy).
     NewIdentity,
-    /// Confirm the copy: three randomly chosen words typed back; a match creates the identity. `label` is an
-    /// optional note (for recognition only; no decision reads it). `network` is the network the identity
-    /// chooses (a row name from the known deployments table, or `deploy::CUSTOM`): both its seats' homes take it.
     ConfirmIdentity { answers: Vec<(usize, crate::secret::Secret)>, label: String, network: String },
-    /// Abandon: wipe the words in memory.
     DropFresh,
-    /// Import an identity (recovery words, private key, or keystore file plus password). `seat` is the seat
-    /// an existing key takes (only that one; the other stays empty); recovery words take both seats, and
-    /// there `seat` only reads the current identity table. `label` is an optional note; `network` as with
-    /// [`Action::ConfirmIdentity`] (an identity imported again keeps the network it had).
     ImportIdentity { form: ImportForm, seat: crate::roles::Role, label: String, network: String },
-    /// Switch to another identity (landing on its author seat).
     SwitchIdentity { id: String },
-    /// Delete an identity: only the key slots and the registry row; neither seat's home is deleted. Asks for
-    /// the local passcode first.
     DeleteIdentity { id: String, pin: crate::secret::Secret },
-    /// Name an identity. No decision reads the name.
     NameIdentity { id: String, label: String },
-    /// Set the passcode for the first time (a wizard step; refused when the vault already has one).
     SetPin { pin: crate::secret::Secret, again: crate::secret::Secret },
-    /// Unlock: a correct passcode loads the master key into memory; a wrong one increments the failure count
-    /// on disk.
     Unlock { pin: crate::secret::Secret },
-    /// Reseal at the floor: when the vault file records key-derivation parameters below this binary's floor,
-    /// unlocking is refused by name and the person comes here: open with the recorded parameters, then write
-    /// the floor back and reseal the passcode seal at the floor.
     Reseal { pin: crate::secret::Secret },
-    /// Delete an empty vault entirely: only for a vault with a passcode set and no identity built yet. Any
-    /// slot or recovery seal present is refused by name (`keybox::reset_empty`) and the file is unchanged.
     ResetEmptyKeybox,
-    /// Only over a key store that cannot be read: set the whole machine directory aside (`home::set_machine_aside`)
-    /// and start over in the first-run wizard. Over a store that reads, refused by name.
     SetMachineAside,
-    /// Lock: the master key is wiped at once and key-using actions are refused from then on.
     Lock,
-    /// Change the passcode: the old one first, then the same master key is resealed under the new one.
     ChangePin { old: crate::secret::Secret, pin: crate::secret::Secret, again: crate::secret::Secret },
-    /// Recover with words: reopen the master key, set a new passcode, reset the failure count.
     RecoverWords { words: crate::secret::Secret, pin: crate::secret::Secret, again: crate::secret::Secret },
-    /// Recover with a key file (existing-key identities only): the keystore V3 file and its password.
     RecoverKeystore { path: String, password: crate::secret::Secret, pin: crate::secret::Secret, again: crate::secret::Secret },
-    /// Show the current identity's twelve words. Asks for the passcode.
     RevealWords { pin: crate::secret::Secret },
-    /// Hide the twelve words (the copy in memory is cleared).
     HideWords,
-    /// Back up this seat's key as a keystore V3 file (password set by the person, `UTC--` naming). Asks for
-    /// the local passcode first.
     BackupKey { pin: crate::secret::Secret, password: crate::secret::Secret, again: crate::secret::Secret, dir: String },
-    /// Turn idle locking on or off and choose how long idle before it locks (machine-wide, `machine.json`).
-    /// Only the five closed values; changing takes effect at once, nothing to save.
     SetAutoLock { on: bool, secs: u64 },
-    /// Make this identity the primary one (the only one that can recover the passcode). The passcode opens the
-    /// vault first; then a new master key is made and every key and local file is resealed (background,
-    /// `rekey::set_primary`).
     SetPrimary { id: String, pin: crate::secret::Secret },
-    // ── Whole-machine backup ──
-    /// Write a whole-machine backup into a folder, sealed with a backup password (at least eight characters,
-    /// typed twice). The passcode opens the vault first.
     ExportBackup { pin: crate::secret::Secret, password: crate::secret::Secret, again: crate::secret::Secret, dir: String },
-    /// Open a backup with its password and say what it holds (nothing here changes; works locked).
     PeekBackup { path: String, password: crate::secret::Secret },
-    /// Replace this machine's identities and local data with a backup's (three entries, `RestoreHow`).
     RestoreBackup { path: String, password: crate::secret::Secret, how: RestoreHow },
-    // ── Background work that reads local data (queue, self-audit, sentinel) ──
-    /// Resume waiting for a submitted anchor's receipt (never resending).
     Resume,
-    /// Right after unlocking, catch up once on what was missed while locked (the self-audit, the vault review
-    /// and its sentinel, the receipt wait); the notices they raise fire once.
     CatchUp,
-    /// The wizard's network step: the network of the identity the wizard created (a row name from the known
-    /// deployments table, or `deploy::CUSTOM`). Recorded as the current identity's network and as this
-    /// machine's last choice (preselected next time); the current home takes the row, or with "custom" is left
-    /// without a network, unless its network was configured by hand.
     ChooseNetwork { name: String },
-    // ── Archive and single writer ──
-    /// Open a home (creating it if missing) and take the writer lock.
     OpenHome { root: String },
-    /// "Change data folder": open the folder the person chose, only when it is a home or empty (anything else
-    /// refused by name, nothing written).
     ChangeHome { root: String },
-    /// Move the home to another path.
     MigrateHome { to: String },
-    /// Change the size cap.
     SetCap { bytes: u64 },
-    // ── Mirror and restore ──
-    /// Write a mirror bundle.
     ExportMirror { to: String },
-    /// Reconcile once (background): assemble the audit input for the core. Only COMPLETE releases the pen.
     Reconcile,
-    /// Check everything again: drop this machine's record of chain facts already checked (`checkedx`), so the
-    /// next scan asks about every log.
     RecheckAll,
-    /// Read the chain once (background): balance and two read-only calls.
     ReadChain,
-    /// Read the chain's time once (background): the latest block's, for a new grant's start. Needs no key and
-    /// reads no balance.
     ReadChainTime,
-    /// Set chain endpoints (`<chain>=<url>`, several allowed).
     SetEndpoints { specs: String },
-    // ── First run and adoption ──
-    /// Write genesis. A legal action (verb `init`).
+    SetLogAsks { n: u64 },
     Genesis { statement: String },
-    /// Adopt an existing ledger directory, or a ledger mirror, in place (a home that already has a root takes only
-    /// that same ledger).
     Adopt { dir: String },
-    // Ledger view.
-    /// Read the ledger table once (background): walk the ledger directory and read bytes into rows.
     ReadLedger,
-    /// Open an entry's details: canonical bytes read from disk now.
     OpenEntry { id: String },
-    /// Write an annotation. A legal action (verb `annotate`).
     Annotate { subject: String, note_md: String },
-    /// Delete a work record: write a `retraction` entry by the local reading convention (`retractx`). A legal
-    /// action. The verb table has no equivalent row, so `verb()` returns `None`.
     Retract { subject: String, note_md: String },
-    // Self-audit.
-    /// Run a self-audit (background): scan the chain, assemble the input, the core writes the report.
     Audit,
-    /// Record the three basis fields (chain, registry, start block).
     SetBasis { chain: String, registry: String, from_block: String },
-    /// Change the self-audit period.
+    MoveChain { chain: String, registry: String, from_block: String, nodes: String },
     SetAuditEvery { secs: u64 },
-    /// The auto-anchor setting (per home, off by default).
     SetAutoAnchor { on: bool },
-    /// Whether the records and ledger pages leave out what a deletion leaves on this machine only (per home,
-    /// off by default; display only).
     SetHideLocalDeletions { on: bool },
-    // Anchoring desk.
-    /// Take a content hash (one of three entry points).
     TakeContent { source: crate::anchorx::Source, path: String },
-    /// Write history entries. A legal action (verb `history`). With `files` empty, one entry for the content
-    /// at hand; otherwise a batch: one entry per file, signed one by one, stopping at the first failure
-    /// (signed entries stay). `for_` is the optional "recorded for" field, written into each body as given
-    /// (the app never reads it back).
     RecordWork { note_md: String, files: Vec<String>, for_: Option<crate::anchorx::For> },
-    /// Register a git repository.
     RegisterRepo { path: String },
-    // Kit index.
-    /// Set a kit's `link` by hand (empty returns to the default: publication base plus kit path). Kits are
-    /// identified by their index row's path.
     SetKitLink { path: String, link: String },
-    /// Delete a kit's local copy (its index row; the directory only when it holds exactly this kit; the
-    /// ledger is untouched). Kits are identified by path.
     DropKitCopy { path: String },
-    /// Compute the registered repository's passive indicator. Once per page open, no resident polling.
     CheckRepo,
-    /// A dropped path: file, directory or git repository, decided by reading the disk now.
     TakeDropped { path: String },
-    // Anchor queue.
-    /// Estimate gas for this batch. Shown before sending: without this reading, sending is not allowed.
     EstimateGas { count: usize },
-    /// Send this batch of anchors. A legal action (verb `anchor`).
     SendBatch { count: usize },
-    /// Resend a stuck batch with higher fees at the same nonce: `tx` is the batch's last transaction and `cap`
-    /// the fee cap its card showed (`Shell::stuck`, read when the last receipt wait ended); the resend goes out
-    /// at exactly the fees shown, or not at all. A legal action (verb `anchor`: the same anchoring at a higher
-    /// price). Only a person's press sends it; nothing resends automatically.
     BumpFee { tx: String, cap: u64 },
-    // Disclosure kits.
-    /// Pick once: range and record hash fields (disk walked in the background).
     PickKit { from: String, to: String, ids: String },
-    /// Write a kit (background): pick, attach, hand to the kit output crate to lay out and self-verify; lands
-    /// only on KIT_OK. `recipient` (an address) or `recipient_key` (a public key), at most one: the one-file package
-    /// is sealed to that key (`addressedx`), the address's key found on chain first; both empty, it is not sealed.
-    /// `originals`: its word, judged by the action layer: none, the chosen records' originals are attached too, those
-    /// the export page lists for the choice (`kitx::originals`), as the command line asks through this desktop;
-    /// `none`, only `attach` (the page itself lists them there); any other word is refused by name.
-    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String, form: String, recipient: String, recipient_key: String, originals: String },
-    /// Digest attachments first: each path dropped on the export page is digested in the background in
-    /// content form.
+    ExportKit { from: String, to: String, ids: String, attach: String, note: String, out: String, form: String, recipient: String, recipient_key: String, originals: String, companion: bool },
     VetAttachments { paths: Vec<String> },
-    // Depth.
-    /// Read depth once (background): the audit input from the core, the three measures from the kit core.
-    ReadDepth { work: String },
-    // Grant drafting.
-    /// Draft a grant. A legal action (verb `grant`). `exclusive` and `terms_file` are recorded once at
-    /// signing (`termsx`, local bookkeeping); no action changes them afterwards.
+    Peek { ask: crate::peekx::Ask },
     DraftGrant { draft: Box<crate::grantx::Draft>, exclusive: bool, terms_file: Option<String> },
-    /// Queue an entry that is in the ledger but not in the queue. Writing an entry normally queues it, but
-    /// entries whose queueing failed (or older ledgers' genesis) are not; this gives them a way onto the chain.
     QueueEntry { id: String },
-    // Grant ledger.
-    /// Read the grant table once (background).
     ReadGrants,
-    /// Run the overlap check (guard against selling the same work twice).
     CheckClash { work: String, from: String, to: String },
-    // Revocation.
-    /// Assemble a revocation. A legal action (verb `revoke`).
     Revoke { grant: String, case: String },
-    /// Read a grant's three-part story.
+    MigrateGrants,
     ReadStory { grant: String },
-    // Adoption.
-    /// Check each entered anchor (background chain queries).
-    VerifyAnchors { rows: String },
-    /// Verify a cosignature (local): only then may its two fields go into the body.
-    Cosign { rows: String, attestor: String, attestation: String },
-    /// Assemble an adoption. A legal action (verb `adopt`).
-    AdoptAnchors { rows: String, attestor: String, attestation: String },
-    /// List the anchors a key sent (background). With `address` empty, this key: read the fragment the
-    /// opening audit already fetched and list those outside the ledger. With an address, scan the chain for
-    /// that key's anchors (the same reading as others' ledgers). Each row is verified on chain and its state
-    /// returned.
-    ListKeyAnchors { address: String },
-    /// Read a claim someone sent (the attesting side): who claims, which anchors, their ledger head; with a
-    /// network configured, ask each anchor's block in the background.
-    ReadClaim { text: String },
-    /// Attest for someone: pass the local passcode, sign the claim text's preimage with this seat's key (the
-    /// adoption signing domain), and return the signature.
-    AttestFor { text: String, pin: crate::secret::Secret },
-    // Succession.
-    /// Scan the new key once (background): anchors it already sent are flagged.
-    LookAtKey { to: String },
-    /// Assemble a succession. A legal action (verb `succeed`).
-    Succeed { to: String, kind: String, effective: String, statement_md: String },
-    // Others' ledgers.
-    /// Read someone else's ledger (background).
+    Upgrade,
+    UpgradeCost,
+    Rotate { step: RotateStep },
     ReadBook { address: String, dir: String },
-    /// Address book: remember or forget an address (local only).
     RememberAddress { address: String },
     ForgetAddress { address: String },
-    // Due diligence.
-    /// Run due diligence (background): scan anchors, have the core give the label and three measures, read
-    /// the grant and succession history, check for a double sale.
     Diligence { address: String, dir: String, work: String, from: String, to: String },
-    /// Save the last due-diligence panels as a snapshot (no evidential weight).
     SaveSnapshot { to: String },
-    // Record verification.
-    /// Verify a record (background): kit verification (kit core), anchor review (anchoring crate and core),
-    /// depth reading (kit core). `then_to`: the folder the originals go to once the verification lands (the command
-    /// line's `kit-verify --originals-to` through the door, which takes them out by `ExtractOriginals` as the page's
-    /// key does); empty from the page, whose key opens the sheet instead.
     VerifyWork { path: String, work: String, then_to: String },
-    /// Take the originals out of a record package verified here (background): the package read again and judged,
-    /// its matching originals placed in `to` all or nothing (`zikaron_glue::extract`).
     ExtractOriginals { kit: String, to: String },
-    // Delivery check.
-    /// Delivery check (background): read the delivered bytes and compare their sha256 with the recorded hash.
+    CleanExports { yes: String },
     CheckDelivery { path: String, expect: String },
-    // Grant check.
-    /// Check a grant (background): a payload or document file, ledger directories per hop, endpoints and
-    /// basis filled in on the page (no settings written), now injected or read from the chain; six checks and
-    /// chain check by the kit core. `file` and `terms` are optional: the granted work and terms files,
-    /// compared by the delivery check in the same pass.
     CheckPayload { typed: String, ledgers: String, endpoints: String, registry: String, from_block: String, now: String, file: String, terms: String },
-    // Grant vault.
-    /// Import a grant document (file or payload): the kit core decodes the payload, the core accepts it, it
-    /// goes into the vault.
+    AuditCheck,
+    AuditOthers,
     ImportGrant { typed: String },
-    /// Import a folder of grants (grantee settings, data): each file goes through the import path.
     ImportGrantDir { dir: String },
-    /// Record where a held grant's upstream bytes are (local bookkeeping).
     SetUpstream { grant: String, dir: String },
-    /// Name a held grant and its issuer for this machine only (local bookkeeping, sealed with the settings).
-    /// An empty name leaves that name as it was.
     NoteHeld { grant: String, note: String, issuer_note: String },
-    /// Review the whole vault (background): six checks per grant by the kit core, upstream label by the core,
-    /// countdowns by chain time only.
     ReviewVault,
-    // Vault listing.
-    /// List the vault (background): walk grants-held.
     ListHeld,
-    /// Change the periodic review (sentinel scan) interval.
     SetReviewEvery { secs: String },
-    /// Change the language and save it in settings.
     SetLang { lang: crate::lang::Lang },
-    /// Choose the time zone moments are shown in, and keep it in settings.
     SetZone { zone: crate::when::Zone },
-    /// How the window looks on this machine (light, dark, or following the system); written to machine
-    /// settings, since it belongs to the machine and not to a home.
     SetAppearance { appearance: String },
-    // Badges.
-    /// Write a badge (background): cascade from a held grant to its root, encode and self-verify with the kit
-    /// core, QR code, land.
     ExportBadge { grant: String, out: String },
-    /// The grant code of a grant, whole: its chain cascaded to the root and encoded (the code the copy key puts
-    /// on the clipboard; the badge and the grant file encode the same chain the same way). It does not pass the
-    /// exit gate: the code says only what the grant's own entries say.
     CopyGrantCode { grant: String },
-    // Grant files and publication.
-    /// Write a grant file (single-file container): chain, terms documents, grant code, publication pointer,
-    /// issuer's ledger; lands where the person chose.
-    ExportGrantFile { id: String, to: String },
-    /// Set the publication address (`https://` only); empty clears it.
+    ExportGrantFile { id: String, to: String, original: String, seal_to: String, key: Option<String> },
     SetPublish { url: String },
-    /// Check publication (background): fetch each file of the local kit back and compare.
     CheckPublished { local: String },
-    // Restored identities.
-    /// Fetch this identity's full ledger from a whole-machine backup (`from`, opened with `password`), land it
-    /// in this home, and scan the chain to check the tail.
     FetchLedger { from: String, password: crate::secret::Secret },
-    /// When fetching found the fetched ledger and this one in conflict (same position, different contents) and
-    /// the person accepted: this seat's home is set aside whole (kept and readable, never written to or
-    /// exported), and a fresh home in its place receives the fetched ledger. `from` and `password` as for
-    /// `FetchLedger`.
     FetchAside { from: String, password: crate::secret::Secret },
-    /// Check the tail of this identity's seats against the chain, whatever their ledgers came from: each seat
-    /// home holding the not-fetched mark is checked (`exitgate::tail`), and a passing one opens for
-    /// writing. The app starts it itself when it is due (`Shell::tail_due`).
     CheckTail,
-    /// Open old data (a home set aside after a conflict) to read it; the current home is remembered for
-    /// returning. The machine pointer does not move.
     ViewOldData { root: String },
-    /// Leave old data for the home open before it.
     LeaveOldData,
-    /// Write the open home from this machine: its writer mark named another machine, so this one opened it
-    /// read-only (`lock::Mode::OtherMachine`); the mark is rewritten to this machine and this instance writes.
     TakeWriter,
-    // Read-only networks (machine-wide, every identity's).
-    /// Add a read-only network (`was` empty) or change the one `was` names (chain id, registry), from the fields
-    /// a person typed. Only written to the machine directory's table; no chain is contacted.
     SaveReadNetwork { was: Option<(u64, String)>, name: String, chain: String, registry: String, from_block: String, nodes: String },
-    /// Remove a read-only network (chain id, registry).
     RemoveReadNetwork { chain: u64, registry: String },
-    /// Read one read-only network once (background): its nodes, and the code at its registry against the
-    /// pinned build.
     ReadReadNetwork { chain: u64, registry: String },
-    /// "Enable command line": read what is currently at the command line's location on the terminal's command
-    /// path (the settings row shows it each time it is shown).
     ReadCliPath,
-    /// "Enable command line": put the command line that ships beside the app on the terminal's command path
-    /// (`on`), or take off what this switch put there (background: the system may ask for an administrator in its
-    /// own dialog). Something else at that place is refused by name and never touched.
     SetCliPath { on: bool },
-    /// Choose how the command line's `anchor` is handled when it goes through the desktop app (machine-wide,
-    /// `machine.json`): sent as the send button would, or left in the queue for the user. Takes effect at once.
     SetCliAnchor { to: crate::machine::CliAnchor },
-    /// "Command line writes through the desktop" (machine-wide, sealed machine settings): whether the desktop
-    /// accepts command-line requests while unlocked. Refused by name while writing alone is on (`CLI_ALONE_ON`):
-    /// that switch outranks this one, so only one command-line path exists at any time.
     SetCliDesktop { on: bool },
-    /// "Command line writes alone", on: after the passcode (the gate), issue the command line's credential
-    /// lasting `lasts` (`zikaron_seal::credential`) and record the switch; the desktop stops accepting
-    /// command-line requests.
     SetCliAlone { lasts: crate::machine::Lasts, pin: crate::secret::Secret },
-    /// "Command line writes alone", off: remove the credential and record the switch.
     CliAloneOff,
-    /// The command line asked the desktop app to send the queue while sending is left to the user
-    /// (`CliAnchor::Queue`): nothing is sent; the request is reported and the `count` entries wait in the queue
-    /// for the user to send from the queue page. With nothing queued (either setting) it is refused like the
-    /// send button's batch (`QUEUE_EMPTY`).
     SendAsked { count: usize },
-    /// Choose how this machine's connections to nodes go out (machine-wide): `system` (follow the system's
-    /// proxy settings), `none`, or one proxy address (`http://host:port`, `socks5://host:port`). Taken by the
-    /// next new connection; a malformed address is refused by name and nothing is written.
     SetProxy { choice: String },
+    SetRestMode { on: bool },
+    AddRest { base: String, key: crate::secret::Secret },
+    RemoveRest { base: String },
+    FaceReread,
+    FaceHome { chain: u64 },
+    FaceAccount { platform: String, handle: String, note: String },
+    FaceKey { address: String, role: String, note: String, consent: String, sign_here: bool, pin: crate::secret::Secret },
+    FaceName { name: String },
+    FaceRelease { subject: String },
+    FaceReseat { entry: String },
+    FaceConsent { identity: String, role: String, pin: crate::secret::Secret },
+    CliPassAdd { note: String, pin: crate::secret::Secret },
+    CliPassDrop { tag: String },
+    FaceBooks,
+    FaceReroot { to: String },
+    FaceOrigin { from: String },
+    FaceRerootMake { answers: Vec<(usize, crate::secret::Secret)>, label: String, chain: u64 },
+    FaceRerootFee { go: bool },
+    FaceJoined { root: String, to: String },
 }
 
 }
 
-/// Where a restore from a backup is started. A closed set of three.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RestoreHow {
-    /// First run, the identity step: the passcode was just set.
     FirstRun,
-    /// Settings: the passcode opens the vault first (the same failure count).
     Settings { pin: crate::secret::Secret },
-    /// The locked card: a new passcode, typed twice.
     Locked { pin: crate::secret::Secret, again: crate::secret::Secret },
 }
 
 impl Action {
-    /// Wipe the passcode field (once it has opened the vault, the action body no longer needs it).
     pub fn forget_pin(&mut self) {
         match self {
             Action::BackupKey { pin, .. }
             | Action::DeleteIdentity { pin, .. }
             | Action::RevealWords { pin }
-            | Action::AttestFor { pin, .. }
             | Action::ExportBackup { pin, .. }
-            | Action::SetCliAlone { pin, .. } => pin.clear(),
-            // The gate's own fields ([`Action::gate_pin`]), all of them.
+            | Action::SetCliAlone { pin, .. }
+            | Action::FaceKey { pin, .. }
+            | Action::FaceConsent { pin, .. }
+            | Action::CliPassAdd { pin, .. } => pin.clear(),
             Action::SetPin { pin, again } | Action::RecoverWords { pin, again, .. } | Action::RecoverKeystore { pin, again, .. } => {
                 pin.clear();
                 again.clear();
@@ -475,13 +236,6 @@ impl Action {
         }
     }
 
-    /// The passcode a gate action hands to its own background task, for actions where [`Action::pin_asked`] is
-    /// `None` because the action is the gate itself: setting the passcode (the new one), unlocking (the one
-    /// typed), resealing, changing (the old one, which opens before the new is set), the two recoveries (the new
-    /// one), and actions that open the vault inside their own task (making another identity primary, restoring
-    /// a backup from settings or the lock card). Together with [`Action::pin_asked`] this is closed: every
-    /// action carrying a passcode answers one of the two. Each moves its fields into its task and keeps no
-    /// copy; [`Action::forget_pin`] wipes them in place.
     pub fn gate_pin(&self) -> Option<&crate::secret::Secret> {
         match self {
             Action::SetPin { pin, .. }
@@ -496,19 +250,16 @@ impl Action {
         }
     }
 
-    /// Moves the passcode this action carries out to the task that derives with it, leaving the action's field
-    /// empty so no second copy stays in memory. Gated actions ([`Action::pin_asked`]) hand it over in
-    /// [`apply`]; the gate's own actions ([`Action::gate_pin`]) move it out when destructured. `None` when the
-    /// action carries no passcode or has already handed it over. A passcode never handed over is zeroed when the
-    /// action is dropped (`Secret`'s drop), whether on a lock, a quit or a refusal.
     pub fn hand_pin(&mut self) -> Option<crate::secret::Secret> {
         let cell = match self {
             Action::BackupKey { pin, .. }
             | Action::DeleteIdentity { pin, .. }
             | Action::RevealWords { pin }
-            | Action::AttestFor { pin, .. }
             | Action::ExportBackup { pin, .. }
             | Action::SetCliAlone { pin, .. }
+            | Action::FaceKey { pin, .. }
+            | Action::FaceConsent { pin, .. }
+            | Action::CliPassAdd { pin, .. }
             | Action::SetPin { pin, .. }
             | Action::Unlock { pin }
             | Action::Reseal { pin }
@@ -525,29 +276,17 @@ impl Action {
         Some(std::mem::take(cell))
     }
 
-    /// Which actions ask for the local passcode (exporting a key file, deleting an identity, showing the
-    /// words).
-    ///
-    /// "Using a key passes the passcode gate" is enforced by this table and the single check in [`apply`]. The
-    /// passcode has one gate ([`crate::keybox::unlock`]); a second would be another way around it with another
-    /// failure count. Export and delete share the gate, and five failures lock the same vault. A new
-    /// passcode-protected action adds a row here and nothing else.
-    ///
-    /// The gate's own actions (set, unlock, change, the two recoveries) are not in the table: they are the
-    /// gate, each with its own rules. Tests check that every action with a `pin` field is either here or in
-    /// the list below.
     pub fn pin_asked(&self) -> Option<&crate::secret::Secret> {
         match self {
             Action::BackupKey { pin, .. }
             | Action::DeleteIdentity { pin, .. }
             | Action::RevealWords { pin }
-            | Action::AttestFor { pin, .. }
             | Action::ExportBackup { pin, .. }
-            | Action::SetCliAlone { pin, .. } => Some(pin),
-            // Making another identity primary and restoring from settings seal the new vault with the passcode
-            // itself, so each opens the vault with it inside its own task (the same gate and failure count).
+            | Action::SetCliAlone { pin, .. }
+            | Action::FaceConsent { pin, .. }
+            | Action::CliPassAdd { pin, .. } => Some(pin),
+            Action::FaceKey { pin, address, consent, sign_here: true, .. } if consent.trim().is_empty() && !address.trim().starts_with(zikaron_glue::face::CONSENT_PREFIX) => Some(pin),
             Action::SetPrimary { .. } | Action::RestoreBackup { .. } => None,
-            // The gate's own actions do not pass the gate.
             Action::SetPin { .. }
             | Action::Unlock { .. }
             | Action::Reseal { .. }
@@ -558,33 +297,19 @@ impl Action {
         }
     }
 
-    /// Whether an action uses a key. When locked, all such actions are refused ("locked").
-    ///
-    /// Closed: each new action must be answered here. Key-using actions are refused at the entry of [`apply`]
-    /// before touching the disk; [`crate::keybox::get`] is the second barrier, so no path can forget to ask
-    /// about the lock.
-    ///
-    /// Local data is sealed under a key derived from the vault's master key, so while locked nothing local can
-    /// be read either: the background work that reads it is refused by its own table
-    /// ([`Action::halts_when_locked`]), and every other local read is refused by the local data layer
-    /// (`local::read`).
     pub fn needs_key(&self) -> bool {
         match self {
-            // Writing entries, anchoring, signing, cosigning, handing over: each needs this seat's key.
             Action::Genesis { .. }
             | Action::RecordWork { .. }
             | Action::Annotate { .. }
             | Action::Retract { .. }
             | Action::DraftGrant { .. }
             | Action::Revoke { .. }
+            | Action::MigrateGrants
             | Action::SendBatch { .. }
             | Action::BumpFee { .. }
-            | Action::AdoptAnchors { .. }
-            | Action::Cosign { .. }
-            | Action::Succeed { .. }
-            | Action::AttestFor { .. }
-            // The key actions themselves: build an identity, import, delete an identity, back up to a file, show
-            // the words.
+            | Action::Upgrade
+            | Action::Rotate { step: RotateStep::Begin { .. } | RotateStep::Hand { .. } | RotateStep::Declare { .. } | RotateStep::Withdraw { .. } | RotateStep::Write | RotateStep::Accede { .. } | RotateStep::Sweep { .. } | RotateStep::Leave { .. } | RotateStep::Cancel | RotateStep::Enroll { .. } }
             | Action::SetPrimary { .. }
             | Action::ExportBackup { .. }
             | Action::RestoreBackup { how: RestoreHow::FirstRun | RestoreHow::Settings { .. }, .. }
@@ -592,15 +317,25 @@ impl Action {
             | Action::ImportIdentity { .. }
             | Action::DeleteIdentity { .. }
             | Action::BackupKey { .. }
-            // The command line's switches are sealed machine settings, and writing alone hands out the master key
-            // sealed in a credential.
             | Action::SetCliDesktop { .. }
             | Action::SetCliAlone { .. }
-            | Action::CliAloneOff => true,
-            // Showing the words is not in this table: its passcode is the unlock question itself (the
-            // `pin_asked` gate), so a locked machine can still show the words once.
+            | Action::CliAloneOff
+            | Action::AddRest { .. }
+            | Action::FaceHome { .. }
+            | Action::FaceAccount { .. }
+            | Action::FaceKey { .. }
+            | Action::FaceName { .. }
+            | Action::FaceRelease { .. }
+            | Action::FaceReseat { .. }
+            | Action::FaceConsent { .. }
+            | Action::FaceReroot { .. }
+            | Action::FaceOrigin { .. }
+            | Action::FaceRerootMake { .. }
+            | Action::FaceRerootFee { go: true }
+            | Action::CliPassAdd { .. }
+            | Action::CliPassDrop { .. } => true,
             Action::RevealWords { .. } => false,
-            // Naming only changes a registry field no decision reads; no key is touched.
+            Action::Rotate { step: RotateStep::Look | RotateStep::Vet { .. } | RotateStep::SweepTo { .. } } | Action::UpgradeCost => false,
             Action::NameIdentity { .. } => false,
             Action::Show(_)
             | Action::SelfCheck
@@ -609,9 +344,6 @@ impl Action {
             | Action::ReadIdentities
             | Action::NewIdentity
             | Action::DropFresh
-            // Switching seat or identity uses no key itself, but the register and the homes it opens are sealed
-            // local data: while locked the local data layer (`local::read`) refuses them, so a locked machine
-            // does not switch seat or identity (by design; unlocking comes first).
             | Action::SwitchRole
             | Action::SwitchIdentity { .. }
             | Action::SetPin { .. }
@@ -621,7 +353,6 @@ impl Action {
             | Action::SetMachineAside
             | Action::Lock
             | Action::SetAutoLock { .. }
-            // Restoring on the locked card is the way out of the lock: it brings its own new passcode.
             | Action::RestoreBackup { how: RestoreHow::Locked { .. }, .. }
             | Action::PeekBackup { .. }
             | Action::Resume
@@ -644,6 +375,9 @@ impl Action {
             | Action::ReadChain
             | Action::ReadChainTime
             | Action::SetEndpoints { .. }
+            | Action::SetLogAsks { .. }
+            | Action::SetRestMode { .. }
+            | Action::RemoveRest { .. }
             | Action::SaveReadNetwork { .. }
             | Action::RemoveReadNetwork { .. }
             | Action::ReadReadNetwork { .. }
@@ -652,6 +386,7 @@ impl Action {
             | Action::OpenEntry { .. }
             | Action::Audit
             | Action::SetBasis { .. }
+            | Action::MoveChain { .. }
             | Action::SetAuditEvery { .. }
             | Action::SetAutoAnchor { .. }
             | Action::SetHideLocalDeletions { .. }
@@ -664,16 +399,18 @@ impl Action {
             | Action::PickKit { .. }
             | Action::ExportKit { .. }
             | Action::VetAttachments { .. }
-            | Action::ReadDepth { .. }
+            | Action::Peek { .. }
             | Action::ReadGrants
             | Action::CheckClash { .. }
             | Action::ReadStory { .. }
-            | Action::VerifyAnchors { .. }
-            | Action::ListKeyAnchors { .. }
-            | Action::ReadClaim { .. }
-            | Action::LookAtKey { .. }
             | Action::ReadBook { .. }
+            | Action::FaceReread
+            | Action::FaceBooks
+            | Action::FaceJoined { .. }
+            | Action::FaceRerootFee { go: false }
             | Action::CheckPayload { .. }
+            | Action::AuditCheck
+            | Action::AuditOthers
             | Action::ImportGrant { .. }
             | Action::ImportGrantDir { .. }
             | Action::SetUpstream { .. }
@@ -682,6 +419,7 @@ impl Action {
             | Action::ListHeld
             | Action::VerifyWork { .. }
             | Action::ExtractOriginals { .. }
+            | Action::CleanExports { .. }
             | Action::CheckDelivery { .. }
             | Action::Diligence { .. }
             | Action::SaveSnapshot { .. }
@@ -709,14 +447,10 @@ impl Action {
         }
     }
 
-    /// The background work that reads local data: the self-audit clock, the vault review and its sentinel, the
-    /// queue's sending and its receipt wait, and the catch-up after unlocking. Closed; while locked each is
-    /// refused here with `LOCKED` (the window does not ask while locked either; this is the rule itself).
     pub fn halts_when_locked(&self) -> bool {
-        matches!(self, Action::Audit | Action::ReviewVault | Action::SendBatch { .. } | Action::BumpFee { .. } | Action::Resume | Action::CatchUp)
+        matches!(self, Action::Audit | Action::ReviewVault | Action::SendBatch { .. } | Action::BumpFee { .. } | Action::Resume | Action::CatchUp | Action::FaceReread | Action::FaceBooks | Action::FaceJoined { .. } | Action::FaceRerootFee { .. })
     }
 
-    /// The component this action belongs to; its trace mark.
     pub fn feature(&self) -> Feature {
         match self {
             Action::Show(_) | Action::SelfCheck | Action::Quit => Feature::H1,
@@ -755,6 +489,10 @@ impl Action {
             | Action::ReadChain
             | Action::ReadChainTime
             | Action::SetEndpoints { .. }
+            | Action::SetLogAsks { .. }
+            | Action::SetRestMode { .. }
+            | Action::AddRest { .. }
+            | Action::RemoveRest { .. }
             | Action::ChooseNetwork { .. }
             | Action::SaveReadNetwork { .. }
             | Action::RemoveReadNetwork { .. }
@@ -762,7 +500,7 @@ impl Action {
             | Action::SetProxy { .. } => Feature::H4,
             Action::Genesis { .. } | Action::Adopt { .. } => Feature::H5,
             Action::ReadLedger | Action::OpenEntry { .. } | Action::Annotate { .. } | Action::Retract { .. } | Action::SetHideLocalDeletions { .. } => Feature::W1,
-            Action::Audit | Action::SetBasis { .. } | Action::SetAuditEvery { .. } => Feature::W2,
+            Action::Audit | Action::SetBasis { .. } | Action::MoveChain { .. } | Action::SetAuditEvery { .. } => Feature::W2,
             Action::QueueEntry { .. } | Action::SetAutoAnchor { .. } | Action::SetCliAnchor { .. } | Action::SendAsked { .. } => Feature::W4,
             Action::TakeContent { .. }
             | Action::RecordWork { .. }
@@ -771,29 +509,44 @@ impl Action {
             | Action::TakeDropped { .. } => Feature::W3,
             Action::EstimateGas { .. } | Action::SendBatch { .. } | Action::BumpFee { .. } => Feature::W4,
             Action::PickKit { .. } | Action::ExportKit { .. } | Action::SetKitLink { .. } | Action::DropKitCopy { .. } | Action::VetAttachments { .. } => Feature::W5,
-            Action::ReadDepth { .. } => Feature::W6,
-            Action::DraftGrant { .. } => Feature::W7,
+            Action::Peek { ask } => match ask {
+                crate::peekx::Ask::Kit { .. } | crate::peekx::Ask::Names { .. } => Feature::W5,
+                crate::peekx::Ask::Files { .. } => Feature::W1,
+                crate::peekx::Ask::GrantFile { .. } => Feature::D6,
+                crate::peekx::Ask::Landing { .. } => Feature::H3,
+                crate::peekx::Ask::Size { .. } => Feature::P1,
+            },
+            Action::DraftGrant { .. } | Action::MigrateGrants => Feature::W7,
             Action::ReadGrants | Action::CheckClash { .. } => Feature::W8,
             Action::Revoke { .. } | Action::ReadStory { .. } => Feature::W9,
-            Action::VerifyAnchors { .. }
-            | Action::Cosign { .. }
-            | Action::AdoptAnchors { .. }
-            | Action::ListKeyAnchors { .. }
-            | Action::ReadClaim { .. }
-            | Action::AttestFor { .. } => Feature::W10,
-            Action::LookAtKey { .. } | Action::Succeed { .. } => Feature::W11,
+            Action::Upgrade | Action::UpgradeCost | Action::Rotate { .. } => Feature::W11,
+            Action::FaceReread
+            | Action::FaceBooks
+            | Action::FaceReroot { .. }
+            | Action::FaceOrigin { .. }
+            | Action::FaceRerootMake { .. }
+            | Action::FaceRerootFee { .. }
+            | Action::FaceJoined { .. }
+            | Action::FaceHome { .. }
+            | Action::FaceAccount { .. }
+            | Action::FaceKey { .. }
+            | Action::FaceName { .. }
+            | Action::FaceRelease { .. }
+            | Action::FaceReseat { .. }
+            | Action::FaceConsent { .. } => Feature::H2,
             Action::ReadBook { .. }
             | Action::RememberAddress { .. }
             | Action::ForgetAddress { .. } => Feature::W14,
-            Action::Diligence { .. } | Action::SaveSnapshot { .. } => Feature::D1,
+            Action::Diligence { .. } | Action::SaveSnapshot { .. } | Action::AuditOthers => Feature::D1,
             Action::VerifyWork { .. } => Feature::D2,
             Action::ExtractOriginals { .. } => Feature::D2,
+            Action::CleanExports { .. } => Feature::W5,
             Action::CheckDelivery { .. } => Feature::D4,
             Action::ImportGrant { .. } | Action::ImportGrantDir { .. } | Action::SetUpstream { .. } | Action::NoteHeld { .. } | Action::ReviewVault => Feature::D6,
             Action::ListHeld => Feature::D6,
             Action::SetReviewEvery { .. } => Feature::D7,
             Action::SetLang { .. } | Action::SetZone { .. } => Feature::H6,
-            Action::ReadCliPath | Action::SetCliPath { .. } | Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff => Feature::H6,
+            Action::ReadCliPath | Action::SetCliPath { .. } | Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff | Action::CliPassAdd { .. } | Action::CliPassDrop { .. } => Feature::H6,
             Action::SetAppearance { .. } => Feature::H0,
             Action::ExportBadge { .. } | Action::CopyGrantCode { .. } => Feature::D9,
             Action::ExportGrantFile { .. } => Feature::D6,
@@ -801,16 +554,10 @@ impl Action {
             Action::FetchLedger { .. } => Feature::H8,
             Action::FetchAside { .. } => Feature::H8,
             Action::CheckTail => Feature::H8,
-            Action::CheckPayload { .. } => Feature::P1,
+            Action::CheckPayload { .. } | Action::AuditCheck => Feature::P1,
         }
     }
 
-    /// Whether this action lets facts of this ledger leave the machine, and which way (the exit gate's closed
-    /// table, `exitgate`). Every action is answered here, one arm each, with no catch-all: a new action does not
-    /// compile until it is classified. Landing entries is not an exit (it stays offline); sending anchors and
-    /// exporting a record bundle, a grant file, a mirror or a badge are. Reading what is published, the
-    /// whole-machine backup (sealed to oneself), a key file and a diligence snapshot (someone else's ledger) are
-    /// not.
     pub fn exit(&self) -> Option<crate::exitgate::Exit> {
         use crate::exitgate::Exit;
         match self {
@@ -860,6 +607,8 @@ impl Action {
             Action::ReadChain => None,
             Action::ReadChainTime => None,
             Action::SetEndpoints { .. } => None,
+            Action::SetLogAsks { .. } => None,
+            Action::SetRestMode { .. } | Action::AddRest { .. } | Action::RemoveRest { .. } => None,
             Action::SaveReadNetwork { .. } => None,
             Action::RemoveReadNetwork { .. } => None,
             Action::ReadReadNetwork { .. } => None,
@@ -871,6 +620,7 @@ impl Action {
             Action::Retract { .. } => None,
             Action::Audit => None,
             Action::SetBasis { .. } => None,
+            Action::MoveChain { .. } => None,
             Action::SetAuditEvery { .. } => None,
             Action::SetAutoAnchor { .. } => None,
             Action::SetHideLocalDeletions { .. } => None,
@@ -883,37 +633,42 @@ impl Action {
             Action::TakeDropped { .. } => None,
             Action::EstimateGas { .. } => None,
             Action::SendBatch { .. } => Some(Exit::Send),
-            // A resend carries only the call the send it replaces already took out (its hashes, its nonce): no
-            // fact of this ledger leaves with it that had not left. It still reads the chain afresh at the gate
-            // before its bytes go (`resend_batch`), as the send did.
             Action::BumpFee { .. } => None,
             Action::PickKit { .. } => None,
             Action::ExportKit { .. } => Some(Exit::Kit),
             Action::VetAttachments { .. } => None,
-            Action::ReadDepth { .. } => None,
+            Action::Peek { .. } => None,
             Action::DraftGrant { .. } => None,
             Action::QueueEntry { .. } => None,
             Action::ReadGrants => None,
             Action::CheckClash { .. } => None,
             Action::Revoke { .. } => None,
+            Action::MigrateGrants => None,
             Action::ReadStory { .. } => None,
-            Action::VerifyAnchors { .. } => None,
-            Action::Cosign { .. } => None,
-            Action::AdoptAnchors { .. } => None,
-            Action::ListKeyAnchors { .. } => None,
-            Action::ReadClaim { .. } => None,
-            Action::AttestFor { .. } => None,
-            Action::LookAtKey { .. } => None,
-            Action::Succeed { .. } => None,
+            Action::Upgrade => None,
+            Action::Rotate { .. } => None,
+            Action::UpgradeCost => None,
             Action::ReadBook { .. } => None,
+            Action::FaceReread | Action::FaceBooks | Action::FaceJoined { .. } | Action::FaceRerootFee { .. } => None,
+            Action::FaceReroot { .. } | Action::FaceOrigin { .. } | Action::FaceRerootMake { .. } => None,
+            Action::FaceHome { .. }
+            | Action::FaceAccount { .. }
+            | Action::FaceKey { .. }
+            | Action::FaceName { .. }
+            | Action::FaceRelease { .. }
+            | Action::FaceReseat { .. }
+            | Action::FaceConsent { .. } => None,
             Action::RememberAddress { .. } => None,
             Action::ForgetAddress { .. } => None,
             Action::Diligence { .. } => None,
             Action::SaveSnapshot { .. } => None,
             Action::VerifyWork { .. } => None,
             Action::ExtractOriginals { .. } => None,
+            Action::CleanExports { .. } => None,
             Action::CheckDelivery { .. } => None,
             Action::CheckPayload { .. } => None,
+            Action::AuditCheck => None,
+            Action::AuditOthers => None,
             Action::ImportGrant { .. } => None,
             Action::ImportGrantDir { .. } => None,
             Action::SetUpstream { .. } => None,
@@ -928,8 +683,7 @@ impl Action {
             Action::SetCliAnchor { .. } => None,
             Action::ReadCliPath => None,
             Action::SetCliPath { .. } => None,
-            Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff => None,
-            // Nothing leaves: the request is only reported.
+            Action::SetCliDesktop { .. } | Action::SetCliAlone { .. } | Action::CliAloneOff | Action::CliPassAdd { .. } | Action::CliPassDrop { .. } => None,
             Action::SendAsked { .. } => None,
             Action::ExportBadge { .. } => Some(Exit::Badge),
             Action::CopyGrantCode { .. } => None,
@@ -942,7 +696,6 @@ impl Action {
         }
     }
 
-    /// Actions that only read what is here (nothing written to the home, the machine or the chain). Closed.
     pub fn reads_only(&self) -> bool {
         matches!(
             self,
@@ -959,26 +712,18 @@ impl Action {
         )
     }
 
-    /// The actions that write what the command line writes too, the ledger and the anchor queue: while it writes
-    /// alone, each takes the home's writer lock for its turn, held until what it started has landed
-    /// (`Shell::take_turn`, `Shell::turn_sync`). Closed: the ledger writers ([`Action::writes_ledger`]), queueing,
-    /// resuming the awaited batches, catching up, adopting and fetching a ledger.
     pub fn takes_turn(&self) -> bool {
         self.writes_ledger()
             || matches!(
                 self,
-                Action::QueueEntry { .. } | Action::Resume | Action::CatchUp | Action::Adopt { .. } | Action::FetchLedger { .. } | Action::FetchAside { .. }
+                Action::QueueEntry { .. } | Action::MoveChain { .. } | Action::CatchUp | Action::Adopt { .. } | Action::FetchLedger { .. } | Action::FetchAside { .. }
             )
     }
 
-    /// What may run while old data is open (`ViewOldData`): reading it, coming back, and the vault gate.
     pub fn reads_old_data(&self) -> bool {
         self.reads_only() || matches!(self, Action::Lock | Action::Unlock { .. } | Action::Reseal { .. } | Action::LeaveOldData)
     }
 
-    /// The closed table of ledger-writing and anchoring actions: for a restored identity, before the full
-    /// ledger is fetched and its tail checked, these are refused by name at the entry of `body`.
-    /// `FetchLedger` itself is not here: it is the way to writing.
     pub fn writes_ledger(&self) -> bool {
         matches!(
             self,
@@ -988,18 +733,22 @@ impl Action {
                 | Action::Retract { .. }
                 | Action::DraftGrant { .. }
                 | Action::Revoke { .. }
+                | Action::MigrateGrants
                 | Action::SendBatch { .. }
                 | Action::BumpFee { .. }
-                | Action::AdoptAnchors { .. }
-                | Action::Succeed { .. }
-                | Action::Cosign { .. }
+                | Action::Upgrade
+                | Action::Rotate { step: RotateStep::Write }
+                | Action::FaceHome { .. }
+                | Action::FaceAccount { .. }
+                | Action::FaceKey { .. }
+                | Action::FaceName { .. }
+                | Action::FaceRelease { .. }
+                | Action::FaceReseat { .. }
+                | Action::FaceReroot { .. }
+                | Action::FaceOrigin { .. }
         )
     }
 
-    /// Whether an action is legal: the family that touches the anchor key, the ledger or the chain.
-    ///
-    /// Moving a home and settings are not: they move the same bytes or change local preferences and create no
-    /// new recorded fact (any copy is equivalent).
     pub fn is_legal(&self) -> bool {
         matches!(
             self,
@@ -1011,225 +760,141 @@ impl Action {
                 | Action::BumpFee { .. }
                 | Action::DraftGrant { .. }
                 | Action::Revoke { .. }
-                | Action::AdoptAnchors { .. }
-                | Action::Succeed { .. }
+                | Action::MigrateGrants
+                | Action::Upgrade
+                | Action::Rotate { step: RotateStep::Write }
         )
     }
 
-    /// The command-line verb this action is equivalent to. No legal action returns `None` (the tests check).
     pub fn verb(&self) -> Option<&'static str> {
         match self {
             Action::Genesis { .. } => Some("init"),
             Action::Annotate { .. } => Some("annotate"),
             Action::Retract { .. } => Some("retract"),
-            // This follows the verb table (`CLI-SCHEMA.md` §6), not the format's entry types; the two happen to
-            // share this spelling. The command line owns the verb table and the app does not depend on it, so
-            // this is a second copy (like the envelope keys, see `entryx`); tests read the table from
-            // `CLI-SCHEMA.md` and check every row.
             Action::RecordWork { .. } => Some("history"),
-            // `SendAsked` is the command line's `anchor` routed through the desktop app when sending is left to
-            // the user.
             Action::SendBatch { .. } | Action::BumpFee { .. } | Action::SendAsked { .. } => Some("anchor"),
-            // Attesting for someone is the command line's `attest`; it asks for the passcode, so it is never run
-            // on the command line's behalf (`pin_asked`).
-            Action::AttestFor { .. } => Some("attest"),
-            // The two chain reads write nothing, but each has a command-line name.
             Action::Audit => Some("audit"),
-            Action::DraftGrant { .. } => Some("grant"),
+            Action::DraftGrant { .. } | Action::MigrateGrants => Some("grant"),
             Action::ExportKit { .. } => Some("kit-export"),
             Action::VerifyWork { .. } => Some("kit-verify"),
-            Action::ReadDepth { .. } => Some("depth"),
             Action::Revoke { .. } => Some("revoke"),
-            Action::AdoptAnchors { .. } => Some("adopt"),
-            Action::Succeed { .. } => Some("succeed"),
+            Action::Upgrade => Some("migrate"),
             Action::ReadBook { .. } => Some("scan"),
-            // The six checks' command-line name.
             Action::ReviewVault => Some("check-grant"),
             Action::ExportBadge { .. } => Some("badge"),
+            Action::CleanExports { .. } => Some("clean"),
+            Action::ExportGrantFile { .. } => Some("grant-package"),
+            Action::FaceReread => Some("face-table"),
+            Action::FaceReroot { .. } => Some("face-reroot"),
+            Action::FaceOrigin { .. } => Some("face-origin"),
+            Action::FaceJoined { .. } => Some("face-joined"),
+            Action::FaceHome { .. } => Some("face-home"),
+            Action::FaceAccount { .. } => Some("face-account"),
+            Action::FaceKey { .. } => Some("face-key"),
+            Action::FaceName { .. } => Some("face-name"),
+            Action::FaceRelease { .. } => Some("face-release"),
             Action::EstimateGas { .. } => None,
             _ => None,
         }
     }
 }
 
-/// What happened after applying. The screen says this; there is no branch that says nothing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Applied {
     Shown(Page),
     Started(Kind),
     Refused(Kind),
     Stopped(Reaped),
-    /// Switched seat.
     Seated(crate::roles::Role),
-    /// Read the identities; how many.
     Identities(usize),
-    /// New words generated, waiting for copy confirmation.
     FreshWords,
-    /// The new words were wiped.
     FreshDropped,
-    /// An identity was built (or imported); the current seat is its author seat. `restored`: the identity was
-    /// already in the registry and this restored its missing vault slot. `seats` lists the seats it holds and
-    /// their addresses (an existing key holds one).
     IdentityMade { id: String, seats: Vec<(crate::roles::Role, Address)>, restored: bool },
-    /// An identity was renamed (nothing reads the name).
     IdentityNamed { id: String, label: String },
-    /// Switched to this identity.
     IdentitySwitched { id: String },
-    /// Asked for the identity in use with no switch running: nothing moved.
     IdentityKept { id: String },
-    /// This identity was deleted (key slots and registry row; homes kept).
     IdentityDeleted { id: String },
-    /// The vault is open (set, unlock, change and the recoveries each succeed with this).
     Unlocked,
-    /// The vault is locked.
     LockedUp,
-    /// An empty vault was deleted; this machine is back to "no passcode set".
     KeyboxReset,
-    /// The machine directory was set aside (`from`, now at `to`); a new one stands in its place.
     MachineAside { from: String, to: String },
-    /// The passcode was changed.
     PinChanged,
-    /// Idle locking was switched or its time changed (machine-wide): whether it is on, and after how long.
     AutoLockSet { on: bool, secs: u64 },
-    /// This identity is now the primary one (a new master key; everything resealed).
     PrimarySet { id: String },
-    /// Restored from a backup: what it held.
     BackupRestored(crate::backup::Summary),
-    /// A receipt wait was resumed (false: nothing to resume, or not now).
     Resumed(bool),
-    /// The catch-up after unlocking: which of the self-audit, the vault review and the receipt wait started.
     CaughtUp { audit: bool, review: bool, resume: bool },
-    /// A network was chosen; `filled` means the current home now has that row's network (false with
-    /// "custom", or when the person configured this home's network by hand).
     NetworkChosen { name: String, filled: bool },
-    /// The auto-anchor setting was saved.
     AutoAnchor(bool),
-    /// The setting that hides local deletions from the two lists was saved.
     HideLocalDeletions(bool),
-    /// Recovered, with a new passcode.
     Recovered,
-    /// The twelve words are shown.
     WordsShown,
-    /// Hidden.
     WordsHidden,
-    /// The key was backed up to a keystore file.
     KeyBackedUp { path: String, address: Address },
-    /// The home is open, with its mode (writer or reader).
     Homed { root: String, mode: crate::lock::Mode },
-    /// The record of checked facts was dropped (`had`: there was one).
     FactsForgotten { had: bool },
-    /// The move finished.
     Migrated { root: String },
-    /// The cap changed.
     Capped(u64),
-    /// A mirror bundle was written.
     Mirrored { path: String, entries: usize, added: usize, topped_up: bool },
-    /// Endpoints set.
     Endpoints(usize),
-    /// Genesis written, with its id. It is queued at once, with the queue length and what comes next.
+    LogAsks(u64),
+    RestMode(bool),
+    RestAdded { base: String },
+    RestKeyed { base: String },
+    RestRemoved { left: usize },
     Genesised { id: String, queued: usize, next: Next },
-    /// Adopted in place.
     AdoptedInPlace { entries: usize, linked: usize, label: String },
-    /// An entry was opened: its id and canonical byte length.
     Opened { id: String, bytes: usize },
-    /// An annotation was written.
     Annotated(String),
-    /// A work record was deleted: the retraction's id, whether the deleted record was in the anchor queue
-    /// (and was removed), the queue length, and whether the pair stays local (the deleted record was never
-    /// published, so the retraction is not queued).
     Retracted { id: String, dropped: bool, queued: usize, local: bool, next: Next },
-    /// The basis was recorded.
     Basis { chain: u64 },
-    /// The self-audit period changed.
     Every(u64),
-    /// A content hash was taken.
     Took { source: crate::anchorx::Source, hex: String },
-    /// A history entry was written and queued.
     Recorded { id: String, queued: usize, next: Next },
-    /// Batch signing: the ids signed (in drop order), where it stopped (index, path, reason; `None` when all
-    /// succeeded), the queue length, and what comes next. Signed entries stay.
     RecordedBatch { ids: Vec<String>, stopped: Option<(usize, String, crate::fault::Fault)>, queued: usize, next: Next },
-    /// A kit's `link` changed (`None`: back to the default with no publication base configured).
     KitLinked { path: String, link: Option<String> },
-    /// The whole grant code of a grant, for the clipboard.
     GrantCode { text: String },
-    /// A kit's index row was removed; `dir_removed` when the directory held exactly this kit and was deleted.
     KitDropped { id: String, dir_removed: bool },
-    /// A repository was registered.
     Registered { path: String },
-    /// The repository's passive indicator was computed.
     Since { head: String, grew: Option<usize> },
-    /// Gas was estimated, with the call data handed to the node for the estimate (built right there).
     Gas { count: usize, gas: u64, calldata: String },
-    /// Entries picked, with those the closure rule pulled in.
     Picked { items: usize, pulled: usize },
-    /// A grant was drafted and queued.
     Granted { id: String, queued: usize, next: Next },
-    /// An entry outside the queue was queued, with the queue length.
     Queued { id: String, queued: usize, next: Next },
-    /// A grant file landed: where, why there, how many hops, how many terms documents, whether it carries the
-    /// issuer's ledger, how many items.
-    GrantFileExported { path: String, why: crate::home::Why, hops: usize, terms: usize, ledger: bool, files: usize },
-    /// The publication address was recorded (`None` clears it).
+    GrantFileExported { path: String, why: crate::home::Why, hops: usize, terms: usize, ledger: bool, files: usize, kit_id: String, original: bool, taken: Vec<String>, left_out: Vec<String>, sealed: bool },
     PublishSet { url: Option<String> },
-    /// The read-only network table was written: how many networks it holds now.
     ReadNets(usize),
-    /// The overlap check ran: how many overlaps.
     Clashed(usize),
-    /// A revocation was written.
-    Revoked { id: String, queued: usize, next: Next },
-    /// A grant's three-part story was read.
+    Revoked { id: String, queued: usize, next: Next, notice: Option<Notice> },
+    GrantsMigrated { count: usize, queued: usize, next: Next },
     Storied { grant: String, revocations: usize },
-    /// The cosignature verified.
-    Cosigned { attestor: String },
-    /// A claim was read (no network configured, blocks not asked).
-    ClaimRead,
-    /// A claim was attested for someone: the attestor and the signature (hex).
-    Attested { attestor: String, attestation: String },
-    /// An adoption was written (with or without a cosignature, as it was).
-    Adopted { id: String, cosigned: bool, queued: usize, next: Next },
-    /// A succession was written.
-    Succeeded { id: String, to: String, queued: usize, next: Next },
-    /// The address book changed.
+    Upgraded { stage: String, queued: usize, next: Next },
+    Moved { queued: usize, left_out: bool },
+    Rotated { stage: String },
     Booked { address: String, on: bool },
-    /// A snapshot was saved (no evidential weight), with where and how many bytes.
     Snapshot { path: String, bytes: usize },
-    /// Grants went into the vault (a payload may hold several), and the grant the pass was for (a chain's last
-    /// hop; empty for a folder of grants).
-    Held { ids: Vec<String>, grant: String },
-    /// A folder import took some files and refused others (each refusal is listed in the trouble panel).
-    HeldPartly { ids: Vec<String>, refused: usize },
-    /// A held grant's upstream location was recorded.
+    Held { ids: Vec<String>, grant: String, renewed: usize },
+    HeldRenewed { grant: String },
+    HeldPartly { ids: Vec<String>, refused: usize, renewed: usize },
     Upstream { grant: String },
-    /// A held grant's or its issuer's local name was recorded.
     HeldNoted { grant: String },
-    /// The review period changed.
     ReviewEvery(u64),
-    /// The language changed and was saved.
     Spoken(crate::lang::Lang),
-    /// The time zone moments are now shown in.
     Zoned(crate::when::Zone),
-    /// The appearance was written to machine settings.
     Appeared(String),
-    /// The proxy choice was written to machine settings (as written: `system`, `none` or the address).
     ProxySet(String),
-    /// How the command line's `anchor` is handled through the desktop app, as written.
     CliAnchorSet(crate::machine::CliAnchor),
-    /// "Command line writes through the desktop" switched (on or off).
     CliDesktopSet(bool),
-    /// "Command line writes alone" switched: on with its credential's expiry (`Some(None)`: never), or off.
     CliAloneSet(Option<Option<u64>>),
-    /// What is currently at the command line's location on the terminal's command path.
     CliPathRead(zikaron_os::cli_path::State),
-    /// The command line asked to send; nothing was sent, and `count` entries wait for the user.
     SendAsked { count: usize },
-    /// It did not happen, with a named reason. There is no silent branch.
     Trouble(crate::fault::Fault),
+    Consented { text: String },
+    RerootMade { id: String },
+    CliPassAdded { pass: crate::secret::Secret, row: zikaron_seal::credential::Row },
+    CliPassDropped { tag: String },
 }
 
-/// After a passcode attempt, bring the shell in line with the disk. The vault locks itself on the final
-/// failure (the master key is wiped at once) while the shell still holds what it had when open (anchor
-/// address, shown words). Every refused passcode action goes through here.
 fn after_vault_shut(shell: &mut Shell) {
     shell.reread_vault();
     if !shell.unlocked() {
@@ -1237,48 +902,47 @@ fn after_vault_shut(shell: &mut Shell) {
     }
 }
 
-/// Whether `apply` holds this action back now, and with which refusal: the single check at the entry of the
-/// action layer. The window also asks it before a timed background action (so a refusal it knows is coming is
-/// not sent every tick), and never keeps its own copy of these rules.
 pub fn held_back(shell: &Shell, a: &Action) -> Option<crate::fault::Known> {
-    // While the master key is being changed (making another identity primary, restoring from a backup) every
-    // other action waits: the screen says it is resealing.
     if shell.rekeying && !matches!(a, Action::Show(_) | Action::Quit | Action::SelfCheck) {
         return Some(crate::fault::Known::Rekeying);
     }
-    // While a home is being swapped for a fresh one (fetch and replace) it is frozen: anything written now
-    // might or might not be copied and could end up only in the old data. Reads pass.
     if shell.swapping && !a.reads_only() {
         return Some(crate::fault::Known::Rekeying);
     }
-    // With old data open, only reading and leaving are allowed: it is never written, fetched into, moved or
-    // exported.
     if shell.old_view.is_some() && !a.reads_old_data() {
         return Some(crate::fault::Known::ReadOnly);
     }
-    // While locked, background work that reads local data is refused by name (`CatchUp` resumes it).
     if a.halts_when_locked() && !shell.unlocked() {
         return Some(crate::fault::Known::Locked);
     }
-    // While locked, key-using actions are refused here without touching the disk.
     if a.needs_key() && !shell.unlocked() {
         return Some(crate::fault::Known::Locked);
     }
     None
 }
 
-/// Runs the exit gate in the background before an export that writes on the UI thread (a grant file, a record
-/// bundle): reading the chain waits on nodes, and the window never waits on the network. When the gate passes,
-/// the export runs where the result lands ([`gate_landed`]); a refusal lands as a trouble, and the home takes
-/// its read-only mark there (`Shell::gate_refused`).
 fn gate_first(shell: &mut Shell, a: Action) -> Applied {
     let ask = match crate::exitgate::ask_of(shell) {
         Ok(x) => x,
         Err(f) => return shell.trouble(f),
     };
     let root = shell.home.as_ref().map(|h| h.root().to_path_buf());
+    let seal = match &a {
+        Action::ExportGrantFile { seal_to, .. } if !seal_to.trim().is_empty() => match sealing_for(shell, seal_to) {
+            Ok(x) => Some(x),
+            Err(f) => return shell.trouble(f),
+        },
+        _ => None,
+    };
     match shell.tasks.spawn(Kind::Gate, move || {
         let pass = crate::exitgate::pass(&ask)?;
+        let a = match (a, seal) {
+            (Action::ExportGrantFile { id, to, original, seal_to, .. }, Some((root, main, readonly))) => {
+                let k = crate::addressedx::key_for(&root, &main, &readonly)?;
+                Action::ExportGrantFile { id, to, original, seal_to, key: Some(zikaron::hexfmt::encode(&k)) }
+            }
+            (a, _) => a,
+        };
         Ok(Done::GatePassed { root, then: Box::new(a), pass: Box::new(pass) })
     }) {
         Spawned::Started => Applied::Started(Kind::Gate),
@@ -1286,11 +950,29 @@ fn gate_first(shell: &mut Shell, a: Action) -> Applied {
     }
 }
 
-/// An export's exit gate passed for the home at `root`; `stale` says whether the source has moved since it
-/// started. The pass holds only for that home and source, in which case the export runs now. Otherwise the
-/// pass is void: if another export is already being gated, that gate answers for itself and this returns
-/// `None`; if not, the export is applied again through [`apply`], where it is refused like any press (locked,
-/// no home) or gated again for the home and source now open.
+fn clean_exports(shell: &mut Shell, yes: bool) -> Applied {
+    let kind = if yes { Kind::Clean } else { Kind::CleanList };
+    match shell.tasks.spawn(kind, move || {
+        let machine = crate::home::machine_dir()?;
+        let plan = if yes { crate::exports::clean(&machine)? } else { crate::exports::plan(&machine)? };
+        Ok(Done::Cleaned { plan, done: yes })
+    }) {
+        Spawned::Started => Applied::Started(kind),
+        Spawned::InFlight => Applied::Refused(kind),
+    }
+}
+
+fn sealing_for(shell: &Shell, root: &str) -> Result<([u8; 20], crate::addressedx::Main, Vec<crate::readnets::Net>), crate::fault::Fault> {
+    let grantee = crate::key::Address::parse(root.trim()).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::AddressShape, root.trim().to_string()))?;
+    let main = crate::addressedx::Main {
+        chain: shell.settings.chain_id,
+        registry: shell.settings.registry.map(|a| a.0),
+        from_block: shell.settings.from_block,
+        nodes: shell.endpoints.iter().filter(|e| Some(e.chain) == shell.settings.chain_id).map(|e| e.url.clone()).collect(),
+    };
+    Ok((grantee.0, main, read_nets_now()?))
+}
+
 pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Action, pass: &crate::exitgate::Pass, stale: bool) -> Option<Applied> {
     let here = shell.home.as_ref().map(|h| h.root().to_path_buf());
     if stale || here != root {
@@ -1299,7 +981,6 @@ pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Ac
         }
         return Some(apply(shell, then));
     }
-    // The export runs with the gate's pass; going through `apply` would gate it again.
     trace::mark(then.feature());
     if let Some(k) = held_back(shell, &then) {
         return Some(shell.trouble(crate::fault::Fault::known(k, String::new())));
@@ -1309,35 +990,26 @@ pub fn gate_landed(shell: &mut Shell, root: Option<std::path::PathBuf>, then: Ac
             Ok((path, entries, added, topped_up)) => Applied::Mirrored { path, entries, added, topped_up },
             Err(f) => shell.trouble(f),
         },
-        Action::ExportGrantFile { id, to } => match export_grant_file(shell, &id, &to, pass) {
+        Action::ExportGrantFile { id, to, original, key, .. } => match export_grant_file(shell, &id, &to, &original, key.as_deref(), pass) {
             Ok(x) => grant_file_exported(x),
             Err(f) => shell.trouble(f),
         },
-        // Only the two exports above are gated through a background pass.
         other => apply(shell, other),
     })
 }
 
-/// Applies an action: the single entry point shared by the window and the test hooks.
 pub fn apply(shell: &mut Shell, a: Action) -> Applied {
     trace::mark(a.feature());
+    shell.moved += 1;
     if let Some(k) = held_back(shell, &a) {
         return shell.trouble(crate::fault::Fault::known(k, String::new()));
     }
-    // Actions that carry a passcode pass `keybox::check_pin` here: one gate, one failure count. Each failure is
-    // recorded on disk, and five lock the vault, leaving only recovery. The check opens nothing: the vault is
-    // already open (a locked vault refuses these actions above), and a lock that comes while the passcode is
-    // being checked stays.
-    //
-    // This comes after the locked check: a locked vault still refuses every key-using action, and this gate
-    // re-identifies the person on an open vault (someone at an unlocked machine cannot export the key or
-    // delete an identity).
-    //
-    // Key derivation runs in the background: the check runs in a `Kind::Vault` task, and only on success does
-    // the action body run where the result lands (`vault_landed`, then `body`, after the same entry check as
-    // here); the passcode field is wiped before the action is handed on. The passcode is moved out of the
-    // action into the task (`hand_pin`), never copied: the action handed on carries none.
     if a.pin_asked().is_some() {
+        if a.writes_ledger() {
+            if let Err(f) = shell.may_write_entries() {
+                return shell.trouble(f);
+            }
+        }
         let mut rest = a;
         let pin = rest.hand_pin().unwrap_or_default();
         rest.forget_pin();
@@ -1349,8 +1021,6 @@ pub fn apply(shell: &mut Shell, a: Action) -> Applied {
     body(shell, a)
 }
 
-/// Starts a background task for a passcode action's key derivation. Single flight: while one runs, another is
-/// refused by name rather than queued.
 fn vault(shell: &mut Shell, work: impl FnOnce() -> Result<crate::task::Vault, crate::fault::Fault> + Send + 'static) -> Applied {
     match shell.tasks.spawn(Kind::Vault, move || work().map(Done::Vault)) {
         Spawned::Started => Applied::Started(Kind::Vault),
@@ -1358,15 +1028,11 @@ fn vault(shell: &mut Shell, work: impl FnOnce() -> Result<crate::task::Vault, cr
     }
 }
 
-/// A passcode task landed; continue on the UI thread. Called where the shell receives results
-/// (`Shell::drain_at`); success and refusal both return the same `Applied` as if run inline.
 pub fn vault_landed(shell: &mut Shell, got: Result<crate::task::Vault, crate::fault::Fault>) -> Applied {
     use crate::task::Vault;
     match got {
         Ok(Vault::Opened) => {
             shell.after_unlock();
-            // The vault opened but the reseal was not saved: report it, since the next start will ask for the
-            // passcode again and the person should know why (disk full, read-only directory).
             if let Some(f) = crate::keybox::take_reseal_trouble() {
                 return shell.trouble(f);
             }
@@ -1380,9 +1046,6 @@ pub fn vault_landed(shell: &mut Shell, got: Result<crate::task::Vault, crate::fa
             shell.after_unlock();
             Applied::Recovered
         }
-        // The passcode was checked and nothing was opened. The vault may have locked while it was checked (the
-        // lock key, the idle lock, a lock waiting for a write): read where it stands now and pass the same entry
-        // check `apply` made; held back, the action is refused by name and not done.
         Ok(Vault::Gate(a)) => {
             shell.reread_vault();
             if shell.lock_pending {
@@ -1393,8 +1056,6 @@ pub fn vault_landed(shell: &mut Shell, got: Result<crate::task::Vault, crate::fa
             }
             body(shell, *a)
         }
-        // A new master key took effect: every copy in hand was read under the old one, so the shell drops them
-        // and opens the home again under the new one.
         Ok(Vault::PrimarySet { id }) => {
             shell.rekeying = false;
             shell.unload();
@@ -1407,24 +1068,25 @@ pub fn vault_landed(shell: &mut Shell, got: Result<crate::task::Vault, crate::fa
             shell.after_unlock();
             Applied::BackupRestored(summary)
         }
-        Ok(Vault::Identity { row, restored, fresh }) => identity_landed(shell, row, restored, fresh),
+        Ok(Vault::Identity { row, restored, fresh, was }) => identity_landed(shell, row, restored, fresh, was),
+        Ok(Vault::RerootMade { id }) => {
+            shell.new_words = None;
+            shell.new_label = None;
+            match crate::register::view() {
+                Ok(v) => shell.seat_identities(Some(v)),
+                Err(f) => shell.faults.push(f),
+            }
+            Applied::RerootMade { id }
+        }
         Err(f) => {
             shell.rekeying = false;
-            // A label taken for a task that did not land is not kept for the next one.
             shell.new_label = None;
-            // After any failure, reread the vault state. The final failure locks the vault; a shell that kept
-            // showing the passcode fields with no tries left would be wrong, so the screen follows the disk and
-            // the final failure goes through the full lock path.
             after_vault_shut(shell);
             shell.trouble(f)
         }
     }
 }
 
-/// A master key change (set primary, restore) reseals every local file, and fetch-and-replace copies a home's
-/// folders before swapping it. A background task that writes local data from its own thread
-/// (`Kind::writes_local`) could write under the key being replaced, or into the home after its folders were
-/// copied, so these operations are refused until such tasks land.
 fn busy_for_rekey(shell: &Shell) -> Option<crate::fault::Fault> {
     let others: Vec<Kind> = shell.tasks.flying().into_iter().filter(|k| k.writes_local()).collect();
     (!others.is_empty()).then(|| {
@@ -1432,15 +1094,15 @@ fn busy_for_rekey(shell: &Shell) -> Option<crate::fault::Fault> {
     })
 }
 
-/// Apply for the test hooks: like [`apply`], but when the action starts a background task, wait for it to land
-/// and return that `Applied` (a test step is one whole path, not spread over frames). Other results received
-/// while waiting are handled as usual.
 pub fn apply_settled(shell: &mut Shell, a: Action) -> Applied {
     let first = apply(shell, a);
     if let Applied::Started(k) = first {
         if lands_said(k) {
             return said_settled(shell, k);
         }
+    }
+    if first == Applied::Started(Kind::Gate) {
+        return gate_settled(shell);
     }
     if first != Applied::Started(Kind::Vault) {
         return first;
@@ -1449,8 +1111,6 @@ pub fn apply_settled(shell: &mut Shell, a: Action) -> Applied {
         if let Some(done) = shell.vault_said.take() {
             return done;
         }
-        // The worker finished but the task is still in flight after draining: the outcome never came back, so
-        // say so by name instead of waiting forever.
         let finished = shell.tasks.finished_in_flight(Kind::Vault);
         shell.drain_hold();
         if shell.vault_said.is_none() {
@@ -1462,22 +1122,14 @@ pub fn apply_settled(shell: &mut Shell, a: Action) -> Applied {
     }
 }
 
-/// Waits for the person's answer to an already opened file dialog: not an action (no verb, nothing read or
-/// written, nothing to hold back) but a background task, so it starts where tasks start. One at a time: if a
-/// dialog is already out this returns `InFlight` and the new wait is dropped (the window only opens a dialog
-/// when none is out).
 pub fn wait_path(shell: &mut Shell, wait: crate::platform::Wait) -> crate::task::Spawned {
     shell.tasks.spawn(Kind::Path, move || wait().map(Done::Path))
 }
 
-/// The kinds whose action result arrives when its task lands (`Shell::said`): the slow half runs in the
-/// background, and the UI-thread half and the result come with the landing ([`landed`]).
 pub fn lands_said(k: Kind) -> bool {
     crate::landing::goes_back(k, crate::landing::Back::Said)
 }
 
-/// The UI-thread half of those kinds, run where the result is received; it returns what the action would have
-/// returned had it run inline.
 pub fn landed(shell: &mut Shell, k: Kind, got: Result<Done, crate::fault::Fault>) -> Applied {
     let lost = |shell: &mut Shell| shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, k.as_str().to_string()));
     match (k, got) {
@@ -1500,7 +1152,6 @@ pub fn landed(shell: &mut Shell, k: Kind, got: Result<Done, crate::fault::Fault>
     }
 }
 
-/// Starts taking a content: its fingerprint is computed in a task (`Kind::Take`).
 fn take_started(shell: &mut Shell, source: crate::anchorx::Source, p: std::path::PathBuf) -> Applied {
     match shell.tasks.spawn(Kind::Take, move || crate::anchorx::of(source, &p).map(|content| Done::Took { source, content })) {
         Spawned::Started => {
@@ -1512,12 +1163,32 @@ fn take_started(shell: &mut Shell, source: crate::anchorx::Source, p: std::path:
     }
 }
 
-/// For [`apply_settled`]: waits until an action of those kinds lands (`Shell::said`), as for a passcode task.
+fn gate_settled(shell: &mut Shell) -> Applied {
+    shell.gate_said = None;
+    loop {
+        if let Some(done) = shell.gate_said.take() {
+            if done != Applied::Started(Kind::Gate) {
+                return done;
+            }
+        }
+        let finished = shell.tasks.finished_in_flight(Kind::Gate);
+        let got = shell.drain_at(0.0);
+        if let Some(f) = got.iter().filter(|o| o.kind == Kind::Gate && !o.stale).find_map(|o| o.result.as_ref().err()) {
+            return Applied::Trouble(f.clone());
+        }
+        shell.keep_back(got);
+        if shell.gate_said.is_none() {
+            if (finished && shell.tasks.in_flight(Kind::Gate)) || !shell.tasks.in_flight(Kind::Gate) {
+                return shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, Kind::Gate.as_str().to_string()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
 fn said_settled(shell: &mut Shell, k: Kind) -> Applied {
     loop {
         if let Some(done) = shell.said.remove(&k) {
-            // A landing that started the same kind again (a seat switch going on to the seat wished meanwhile) is a
-            // step on the way: the answer is the one that ends it.
             if done != Applied::Started(k) {
                 return done;
             }
@@ -1533,20 +1204,17 @@ fn said_settled(shell: &mut Shell, k: Kind) -> Applied {
     }
 }
 
-/// A gas estimate landed. On success the batch's estimate and fees go on the shell (shown on the send sheet,
-/// used by the balance gate and carried by the transaction); on failure there is no estimate, so the batch
-/// cannot be sent, and the refusal is recorded.
 pub fn gas_landed(shell: &mut Shell, got: Result<Done, crate::fault::Fault>) -> Applied {
-    // A failed estimate has no fee reading, so no nodes are listed as left out of one.
     if got.is_err() {
         shell.fees_left.clear();
     }
     match got {
-        Ok(Done::Gas { count, gas, calldata, fees, fees_left, head_time }) => {
+        Ok(Done::Gas { count, gas, calldata, fees, fees_left, head_time, lane }) => {
             if let Some(t) = head_time {
                 shell.note_chain_time(t);
             }
             shell.gas = Some((count, gas));
+            shell.gas_lane = Some(lane);
             shell.fees = Some(fees);
             shell.fees_left = fees_left;
             Applied::Gas { count, gas, calldata }
@@ -1554,23 +1222,23 @@ pub fn gas_landed(shell: &mut Shell, got: Result<Done, crate::fault::Fault>) -> 
         Ok(_) => shell.trouble(crate::fault::Fault::known(crate::fault::Known::OutcomeLost, Kind::Gas.as_str().to_string())),
         Err(f) => {
             shell.gas = None;
+            shell.gas_lane = None;
             shell.fees = None;
             shell.trouble(f)
         }
     }
 }
 
-/// The action body (after the locked check and the passcode gate).
+pub fn behind(shell: &mut Shell, kind: Kind, work: impl FnOnce() -> Result<Done, crate::fault::Fault> + Send + 'static) -> Spawned {
+    shell.tasks.spawn(kind, work)
+}
+
 fn body(shell: &mut Shell, a: Action) -> Applied {
-    // A restored identity is read-only until its full ledger is fetched: while marked, the ledger-writing and
-    // anchoring actions are refused by name without touching the disk.
     if a.writes_ledger() {
-        if let Some(s) = shell.unfetched {
-            return shell.trouble(crate::restorex::fault(s));
+        if let Some(s) = shell.unfetched.as_ref() {
+            return shell.trouble(crate::restorex::fault(s).gate_owned());
         }
     }
-    // While the command line writes alone, a write of the ledger or the queue takes the home's writer lock first
-    // (`Shell::take_turn`): the command line holding it is said by name and nothing is done.
     if a.takes_turn() {
         if let Err(f) = shell.take_turn() {
             return shell.trouble(f);
@@ -1587,27 +1255,17 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Spawned::InFlight => Applied::Refused(Kind::SelfCheck),
             }
         }
-        Action::Measure => {
-            let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else {
-                return shell.trouble(crate::fault::Fault::known(
-                    crate::fault::Known::NoHome,
-                    crate::lang::t(crate::lang::Key::Tail001).to_string(),
-                ));
-            };
-            match shell.tasks.spawn(Kind::Archive, move || measure(&root)) {
-                Spawned::Started => Applied::Started(Kind::Archive),
-                Spawned::InFlight => Applied::Refused(Kind::Archive),
-            }
-        }
+        Action::Measure => match remeasure(shell) {
+            None => shell.trouble(crate::fault::Fault::known(crate::fault::Known::NoHome, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail001).to_string()))),
+            Some(Spawned::Started) => Applied::Started(Kind::Archive),
+            Some(Spawned::InFlight) => Applied::Refused(Kind::Archive),
+        },
         Action::Quit => {
-            // Clear the shown and unconfirmed words first (zeroing their buffers): a quitting process may not
-            // run every destructor.
             for w in shell.words.iter_mut().flatten() {
                 w.clear();
             }
             shell.words = None;
             shell.new_words = None;
-            // Close the command-line channel first: pending requests are told the desktop closed.
             shell.door_off = true;
             shell.door_sync();
             Applied::Stopped(shell.tasks.shutdown())
@@ -1644,7 +1302,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(started) => started,
             Err(f) => shell.trouble(f),
         },
-        // Off the window's thread, as a seat switch (`keys::switch_identity`): it answers where it lands.
         Action::SwitchIdentity { id } => switch_identity(shell, &id),
         Action::NameIdentity { id, label } => match name_identity(shell, &id, &label) {
             Ok(row) => Applied::IdentityNamed { id: row.id, label: row.label },
@@ -1659,8 +1316,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 return shell.trouble(f);
             }
             vault(shell, move || {
-                // A new passcode makes a new master key: files sealed under a vanished key store are moved aside
-                // first (they could never be opened, and left in place they would stop their home from opening).
                 if crate::keybox::pin_trouble(pin.expose()).is_none()
                     && matches!(crate::keybox::state()?, crate::keybox::State::Absent)
                 {
@@ -1675,7 +1330,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 crate::keybox::set_pin(pin.expose()).map(|_| crate::task::Vault::Opened)
             })
         }
-        // After opening, in the same task: staged files of a master key change settle (`local::after_open`).
         Action::Unlock { pin } => vault(shell, move || {
             crate::keybox::unlock(pin.expose())?;
             crate::local::after_open();
@@ -1688,9 +1342,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         }),
         Action::ResetEmptyKeybox => match crate::keybox::reset_empty() {
             Ok(()) => {
-                // The file is gone, so the vault is `Absent`: key, words and address are wiped from the shell as
-                // for a lock, the vault state is reread, the gate closes (`gate_up` is false for `Absent`) and
-                // the wizard returns to step 1.
                 shell.after_lock();
                 Applied::KeyboxReset
             }
@@ -1698,9 +1349,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         },
         Action::SetMachineAside => set_machine_aside(shell),
         Action::Lock => {
-            // If a task that writes local data is still running, the lock takes effect on screen now (every
-            // action is refused as locked) and completes (master key wiped, home closed) once those tasks land,
-            // so a write under way, above all a broadcast anchor's queue mark, is never lost to a missing key.
             if shell.tasks.flying().into_iter().any(|k| k.writes_local()) {
                 shell.begin_lock();
             } else {
@@ -1713,16 +1361,12 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             if let Err(f) = same_twice(&pin, &again) {
                 return shell.trouble(f);
             }
-            // The old passcode goes through the same failure count: the final failure locks this session, and
-            // the screen follows the disk when the result lands.
             vault(shell, move || crate::keybox::change_pin(old.expose(), pin.expose()).map(|_| crate::task::Vault::Changed))
         }
         Action::RecoverWords { words, pin, again } => {
             if let Err(f) = same_twice(&pin, &again) {
                 return shell.trouble(f);
             }
-            // Words are checked against the core's word list and checksum first (a malformed phrase is refused
-            // by name, never tried against the vault); the entropy never leaves the identity layer.
             let fresh = match crate::identity::from_words(words.expose()) {
                 Ok(f) => f,
                 Err(f) => return shell.trouble(f),
@@ -1756,7 +1400,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
         },
         Action::HideWords => {
-            // Zero each word's buffer in place, then drop it (dropping zeroes it too).
             for w in shell.words.iter_mut().flatten() {
                 w.clear();
             }
@@ -1789,7 +1432,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
         Action::PeekBackup { path, password } => {
-            match shell.tasks.spawn(Kind::Backup, move || crate::backup::peek(std::path::Path::new(&path), password.expose()).map(|s| Done::BackupSeen { summary: s })) {
+            match shell.tasks.spawn(Kind::Backup, move || crate::backup::peek(std::path::Path::new(&path), password.expose()).map(|s| Done::BackupSeen { path, summary: s })) {
                 Spawned::Started => Applied::Started(Kind::Backup),
                 Spawned::InFlight => Applied::Refused(Kind::Backup),
             }
@@ -1854,8 +1497,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
 
-        // Whatever can be refused without reading the chain is refused before the exit gate starts (the same
-        // plan is checked again when the gate lands, against the state then).
         Action::ExportMirror { to } => match mirror_plan(shell, &to) {
             Ok(_) => gate_first(shell, Action::ExportMirror { to }),
             Err(f) => shell.trouble(f),
@@ -1881,7 +1522,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             let Some(who) = shell.anchor else {
                 return shell.trouble(crate::fault::Fault::known(
                     crate::fault::Known::KeychainMissing,
-                    crate::lang::t(crate::lang::Key::Tail002).to_string(),
+                    crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail002).to_string()),
                 ));
             };
             let chain = shell.settings.chain_id;
@@ -1893,7 +1534,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         }
         Action::ReadChainTime => {
             let eps = shell.endpoints.clone();
-            // No chain set reads as no node for it (`node::head_time`'s own refusal), kept for the grant form.
             let chain = shell.settings.chain_id.unwrap_or(0);
             match shell.tasks.spawn(Kind::ChainTime, move || crate::chainx::head_time(&eps, chain).map(|(at, _, _)| Done::ChainTime(at))) {
                 Spawned::Started => Applied::Started(Kind::ChainTime),
@@ -1904,49 +1544,64 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(n) => Applied::Endpoints(n),
             Err(f) => shell.trouble(f),
         },
+        Action::SetLogAsks { n } => match set_log_asks(shell, n) {
+            Ok(n) => Applied::LogAsks(n),
+            Err(f) => shell.trouble(f),
+        },
+        Action::SetRestMode { on } => match set_rest_mode(shell, on) {
+            Ok(on) => Applied::RestMode(on),
+            Err(f) => shell.trouble(f),
+        },
+        Action::AddRest { base, key } => match add_rest(shell, &base, &key) {
+            Ok(rest::Added::Row(base)) => Applied::RestAdded { base },
+            Ok(rest::Added::Keyed(base)) => Applied::RestKeyed { base },
+            Err(f) => shell.trouble(f),
+        },
+        Action::RemoveRest { base } => match remove_rest(shell, &base) {
+            Ok(left) => Applied::RestRemoved { left },
+            Err(f) => shell.trouble(f),
+        },
 
         Action::Genesis { statement } => match genesis(shell, &statement) {
             Ok((id, n)) => {
-                shell.rooted = true;
+                if let Some(Err(f)) = shell.home.as_ref().map(crate::restorex::forget_on) {
+                    shell.faults.push(f);
+                }
                 Applied::Genesised { id, queued: n.queued, next: n.next }
             }
             Err(f) => shell.trouble(f),
         },
-        // ── Ledger view ──
         Action::ReadLedger => {
             let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else {
                 return shell.trouble(crate::fault::Fault::known(
                     crate::fault::Known::NoHome,
-                    crate::lang::t(crate::lang::Key::Tail003).to_string(),
+                    crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail003).to_string()),
                 ));
             };
-            // The anchored state comes from the last audit's report; with no audit yet there is no report and
-            // no green light.
             let report = shell.audit.as_ref().map(|a| a.report.clone());
-            // The last pass's anchored set (disk cache): until a report arrives it shows "checked last time",
-            // never "anchored".
             let remembered = shell.remembered.clone();
             let wall = (shell.clock)();
-            // Status lights come from the queue file (step, block), the same source on every page.
             let queue = shell.queue.clone();
             let mine = shell.anchor;
             let r#gen = shell.rows_gen;
-            // The first-anchor block times come from the chain fragment of the last self-audit.
             let fragment = shell.audit.as_ref().map(|a| a.fragment.clone());
             match shell.tasks.spawn(Kind::Ledger, move || {
                 let home = crate::home::Home::open(&root)?;
                 let mut t = crate::ledgerx::table_remembering(&home, report.as_ref(), &queue, remembered.as_ref(), wall)?;
-                // Who writes this ledger from now on: once a succession is in the ledger, this desk has
-                // handed it over. Read in the same pass as the table, so the notice and the table describe the
-                // same moment.
                 let pile = home
                     .ledger()?
                     .pile()?;
                 let handed = crate::succeedx::handed_over(&pile.items, mine);
+                let office = crate::rotatex::office_of(&pile.items);
+                let upgrade = crate::upgradex::stage(&pile.items, fragment.as_ref(), mine.map(|a| a.hex()).as_deref(), &queue);
+                let upgrade_read = fragment.is_some();
                 if let Some(f) = &fragment {
                     crate::ledgerx::stamp(&mut t.rows, &pile.items, f);
                 }
-                Ok(Done::Ledger { rows: t.rows, strays: t.strays, handed, r#gen })
+                let seats = zikaron_glue::face::seat_chains(&pile.items);
+                let faces = rotate::faces_in(&pile.items);
+                let places = zikaron_seal::queue::places_of(&pile.items);
+                Ok(Done::Ledger { rows: t.rows, strays: t.strays, handed, office, upgrade, upgrade_read, seats, faces, places, r#gen })
             }) {
                 Spawned::Started => Applied::Started(Kind::Ledger),
                 Spawned::InFlight => Applied::Refused(Kind::Ledger),
@@ -1964,7 +1619,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok((id, dropped, q, local)) => Applied::Retracted { id, dropped, queued: q.queued, local, next: q.next },
             Err(f) => shell.trouble(f),
         },
-        // ── Self-audit ──
         Action::Audit => match start_audit(shell) {
             Ok(s) => match s {
                 Spawned::Started => Applied::Started(Kind::Audit),
@@ -1976,6 +1630,10 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(audit::Basis::Saved(c)) => Applied::Basis { chain: c },
             Ok(audit::Basis::Checking(Spawned::Started)) => Applied::Started(Kind::Basis),
             Ok(audit::Basis::Checking(Spawned::InFlight)) => Applied::Refused(Kind::Basis),
+            Err(f) => shell.trouble(f),
+        },
+        Action::MoveChain { chain, registry, from_block, nodes } => match move_chain(shell, &chain, &registry, &from_block, &nodes) {
+            Ok((queued, left_out)) => Applied::Moved { queued, left_out },
             Err(f) => shell.trouble(f),
         },
         Action::SetAuditEvery { secs } => {
@@ -1992,10 +1650,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(()) => Applied::HideLocalDeletions(on),
             Err(f) => shell.trouble(f),
         },
-        // ── Anchoring desk ──
-        // The fingerprint reads the whole content, so it runs as a task (`Kind::Take`) that lands in
-        // `took_landed`. Meanwhile the previous content is cleared, so the record sheet cannot continue with the
-        // one being replaced.
         Action::TakeContent { source, path } => {
             let p = std::path::PathBuf::from(path.trim());
             take_started(shell, source, p)
@@ -2006,8 +1660,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Err(f) => shell.trouble(f),
             }
         }
-        // Fingerprints of the files to record are computed in a task (`Kind::Record`); the entries are signed
-        // and appended when it lands (`record_files`).
         Action::RecordWork { note_md, files, for_ } => match shell.tasks.spawn(Kind::Record, move || {
             let files = hash_files(&files);
             Ok(Done::Hashed { note_md, for_, files })
@@ -2027,6 +1679,13 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         }) {
             Spawned::Started => Applied::Started(Kind::Vet),
             Spawned::InFlight => Applied::Refused(Kind::Vet),
+        },
+        Action::Peek { ask } => match shell.tasks.spawn(Kind::Peek, move || {
+            let got = crate::peekx::read(&ask);
+            Ok(Done::Peeked(Box::new((ask, got))))
+        }) {
+            Spawned::Started => Applied::Started(Kind::Peek),
+            Spawned::InFlight => Applied::Refused(Kind::Peek),
         },
         Action::SetKitLink { path, link } => match set_kit_link(shell, &path, &link) {
             Ok(link) => Applied::KitLinked { path, link },
@@ -2048,14 +1707,11 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(s) => Applied::Since { head: s.0, grew: s.1 },
             Err(f) => shell.trouble(f),
         },
-        // ── Anchor queue ──
-        // The estimate queries the network, so it runs as a task (`Kind::Gas`, single flight) that lands in
-        // `gas_landed`. Meanwhile the last estimate is cleared so an old number cannot release a new batch, and
-        // the send sheet shows the field loading with the send button disabled.
         Action::EstimateGas { count } => match gas_ask(shell, count) {
             Ok(ask) => match shell.tasks.spawn(Kind::Gas, move || estimate_on(ask)) {
                 Spawned::Started => {
                     shell.gas = None;
+                    shell.gas_lane = None;
                     shell.fees = None;
                     shell.said.remove(&Kind::Gas);
                     shell.gas_asked = Some(shell.gas_epoch);
@@ -2065,6 +1721,7 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             },
             Err(f) => {
                 shell.gas = None;
+                shell.gas_lane = None;
                 shell.fees = None;
                 shell.trouble(f)
             }
@@ -2084,7 +1741,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
 
-        // ── Disclosure kits ──
         Action::PickKit { from, to, ids } => match pick_kit(shell, &from, &to, &ids) {
             Ok((n, pulled)) => {
                 let p = pulled.len();
@@ -2093,8 +1749,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
-        Action::ExportKit { from, to, ids, attach, note, out, form, recipient, recipient_key, originals } => {
-            match export_kit(shell, &from, &to, &ids, &attach, &note, &out, &form, &recipient, &recipient_key, &originals) {
+        Action::ExportKit { from, to, ids, attach, note, out, form, recipient, recipient_key, originals, companion } => {
+            match export_kit(shell, &from, &to, &ids, &attach, &note, &out, &form, &recipient, &recipient_key, &originals, companion) {
                 Ok(s) => match s {
                     Spawned::Started => Applied::Started(Kind::Kit),
                     Spawned::InFlight => Applied::Refused(Kind::Kit),
@@ -2102,27 +1758,13 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Err(f) => shell.trouble(f),
             }
         }
-        // ── Depth ──
-        Action::ReadDepth { work } => match read_depth(shell, &work) {
-            Ok(s) => match s {
-                Spawned::Started => Applied::Started(Kind::Depth),
-                Spawned::InFlight => Applied::Refused(Kind::Depth),
-            },
-            Err(f) => shell.trouble(f),
-        },
-        // ── Grant drafting ──
-        Action::DraftGrant { draft, exclusive, terms_file } => {
-            match draft_grant(shell, &draft, exclusive, terms_file.as_deref()) {
-                Ok((id, q)) => Applied::Granted { id, queued: q.queued, next: q.next },
-                Err(f) => shell.trouble(f),
-            }
-        }
-        // ── Grant register ──
+        a @ Action::DraftGrant { .. } => grant_first(shell, a),
+        Action::MigrateGrants => migrate_first(shell),
         Action::ReadGrants => {
             let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else {
                 return shell.trouble(crate::fault::Fault::known(
                     crate::fault::Known::NoHome,
-                    crate::lang::t(crate::lang::Key::Tail004).to_string(),
+                    crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail004).to_string()),
                 ));
             };
             let r#gen = shell.grants_gen;
@@ -2142,74 +1784,82 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(n) => Applied::Clashed(n),
             Err(f) => shell.trouble(f),
         },
-        // ── Revocation ──
-        Action::Revoke { grant, case } => match revoke(shell, &grant, &case) {
-            Ok((id, n)) => Applied::Revoked { id, queued: n.queued, next: n.next },
-            Err(f) => shell.trouble(f),
-        },
+        Action::Revoke { grant, case } => revoke_first(shell, &grant, &case),
         Action::ReadStory { grant } => match read_story(shell, &grant) {
             Ok(n) => Applied::Storied { grant, revocations: n },
             Err(f) => shell.trouble(f),
         },
-        // ── Adoption ──
-        Action::VerifyAnchors { rows } => match verify_anchors(shell, &rows) {
-            Ok(s) => match s {
-                Spawned::Started => Applied::Started(Kind::Adopt),
-                Spawned::InFlight => Applied::Refused(Kind::Adopt),
-            },
+        Action::Rotate { step } => match rotate(shell, step) {
+            Ok(a) => a,
             Err(f) => shell.trouble(f),
         },
-        Action::Cosign { rows, attestor, attestation } => {
-            match cosign(shell, &rows, &attestor, &attestation) {
-                Ok(a) => Applied::Cosigned { attestor: a },
-                Err(f) => shell.trouble(f),
-            }
-        }
-        Action::AdoptAnchors { rows, attestor, attestation } => {
-            match adopt_anchors(shell, &rows, &attestor, &attestation) {
-                Ok((id, c, n)) => Applied::Adopted { id, cosigned: c, queued: n.queued, next: n.next },
-                Err(f) => shell.trouble(f),
-            }
-        }
-        Action::ListKeyAnchors { address } => match list_key_anchors(shell, &address) {
-            Ok(s) => match s {
-                Spawned::Started => Applied::Started(Kind::Adopt),
-                Spawned::InFlight => Applied::Refused(Kind::Adopt),
-            },
+        Action::UpgradeCost => match upgrade_cost(shell) {
+            Ok(Spawned::Started) => Applied::Started(Kind::Rotate),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::Rotate),
             Err(f) => shell.trouble(f),
         },
-        Action::ReadClaim { text } => match read_claim(shell, &text) {
-            Ok(Some(s)) => match s {
-                Spawned::Started => Applied::Started(Kind::Adopt),
-                Spawned::InFlight => Applied::Refused(Kind::Adopt),
-            },
-            Ok(None) => Applied::ClaimRead,
+        Action::Upgrade => match upgrade(shell) {
+            Ok((stage, n)) => Applied::Upgraded { stage: stage.as_str().to_string(), queued: n.queued, next: n.next },
             Err(f) => shell.trouble(f),
         },
-        Action::AttestFor { text, .. } => match attest_for(shell, &text) {
-            Ok((attestor, attestation)) => Applied::Attested { attestor, attestation },
-            Err(f) => shell.trouble(f),
-        },
-        // ── Succession ──
-        Action::LookAtKey { to } => match look_at_key(shell, &to) {
-            Ok(s) => match s {
-                Spawned::Started => Applied::Started(Kind::Sighting),
-                Spawned::InFlight => Applied::Refused(Kind::Sighting),
-            },
-            Err(f) => shell.trouble(f),
-        },
-        Action::Succeed { to, kind, effective, statement_md } => {
-            match succeed(shell, &to, &kind, &effective, &statement_md) {
-                Ok((id, n)) => Applied::Succeeded { id, to, queued: n.queued, next: n.next },
-                Err(f) => shell.trouble(f),
-            }
-        }
-        // ── Others' ledgers ──
         Action::ReadBook { address, dir } => match read_book(shell, &address, &dir) {
             Ok(s) => match s {
                 Spawned::Started => Applied::Started(Kind::Book),
                 Spawned::InFlight => Applied::Refused(Kind::Book),
             },
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceReroot { to } => match face::face_reroot(shell, &to) {
+            Ok((id, q)) => Applied::Queued { id, queued: q.queued, next: q.next },
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceOrigin { from } => match face::face_origin(shell, &from) {
+            Ok((id, q)) => Applied::Queued { id, queued: q.queued, next: q.next },
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceRerootMake { answers, label, chain } => match face::reroot_make(shell, &answers, &label, chain) {
+            Ok(a) => a,
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceRerootFee { go } => match face::reroot_fee(shell, go) {
+            Ok(Spawned::Started) => Applied::Started(Kind::RerootFee),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::RerootFee),
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceJoined { root, to } => match face::joined_read(shell, &root, &to) {
+            Ok(Spawned::Started) => Applied::Started(Kind::FaceJoined),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::FaceJoined),
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceBooks => match face_books(shell) {
+            Ok(Spawned::Started) => Applied::Started(Kind::FaceBooks),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::FaceBooks),
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceReread => match face_reread(shell) {
+            Ok(Spawned::Started) => Applied::Started(Kind::Persona),
+            Ok(Spawned::InFlight) => Applied::Refused(Kind::Persona),
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceHome { chain } => face::home_first(shell, chain),
+        Action::FaceAccount { platform, handle, note } => { let r = face::face_account(shell, &platform, &handle, &note); queued(shell, r) },
+        Action::FaceKey { address, role, note, consent, sign_here, .. } => { let r = face::face_key(shell, &address, &role, &note, &consent, sign_here); queued(shell, r) },
+        Action::FaceName { name } => { let r = face::face_name(shell, &name); queued(shell, r) },
+        Action::FaceRelease { subject } => { let r = face::face_release(shell, &subject); queued(shell, r) },
+        Action::FaceReseat { entry } => match face::face_reseat(shell, &entry) {
+            Ok(a) => a,
+            Err(f) => shell.trouble(f),
+        },
+        Action::FaceConsent { identity, role, .. } => match face::face_consent(shell, &identity, &role) {
+            Ok(text) => Applied::Consented { text },
+            Err(f) => shell.trouble(f),
+        },
+        Action::CliPassAdd { note, .. } => match cli_pass_add(shell, &note) {
+            Ok((pass, row)) => Applied::CliPassAdded { pass, row },
+            Err(f) => shell.trouble(f),
+        },
+        Action::CliPassDrop { tag } => match cli_pass_drop(shell, &tag) {
+            Ok(()) => Applied::CliPassDropped { tag },
             Err(f) => shell.trouble(f),
         },
         Action::RememberAddress { address } => match book_address(shell, &address, true) {
@@ -2220,7 +1870,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Ok(a) => Applied::Booked { address: a, on: false },
             Err(f) => shell.trouble(f),
         },
-        // ── Diligence, record verification, delivery check ──
         Action::Diligence { address, dir, work, from, to } => {
             match diligence(shell, &address, &dir, &work, &from, &to) {
                 Ok(s) => match s {
@@ -2242,6 +1891,11 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
         Action::ExtractOriginals { kit, to } => extract_originals(shell, &kit, &to),
+        Action::CleanExports { yes } => match yes.trim() {
+            "" => clean_exports(shell, false),
+            crate::exports::YES => clean_exports(shell, true),
+            w => shell.trouble(crate::fault::Fault::known(crate::fault::Known::CleanWord, w.to_string())),
+        },
         Action::CheckDelivery { path, expect } => match check_delivery(shell, &path, &expect) {
             Ok(s) => match s {
                 Spawned::Started => Applied::Started(Kind::Delivery),
@@ -2249,7 +1903,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             },
             Err(f) => shell.trouble(f),
         },
-        // ── Grant check ──
         Action::CheckPayload { typed, ledgers, endpoints, registry, from_block, now, file, terms } => {
             match check_payload(shell, &typed, &ledgers, &endpoints, &registry, &from_block, &now, (file, terms)) {
                 Ok(s) => match s {
@@ -2259,28 +1912,34 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
                 Err(f) => shell.trouble(f),
             }
         }
-        // ── Grant vault ──
+        Action::AuditCheck => match check::audit_check(shell) {
+            Ok(()) => Applied::Started(Kind::Behind),
+            Err(f) => shell.trouble(f),
+        },
+        Action::AuditOthers => match reader::audit_others(shell) {
+            Ok(()) => Applied::Started(Kind::Behind),
+            Err(f) => shell.trouble(f),
+        },
         Action::ImportGrant { typed } => match import_grant(shell, &typed) {
-            Ok((ids, grant)) => Applied::Held { ids, grant },
+            Ok(vault::Imported::Stored { ids, grant }) => Applied::Held { ids, grant, renewed: 0 },
+            Ok(vault::Imported::Renewed { grant }) => Applied::HeldRenewed { grant },
             Err(f) => shell.trouble(f),
         },
         Action::ImportGrantDir { dir } => match import_grant_dir(shell, &dir) {
-            Ok((ids, refused)) if refused.is_empty() => Applied::Held { ids, grant: String::new() },
-            // Nothing taken: report the last refusal; the others go to the trouble panel too.
-            Ok((ids, mut refused)) if ids.is_empty() => {
+            Ok((ids, renewed, refused)) if refused.is_empty() => Applied::Held { ids, grant: String::new(), renewed },
+            Ok((ids, renewed, mut refused)) if ids.is_empty() && renewed == 0 => {
                 let last = refused.pop().expect("非空");
                 for f in refused {
                     shell.trouble(f);
                 }
                 shell.trouble(last)
             }
-            // Some taken, some refused: not reported as success; each refusal goes to the trouble panel.
-            Ok((ids, refused)) => {
+            Ok((ids, renewed, refused)) => {
                 let n = refused.len();
                 for f in refused {
                     shell.trouble(f);
                 }
-                Applied::HeldPartly { ids, refused: n }
+                Applied::HeldPartly { ids, refused: n, renewed }
             }
             Err(f) => shell.trouble(f),
         },
@@ -2322,7 +1981,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
         Action::ReadCliPath => {
             let s = cli_path_now();
             shell.cli_path = Some(s.clone());
-            // No config where the command line cannot be reached from outside the app (the same judgement).
             shell.ai_config = cli_beside().filter(|_| !matches!(s, zikaron_os::cli_path::State::Unsupported(_))).map(|cli| ai_config(&cli));
             Applied::CliPathRead(s)
         }
@@ -2334,8 +1992,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             None => shell.trouble(crate::fault::Fault::known(crate::fault::Known::CliPathUnsupported, String::new())),
         },
         Action::SetCliDesktop { on } => {
-            // While writing alone is on, the desktop switch is greyed out, since writing alone outranks it
-            // (`Machine::cli_path` decides).
             if shell.machine.cli_path() == crate::machine::CliPath::Alone {
                 return shell.trouble(crate::fault::Fault::known(crate::fault::Known::CliAloneOn, String::new()));
             }
@@ -2362,10 +2018,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             }
             Err(f) => shell.trouble(f),
         },
-        // With nothing queued, refuse as the send button does; otherwise only report the request (sending
-        // happens from the queue page).
         Action::SendAsked { count } => match count {
-            0 => shell.trouble(crate::fault::Fault::known(crate::fault::Known::QueueEmpty, crate::lang::t(crate::lang::Key::Tail030).to_string())),
+            0 => shell.trouble(crate::fault::Fault::known(crate::fault::Known::QueueEmpty, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail030).to_string()))),
             n => Applied::SendAsked { count: n },
         },
         Action::ListHeld => match list_held(shell) {
@@ -2375,8 +2029,8 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             },
             Err(f) => shell.trouble(f),
         },
-        Action::ExportGrantFile { id, to } => match grant_file_plan(shell, &id, &to) {
-            Ok(_) => gate_first(shell, Action::ExportGrantFile { id, to }),
+        Action::ExportGrantFile { id, to, original, seal_to, .. } => match grant_file_plan(shell, &id, &to) {
+            Ok(_) => gate_first(shell, Action::ExportGrantFile { id, to, original, seal_to, key: None }),
             Err(f) => shell.trouble(f),
         },
         Action::SaveReadNetwork { was, name, chain, registry, from_block, nodes } => {
@@ -2409,8 +2063,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
             Err(f) => shell.trouble(f),
         },
         Action::FetchAside { from, password } => {
-            // A background task writing local data could write into this home after its folders are copied and
-            // before the swap, so this is refused until such tasks land (as for a master key change).
             if let Some(f) = busy_for_rekey(shell) {
                 return shell.trouble(f);
             }
@@ -2444,8 +2096,6 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
 
         Action::Adopt { dir } => match adopt(shell, &dir) {
             Ok(a) => {
-                // An adopted ledger carries its own genesis, so the clock can start.
-                shell.rooted = true;
                 Applied::AdoptedInPlace {
                     entries: a.sighting_entries,
                     linked: a.linked,
@@ -2459,34 +2109,15 @@ fn body(shell: &mut Shell, a: Action) -> Applied {
 
 
 
-
-// Identities.
-
-/// A test hook that runs between writing a key file and reading it back.
-///
-/// A write that reports success but leaves wrong bytes (disk full mid-write, the target swapped, another key
-/// written) cannot be produced from outside, because a successful write reads back what it wrote. This hook
-/// lets tests alter the file between the two steps so that case yields `BACKUP_NOT_LANDED`.
-///
-/// Like `keybox::set_light_kdf`, it can be set only once and only by the test hooks (tests check this); the
-/// window never sets it, so in the shipped app it does nothing.
 static LANDED_TAMPER: std::sync::OnceLock<fn(&std::path::Path)> = std::sync::OnceLock::new();
 
-
-// Ledger view.
-
-/// What comes after queueing. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Next {
-    /// Auto-anchor on: estimate gas and show the confirmation card.
     Send,
-    /// Auto-anchor off: only added to the ledger, waiting for a manual send.
     Wait,
-    /// Not queued (queueing failed, already anchored, or a local-only deleted pair): nothing comes next.
     Held,
 }
 
-/// The result of queueing: queue length and what comes next.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Enqueued {
     pub queued: usize,
@@ -2494,81 +2125,109 @@ pub struct Enqueued {
 }
 
 
-
-// Anchor queue.
-
-/// The anchors of a batch and what is needed to send them: the sender's (`zikaron_send::batch::Batch`).
 use zikaron_send::batch::Batch;
 
-/// How long to wait for an anchor to be included. Not being included in time means "not yet", not a verdict,
-/// and the anchor stays queued.
 pub const ANCHOR_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-mod adopt;
 mod anchor;
 mod archive;
 mod audit;
 mod badge;
 mod check;
 mod readnet;
+mod rest;
 mod delivery;
-mod depth;
 mod diligence;
+mod face;
+pub use self::face::{face_cleared, face_entries, reroot_nodes, reroot_row, unseated, unseated_of, FeeReading};
 mod genesis;
 mod grant;
 mod grant_file;
+pub use self::grant_file::ask_unwritten;
+mod issue;
 mod grants;
 mod home;
 mod identity;
 pub use self::check::one_place;
+pub use self::diligence::{snapshot_of, Snapshot};
 pub use self::identity::seats_with_entries;
 mod keys;
+mod office;
 mod kit;
 mod ledger;
 mod queue;
 mod reader;
 mod revoke;
 mod sentinel;
-mod succeed;
+mod chain;
+mod rotate;
+mod upgrade;
 mod vault;
 mod verify;
-use self::adopt::*;
 use self::anchor::*;
 use self::archive::*;
+use self::rest::*;
+pub use self::rest::add_refused;
 use self::audit::*;
 use self::badge::*;
+
+fn set_zone(shell: &mut Shell, zone: crate::when::Zone) -> Result<crate::when::Zone, crate::fault::Fault> {
+    shell.may_save_settings()?;
+    shell.commit_settings(|s| s.zone = Some(zone))?;
+    crate::when::set(zone);
+    Ok(zone)
+}
+
+fn set_lang(shell: &mut Shell, lang: crate::lang::Lang) -> Result<crate::lang::Lang, crate::fault::Fault> {
+    if shell.home.is_some() {
+        shell.may_save_settings()?;
+    }
+    shell.machine = crate::machine::update(|m| m.lang = Some(lang))?;
+    if shell.home.is_some() {
+        shell.commit_settings(|s| s.lang = Some(lang))?;
+    }
+    crate::lang::set(lang);
+    Ok(lang)
+}
+
 pub use self::check::*;
+pub use self::reader::OthersAsk;
 pub use self::audit::{basis_read, basis_stamp, BasisStamp};
 pub use self::readnet::*;
+pub use self::rotate::{old_words_held_elsewhere, words_note, words_pending, words_settle, WordsNote};
+pub use crate::identity::{seat_ledger, SeatLedger};
 use self::delivery::*;
-use self::depth::*;
 use self::diligence::*;
 use self::genesis::*;
 use self::grant::*;
+use self::issue::{grant_first, migrate_first, revoke_first};
+pub use self::issue::{issued, migratable, withdrew, Notice};
 use self::grant_file::*;
+use self::upgrade::*;
+pub use self::rotate::{follow_office, last_move, ledger_root, seat_before, LedgerFaces, rotation_owed, rotation_stage, start_stage, sweep_key, sweep_open, swept_now, RotateStep};
+use self::rotate::enrolment_read;
+use self::rotate::rotate;
+pub use self::chain::moved_ids;
+use self::chain::move_chain;
 use self::grants::*;
 pub use self::home::*;
 pub use self::identity::*;
 use self::keys::*;
-pub use self::keys::Seating;
+use self::office::*;
+pub use self::office::{follow_register, settle, Back, Followed, Seating};
 use self::kit::*;
 use self::ledger::*;
 pub use self::queue::*;
 use self::reader::*;
 use self::revoke::*;
 use self::sentinel::*;
-use self::succeed::*;
 use self::vault::*;
 use self::verify::*;
 
-/// The command line binary shipped beside this program (located only by `zikaron_os::cli_path`).
 pub fn cli_beside() -> Option<std::path::PathBuf> {
     zikaron_os::cli_path::beside_this_program()
 }
 
-/// What an AI app takes to start the command line's MCP server (CLI-SCHEMA §13): this machine's command line by its
-/// absolute path (an app started from the desktop does not have the terminal's path), and `mcp`. Written by the
-/// one JSON writer, so a path's backslashes and quotes are escaped as JSON escapes them on every system.
 pub fn ai_config(cli: &std::path::Path) -> String {
     use zikaron::json::Value;
     let o = |k: &str, v: Value| Value::Obj(vec![(k.to_string(), v)]);
@@ -2576,7 +2235,17 @@ pub fn ai_config(cli: &std::path::Path) -> String {
     String::from_utf8_lossy(&zikaron::json::canon_bytes(&o("mcpServers", o("zikaron", server)))).into_owned()
 }
 
-/// What is currently at the command line's location (a missing bundled command line reads as unsupported).
+pub fn ai_config_with_pass(config: &str, pass: &str) -> Option<String> {
+    use zikaron::json::Value;
+    let mut v = zikaron::json::parse(config.as_bytes()).ok()?;
+    let Value::Obj(top) = &mut v else { return None };
+    let Value::Obj(servers) = &mut top.iter_mut().find(|(k, _)| k == "mcpServers")?.1 else { return None };
+    let Value::Obj(server) = &mut servers.iter_mut().find(|(k, _)| k == "zikaron")?.1 else { return None };
+    server.retain(|(k, _)| k != "env");
+    server.push(("env".to_string(), Value::Obj(vec![(zikaron_seal::credential::PASS_ENV.to_string(), Value::Str(pass.to_string()))])));
+    Some(String::from_utf8_lossy(&zikaron::json::canon_bytes(&v)).into_owned())
+}
+
 fn cli_path_now() -> zikaron_os::cli_path::State {
     match cli_beside() {
         Some(cli) => zikaron_os::cli_path::state(&cli),
@@ -2584,7 +2253,6 @@ fn cli_path_now() -> zikaron_os::cli_path::State {
     }
 }
 
-/// Turns the command line on or off on the task's thread, via the platform module; each refusal is named.
 fn cli_path_set(cli: &std::path::Path, on: bool) -> Result<Done, crate::fault::Fault> {
     use crate::fault::{Fault, Known};
     use zikaron_os::cli_path::{disable, enable, Refused};
@@ -2594,17 +2262,14 @@ fn cli_path_set(cli: &std::path::Path, on: bool) -> Result<Done, crate::fault::F
         Refused::Cancelled => Fault::known(Known::CliPathCancelled, String::new()),
         Refused::NotAllowed(said) => Fault::known(Known::CliPathNotAllowed, said),
         Refused::Unsupported(why) => Fault::known(Known::CliPathUnsupported, why),
-        Refused::TooLong(n) => Fault::known(Known::CliPathNotAllowed, crate::lang::fill1(crate::lang::Key::TailCliPathTooLong, &n.to_string())),
+        Refused::TooLong(n) => Fault::known(Known::CliPathNotAllowed, crate::lang::both_of(|| crate::lang::fill1(crate::lang::Key::TailCliPathTooLong, &n.to_string()))),
     })
 }
 
-/// A grant file was written, as the UI shows it.
 fn grant_file_exported(x: crate::grantfilex::Exported) -> Applied {
-    Applied::GrantFileExported { path: x.path.display().to_string(), why: x.chosen.why, hops: x.hops, terms: x.terms, ledger: x.ledger, files: x.files }
+    Applied::GrantFileExported { path: x.path.display().to_string(), why: x.chosen.why, hops: x.hops, terms: x.terms, ledger: x.ledger, files: x.files, kit_id: x.kit_id, original: x.original, taken: x.taken, left_out: x.left_out, sealed: x.sealed }
 }
 
-/// Turn writing alone on (the passcode already passed the gate): the credential first, lasting `lasts` from now,
-/// then the switch; a switch that does not land takes the credential back. Returns when it expires.
 fn cli_alone_on(shell: &mut Shell, lasts: crate::machine::Lasts) -> Result<Option<u64>, crate::fault::Fault> {
     if !lasts.ok() {
         return Err(crate::fault::Fault::known(crate::fault::Known::MachineShape, crate::machine::member::CLI_ALONE.to_string()));
@@ -2620,21 +2285,42 @@ fn cli_alone_on(shell: &mut Shell, lasts: crate::machine::Lasts) -> Result<Optio
         }
     }
     shell.credential = Some(term);
+    shell.passes.clear();
     Ok(term.expires)
 }
 
-/// Turn writing alone off: the credential goes first (the command line cannot open anything from then on),
-/// then the switch.
+fn cli_pass_add(shell: &mut Shell, note: &str) -> Result<(crate::secret::Secret, zikaron_seal::credential::Row), crate::fault::Fault> {
+    match crate::keybox::add_pass(note, crate::lastread::now_secs()) {
+        Ok((pass, row)) => {
+            shell.passes.push(row.clone());
+            Ok((pass, row))
+        }
+        Err(f) => {
+            match f.which() {
+                Some(crate::fault::Known::CredentialExpired) => cli_alone_ended(shell, crate::fault::Known::CredentialExpired),
+                Some(crate::fault::Known::CredentialShape) => cli_alone_ended(shell, crate::fault::Known::CredentialReclaimed),
+                Some(crate::fault::Known::CredentialMissing) if shell.machine.cli_alone.is_some() => cli_alone_ended(shell, crate::fault::Known::CredentialMissing),
+                _ => {}
+            }
+            Err(f)
+        }
+    }
+}
+
+fn cli_pass_drop(shell: &mut Shell, tag: &str) -> Result<(), crate::fault::Fault> {
+    let done = crate::keybox::drop_pass(tag);
+    shell.reread_credential();
+    done
+}
+
 fn cli_alone_off(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
     crate::keybox::drop_credential()?;
     shell.credential = None;
+    shell.passes.clear();
     shell.machine = crate::machine::update(|m| m.cli_alone = None)?;
     Ok(())
 }
 
-/// Writing alone ends without the switch being touched: its credential expired, or a new master key made it
-/// worthless (`why`: `CREDENTIAL_EXPIRED` or `CLI_ALONE_DROPPED`). The credential is removed, the switch turned
-/// off and the person told once. Nothing to do when writing alone is off and no credential is left.
 pub fn cli_alone_ended(shell: &mut Shell, why: crate::fault::Known) {
     let had = match crate::keybox::drop_credential() {
         Ok(had) => had,
@@ -2643,7 +2329,12 @@ pub fn cli_alone_ended(shell: &mut Shell, why: crate::fault::Known) {
             return;
         }
     };
+    alone_ended(shell, why, had);
+}
+
+pub fn alone_ended(shell: &mut Shell, why: crate::fault::Known, had: bool) {
     shell.credential = None;
+    shell.passes.clear();
     if shell.machine.cli_alone.is_none() && !had {
         return;
     }
@@ -2652,4 +2343,37 @@ pub fn cli_alone_ended(shell: &mut Shell, why: crate::fault::Known) {
         Err(f) => shell.faults.push(f),
     }
     shell.faults.push(crate::fault::Fault::known(why, crate::places::credential_file()));
+}
+
+fn queued(shell: &mut Shell, r: Result<(String, Enqueued), crate::fault::Fault>) -> Applied {
+    match r {
+        Ok((id, q)) => Applied::Queued { id, queued: q.queued, next: q.next },
+        Err(f) => shell.trouble(f),
+    }
+}
+
+#[cfg(test)]
+mod ai_config_tests {
+    #[test]
+    fn the_config_copied_carries_the_key_just_made() {
+        use zikaron::json::Value;
+        let base = super::ai_config(std::path::Path::new("/opt/zikaron/bin/zikaron"));
+        let with = super::ai_config_with_pass(&base, "zkp_test").expect("in shape");
+        let v = zikaron::json::parse(with.as_bytes()).expect("json");
+        let server = v.member("mcpServers").and_then(|m| m.member("zikaron")).expect("the server");
+        assert_eq!(server.member("env").and_then(|e| e.member(zikaron_seal::credential::PASS_ENV)), Some(&Value::Str("zkp_test".into())));
+        assert_eq!(server.member("command"), Some(&Value::Str("/opt/zikaron/bin/zikaron".into())));
+        assert_eq!(server.member("args"), Some(&Value::Arr(vec![Value::Str("mcp".into())])));
+        let mut back = zikaron::json::parse(with.as_bytes()).expect("json");
+        if let Value::Obj(top) = &mut back {
+            if let Some((_, Value::Obj(servers))) = top.iter_mut().find(|(k, _)| k == "mcpServers") {
+                if let Some((_, Value::Obj(s))) = servers.iter_mut().find(|(k, _)| k == "zikaron") {
+                    s.retain(|(k, _)| k != "env");
+                }
+            }
+        }
+        assert_eq!(String::from_utf8_lossy(&zikaron::json::canon_bytes(&back)), base, "nothing else changed");
+        assert!(super::ai_config_with_pass("not json", "zkp_test").is_none());
+        assert!(super::ai_config_with_pass(r#"{"mcpServers":{}}"#, "zkp_test").is_none());
+    }
 }

@@ -1,8 +1,3 @@
-//! The app's skeleton, checked by running its own entry points (shell boot, the action layer's `Quit`) or,
-//! where the failing branch cannot be reached from outside, by reading the source: a missing font role is
-//! reported by name, closing the window waits for writes in flight, and a QR code is handed out only once it
-//! reads back. Places are set before any shell use (`vault_open`); each test runs alone in its own process.
-
 use super::{code_only, read_src_file, vault_open};
 use app::action::{apply, Action, Applied};
 use app::task::{Done, Kind};
@@ -16,7 +11,6 @@ fn boot(dressed: zikaron_ui::skin::Dressed) -> app::shell::Shell {
     app::shell::Shell::boot(dressed)
 }
 
-/// A missing font role is reported by name (`FONT_MISSING`), never drawn silently as boxes.
 #[test]
 fn a_missing_font_role_is_said_by_name_when_the_shell_boots() {
     if super::alone_in(module_path!(), "a_missing_font_role_is_said_by_name_when_the_shell_boots") {
@@ -35,14 +29,11 @@ fn a_missing_font_role_is_said_by_name_when_the_shell_boots() {
     assert_eq!(shell.font_missing, vec![zikaron_ui::fonts::Role::Cjk, zikaron_ui::fonts::Role::Strong]);
 }
 
-/// Quitting returns only after a write in flight has landed; a network task is left running and named, so
-/// quitting never hangs on it.
 #[test]
 fn quitting_returns_only_after_a_write_in_flight_has_landed() {
     if super::alone_in(module_path!(), "quitting_returns_only_after_a_write_in_flight_has_landed") {
         return;
     }
-    // The window's close goes through the action layer's quit.
     let window = code_only(&read_src_file("window/mod.rs").expect("window/mod.rs"));
     let at = window.find("fn on_exit(").expect("the window's close");
     let body = &window[at..at + window[at..].find("\n    }\n").expect("its end")];
@@ -55,7 +46,6 @@ fn quitting_returns_only_after_a_write_in_flight_has_landed() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a directory to write into");
     let bytes: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
-    // The write is held until `go`, released from elsewhere shortly after quitting begins.
     let go = Arc::new(AtomicBool::new(false));
     let (held, d, b) = (go.clone(), dir.clone(), bytes.clone());
     let _ = shell.tasks.spawn(Kind::Backup, move || {
@@ -64,7 +54,6 @@ fn quitting_returns_only_after_a_write_in_flight_has_landed() {
         }
         app::home::put_at(&d, "landed.bin", &b).map(|_| Done::Reconciled { label: String::new(), complete: true, entries: 0 })
     });
-    // A network task that never ends by itself while quitting.
     let stay = Arc::new(AtomicBool::new(false));
     let staying = stay.clone();
     let _ = shell.tasks.spawn(Kind::Chain, move || {
@@ -86,7 +75,6 @@ fn quitting_returns_only_after_a_write_in_flight_has_landed() {
         other => panic!("quit answered {other:?}"),
     };
     let took = started.elapsed();
-    // When quit returns, the write has landed whole.
     assert_eq!(std::fs::read(dir.join("landed.bin")).ok(), Some(bytes), "the write in flight landed before quit returned");
     assert!(took >= Duration::from_millis(250), "quit waited for it ({took:?})");
     assert!(reaped.waited.contains(&Kind::Backup) && reaped.joined == 1, "the backup was waited for and joined: {reaped:?}");
@@ -97,11 +85,8 @@ fn quitting_returns_only_after_a_write_in_flight_has_landed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A QR code is read back by our own reader before it is handed out and refused by name otherwise. Checked
-/// from the source, since no input reaches the refusing branch.
 #[test]
 fn a_qr_code_is_handed_out_only_once_it_reads_back() {
-    // The shipped part of qr.rs (its tests build damaged codes on purpose).
     let qr = code_only(&read_src_file("qr.rs").expect("qr.rs"));
     let qr = qr.split("#[cfg(test)]").next().unwrap_or("").to_string();
     const READ_BACK: &str = "Ok(back) if back == bytes => Ok(code),";
@@ -126,7 +111,6 @@ fn a_qr_code_is_handed_out_only_once_it_reads_back() {
     makers.sort();
     assert_eq!(makers, vec!["encode", "make", "make_with_mask"], "the public makers of a code");
     assert_eq!(qr.matches("Code { version").count(), 1, "one place draws a code (the private `drawn`)");
-    // No shipped source outside qr.rs builds a code by hand (its fields are public).
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(dir).expect("a source folder").flatten() {
             let p = e.path();
@@ -150,7 +134,6 @@ fn a_qr_code_is_handed_out_only_once_it_reads_back() {
         let code = code_only(&std::fs::read_to_string(f).expect("a source"));
         assert!(!code.contains("qr::Code {") && !code.contains("Code { version"), "{} builds a QR code by hand", f.display());
     }
-    // The badge, the one export of a code, reports the refusal in its own sentence.
     let badge = code_only(&read_src_file("badgex.rs").expect("badgex.rs"));
     assert!(badge.contains("crate::qr::NotMade::SelfCheck => crate::lang::Key::Tail237,"), "the badge says the refusal in its own sentence");
     let line = |k: app::lang::Key| app::lang::TABLE.iter().find(|(x, _, _)| *x == k).map(|(_, z, e)| (*z, *e)).expect("the sentence");

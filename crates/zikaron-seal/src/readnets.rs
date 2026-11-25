@@ -1,39 +1,22 @@
-//! The read-only networks table's bytes, one reading for both ends: the extra networks this machine reads when it
-//! reads someone else's material, and where a record package addressed to an address looks for that address's key.
-//! The desktop keeps the table (adding, editing, removing, the names shown); the command line reads it here too.
-//!
-//! One file in the machine directory ([`FILE`], form literal [`FORM`]), plain (it holds no account data):
-//! `{"form":"zikaron.read-networks/1","networks":[{"chainId":n,"fromBlock":n,"name":"…"?,"nodes":["…"],
-//! "registry":"0x…"}…]}`, rows in the order they were added. No file is an empty table.
-
 use std::path::{Path, PathBuf};
 use zikaron::json::{self, Value};
 
-/// The table's form literal.
 pub const FORM: &str = "zikaron.read-networks/1";
-/// The table's file name in the machine directory.
 pub const FILE: &str = "read-networks.json";
 
-/// One read-only network as written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub chain_id: u64,
     pub registry: [u8; 20],
     pub from_block: u64,
-    /// Node addresses as written, at least one.
     pub nodes: Vec<String>,
-    /// The typed name, when one is stored.
     pub name: Option<String>,
 }
 
-/// Where the table's file is.
 pub fn path_in(machine: &Path) -> PathBuf {
     machine.join(FILE)
 }
 
-/// The table read from bytes. `Err` (the member that does not read, or the whole when the form is not this one)
-/// for a table not in its shape: a malformed table is never read as empty. Two rows on one chain and registry, or
-/// a row with no node, are not in its shape.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Row>, String> {
     let v = json::parse(bytes).map_err(|t| format!("{t:?}"))?;
     if !matches!(v.member("form"), Some(Value::Str(f)) if f == FORM) {
@@ -66,8 +49,6 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Row>, String> {
     Ok(out)
 }
 
-/// The table in the machine directory `machine`: no file is an empty table; a file that does not read, or is not
-/// in its shape, is `Err` with its path and what failed.
 pub fn read(machine: &Path) -> Result<Vec<Row>, crate::Trouble> {
     let p = path_in(machine);
     let bytes = match std::fs::read(&p) {

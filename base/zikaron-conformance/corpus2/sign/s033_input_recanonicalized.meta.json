@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s033_input_recanonicalized.bin",
+ "note": "HARNESS: any RFC 8259 spelling is re-canonicalized before signing",
+ "predicted": {
+  "digest": "0xc4ed385596e032f48c94882562d706335961e244f3b26cdb29387d00f1d2ecf0",
+  "presig": "0xcdab067e9f3beb32d1252cfd63e492592fecbf591b0d08cadb24bb17f3864246",
+  "sig": "0xd273ed3d431e3d2e8945db444848f25624b2ad671a6c20c25d778cc941fa34ce3fa6e9a816d24554a2cbf586920fd074f085cb99e2d1ebb8f435d917be1c54aa1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

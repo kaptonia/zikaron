@@ -1,0 +1,1 @@
+sec 12.6: the same record with verdict VOID is an old record too, its hash an old ledger entry; zikaron/1 carries it in its VOID list and no label turns on it.

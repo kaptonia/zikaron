@@ -1,12 +1,3 @@
-//! What counts as a node's answer, and how a question is carried: each against a node started in this
-//! process (a local listener, or an in-process endpoint), never the network.
-//!
-//! An answer is the node's word only when it is a JSON-RPC answer to this question (an object with this
-//! `id`, `result` with `error` absent or null, or a non-null `error` without `result`); anything else is read
-//! by its HTTP status and never as an empty result. A broadcast is asked exactly once; a read whose
-//! connection broke before the answer is asked once more. A receipt wait is one deadline over every
-//! question.
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +9,6 @@ use zikaron_anchor::said::{self, Refusal};
 use zikaron_anchor::wire::{self, W};
 use zikaron_anchor::send;
 
-/// Read one whole request; `None` when the client closed first.
 fn read_request(s: &mut TcpStream) -> Option<Vec<u8>> {
     let mut raw = Vec::new();
     let mut buf = [0u8; 4096];
@@ -37,15 +27,11 @@ fn read_request(s: &mut TcpStream) -> Option<Vec<u8>> {
     }
 }
 
-/// What the node did with one question: answer with a status and a body (the request's `id` put in for
-/// `{id}`), or drop the connection without a byte.
 enum Reply {
     Say(u16, String),
     Drop,
 }
 
-/// A node answering each question by `rule` over (method, how many questions before); every method asked is
-/// kept, in order.
 fn node(rule: impl Fn(&str, usize) -> Reply + Send + Sync + 'static) -> (String, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}/", l.local_addr().expect("addr"));
@@ -99,9 +85,6 @@ fn shapeless(t: &Result<W, Trouble>) -> bool {
     matches!(t, Err(Trouble::Transport(rpc::Broke::Shapeless { .. })))
 }
 
-/// Eight answer forms: a JSON page without `result` or `error`, another request's `id`, or an array is a wrong
-/// shape (never an empty result); 429, 403 and 502 are read by status; `result: null` is a valid empty answer;
-/// `error: null` beside a `result` is the result.
 #[test]
 fn only_an_answer_to_this_question_is_the_nodes_word() {
     assert!(shapeless(&ask_once(200, "{\"message\":\"Too Many Requests\"}")), "①");
@@ -115,27 +98,19 @@ fn only_an_answer_to_this_question_is_the_nodes_word() {
     assert_eq!(ask_once(200, "{\"id\":{id},\"result\":null}").map(|v| v.is_null()), Ok(true), "⑥");
     assert_eq!(ask_once(200, "{\"id\":{id},\"error\":null,\"result\":\"0x1\"}").ok().and_then(|v| v.as_str().map(str::to_string)), Some("0x1".into()), "⑦");
     assert!(shapeless(&ask_once(200, "[{\"id\":{id},\"result\":\"0x1\"}]")), "⑧");
-    // Both, and neither: no answer.
     assert!(shapeless(&ask_once(200, "{\"id\":{id},\"error\":{\"code\":1,\"message\":\"x\"},\"result\":\"0x1\"}")));
     assert!(shapeless(&ask_once(200, "{\"id\":{id}}")));
-    // An error the node could not number (`id` null or absent) is still the node's refusal, read by its words;
-    // a result never is without this question's `id`.
     assert_eq!(ask_once(200, "{\"id\":null,\"error\":{\"code\":-32005,\"message\":\"rate limit exceeded\"}}").err().as_ref().and_then(said::refusal), Some(Refusal::RateLimited));
     assert_eq!(ask_once(429, "{\"error\":{\"code\":-32600,\"message\":\"invalid request\"}}").err().as_ref().and_then(said::refusal).map(|r| matches!(r, Refusal::Coded(_))), Some(true));
     assert!(shapeless(&ask_once(200, "{\"id\":null,\"result\":\"0x1\"}")));
     assert!(shapeless(&ask_once(200, "{\"result\":\"0x1\"}")));
     assert!(shapeless(&ask_once(200, "{\"id\":7,\"error\":{\"code\":1,\"message\":\"x\"}}")));
-    // A well-formed error is the node's word whatever the status; a 2xx page that is not JSON is not JSON.
     assert!(matches!(ask_once(500, "{\"id\":{id},\"error\":{\"code\":-32000,\"message\":\"no\"}}"), Err(Trouble::Node(_))));
     assert!(matches!(ask_once(400, "{\"id\":{id},\"result\":\"0x2\"}"), Ok(_)));
     assert!(matches!(ask_once(200, "<html>ok</html>"), Err(Trouble::Transport(rpc::Broke::NotJson))));
-    // A status without the node's word names the status, the gateway's JSON included.
     assert_eq!(ask_once(503, "{\"message\":\"down\"}").err().and_then(|t| rpc::status_of(&t)), Some(503));
 }
 
-/// The replay reads a recording as a live answer is read: an exchange holding neither `result` nor `error`
-/// holds no answer (the question is not served, never replayed as empty); `error: null` beside a `result` is
-/// the result.
 #[test]
 fn a_recorded_exchange_without_an_answer_is_no_answer() {
     let w = |j: &str| wire::parse(j.as_bytes()).expect("JSON");
@@ -150,8 +125,6 @@ fn a_recorded_exchange_without_an_answer_is_no_answer() {
     assert!(matches!(r.call("eth_blockNumber", &Value::Arr(vec![])), Err(Trouble::NotServed(_))));
 }
 
-/// A read whose connection breaks before any byte is asked once more; a broadcast whose connection breaks is
-/// asked exactly once (sending moves on and asks by hash instead).
 #[test]
 fn a_broadcast_is_asked_exactly_once_and_a_read_once_more() {
     let (url, asked) = node(|m, n| match (m, n) {
@@ -165,10 +138,6 @@ fn a_broadcast_is_asked_exactly_once_and_a_read_once_more() {
     assert_eq!(*asked.lock().expect("asked"), vec!["eth_blockNumber", "eth_blockNumber", rpc::BROADCAST]);
 }
 
-/// The command line's anchor: the broadcast is asked exactly once even when its connection breaks, and an
-/// estimate refused for the node's own reasons (rate limit, credentials, missing method, wrong chain) is a
-/// network trouble; only a refusal about the call itself (a revert, an unrecognised coded error) means "the
-/// call would revert".
 #[test]
 fn an_estimate_is_refused_by_the_one_table_and_a_broadcast_goes_once() {
     let estimate_says = |reply: fn() -> Reply| {
@@ -181,7 +150,7 @@ fn an_estimate_is_refused_by_the_one_table_and_a_broadcast_goes_once() {
             _ => Reply::Drop,
         });
         let mut ep = Http::new(&url).expect("an endpoint");
-        let got = send::anchor_estimated(&mut ep, &[7u8; 32], 31337, send::Form::Bare, None, &[[0xaa; 32]], None, Duration::ZERO);
+        let got = send::anchor_estimated(&mut ep, &[7u8; 32], 31337, send::Form::Registry, Some([0x11; 20]), &[[0xaa; 32]], None, Duration::ZERO);
         let broadcasts = asked.lock().expect("asked").iter().filter(|m| *m == rpc::BROADCAST).count();
         (got.err(), broadcasts)
     };
@@ -207,15 +176,11 @@ fn an_estimate_is_refused_by_the_one_table_and_a_broadcast_goes_once() {
         assert!(refused(&e), "{form}: {e:?}");
         assert_eq!(sends, 0, "{form}: nothing sent");
     }
-    // Estimated: the broadcast's connection breaks, and it is not asked again; the signed hash goes with the
-    // trouble (the bytes may be in a pool).
     let (e, sends) = estimate_says(|| Reply::Say(200, "{\"id\":{id},\"result\":\"0x5208\"}".into()));
     assert!(matches!(e, Some(send::NotSent::Broadcast(_, _))), "{e:?}");
     assert_eq!(sends, 1, "the broadcast is asked exactly once");
 }
 
-/// A receipt wait is one deadline over every question: a node that never answers cannot hold it past the wait
-/// by a deadline of its own, and once the wait is spent no further node is asked.
 #[test]
 fn a_receipt_wait_is_one_deadline_over_every_question() {
     let held = Arc::new(AtomicUsize::new(0));
@@ -233,7 +198,6 @@ fn a_receipt_wait_is_one_deadline_over_every_question() {
         }
     });
     let (other, asked) = node(|_, _| Reply::Say(200, "{\"id\":{id},\"result\":null}".into()));
-    // Each endpoint's own deadline is far longer than the wait.
     let mut a = Http::new(&silent).expect("endpoint").with_limits(rpc::Limits { deadline: Duration::from_secs(8), max_answer: 0 });
     let mut b = Http::new(&other).expect("endpoint").with_limits(rpc::Limits { deadline: Duration::from_secs(8), max_answer: 0 });
     let began = Instant::now();
@@ -245,8 +209,6 @@ fn a_receipt_wait_is_one_deadline_over_every_question() {
     assert!(asked.lock().expect("asked").is_empty(), "the wait was spent on the first node: the second is not asked");
 }
 
-/// The receipt wait's edges: no endpoint is said as none; a wait of zero asks exactly one round; a node
-/// that refuses and a node that answers "not yet" make "not yet", not "out of sight".
 #[test]
 fn a_receipt_wait_of_zero_asks_one_round() {
     struct Count(usize, Result<W, Trouble>);
@@ -258,7 +220,6 @@ fn a_receipt_wait_of_zero_asks_one_round() {
         fn name(&self) -> String {
             "count".into()
         }
-        /// No address: the place is the name.
         fn place(&self) -> String {
             self.name()
         }

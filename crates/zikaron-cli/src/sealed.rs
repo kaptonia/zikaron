@@ -1,17 +1,3 @@
-//! Reading and writing a home ZIKARON Desk keeps sealed, with the command line's credential: the desktop's switch "the
-//! command line writes alone" issued it (`zikaron_seal::credential`), and it is the one thing this path is
-//! given. No passcode, no `--key`: the signing key is the one the desktop keeps for the home's identity and seat.
-//!
-//! One implementation with the desktop, the sealed layer's (`zikaron-seal`): the credential opens to the master
-//! key, which must be this machine's vault's; the home's writer lock is taken for this one write (the desktop
-//! holding it is refused by name, `E_HOME_HELD`); the home's label says whose it is, the identity register which
-//! key signs, the vault gives that key; the entry is written into the sealed ledger by the sealed layer's
-//! `Ledger::append` after the same write gate as every other entry, and queued for anchoring in the home's sealed
-//! queue (`zikaron_seal::queue`). `anchor` with `--ledger` sends that queue from here, through the one sender
-//! (`sealedsend`); the command line's direct `anchor` (`--key`, `--endpoint`) never comes here.
-//!
-//! A home is sealed when the ledger's home has a label (`envelope::LABEL_FILE` in its settings room).
-
 use crate::codes::{Key, Reason};
 use crate::out::{self, s, Answer, Said};
 use std::path::{Path, PathBuf};
@@ -20,13 +6,18 @@ use zikaron_seal::keybox::{self, LocalKey, Vault};
 use zikaron_seal::names::NameKey;
 use zikaron_seal::{Code, Trouble};
 
-/// Whether `ledger` (as given to `--ledger`) is the ledger of a home the desktop keeps sealed.
+pub fn ledger_given(given: &str) -> String {
+    let Ok(at) = std::path::absolute(Path::new(given)) else { return given.to_string() };
+    if env::label_path(&at).is_file() && !env::label_path(zikaron_os::parent_dir(&at)).is_file() {
+        return at.join(env::LEDGER_DIR).display().to_string();
+    }
+    given.to_string()
+}
+
 pub fn is_home(ledger: &str) -> bool {
     env::label_path(&home_of(ledger)).is_file()
 }
 
-/// A sealed home opened for one write: its ledger and what reads and writes it, the signing key and its address,
-/// the entries as they open, and the home's writer lock (held until this is dropped).
 pub struct Opened {
     home: PathBuf,
     machine: PathBuf,
@@ -41,30 +32,26 @@ pub struct Opened {
     lock: Option<zikaron_os::LockFile>,
 }
 
-/// How long a send waits to take the home's writer lock back to settle its receipt ([`Opened::take_back`]): the
-/// desktop holds it for one write, or the first two stages of a send of its own; and how often it asks meanwhile.
 pub const TAKE_BACK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 pub const TAKE_BACK_STEP: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The sealed layer's refusal as this command line's answer: the credential's three refusals, the writer lock,
-/// another machine's mark and a handed-off ledger by their own reasons; anything else as unreadable, with the code
-/// and its evidence.
 pub fn refused(t: &Trouble) -> Answer {
+    if let Some(a) = crate::named::credential(t) {
+        return a;
+    }
     let members = vec![(Key::Token, s(&word(t.code))), (Key::Detail, s(&t.tail))];
     match t.code {
-        Code::CredentialExpired => out::denied(Reason::CredentialExpired, members).telling(Said::CredentialExpired.text().to_string()),
-        Code::CredentialMissing => out::denied(Reason::CredentialMissing, members).telling(Said::CredentialMissing.text().to_string()),
-        Code::CredentialShape => out::denied(Reason::CredentialShape, members).telling(Said::CredentialShape.text().to_string()),
         Code::HomeHeld => out::denied(Reason::HomeHeld, members).telling(Said::HomeHeld.text().to_string()),
         Code::HomeOtherMachine => out::denied(Reason::HomeOtherMachine, members).telling(Said::HomeOtherMachine.text().to_string()),
-        // Handed off: the handoff's id is the evidence.
-        Code::HandedOff => out::denied(Reason::HandedOff, vec![(Key::Handoff, s(&t.tail))]).telling(Said::HandedOff.text().to_string()),
+        Code::HandedOff => handed_off(&t.tail),
         _ => out::denied(Reason::Unreadable, members),
     }
 }
 
-/// The sealed layer's code as one word in capitals (`CredentialExpired` → `CREDENTIAL_EXPIRED`), the form the
-/// desktop's codes are spelled in.
+pub fn handed_off(handoff: &str) -> Answer {
+    crate::named::of(zikaron_glue::door::Own::HandedOff, "", handoff, false, "")
+}
+
 pub fn word(c: Code) -> String {
     let mut out = String::new();
     for (i, ch) in format!("{c:?}").chars().enumerate() {
@@ -76,8 +63,6 @@ pub fn word(c: Code) -> String {
     out
 }
 
-/// What the credential opens on this machine: the vault of the account it was issued for, and the keys sealed
-/// files are read and written with.
 struct Unlocked {
     machine: PathBuf,
     account: String,
@@ -86,68 +71,119 @@ struct Unlocked {
     names: NameKey,
 }
 
-/// Open this machine's credential at `now` (seconds since the epoch): found by its name (which says the account
-/// base), opened (an expired one is removed on the way out), and its master key checked against this machine's
-/// vault. The one opening of the credential, for reading and writing alike.
 fn unlock(now: u64) -> Result<Unlocked, Trouble> {
     let machine = zikaron_os::machine::here().map(|(m, _)| m).map_err(|_| Trouble::new(Code::CredentialMissing, String::new()))?;
     let account = zikaron_seal::credential::find(&machine)?;
-    let mk = zikaron_seal::credential::open(&machine, &account, now)?;
+    let pass = std::env::var_os(zikaron_seal::credential::PASS_ENV).map(|v| v.into_string().unwrap_or_else(|_| String::from("\u{0}")));
+    let mk = zikaron_seal::credential::open(&machine, &account, now, pass.as_deref())?;
+    drop(pass);
     let mk: [u8; 32] = mk.bytes().try_into().map_err(|_| Trouble::new(Code::CredentialShape, account.clone()))?;
     keybox::hold_master(&mk);
     let vault = Vault::new(machine.clone(), zikaron_seal::places::keybox_file_for(&account), zikaron_seal::places::keybox_lock_file_for(&account));
     if !keybox::master_is_this(&vault)? {
+        zikaron_seal::credential::remove(&machine, &account)?;
         return Err(Trouble::new(Code::CredentialShape, format!("{} master", zikaron_seal::credential::path(&machine, &account).display())));
     }
     let local = keybox::local_key()?;
     let names = keybox::name_key()?;
+    zikaron_anchor::action::keep_in(std::sync::Arc::new(zikaron_send::checked::Logs(zikaron_send::checked::Sealed(machine.clone()))));
     Ok(Unlocked { machine, account, vault, local, names })
 }
 
-/// This user's machine folder, made when missing (the pen list of handed ledgers and the adopted list live
-/// there). One that cannot be found is refused by name (`MachineShape`).
 pub fn machine_here() -> Result<PathBuf, Trouble> {
     let (m, _) = zikaron_os::machine::here().map_err(|_| Trouble::new(Code::MachineShape, String::new()))?;
     std::fs::create_dir_all(&m).map_err(|e| Trouble::io(&e, &m.display().to_string()))?;
     Ok(m)
 }
 
-/// The home of `ledger` (as given to `--ledger`): the directory it is in, said by the platform piece's one place
-/// for that (`zikaron_os::parent_dir`): a bare `--ledger ledger` is in the working directory `.`.
 fn home_of(ledger: &str) -> PathBuf {
     zikaron_os::parent_dir(Path::new(ledger)).to_path_buf()
 }
 
-/// Open the sealed home whose ledger is `ledger` with this machine's credential, at `now` (seconds since the
-/// epoch), for one write.
 pub fn open(ledger: &str, now: u64) -> Result<Opened, Trouble> {
     crate::seam();
     let ledger_dir = PathBuf::from(ledger);
     let home = home_of(ledger);
     let Unlocked { machine, account, vault, local, names } = unlock(now)?;
-    // The home's writer lock, for this one write: the desktop holding it, or a home another machine writes, is
-    // refused by name.
     let lock = take_lock(&home, &machine)?;
+    if let Some(u) = zikaron_os::user_home() {
+        let _ = zikaron_os::machine::settle_pointer(&u, &machine);
+    }
     let label = env::read_label(&home, &local)?.ok_or_else(|| Trouble::new(Code::LocalSeal, env::label_path(&home).display().to_string()))?;
-    // Which key signs for this home: its identity's address on its seat, in the identity register (a home of
-    // no identity's seat is signed for by the current identity and seat, as on the desktop).
-    let book = register_of(&machine, &account, &local, &names)?;
-    let (identity, seat) = match (label.whose.clone(), book.current.clone()) {
-        (Some(w), _) => w,
-        (None, Some((id, seat))) => (id, seat.to_string()),
-        (None, None) => return Err(Trouble::new(Code::IdentitiesShape, env::label_path(&home).display().to_string())),
-    };
-    let line = book.lines.iter().find(|l| l.id == identity).ok_or_else(|| Trouble::new(Code::IdentitiesShape, identity.clone()))?;
-    let address = line.address(&seat).ok_or_else(|| Trouble::new(Code::IdentitiesShape, format!("{identity} {seat}")))?;
-    let author = zikaron::hexfmt::encode(&address);
+    let author = office_of(&home, &machine, &account, &local, &names, &label)?;
     let key = key_in(&vault, &account, &author)?.ok_or_else(|| Trouble::new(Code::KeyboxSlot, author.clone()))?;
     let ledger = zikaron_seal::ledger::Ledger::open(&ledger_dir)?;
     let items = ledger.pile(&keys(&local, &names, &label.number))?.items;
     Ok(Opened { home, machine, account, ledger, local, names, number: label.number, key, author, items, lock: Some(lock) })
 }
 
-/// A sealed home opened for reading: its entries as they open, and what reads its other sealed files (its
-/// settings, this machine's index of signed files).
+fn office_of(home: &Path, machine: &Path, account: &str, local: &LocalKey, names: &NameKey, label: &env::Label) -> Result<String, Trouble> {
+    let book = register_of(machine, account, local, names)?;
+    let (identity, seat) = match (label.whose.clone(), book.current.clone()) {
+        (Some(w), _) => w,
+        (None, Some((id, seat))) => (id, seat.to_string()),
+        (None, None) => return Err(Trouble::new(Code::IdentitiesShape, env::label_path(home).display().to_string())),
+    };
+    let line = book.lines.iter().find(|l| l.id == identity).ok_or_else(|| Trouble::new(Code::IdentitiesShape, identity.clone()))?;
+    let address = line.office(&seat).map(|o| o.current).ok_or_else(|| Trouble::new(Code::IdentitiesShape, format!("{identity} {seat}")))?;
+    Ok(zikaron::hexfmt::encode(&address))
+}
+
+fn last_anchored_at(local: &LocalKey, names: &NameKey, home: &Path, number: &str) -> Result<Option<zikaron_seal::lastaudit::Anchored>, Trouble> {
+    let rel = format!("{}/{}", env::SETTINGS_DIR, zikaron_seal::lastaudit::FILE);
+    match sealed_at(local, names, home, &rel, Doc::LastAudit, Owner::Home(number.to_string()))? {
+        None => Ok(None),
+        Some(plain) => zikaron_seal::lastaudit::parse(&plain).map(Some).map_err(|w| Trouble::new(Code::SettingsShape, format!("{rel}: {w}"))),
+    }
+}
+
+fn terms_records_at(local: &LocalKey, names: &NameKey, home: &Path, number: &str) -> Result<Vec<zikaron_seal::terms::Record>, Trouble> {
+    use zikaron_seal::terms::{RECORD_PREFIX, RECORD_SUFFIX};
+    let room = format!("{}/{}", env::KITS_DIR, zikaron_glue::grantfile::TERMS_ROOM);
+    let listing = match std::fs::read_dir(home.join(&room)) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Trouble::io(&e, &home.join(&room).display().to_string())),
+    };
+    let mut out = Vec::new();
+    for e in listing.filter_map(Result::ok) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with(RECORD_PREFIX) && name.ends_with(RECORD_SUFFIX)) {
+            continue;
+        }
+        let rel = format!("{room}/{name}");
+        let at = home.join(&rel);
+        let raw = std::fs::read(&at).map_err(|e| Trouble::io(&e, &at.display().to_string()))?;
+        let ex = Expect { owner: Some(Owner::Home(number.to_string())), doc: Doc::TermsRecord, rel: Some(rel.clone()) };
+        if let Some(r) = zikaron_seal::terms::record_of(&env::open_with(local, &ex, &raw, &rel, Some(names))?) {
+            out.push(r);
+        }
+    }
+    out.sort_by(|a, b| a.grant.cmp(&b.grant));
+    Ok(out)
+}
+
+fn kept_ledgers_at(local: &LocalKey, names: &NameKey, home: &Path, number: &str) -> Result<Vec<Vec<Vec<u8>>>, Trouble> {
+    let room = format!("{}/{}", env::GRANTS_HELD_DIR, env::KEPT_DIR);
+    let listing = match std::fs::read_dir(home.join(&room)) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Trouble::io(&e, &home.join(&room).display().to_string())),
+    };
+    let mut paths: Vec<String> = listing.filter_map(Result::ok).filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for name in paths {
+        let rel = format!("{room}/{name}");
+        if let Some(plain) = sealed_at(local, names, home, &rel, Doc::KeptGrant, Owner::Home(number.to_string()))? {
+            if let Ok(o) = zikaron_glue::grantfile::open(&plain) {
+                out.push(o.ledger);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub struct Reading {
     home: PathBuf,
     machine: PathBuf,
@@ -156,12 +192,9 @@ pub struct Reading {
     names: NameKey,
     number: String,
     pub items: Vec<Vec<u8>>,
+    pub own: Option<String>,
 }
 
-/// Open the sealed home whose ledger is `ledger` with this machine's credential, at `now`, for reading: the same
-/// opening as a write ([`unlock`]) and the same refusals, the credential's three and another machine's mark
-/// (`E_HOME_OTHER_MACHINE`). No writer lock is taken: a read changes nothing, and the desktop writing meanwhile
-/// lands each file whole.
 pub fn read(ledger: &str, now: u64) -> Result<Reading, Trouble> {
     crate::seam();
     let home = home_of(ledger);
@@ -169,12 +202,11 @@ pub fn read(ledger: &str, now: u64) -> Result<Reading, Trouble> {
     this_machines(&home, &machine)?;
     let label = env::read_label(&home, &local)?.ok_or_else(|| Trouble::new(Code::LocalSeal, env::label_path(&home).display().to_string()))?;
     let items = zikaron_seal::ledger::Ledger::open(Path::new(ledger))?.pile(&keys(&local, &names, &label.number))?.items;
-    Ok(Reading { home, machine, account, local, names, number: label.number, items })
+    let own = office_of(&home, &machine, &account, &local, &names, &label).ok();
+    Ok(Reading { home, machine, account, local, names, number: label.number, items, own })
 }
 
-/// A home this machine may read: no writer mark, or this machine's; another machine's mark, or one that does not
-/// read, is refused by name (`E_HOME_OTHER_MACHINE`).
-fn this_machines(home: &Path, machine: &Path) -> Result<(), Trouble> {
+pub(crate) fn this_machines(home: &Path, machine: &Path) -> Result<(), Trouble> {
     match zikaron_seal::writer::mark_read(home) {
         zikaron_seal::writer::Mark::None => Ok(()),
         zikaron_seal::writer::Mark::Machine(m) if m == zikaron_seal::writer::this_machine(machine)? => Ok(()),
@@ -183,7 +215,6 @@ fn this_machines(home: &Path, machine: &Path) -> Result<(), Trouble> {
     }
 }
 
-/// The identity register of this machine's account, as it opens (`zikaron_seal::identities`).
 fn register_of(machine: &Path, account: &str, local: &LocalKey, names: &NameKey) -> Result<zikaron_seal::identities::Book, Trouble> {
     let register_name = zikaron_seal::places::registry_file_for(account);
     let register_at = machine.join(&register_name);
@@ -193,8 +224,6 @@ fn register_of(machine: &Path, account: &str, local: &LocalKey, names: &NameKey)
     zikaron_seal::identities::Book::parse(&plain).map_err(|w| Trouble::new(Code::IdentitiesShape, w))
 }
 
-/// The private key the vault keeps for `author` (`0x` and lowercase), checked to be that address's; `None` when
-/// its slot is empty.
 fn key_in(vault: &Vault, account: &str, author: &str) -> Result<Option<[u8; 32]>, Trouble> {
     let Some(mut secret) = keybox::get(vault, &zikaron_seal::places::key_slot_for(account, author))? else { return Ok(None) };
     let key: Result<[u8; 32], _> = secret.as_slice().try_into();
@@ -206,13 +235,6 @@ fn key_in(vault: &Vault, account: &str, author: &str) -> Result<Option<[u8; 32]>
     Ok(Some(key))
 }
 
-/// This machine's identities' keys, to try on a record package addressed to one key, with the credential, as the
-/// desktop tries them (`addressedx::local_keys`): each seat of each identity in the register, in the register's
-/// order, author seat first; a seat whose slot is empty is passed over (an identity's seed slot holds no key and is
-/// not read); so is one whose slot is unreadable on its own (`zikaron_seal::Code::one_slot`), the first such trouble
-/// kept beside the keys, as the desktop keeps it. `ledger` names a home the desktop keeps (the credential road's one
-/// form, `--ledger <home>/ledger`): the same opening and refusals as a read (the credential's three, another machine's
-/// mark); its ledger is not read.
 pub fn identity_keys(ledger: &str, now: u64) -> Result<(Vec<[u8; 32]>, Option<Trouble>), Trouble> {
     crate::seam();
     let home = home_of(ledger);
@@ -222,23 +244,30 @@ pub fn identity_keys(ledger: &str, now: u64) -> Result<(Vec<[u8; 32]>, Option<Tr
     let (mut keys, mut passed) = (Vec::new(), None);
     for line in &book.lines {
         for seat in env::SEATS {
-            let Some(address) = line.address(seat) else { continue };
-            match key_in(&vault, &account, &zikaron::hexfmt::encode(&address)) {
-                Ok(Some(k)) => {
-                    keys.push(k);
+            let (Some(root), Some(office)) = (line.address(seat), line.office(seat)) else { continue };
+            let mut held: Vec<[u8; 20]> = vec![root];
+            for a in std::iter::once(office.current).chain(office.former.iter().copied()) {
+                if !held.contains(&a) {
+                    held.push(a);
                 }
-                Ok(None) => {}
-                Err(t) if t.code.one_slot() => {
-                    passed.get_or_insert(t);
+            }
+            for address in held {
+                match key_in(&vault, &account, &zikaron::hexfmt::encode(&address)) {
+                    Ok(Some(k)) => {
+                        keys.push(k);
+                    }
+                    Ok(None) => {}
+                    Err(t) if t.code.one_slot() => {
+                        passed.get_or_insert(t);
+                    }
+                    Err(t) => return Err(t),
                 }
-                Err(t) => return Err(t),
             }
         }
     }
     Ok((keys, passed))
 }
 
-/// One sealed file's plain bytes (`None` when it is not there): at `dir`/`rel`, owned by `owner`.
 fn sealed_at(local: &LocalKey, names: &NameKey, dir: &Path, rel: &str, doc: Doc, owner: Owner) -> Result<Option<Vec<u8>>, Trouble> {
     let at = dir.join(rel);
     let raw = match std::fs::read(&at) {
@@ -250,39 +279,49 @@ fn sealed_at(local: &LocalKey, names: &NameKey, dir: &Path, rel: &str, doc: Doc,
     env::open_with(local, &ex, &raw, rel, Some(names)).map(Some)
 }
 
-/// Where the home's settings say its anchors are (`zikaron_seal::ground`); a home without settings has none set.
+fn hold_rest_keys(g: &zikaron_seal::ground::Ground, read: impl FnOnce() -> Result<zikaron_seal::machine::Cli, Trouble>) -> Result<(), Trouble> {
+    if !g.rest_asked().is_empty() {
+        zikaron_anchor::rest::hold_keys(read()?.rest_keys.0);
+    }
+    Ok(())
+}
+
 fn ground_of(local: &LocalKey, names: &NameKey, home: &Path, number: &str) -> Result<zikaron_seal::ground::Ground, Trouble> {
     let rel = format!("{}/{}", env::SETTINGS_DIR, zikaron_seal::ground::SETTINGS_FILE);
     match sealed_at(local, names, home, &rel, Doc::Settings, Owner::Home(number.to_string()))? {
         None => Ok(zikaron_seal::ground::Ground::default()),
         Some(plain) => {
             let v = zikaron::json::parse(&plain).map_err(|t| Trouble::new(Code::SettingsShape, format!("{rel}: {t:?}")))?;
-            Ok(zikaron_seal::ground::of_settings(&v))
+            let g = zikaron_seal::ground::of_settings(&v);
+            zikaron_anchor::action::take_asks_cap(g.log_asks.unwrap_or(zikaron_anchor::action::ASKS_DEFAULT));
+            Ok(g)
         }
     }
 }
 
 impl Reading {
-    /// One sealed file's plain bytes (`None` when it is not there): at `dir`/`rel`, owned by `owner`.
     fn sealed(&self, dir: &Path, rel: &str, doc: Doc, owner: Owner) -> Result<Option<Vec<u8>>, Trouble> {
         sealed_at(&self.local, &self.names, dir, rel, doc, owner)
     }
 
-    /// Where the home's settings say its anchors are (`zikaron_seal::ground`); a home without settings has none
-    /// set.
     pub fn ground(&self) -> Result<zikaron_seal::ground::Ground, Trouble> {
-        ground_of(&self.local, &self.names, &self.home, &self.number)
+        let g = ground_of(&self.local, &self.names, &self.home, &self.number)?;
+        hold_rest_keys(&g, || self.machine_settings())?;
+        Ok(g)
     }
 
-    /// What this machine's sealed settings say about the command line (`zikaron_seal::machine`): its proxy among
-    /// them, as a write reads it.
     pub fn machine_settings(&self) -> Result<zikaron_seal::machine::Cli, Trouble> {
         zikaron_seal::machine::read(&self.machine, &self.account, &self.local, &self.names)
     }
 
-    /// The terms document kept when the grant `grant` (its id, `0x` and lowercase) was signed, as its path in a
-    /// package and its bytes (`zikaron_seal::terms`: the issuance record, then the document it names); `None`
-    /// when the home keeps none for it.
+    pub fn place_mark(&self, s: &zikaron_seal::unfetched::State) -> Result<(), Trouble> {
+        zikaron_seal::unfetched::write(&self.home, &self.local, &self.number, s)
+    }
+
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
     pub fn terms_of(&self, grant: &str) -> Result<Option<(String, Vec<u8>)>, Trouble> {
         let owner = || Owner::Home(self.number.clone());
         let rel = zikaron_seal::terms::record_rel(&self.names, grant);
@@ -293,12 +332,83 @@ impl Reading {
         Ok(self.sealed(&self.home, &rel, Doc::TermsDoc, owner())?.map(|bytes| (doc, bytes)))
     }
 
-    /// This machine's read-only networks (`zikaron_seal::readnets`, the table the desktop keeps); none is no rows.
+    pub fn machine(&self) -> &Path {
+        &self.machine
+    }
+
+    pub fn checked(&self) -> zikaron_send::checked::Record<zikaron_send::checked::Sealed> {
+        zikaron_send::checked::Record(zikaron_send::checked::Sealed(self.machine.clone()))
+    }
+
+    pub fn exports_list(&self) -> Result<Vec<zikaron_seal::exports::Row>, Trouble> {
+        let rel = format!("{}/{}", zikaron_seal::exports::DIR, zikaron_seal::exports::FILE);
+        match self.sealed(&self.machine, &rel, Doc::Exports, Owner::Machine)? {
+            None => Ok(Vec::new()),
+            Some(plain) => zikaron_seal::exports::parse(&plain).map_err(|w| Trouble::new(Code::SettingsShape, format!("{rel}: {w}"))),
+        }
+    }
+
+    pub fn write_exports_list(&self, rows: &[zikaron_seal::exports::Row]) -> Result<(), Trouble> {
+        let rel = format!("{}/{}", zikaron_seal::exports::DIR, zikaron_seal::exports::FILE);
+        let sealed = env::seal_checked(&self.local, &Ident { owner: Owner::Machine, doc: Doc::Exports, logical: rel }, &zikaron_seal::exports::render(rows))?;
+        zikaron_seal::land::put_at(&self.machine.join(zikaron_seal::exports::DIR), zikaron_seal::exports::FILE, &sealed)
+    }
+
+    pub fn list_export(&self, kind: zikaron_seal::exports::Kind, path: &Path, now: u64) -> Result<(), Trouble> {
+        let at = std::fs::canonicalize(path).map_err(|e| Trouble::io(&e, &path.display().to_string()))?;
+        let rows = zikaron_seal::exports::listed(&self.exports_list()?, kind, &at, now).ok_or_else(|| Trouble::new(Code::Ledger, at.display().to_string()))?;
+        self.write_exports_list(&rows)
+    }
+
+    pub fn last_anchored(&self) -> Result<Option<zikaron_seal::lastaudit::Anchored>, Trouble> {
+        last_anchored_at(&self.local, &self.names, &self.home, &self.number)
+    }
+
+    pub fn kept_ledgers(&self) -> Result<Vec<Vec<Vec<u8>>>, Trouble> {
+        kept_ledgers_at(&self.local, &self.names, &self.home, &self.number)
+    }
+
+    pub fn held_office(&self, root: &[u8; 20]) -> Result<Option<[u8; 20]>, Trouble> {
+        let book = register_of(&self.machine, &self.account, &self.local, &self.names)?;
+        let seats: Vec<([u8; 20], [u8; 20])> = book.lines.iter().flat_map(|l| env::SEATS.iter().filter_map(move |seat| Some((l.address(seat)?, l.office(seat)?.current)))).collect();
+        let kept = kept_ledgers_at(&self.local, &self.names, &self.home, &self.number)?;
+        Ok(zikaron_send::recipient::held(root, &seats, &kept))
+    }
+
     pub fn read_networks(&self) -> Result<Vec<zikaron_seal::readnets::Row>, Trouble> {
         zikaron_seal::readnets::read(&self.machine)
     }
 
-    /// This machine's index of signed files (`zikaron_seal::records`); none kept is no rows.
+    pub fn held(&self) -> Result<Vec<Vec<u8>>, Trouble> {
+        let root = self.home.join(env::GRANTS_HELD_DIR);
+        let mut stack = vec![root.clone()];
+        let mut out = Vec::new();
+        while let Some(at) = stack.pop() {
+            let listing = match std::fs::read_dir(&at) {
+                Ok(l) => l,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && at == root => return Ok(out),
+                Err(e) => return Err(Trouble::io(&e, &at.display().to_string())),
+            };
+            for e in listing.filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().into_owned();
+                if zikaron_store::layout::parse_entry_file(&name).is_none() {
+                    continue;
+                }
+                let Ok(rel) = p.strip_prefix(&self.home) else { continue };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if let Ok(Some(plain)) = self.sealed(&self.home, &rel, Doc::Held, Owner::Home(self.number.clone())) {
+                    out.push(plain);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn records(&self) -> Result<Vec<zikaron_seal::records::Row>, Trouble> {
         let rel = format!("{}/{}", zikaron_seal::records::DIR, zikaron_seal::records::FILE);
         match self.sealed(&self.machine, &rel, Doc::Records, Owner::Machine)? {
@@ -312,9 +422,6 @@ fn keys<'a>(local: &'a LocalKey, names: &'a NameKey, number: &str) -> zikaron_se
     zikaron_seal::ledger::Keys { local, names, owner: Some(Owner::Home(number.to_string())) }
 }
 
-/// Take the home's writer lock now through the one way both ends take it (`zikaron_seal::writer::take`), or
-/// refuse: the desktop (or another writer here) holds it; another machine's mark is on the home, or a mark this
-/// version cannot read.
 fn take_lock(home: &Path, machine: &Path) -> Result<zikaron_os::LockFile, Trouble> {
     let t = zikaron_seal::writer::take(home, machine)?;
     match t.took {
@@ -326,28 +433,20 @@ fn take_lock(home: &Path, machine: &Path) -> Result<zikaron_os::LockFile, Troubl
 }
 
 impl Opened {
-    /// The ledger directory, as answered.
     pub fn ledger_root(&self) -> String {
         self.ledger.root().to_string_lossy().into_owned()
     }
 
-    /// Write one entry (its id and canonical bytes) into the sealed ledger, and, when it was written, queue it
-    /// for anchoring at `now` as the desktop queues each entry it writes. True when written, false when the same
-    /// entry was already there.
     pub fn append(&self, id: &str, bytes: &[u8], now: u64) -> Result<bool, Trouble> {
         let name = zikaron_store::layout::EntryName::parse(id.trim_start_matches("0x")).ok_or_else(|| Trouble::new(Code::Ledger, id.to_string()))?;
         let stored = self.ledger.append(&name, bytes, &keys(&self.local, &self.names, &self.number), &self.number)?;
         let written = matches!(stored, zikaron_store::ledger::Stored::Written);
         if written {
-            self.queue(id, now)?;
+            self.queue(id, bytes, now)?;
         }
         Ok(written)
     }
 
-    /// Record in this machine's index of signed files (`zikaron_seal::records`, the one the desktop writes as it
-    /// signs a file) that `row`'s file is the original of its entry: read, the row of that entry replaced, written
-    /// back whole, sealed as the desktop seals it. A record package exported later takes the original from there,
-    /// whichever way the entry was written.
     pub fn index_original(&self, row: zikaron_seal::records::Row) -> Result<(), Trouble> {
         use zikaron_seal::records::{self as records, DIR, FILE};
         let rel = format!("{DIR}/{FILE}");
@@ -368,33 +467,29 @@ impl Opened {
         zikaron_seal::land::put_at(&dir, FILE, &sealed)
     }
 
-    /// Write one entry taken from a handoff (its id and canonical bytes) into the sealed ledger, not queued: whether
-    /// it is on chain is the desktop's next self-audit's to read, so an entry the other place anchored is never
-    /// queued to be sent again. True when written, false when the same entry was already there.
     pub fn take(&self, id: &str, bytes: &[u8]) -> Result<bool, Trouble> {
         let name = zikaron_store::layout::EntryName::parse(id.trim_start_matches("0x")).ok_or_else(|| Trouble::new(Code::Ledger, id.to_string()))?;
         let stored = self.ledger.append(&name, bytes, &keys(&self.local, &self.names, &self.number), &self.number)?;
         Ok(matches!(stored, zikaron_store::ledger::Stored::Written))
     }
 
-    /// Queue `id` in the home's sealed queue: read, push, write back whole (the lock is held).
-    fn queue(&self, id: &str, now: u64) -> Result<(), Trouble> {
+    fn queue(&self, id: &str, bytes: &[u8], now: u64) -> Result<(), Trouble> {
         let mut q = self.read_queue()?;
-        q.push(id, now);
+        let ground = self.ground()?;
+        let place = zikaron_seal::queue::places_of(&self.pile()?).get(&format!("0x{}", id.trim_start_matches("0x").to_ascii_lowercase())).copied().or_else(|| zikaron_glue::book::check(bytes).ok().map(|e| zikaron_seal::queue::Place::of(&e)));
+        q.push_placed(id, place.is_some_and(|p| p.alone), place.and_then(|p| p.carried_on), &ground.other_chains(), now);
         self.write_queue(&q)
     }
 
-    /// The home's sealed queue as its file holds it (no file: empty).
     pub fn read_queue(&self) -> Result<zikaron_seal::queue::Queue, Trouble> {
         use zikaron_seal::queue::{Queue, FILE};
         let rel = format!("{}/{FILE}", env::SETTINGS_DIR);
         match sealed_at(&self.local, &self.names, &self.home, &rel, Doc::Queue, Owner::Home(self.number.clone()))? {
-            Some(plain) => Queue::parse(&plain).map_err(|w| Trouble::new(Code::QueueShape, format!("{rel}: {w:?}"))),
-            None => Ok(Queue::default()),
+            Some(plain) => Queue::parse(&plain, self.ground()?.chain_id.unwrap_or(0)).map_err(|w| Trouble::new(Code::QueueShape, format!("{rel}: {w:?}"))),
+            None => Ok(Queue { chain: self.ground()?.chain_id.unwrap_or(0), ..Queue::default() }),
         }
     }
 
-    /// Write the home's sealed queue whole, sealed as the desktop seals it.
     pub fn write_queue(&self, q: &zikaron_seal::queue::Queue) -> Result<(), Trouble> {
         use zikaron_seal::queue::FILE;
         let rel = format!("{}/{FILE}", env::SETTINGS_DIR);
@@ -402,52 +497,71 @@ impl Opened {
         zikaron_seal::land::put_at(&self.home.join(env::SETTINGS_DIR), FILE, &sealed)
     }
 
-    /// The home's ledger entries as they open now (a send reads them again under its lock: the desktop may have
-    /// written between).
+    pub fn retracting(&self, target: &str) -> Result<Option<zikaron_seal::queue::Retracting>, Trouble> {
+        let last: Option<Vec<String>> = last_anchored_at(&self.local, &self.names, &self.home, &self.number)?.map(|a| a.rows.into_iter().map(|(id, _)| id).collect());
+        Ok(self.read_queue()?.retracting(target, last.as_deref(), self.ground()?.can_anchor()))
+    }
+
+    pub fn last_anchored(&self) -> Result<Option<zikaron_seal::lastaudit::Anchored>, Trouble> {
+        last_anchored_at(&self.local, &self.names, &self.home, &self.number)
+    }
+
+    pub fn terms_records(&self) -> Result<Vec<zikaron_seal::terms::Record>, Trouble> {
+        terms_records_at(&self.local, &self.names, &self.home, &self.number)
+    }
+
+    pub fn amend_queue<T>(&self, f: impl FnOnce(&mut zikaron_seal::queue::Queue) -> T) -> Result<T, Trouble> {
+        let mut q = self.read_queue()?;
+        let t = f(&mut q);
+        self.write_queue(&q)?;
+        Ok(t)
+    }
+
     pub fn pile(&self) -> Result<Vec<Vec<u8>>, Trouble> {
         Ok(self.ledger.pile(&keys(&self.local, &self.names, &self.number))?.items)
     }
 
-    /// Where the home's settings say its anchors are (`zikaron_seal::ground`).
     pub fn ground(&self) -> Result<zikaron_seal::ground::Ground, Trouble> {
-        ground_of(&self.local, &self.names, &self.home, &self.number)
+        let g = ground_of(&self.local, &self.names, &self.home, &self.number)?;
+        hold_rest_keys(&g, || self.machine_settings())?;
+        Ok(g)
     }
 
-    /// What this machine's sealed settings say about the command line (`zikaron_seal::machine`): how its sending
-    /// is handled, the proxy, writing alone.
     pub fn machine_settings(&self) -> Result<zikaron_seal::machine::Cli, Trouble> {
         zikaron_seal::machine::read(&self.machine, &self.account, &self.local, &self.names)
     }
 
-    /// The home's read-only mark (`zikaron_seal::unfetched`; none: `None`).
     pub fn mark(&self) -> Result<Option<zikaron_seal::unfetched::State>, Trouble> {
         zikaron_seal::unfetched::read(&self.home, &self.local, &self.names, &self.number)
     }
 
-    /// Place the home's read-only mark, as the desktop places it.
-    pub fn place_mark(&self, s: zikaron_seal::unfetched::State) -> Result<(), Trouble> {
+    pub fn place_mark(&self, s: &zikaron_seal::unfetched::State) -> Result<(), Trouble> {
         zikaron_seal::unfetched::write(&self.home, &self.local, &self.number, s)
     }
 
-    /// This user's machine folder.
+    pub fn lift_mark(&self) -> Result<(), Trouble> {
+        match self.lock {
+            Some(_) => zikaron_seal::unfetched::clear(&self.home),
+            None => Ok(()),
+        }
+    }
+
     pub fn machine(&self) -> &Path {
         &self.machine
     }
 
-    /// The home's folder.
+    pub fn checked(&self) -> zikaron_send::checked::Record<zikaron_send::checked::Sealed> {
+        zikaron_send::checked::Record(zikaron_send::checked::Sealed(self.machine.clone()))
+    }
+
     pub fn home(&self) -> &Path {
         &self.home
     }
 
-    /// Let the home's writer lock go while a send waits for its receipt (holding none, so the desktop may write and
-    /// send the rest of the queue meanwhile).
     pub fn let_go(&mut self) {
         self.lock = None;
     }
 
-    /// Take the home's writer lock back to settle a send's receipt, asking again while the desktop holds it, for
-    /// [`TAKE_BACK_WAIT`] at most (then refused by name, `HomeHeld`: nothing is settled, and the batch stays in
-    /// flight for whichever sender asks next); another machine's mark is refused as at the opening.
     pub fn take_back(&mut self) -> Result<(), Trouble> {
         if self.lock.is_some() {
             return Ok(());
@@ -468,7 +582,6 @@ impl Opened {
 
 #[cfg(test)]
 mod tests {
-    /// A ledger's home is the directory it is in: the working directory for a bare name, never the empty path.
     #[test]
     fn a_ledgers_home_is_the_directory_it_is_in() {
         use std::path::Path;

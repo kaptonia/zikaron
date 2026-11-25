@@ -1,28 +1,35 @@
 use super::*;
 
-pub(super) fn revoke(shell: &mut Shell, grant: &str, case: &str) -> Result<(String, Enqueued), crate::fault::Fault> {
-    let body = crate::grantx::revocation_body(grant, case)?;
-    // The revoked grant must be in this ledger. In zikaron/1 a revocation pointing elsewhere is still a valid
-    // entry with a dangling reference, but it is never what the person wants, so it is refused by name before
-    // anything reaches the chain.
+pub(super) fn revoke_rules(shell: &mut Shell, grant: &str) -> Result<(), crate::fault::Fault> {
+    crate::grantx::revocation_body(grant, "")?;
     let home = shell.home.as_ref().ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoHome, String::new())
     })?;
-    // Read the entry directly rather than through the register table: this only needs to know whether it is a
-    // grant in this ledger.
-    let d = crate::ledgerx::detail(home, grant).map_err(|_| {
-        crate::fault::Fault::known(crate::fault::Known::SubjectMissing, grant.trim().to_string())
+    let queued: Vec<String> = shell.queue.items.iter().map(|q| q.id.clone()).collect();
+    let rows = crate::ledgerx::table(home, None, &queued)?.rows;
+    zikaron_glue::retraction::revocation::may_revoke(&crate::retractx::lines(&rows), grant).map_err(|why| {
+        let f = match why {
+            zikaron_glue::retraction::revocation::Invalid::NotInLedger => crate::fault::Fault::known(crate::fault::Known::SubjectMissing, grant.trim().to_string()),
+            zikaron_glue::retraction::revocation::Invalid::NotAGrant => crate::fault::Fault::known(crate::fault::Known::SubjectMissing, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail048, &[&(grant.trim()).to_string()]))),
+        };
+        f.ruled(zikaron_glue::door::Rule::Revocation, Some(why.token()), Some(grant.trim().to_string()), None)
     })?;
-    if d.kind != zikaron::tokens::EntryType::Grant {
-        return Err(crate::fault::Fault::known(
-            crate::fault::Known::SubjectMissing,
-            crate::lang::filln(crate::lang::Key::Tail048, &[&(grant.trim()).to_string()]),
-        ));
-    }
+    Ok(())
+}
+
+pub(super) fn revoke(shell: &mut Shell, grant: &str, case: &str) -> Result<(String, Enqueued), crate::fault::Fault> {
+    revoke_rules(shell, grant)?;
+    let id = seal_revocation(shell, grant, case)?;
+    let n = queue_it(shell, &id);
+    Ok((id, n))
+}
+
+pub(super) fn seal_revocation(shell: &mut Shell, grant: &str, case: &str) -> Result<String, crate::fault::Fault> {
+    let body = crate::grantx::revocation_body(grant, case)?;
     let (head, secret) = ready_to_append(shell)?;
     let sealed = match crate::entryx::seal(
         &secret,
-        zikaron::tokens::EntryType::Revocation.as_str(),
+        zikaron_glue::book::Kind::Revocation.as_str(),
         head.0 + 1,
         Some(&head.1),
         body,
@@ -37,11 +44,8 @@ pub(super) fn revoke(shell: &mut Shell, grant: &str, case: &str) -> Result<(Stri
         }
     };
     let id = land_sealed(shell, sealed)?;
-    let n = queue_it(shell, &id);
-    // The grant's register row changes too; mark it stale so it is reread.
-    shell.stale_grants();
-    shell.stale_rows();
-    Ok((id, n))
+    shell.reread(crate::shell::Reread::WroteGrant);
+    Ok(id)
 }
 
 pub(super) fn read_story(shell: &mut Shell, grant: &str) -> Result<usize, crate::fault::Fault> {

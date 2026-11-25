@@ -1,0 +1,1 @@
+sec 12.6: one key closes twice; the later-cut candidate's genesis has the smaller id, and the cut alone decides: the earlier closing succession continues, the later one falls into the new segment MALFORMED with its record MISSING, and BROKEN_CHAIN comes from the two root geneses at seq 0 in the new segment, the old report being COMPLETE.

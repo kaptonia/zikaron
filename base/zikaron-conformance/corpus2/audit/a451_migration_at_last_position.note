@@ -1,0 +1,1 @@
+sec 6.6: a migration at the ledger's last position closes it; nothing follows and the label is COMPLETE.

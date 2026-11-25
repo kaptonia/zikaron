@@ -1,13 +1,3 @@
-//! `zkk`: the kit conformance CLI, implementing the commands of `base/zikaron-conformance/HARNESS-KIT.md`.
-//!
-//! One call writes one canonical JSON value to stdout with no trailing newline. Any answer (a refusal is an
-//! answer) exits 0; harness misuse exits 2; there is no other exit code.
-//!
-//! Positional arguments come first, then options in any order, each option's value as the next token and no
-//! option repeated. Any other token sequence (a repeated option, `--now=<int>`, an option before a
-//! positional, extra tokens) is misuse.
-
-// `unsafe` code belongs only in the platform crate (`zikaron-os`); it is forbidden here.
 #![forbid(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
@@ -37,7 +27,6 @@ fn emit(v: &Value) -> ! {
     exit(0)
 }
 
-/// Builds every command output object; keys come from [`Key`].
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }
@@ -46,8 +35,6 @@ fn s(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
-/// `--now` uses the §3.2 int spelling: decimal digits, unsigned, no leading zero, at most 2^53 − 1; anything
-/// else is misuse.
 fn parse_now(raw: &str) -> u64 {
     if raw.is_empty() || !raw.bytes().all(|c| c.is_ascii_digit()) {
         die("--now takes a decimal int");
@@ -65,8 +52,6 @@ fn parse_now(raw: &str) -> u64 {
     v
 }
 
-/// Paths are passed to the file system as raw OS bytes (per the harness), not via UTF-8; an unreadable path is
-/// misuse.
 fn read(path: &OsStr) -> Vec<u8> {
     match std::fs::read(path) {
         Ok(b) => b,
@@ -74,7 +59,6 @@ fn read(path: &OsStr) -> Vec<u8> {
     }
 }
 
-/// Text arguments (command, option names, private key, domain, work digest, `--now`): not UTF-8 is misuse.
 fn text<'a>(x: &'a OsStr, usage: &str) -> &'a str {
     x.to_str().unwrap_or_else(|| die(usage))
 }
@@ -83,7 +67,6 @@ fn starts_with_dashes(x: &OsStr) -> bool {
     x.to_str().map(|s| s.starts_with("--")).unwrap_or(false)
 }
 
-/// The options of a command: tokens after the positionals, `--audit <f>` and `--now <int>` at most once each.
 struct Opts {
     audit: Option<OsString>,
     now: Option<u64>,
@@ -115,7 +98,6 @@ fn options(tokens: &[OsString], allow_audit: bool, usage: &str) -> Opts {
     Opts { audit, now }
 }
 
-/// Exactly n positionals, then options; an option token among the positionals is misuse.
 fn positional<'a>(args: &'a [OsString], n: usize, usage: &str) -> (&'a [OsString], &'a [OsString]) {
     if args.len() < 1 + n {
         die(usage);
@@ -133,16 +115,12 @@ fn no_options(rest: &[OsString], usage: &str) {
     }
 }
 
-/// Audit input file to audit outcome. An unreadable file is misuse (exit 2, as for other file arguments); a
-/// readable file the reader refuses or that fails the §9.4 shape is invalid input per the spec and gives `None`.
 fn outcome_of(path: &OsStr) -> Option<zikaron::audit::Outcome> {
     let b = read(path);
     let v = json::parse_tests_1_3(&b).ok()?;
     zikaron::audit::audit_full(&v)
 }
 
-/// Audit input file to its value (the six checks add g to the pile and audit again); an unreadable file exits
-/// 2.
 fn input_value(path: &OsStr) -> Option<Value> {
     let b = read(path);
     json::parse_tests_1_3(&b).ok()
@@ -189,12 +167,10 @@ fn pairing_value(p: &Pairing) -> Value {
 }
 
 fn main() {
-    // `args_os`: non-UTF-8 arguments do not panic; exit codes are only 0 and 2.
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let cmd = args.first().and_then(|x| x.to_str()).unwrap_or("");
 
     match cmd {
-        // Documents (kit law §4, §5).
         "fpm-check" => {
             let usage = "usage: zkk fpm-check <path>";
             let (pos, rest) = positional(&args, 1, usage);
@@ -221,9 +197,6 @@ fn main() {
                 Err(r) => emit(&doc_reject(&r)),
             }
         }
-        // Signing (kit law §3.1), per the `zikaron/1` contract: the file is read in any RFC 8259 spelling,
-        // recanonicalized and signed as is with no member dropped; a non-object or a value failing tests 1 to 5
-        // is misuse.
         "sign" => {
             let usage = "usage: zkk sign <privkey-hex> <path> <domain>";
             let (pos, rest) = positional(&args, 3, usage);
@@ -253,7 +226,6 @@ fn main() {
                 (Key::Signer, s(&hexfmt::encode(&signer))),
             ]))
         }
-        // Pairing and attribution (kit law §5.3, §5.4).
         "pair" => {
             let usage = "usage: zkk pair <fpm-path> <ack-path>";
             let (pos, rest) = positional(&args, 2, usage);
@@ -292,7 +264,6 @@ fn main() {
                 ])),
             }
         }
-        // Grant payloads (kit law §6).
         "badge-encode" => {
             let usage = "usage: zkk badge-encode <entry-path>...";
             if args.len() < 2 || args[1..].iter().any(|x| starts_with_dashes(x)) {
@@ -320,9 +291,6 @@ fn main() {
                 Err(r) => emit(&decode_reject(&r)),
             }
         }
-        // Disclosure kits (kit law §7). `<dir>` is the root handed to the reader, not an entry of the walk:
-        // symlink or not, if it resolves to a directory, that is the kit. Missing or not a directory is misuse;
-        // existing but unlistable is the first walk failure of §7.1.
         "kit-verify" => {
             let usage = "usage: zkk kit-verify <dir>";
             let (pos, rest) = positional(&args, 1, usage);
@@ -371,12 +339,10 @@ fn main() {
                 }
             }
         }
-        // Depth (kit law §9).
         "depth" => {
             let usage = "usage: zkk depth <audit-input.json> <work-hex32>";
             let (pos, rest) = positional(&args, 2, usage);
             no_options(rest, usage);
-            // The work digest is a spec value (hex32, lowercase); any other spelling is misuse, not "not found".
             let work = text(&pos[1], usage);
             if !hexfmt::is_hex32(work) {
                 die("work digest is not hex32");
@@ -384,7 +350,6 @@ fn main() {
             let o = outcome_of(&pos[0]);
             emit(&reading::depth(o.as_ref(), work))
         }
-        // Six checks and chain check (kit law §10).
         "grant-check" => {
             let usage = "usage: zkk grant-check <grant-path> [--audit <f>] [--now <int>]";
             let (pos, rest) = positional(&args, 1, usage);
@@ -393,9 +358,6 @@ fn main() {
             let input = opts.audit.as_deref().and_then(input_value);
             emit(&check::grant_check(&g, input.as_ref(), opts.now).value)
         }
-        // The hops file: an array whose elements have exactly `grant` (a path) and `audit` (a path or null);
-        // any other shape (duplicate member names included) is misuse. Paths resolve against the working
-        // directory.
         "chain-check" => {
             let usage = "usage: zkk chain-check <hops.json> [--now <int>]";
             let (pos, rest) = positional(&args, 1, usage);

@@ -1,7 +1,3 @@
-//! Boundary cases, one test each. Each test sets a temporary machine directory and its own test account before
-//! any vault or shell use; the real machine directory and account are never touched. Nodes are local ports in
-//! this process; no network.
-
 use app::fault::Known;
 use app::local::{self, Doc, Expect, Ident, Owner, Unread};
 use std::path::{Path, PathBuf};
@@ -9,8 +5,6 @@ use super::vault_open;
 
 
 
-
-/// A fresh temporary folder for one test.
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("zk-gaps-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -36,9 +30,6 @@ fn reason(r: Result<Vec<u8>, app::fault::Fault>) -> Option<Unread> {
     }
 }
 
-// ───────────────────────── Nodes on local ports ─────────────────────────
-
-/// A JSON-RPC node on a local port answering each question by `answer(method)`, one question per connection.
 fn rpc_node(answer: fn(&str) -> Option<String>) -> String {
     serve(move |body| {
         let method = body.split("\"method\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
@@ -49,8 +40,6 @@ fn rpc_node(answer: fn(&str) -> Option<String>) -> String {
     })
 }
 
-/// A node on a local port answering every question with this HTTP status and a page that is not the node's
-/// word (a gateway's page, a bare refusal).
 fn status_node(line: &'static str) -> String {
     serve(move |_| {
         let body = "<html>busy</html>";
@@ -117,7 +106,6 @@ fn node_at_191(m: &str) -> Option<String> {
     })
 }
 
-/// A shell over a fresh home of its own, its writer lock held (as set up for the basis check in `checks.rs`).
 fn shell_with_home(name: &str) -> (app::shell::Shell, PathBuf) {
     vault_open();
     let dir = scratch(name);
@@ -129,11 +117,6 @@ fn shell_with_home(name: &str) -> (app::shell::Shell, PathBuf) {
     (shell, dir)
 }
 
-// ───────────────────────── a sealed file's head and inner frame ─────────────────────────
-
-/// A sealed file whose head matches what is asked (kind, version, identity digest) but whose inner frame names
-/// another owner, or the same owner at another place, reads as `swapped`; an unreadable inner frame is
-/// `unopenable`; an unknown kind tag of the same length is `other-kind`.
 #[test]
 fn an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_unknown_tag_is_another_kind() {
     if super::alone_in(module_path!(), "an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_unknown_tag_is_another_kind") {
@@ -146,8 +129,6 @@ fn an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_u
     let asked = Ident { owner: mine.clone(), doc: Doc::Settings, logical: logical.into() };
     let ex = Expect { owner: Some(mine.clone()), doc: Doc::Settings, rel: Some(logical.into()) };
     let plain = b"{\"capBytes\":0}";
-    // The head as the asked file's: magic, algorithm (the version written), kind, version, the asked identity's
-    // keyed digest, the nonce.
     let tag = Doc::Settings.tag().as_bytes();
     let mut head = local::MAGIC_V2.to_vec();
     head.push(local::ALG_KEYED);
@@ -171,11 +152,9 @@ fn an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_u
         b.extend_from_slice(plain);
         b
     };
-    // The frame as the envelope writes it opens: the hand-made head is the real one.
     let right = sealed_with(&frame(&mine.text(), logical));
     assert_eq!(right, local::envelope(&key, &asked, &nonce, plain).expect("seals"), "the hand-made envelope is the product's");
     assert_eq!(local::unseal(&key, &ex, &right, "t").expect("opens"), plain);
-    // Another home inside, another place inside, an owner that is no owner: another file.
     for (form, owner, at) in [
         ("another home inside", "home:ffffffffffffffffffffffffffffffff".to_string(), logical),
         ("the machine inside", "machine".to_string(), logical),
@@ -184,11 +163,9 @@ fn an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_u
     ] {
         assert_eq!(reason(local::unseal(&key, &ex, &sealed_with(&frame(&owner, at)), "t")), Some(Unread::Swapped), "{form}");
     }
-    // A frame that does not read: a length past the bytes, nothing at all, a name that is not text.
     for (form, body) in [("a length past the bytes", vec![0xff, 0xff, b'x']), ("empty", Vec::new()), ("not text", vec![0x00, 0x02, 0xc3, 0x28, 0x00, 0x00])] {
         assert_eq!(reason(local::unseal(&key, &ex, &sealed_with(&body), "t")), Some(Unread::Unopenable), "{form}");
     }
-    // A kind tag this version does not know, of the same length.
     let unknown = b"zzzzzzzz";
     assert_eq!(unknown.len(), tag.len());
     assert_eq!(Doc::from_tag("zzzzzzzz"), None, "a tag no kind has");
@@ -199,11 +176,6 @@ fn an_inner_frame_of_another_owner_is_swapped_garbage_framing_is_unopenable_an_u
     assert_eq!(reason(local::unseal(&key, &ex, &patched, "t")), Some(Unread::OtherKind));
 }
 
-// ───────────────────────── home labels ─────────────────────────
-
-/// A home label changed after it was read (a restore, a key change) is read again, even when the new label has
-/// the same length and time (as on a volume with coarse times): a file of the new number opens, one of the old
-/// number is `swapped`.
 #[test]
 fn a_relabelled_home_on_a_coarse_time_volume_reads_by_its_new_number() {
     if super::alone_in(module_path!(), "a_relabelled_home_on_a_coarse_time_volume_reads_by_its_new_number") {
@@ -222,7 +194,6 @@ fn a_relabelled_home_on_a_coarse_time_volume_reads_by_its_new_number() {
     local::put(&room, app::settings::FILE, Doc::Settings, plain).expect("a settings file under the old number");
     let old_file = std::fs::read(&at).expect("written");
     assert!(local::read(&at, Doc::Settings).expect("reads").is_some());
-    // Another number of the same length, landed over the label; the label file's time put back.
     let label_at = local::label_path(&root);
     let before = std::fs::metadata(&label_at).expect("the label");
     let new = local::Label::new(None).expect("a number").number;
@@ -234,22 +205,17 @@ fn a_relabelled_home_on_a_coarse_time_volume_reads_by_its_new_number() {
     drop(f);
     let after = std::fs::metadata(&label_at).expect("the label");
     assert_eq!((after.len(), after.modified().ok()), (before.len(), before.modified().ok()), "same length, same time: the coarse volume's view");
-    // The label on disk is the new one (opened directly: `read_label` would itself refresh what was read).
     let label_ex = Expect { owner: Some(Owner::Label), doc: Doc::HomeLabel, rel: Some(format!("{}/{}", app::home::Slot::Settings.as_str(), local::LABEL_FILE)) };
     let on_disk = local::open_with(&app::keybox::local_key().expect("the key"), &label_ex, &std::fs::read(&label_at).expect("reads"), "label").expect("opens");
     assert_eq!(local::Label::parse(&on_disk).expect("a label").number, new, "the label on disk is the new one");
-    // A file of the new number opens.
     let new_file = local::seal(&local::ident_in(Owner::Home(new.clone()), Doc::Settings, &rel, plain).expect("an ident"), plain).expect("sealed");
     std::fs::write(&at, &new_file).expect("written");
     assert_eq!(local::read(&at, Doc::Settings).map(|o| o.is_some()).map_err(|f| f.said().to_string()), Ok(true), "a file of the new number reads");
-    // The old number's file is another home's.
     std::fs::write(&at, &old_file).expect("written");
     assert_eq!(reason(local::read(&at, Doc::Settings).map(|o| o.unwrap_or_default())), Some(Unread::Swapped), "the old number's file is another file");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Concurrent first writers of a fresh home never give it two numbers: eight threads end with one label, one
-/// number.
 #[test]
 fn eight_first_writers_of_a_fresh_home_give_it_one_number() {
     if super::alone_in(module_path!(), "eight_first_writers_of_a_fresh_home_give_it_one_number") {
@@ -279,11 +245,6 @@ fn eight_first_writers_of_a_fresh_home_give_it_one_number() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ───────────────────────── the lock file, machine settings ─────────────────────────
-
-/// A lock file already open to others (0644) is used as it is: taking the lock while another holds it leaves
-/// its contents and permissions; taking it as the writer leaves its permissions. Unix only: Windows does not
-/// open files to other accounts (`zikaron_os::open_to_others` refuses by name there).
 #[cfg(unix)]
 #[test]
 fn an_existing_lock_file_open_to_others_is_left_as_it_is() {
@@ -296,10 +257,8 @@ fn an_existing_lock_file_open_to_others_is_left_as_it_is() {
     let at = app::lock::path_of(&home);
     std::fs::create_dir_all(at.parent().unwrap()).expect("the room");
     std::fs::write(&at, b"pid 4242\n").expect("an older lock file");
-    // Open to others the platform's way (the platform module holds the system's words for it).
     zikaron_os::open_to_others(&at, false).expect("open to others");
     let mode = |p: &Path| zikaron_os::is_owner_only(p).expect("there");
-    // Another holder: this one is a reader, the file as it was.
     let other = std::fs::File::open(&at).expect("another handle");
     assert!(app::lock::grab(&other), "the other holds it");
     let reader = app::lock::take(&home).expect("taken");
@@ -308,7 +267,6 @@ fn an_existing_lock_file_open_to_others_is_left_as_it_is() {
     assert!(!mode(&at), "permissions as they were (still open to others)");
     drop(reader);
     drop(other);
-    // Nobody holds it: the writer writes its words, the permissions as they were.
     let writer = app::lock::take(&home).expect("taken");
     assert_eq!(writer.mode(), app::lock::Mode::Writer);
     assert!(!mode(&at), "permissions as they were (still open to others)");
@@ -316,8 +274,6 @@ fn an_existing_lock_file_open_to_others_is_left_as_it_is() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Machine settings change only through `machine::update` (read, change, write in one step): no shipped source
-/// outside `machine.rs` calls or imports `machine::write`.
 #[test]
 fn no_source_outside_machine_rs_writes_the_machine_settings_whole() {
     if super::alone_in(module_path!(), "no_source_outside_machine_rs_writes_the_machine_settings_whole") {
@@ -349,10 +305,6 @@ fn no_source_outside_machine_rs_writes_the_machine_settings_whole() {
     assert!(found.is_empty(), "machine settings written whole outside machine.rs (every change goes through machine::update): {found:?}");
 }
 
-// ───────────────────────── asking the nodes ─────────────────────────
-
-/// `MAX_HEAD_LAG` is 64, inclusive: heads 256 and 192 are accepted at the smaller head; 256 and 191 are refused
-/// `DISAGREE`, naming the node behind, by how much, and the highest.
 #[test]
 fn heads_sixty_four_apart_are_taken_and_sixty_five_apart_refused() {
     if super::alone_in(module_path!(), "heads_sixty_four_apart_are_taken_and_sixty_five_apart_refused") {
@@ -367,8 +319,6 @@ fn heads_sixty_four_apart_are_taken_and_sixty_five_apart_refused() {
     assert!(f.tail().contains(&past_lag) && f.tail().contains("65") && f.tail().contains("256"), "{}", f.tail());
 }
 
-/// Two failing nodes (a bare 429, then a gateway's 502): the height is refused with the first node's code
-/// (`RATE_LIMITED`) and both nodes' words in the tail; in the other order, `NODE_REFUSED`.
 #[test]
 fn two_nodes_with_different_troubles_say_the_first_nodes_code() {
     if super::alone_in(module_path!(), "two_nodes_with_different_troubles_say_the_first_nodes_code") {
@@ -382,8 +332,6 @@ fn two_nodes_with_different_troubles_say_the_first_nodes_code() {
     let f = app::chainx::head_block(&eps(&[&gateway, &limited]), 31337).expect_err("nobody answered");
     assert_eq!(f.which(), Some(Known::NodeRefused), "the first node's: {} {}", f.said(), f.tail());
 }
-
-// ───────────────────────── the main network's check after the nodes ─────────────────────────
 
 #[test]
 fn a_grant_window_past_the_ceiling_is_refused_and_nothing_lands() {
@@ -422,10 +370,6 @@ fn a_grant_window_past_the_ceiling_is_refused_and_nothing_lands() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ───────────────────────── the count behind the backup ─────────────────────────
-
-/// The count since the last whole-machine backup includes held grants: a grant held before the backup is not
-/// behind, one held after it is one behind. Runs in its own process ([`alone`]).
 #[test]
 fn a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not() {
     if super::alone_in(module_path!(), "a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not") {
@@ -440,7 +384,6 @@ fn a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not() {
     super::seated(&mut shell, &base.join("a"));
     answers!(apply(&mut shell, Action::OpenHome { root: base.join("a").display().to_string() }), Applied::Homed { .. });
     let home = app::home::Home::open(shell.home.as_ref().expect("the home").root()).expect("the home");
-    // Two grants of another's, signed by their own key.
     let secret = app::key::Secret::take([0x47; 32]).expect("a key");
     let genesis = app::entryx::genesis(&secret, "held").expect("genesis");
     let grant = |n: u64| {
@@ -460,9 +403,6 @@ fn a_grant_held_after_the_backup_is_behind_it_and_one_held_before_is_not() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-// ───────────────────────── the window's handle ─────────────────────────
-
-/// Says to every frame that the window is maximized, as the windowing layer does for a maximized window.
 struct SaysMaximized;
 
 impl zikaron_ui::egui::Plugin for SaysMaximized {
@@ -475,8 +415,6 @@ impl zikaron_ui::egui::Plugin for SaysMaximized {
     }
 }
 
-/// A double click on the window's handle restores a maximized window, as a title bar does: it asks
-/// `Maximized(false)`, never `Maximized(true)`.
 #[test]
 fn a_double_click_on_the_handle_of_a_maximized_window_puts_it_back() {
     if super::alone_in(module_path!(), "a_double_click_on_the_handle_of_a_maximized_window_puts_it_back") {

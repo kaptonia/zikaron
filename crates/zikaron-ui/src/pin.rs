@@ -1,31 +1,18 @@
-//! Passcode cells, the twelve word cells, the masked word display and the strength bar.
-
 use crate::motion::{self, Curve};
 use crate::paint;
 use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// What a passcode row did this frame.
 pub struct PinRow {
-    /// Filled this frame (the caller acts on it).
     pub full: bool,
-    /// Changed this frame (the caller clears its error line).
     pub changed: bool,
 }
 
-/// The passcode row: eight cells (40 × 54, or 30 × 40 when `small`), dots only. The row takes the keyboard:
-/// ASCII letters and digits in, backspace out; pasting takes the letters and digits of the pasted text. A
-/// filled dot pops in; the cell being typed has a blue edge and ring; a refused entry shakes the row for
-/// 400 ms (from `shake_at`). Returns `full` once when the eighth character lands.
 pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secret, len: usize, shake_at: Option<f64>, active: bool, small: bool) -> PinRow {
     let (cw, ch) = if small { (tokens::PIN_SMALL_W, tokens::PIN_SMALL_H) } else { (tokens::PIN_W, tokens::PIN_H) };
     let w = cw * len as f32 + tokens::PIN_GAP * (len as f32 - 1.0);
     let (rect, resp) = ui.push_id(("zikaron-pin", id_salt), |ui| ui.allocate_exact_size(vec2(w, ch), egui::Sense::click())).inner;
-    // Focus is real focus and keys are taken only with it; `active` only means "take focus when nobody holds
-    // it", and a holder is never displaced. A row that takes focus this frame does not take this frame's keys.
-    // Both ask first whether the row lies on top (`layer::on_top`): under an overlay it neither takes focus
-    // nor takes keys, so what is typed on the overlay never lands in a row nobody can see.
     let top = crate::layer::on_top(ui, rect);
     let held = resp.has_focus() && top;
     if resp.clicked() {
@@ -33,7 +20,6 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
     } else if active && top && ui.memory(|m| m.focused().is_none()) {
         resp.request_focus();
     }
-    // A row typed into, as a field is: the text beam over it.
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
     }
@@ -66,8 +52,6 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
         let x = rect.left() + dx + (cw + tokens::PIN_GAP) * i as f32;
         let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cw, ch));
         let here = i == filled.min(len - 1) && filled < len;
-        // A grey tone; the cell being typed into, focused, turns to the surface with a blue edge and the soft
-        // blue ring, as a field does.
         let lit = if here { focus } else { 0.0 };
         let r = Radius::Field.px() as u8;
         if lit > 0.0 {
@@ -75,7 +59,6 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
         }
         p.rect(cell, egui::CornerRadius::same(r), palette::mix(c(C::Tone), c(C::Surface), lit), egui::Stroke::new(1.0_f32, c(C::Accent).gamma_multiply(0.7 * lit)), egui::StrokeKind::Inside);
         if i < filled {
-            // Each dot pops in with a spring the first time it is drawn.
             let a = motion::age(ui.ctx(), id.with(("dot", i)), 0);
             let k = if a < tokens::FAST {
                 ui.ctx().request_repaint();
@@ -94,9 +77,6 @@ pub fn pin_row(ui: &mut egui::Ui, id_salt: &str, value: &mut crate::secret::Secr
     PinRow { full, changed }
 }
 
-/// Twelve recovery word cells (three across), each masked and numbered. A whole phrase pasted into any cell
-/// is split and fills the cells in order. `bad` marks cells whose word is not in the list. Returns whether
-/// anything changed.
 pub fn words_grid_marked(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::secret::Secret; 12], bad: &[bool]) -> bool {
     let mut changed = false;
     let cols = 3usize;
@@ -119,7 +99,6 @@ pub fn words_grid_marked(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::s
             }
         });
     });
-    // Split: from the cell a phrase was pasted into, fill onward in order. Each piece stays a secret type.
     if changed {
         if let Some(at) = words.iter().position(|x| x.expose().split_whitespace().count() > 1) {
             let got: Vec<crate::secret::Secret> = words[at].expose().split_whitespace().map(crate::secret::Secret::of).collect();
@@ -133,14 +112,10 @@ pub fn words_grid_marked(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::s
     changed
 }
 
-/// The same twelve cells without marks.
 pub fn words_grid(ui: &mut egui::Ui, id_salt: &str, words: &mut [crate::secret::Secret; 12]) -> bool {
     words_grid_marked(ui, id_salt, words, &[false; 12])
 }
 
-/// The masked display: until opened, a dashed striped block with "click to show"; opened, the twelve numbered
-/// words in `cols` columns, each cell entering 25 ms after the one before. The words are painted, not
-/// selectable, so they cannot be copied. Returns the block's response (a click while masked reveals).
 pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Secret]>, cover: &str, cols: usize, height: f32) -> egui::Response {
     let id = ui.id().with(("zikaron-mask", id_salt));
     let w = ui.available_width();
@@ -158,7 +133,6 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
         None => {
             let hot = motion::states(ui.ctx(), id, resp.hovered(), resp.is_pointer_button_down_on(), resp.has_focus(), true).hover;
             p.rect_filled(rect, Radius::Tag.egui(), c(C::Drop));
-            // Diagonal stripes, 8 wide.
             let clip = p.with_clip_rect(rect.shrink(1.0));
             let mut x = rect.left() - rect.height();
             while x < rect.right() {
@@ -195,10 +169,7 @@ pub fn mask(ui: &mut egui::Ui, id_salt: &str, words: Option<&[crate::secret::Sec
     }
 }
 
-/// The strength bar: three segments 34 × 4, `lit` of them in the tone's color, then the reading, in one cell of
-/// the caller's layout (`width::cell`).
 pub fn strength(ui: &mut egui::Ui, lit: usize, tone: crate::mark::Mark, text: &str) {
-    // Three segments, each followed by the 4 between parts, then 4 more before the reading.
     const BAR: f32 = 3.0 * (34.0 + 4.0) + 4.0;
     let words = paint::wrapped(ui, text, Type::Tiny.font(), c(C::Ink2), Type::Tiny.line(), ui.available_width() - BAR);
     let size = vec2(BAR + words.size().x, words.size().y.max(4.0));

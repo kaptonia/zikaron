@@ -1,32 +1,16 @@
-//! The local index of signed files (`records/index.json` in the machine directory, sealed as `Doc::Records`):
-//! which file was signed as which record. Its form is read and written here only; the desktop keeps it as it
-//! signs, and the desktop's record package export and the command line's (with the credential) take originals
-//! from it alike ([`originals_for`]).
-//!
-//! A row holds only what was fixed at signing (ledger, digest, entry id, `seq`, file name, path). Anchor state
-//! is not stored, because it would go stale.
-
 use zikaron::json::{self, Value};
 
-/// Format identifier written into the index file.
 pub const FORM: &str = "zikaron-desk/records/1";
-/// The index's room in the machine directory, and its file there.
 pub const DIR: &str = "records";
 pub const FILE: &str = "index.json";
 
-/// One row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// Which ledger (genesis id).
     pub root: String,
-    /// `content` (hex32).
     pub content: String,
-    /// Entry id.
     pub id: String,
     pub seq: u64,
-    /// File name (last segment).
     pub name: String,
-    /// The absolute path at signing time.
     pub path: String,
 }
 
@@ -37,7 +21,6 @@ fn str_of(v: &Value, k: &str) -> Option<String> {
     }
 }
 
-/// Read the index's plain bytes. Anything but this form is refused (its reason in words).
 pub fn parse(plain: &[u8]) -> Result<Vec<Row>, String> {
     let v = json::parse(plain).map_err(|t| format!("{t:?}"))?;
     if str_of(&v, "form").as_deref() != Some(FORM) {
@@ -62,7 +45,6 @@ pub fn parse(plain: &[u8]) -> Result<Vec<Row>, String> {
         .ok_or_else(|| "row".to_string())
 }
 
-/// The index's plain bytes for these rows (canonical JSON).
 pub fn render(rows: &[Row]) -> Vec<u8> {
     let v = Value::Obj(vec![
         ("form".to_string(), Value::Str(FORM.to_string())),
@@ -87,8 +69,6 @@ pub fn render(rows: &[Row]) -> Vec<u8> {
     json::canon_bytes(&v)
 }
 
-/// The rows of one ledger (`root`, its genesis id) for these entries (`ids`), by `seq` then path, each once: the
-/// originals a record package of those entries takes from this machine.
 pub fn originals_for(rows: &[Row], root: &str, ids: &[String]) -> Vec<Row> {
     let mut out: Vec<Row> = rows
         .iter()
@@ -97,6 +77,57 @@ pub fn originals_for(rows: &[Row], root: &str, ids: &[String]) -> Vec<Row> {
         .collect();
     out.sort_by(|a, b| a.seq.cmp(&b.seq).then(a.path.cmp(&b.path)));
     out.dedup_by(|a, b| a.id == b.id && a.path == b.path);
+    out
+}
+
+pub fn withdrawn(items: &[Vec<u8>]) -> Vec<String> {
+    zikaron_glue::retraction::read_items(items).1.deleted.into_keys().collect()
+}
+
+#[derive(Default)]
+pub struct Took {
+    pub original: Option<zikaron_glue::grantfile::Original>,
+    pub place: Option<String>,
+    pub taken: Vec<String>,
+    pub left_out: Vec<String>,
+}
+
+pub fn take(rows: &[Row], items: &[Vec<u8>], work: &str) -> Took {
+    use zikaron_glue::grantfile::Original;
+    let w = work.trim().to_ascii_lowercase();
+    let root = zikaron_glue::book::root_entry(items).map(|e| e.id_hex()).unwrap_or_default();
+    let ids: Vec<String> = items
+        .iter()
+        .filter_map(|b| zikaron_glue::book::check(b).ok())
+        .filter(|e| zikaron_glue::recordcheck::work_of(e.kind, &e.body).is_some_and(|x| x.eq_ignore_ascii_case(&w)))
+        .map(|e| e.id_hex())
+        .collect();
+    let is_work = |d: [u8; 32]| zikaron::hexfmt::encode(&d).eq_ignore_ascii_case(&w);
+    let mut out = Took::default();
+    for row in originals_for(rows, &root, &ids) {
+        let at = std::path::Path::new(&row.path);
+        let name = at.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let got = match std::fs::symlink_metadata(at) {
+            Ok(m) if m.is_file() => std::fs::read(at).ok().filter(|b| is_work(zikaron_glue::recording::content_of(b))).map(|b| Original::File(name.clone(), b)),
+            Ok(m) if m.is_dir() => zikaron_glue::recording::dir_rows(at)
+                .ok()
+                .filter(|(r, skipped)| *skipped == 0 && zikaron_glue::recording::dir_contents(r).into_iter().any(|(d, _)| is_work(d)))
+                .and_then(|_| {
+                    let mut files = Vec::new();
+                    zikaron_glue::pack::gather(at, "", &mut files).ok().map(|_| Original::Dir(name.clone(), files))
+                }),
+            _ => None,
+        };
+        match got {
+            Some(o) => {
+                out.taken.push(zikaron_glue::kitnames::kit_segment(&name).unwrap_or(name));
+                out.place = Some(row.path.clone());
+                out.original = Some(o);
+                break;
+            }
+            None => out.left_out.push(row.path.clone()),
+        }
+    }
     out
 }
 

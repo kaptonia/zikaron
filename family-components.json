@@ -1,14 +1,14 @@
 {
  "schema": 1,
  "product": "ZIKARON",
- "release": "0.1.5",
+ "release": "0.2.0",
  "components": [
   {
    "id": "transport",
-   "familyVersion": 4,
+   "familyVersion": 14,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 13
    },
    "home": [
     "crates/app/src/proxycells.rs",
@@ -25,6 +25,7 @@
     "crates/zikaron-net/tests/auto_proxy.rs",
     "crates/zikaron-net/tests/closing.rs",
     "crates/zikaron-net/tests/default_way.rs",
+    "crates/zikaron-net/tests/dial_again.rs",
     "crates/zikaron-net/tests/edges.rs",
     "crates/zikaron-net/tests/engine_sources.rs",
     "crates/zikaron-net/tests/fixtures/self-signed-cert.der",
@@ -70,7 +71,15 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "a_rest_place_and_a_node_on_its_host_are_one_place"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
      "name": "addresses_are_one_place_by_what_they_name"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "the_answer_two_places_gave_is_counted_by_places_not_rows"
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
@@ -345,6 +354,14 @@
      "name": "the_environments_proxy_is_followed_with_nothing_chosen"
     },
     {
+     "path": "crates/zikaron-net/tests/dial_again.rs",
+     "name": "a_connect_refused_once_is_dialled_once_more_and_a_deadline_spent_is_not"
+    },
+    {
+     "path": "crates/zikaron-net/tests/dial_again.rs",
+     "name": "a_handshake_that_fails_once_is_dialled_once_more_and_answered"
+    },
+    {
      "path": "crates/zikaron-net/tests/edges.rs",
      "name": "a_connection_left_open_carries_the_next_question"
     },
@@ -462,6 +479,10 @@
     },
     {
      "path": "crates/zikaron-net/tests/slow_answer.rs",
+     "name": "a_tls_error_after_the_handshake_is_the_streams_not_the_handshakes"
+    },
+    {
+     "path": "crates/zikaron-net/tests/slow_answer.rs",
      "name": "a_tls_handshake_trickled_is_cut_at_the_deadline"
     },
     {
@@ -485,10 +506,10 @@
   },
   {
    "id": "node-answer",
-   "familyVersion": 5,
+   "familyVersion": 19,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 18
    },
    "home": [
     "crates/app/src/chainx.rs",
@@ -497,8 +518,16 @@
     "crates/app/tests/checks_more/gaps_b13.rs",
     "crates/app/tests/checks_more/gaps_r20b2.rs",
     "crates/app/tests/checks_more/gaps_r21b2.rs",
+    "crates/zikaron-anchor/src/ahead.rs",
+    "crates/zikaron-anchor/src/ahead/sepolia.json",
+    "crates/zikaron-anchor/src/ahead/tests.rs",
+    "crates/zikaron-anchor/src/oneread.rs",
+    "crates/zikaron-anchor/src/proofs.rs",
+    "crates/zikaron-anchor/src/proofs/tests.rs",
+    "crates/zikaron-anchor/src/rest.rs",
     "crates/zikaron-anchor/src/rpc.rs",
     "crates/zikaron-anchor/src/said.rs",
+    "crates/zikaron-anchor/src/trie.rs",
     "crates/zikaron-anchor/src/wire.rs",
     "crates/zikaron-anchor/tests/a8_unread_members.rs",
     "crates/zikaron-anchor/tests/anchoring.rs",
@@ -508,9 +537,15 @@
     "crates/zikaron-anchor/tests/refusal_shapes.rs",
     "crates/zikaron-anchor/tests/revert.rs",
     "crates/zikaron-anchor/tests/wire_numbers.rs",
-    "crates/zikaron-send/src/node.rs"
+    "crates/zikaron-glue/src/anchorproofs.rs",
+    "crates/zikaron-send/src/node.rs",
+    "crates/zikaron-send/src/proofs.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/chainx.rs",
+     "name": "a_node_is_said_by_its_kind_without_its_code"
+    },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "a_height_that_does_not_read_as_64_bits_is_named_never_zero"
@@ -525,7 +560,23 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "a_node_passed_over_is_named_once_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_saying_not_yet_is_asked_again_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "a_node_serving_another_chain_is_left_out_of_balance_and_fees_and_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_that_gave_nothing_is_asked_nothing_more_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_rest_row_with_no_key_here_is_asked_nothing_and_named_once_in_each_reading"
     },
     {
      "path": "crates/app/tests/asking.rs",
@@ -537,11 +588,19 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "an_answer_the_reading_cannot_take_passes_the_node_over_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "the_balance_before_sending_is_pinned_and_compared"
     },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "the_head_is_the_smallest_and_a_node_too_far_behind_is_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "the_questions_outside_a_read_still_ask_a_node_it_passed_over"
     },
     {
      "path": "crates/app/tests/checks_more/gaps_b12.rs",
@@ -665,10 +724,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -678,6 +733,194 @@
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "which_kinds_are_renamed_is_judged_once"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_batch_limited_past_its_table_is_halved_and_the_halves_answer"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_halving_holds_as_a_rest_does_and_is_forgotten_once_answered"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_node_limiting_every_batch_is_split_no_further_than_two_halves_and_rests"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_node_resting_from_proofs_is_dealt_them_again_once_it_answers"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_node_taking_half_a_batch_answers_every_question_in_halves"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_node_that_gives_no_proof_is_asked_none_nor_a_block_before_and_another_takes_its_share"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_nodes_share_is_read_from_its_place_in_the_list"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_passing_fault_is_not_remembered_as_a_node_that_takes_no_batch_and_what_came_is_kept"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_rate_limit_halves_how_many_batches_go_to_that_node_at_once_and_it_is_remembered"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_real_header_hashes_to_its_block_and_one_byte_changed_does_not"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_share_limited_once_is_handed_to_another_node_at_once"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_transaction_is_asked_ahead_of_one_node_once"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "a_window_is_read_ahead_in_batches_kept_once_proved_and_a_refusal_is_remembered"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "one_proof_that_came_keeps_the_node_dealt_proofs"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "one_question_refused_in_a_batch_leaves_its_method_batched"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "questions_limited_in_a_batch_taken_are_posted_again_after_the_tables_pause"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "the_batches_to_one_node_go_out_together_within_its_limit_and_answer_as_one_after_another"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "the_code_at_a_block_is_read_from_a_real_account_proof_and_nothing_else_proves"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/ahead/tests.rs",
+     "name": "two_nodes_bear_a_share_each_of_the_blocks_and_proofs_and_each_is_asked_its_receipts"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/oneread.rs",
+     "name": "a_receipt_asked_alone_is_not_held_to_one_ask"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "a_cold_read_with_the_seats_proofs_asks_the_node_nothing_of_its_anchors_and_reads_as_without"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "a_forged_part_of_a_proof_does_not_hold"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "a_proof_is_built_from_a_node_holds_and_comes_back_from_its_value"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "an_anchor_held_proved_but_for_its_receipt_is_asked_its_receipt_alone"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "an_anchor_read_from_proofs_is_marked_proved_and_one_read_of_a_nodes_word_is_not"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/proofs/tests.rs",
+     "name": "the_seats_proofs_are_read_only_as_a_scan_tests_an_anchor"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_base_url_reads_as_https_with_no_query_and_names_its_service"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_blockscout_rows_json_rpc_is_its_chains_or_its_instances"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_key_file_gives_a_key_the_settings_lack_and_the_settings_key_wins"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_keys_file_reads_whole_or_is_refused_by_name"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_log_filter_goes_to_blockscout_with_one_address"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_log_from_the_logs_module_reads_as_a_nodes_log"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_log_question_is_split_by_address_and_topic_and_read_to_its_last_page"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_log_question_naming_no_address_is_asked_by_its_topics"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_rate_limit_on_a_log_page_is_waited_out_in_one_layer"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_recording_through_a_rest_row_holds_no_byte_of_the_key"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_row_with_no_key_here_asks_nothing"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_service_that_says_its_rate_is_asked_under_it"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "a_service_without_the_proxy_module_is_asked_through_its_json_rpc"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "an_etherscan_host_is_paced_from_its_first_question"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "an_etherscan_rows_head_is_its_index_head_when_lower"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "each_proxy_question_is_asked_with_its_own_members_the_chain_and_the_key"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "one_service_is_one_place_and_a_json_rpc_node_on_its_host_joins_it"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "past_the_last_page_a_log_question_is_refused_naming_the_results"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "the_chain_id_is_the_chain_asked_once_a_question_about_it_passed"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "the_services_refusals_read_as_rate_limiting_credentials_or_its_own_words"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/rest.rs",
+     "name": "what_the_service_cannot_answer_as_asked_is_not_served_and_never_asked"
     },
     {
      "path": "crates/zikaron-anchor/src/rpc.rs",
@@ -690,6 +933,10 @@
     {
      "path": "crates/zikaron-anchor/src/said.rs",
      "name": "what_the_node_said_is_one_closed_table"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/trie.rs",
+     "name": "a_built_trie_proves_each_leaf_and_nothing_else"
     },
     {
      "path": "crates/zikaron-anchor/tests/a8_unread_members.rs",
@@ -793,6 +1040,14 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_call_data_that_carries_an_entry_is_anchor_and_the_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_registry_form_builds_the_calldata_the_law_reads"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_same_answer_recorded_twice_is_one_answer"
     },
     {
@@ -802,10 +1057,6 @@
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_transport_reader_takes_what_the_law_does_not"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_two_forms_build_the_calldata_the_law_reads"
     },
     {
      "path": "crates/zikaron-anchor/tests/answers.rs",
@@ -849,7 +1100,15 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "a_rest_place_and_a_node_on_its_host_are_one_place"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
      "name": "addresses_are_one_place_by_what_they_name"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "the_answer_two_places_gave_is_counted_by_places_not_rows"
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
@@ -1038,24 +1297,120 @@
     {
      "path": "crates/zikaron-anchor/tests/wire_numbers.rs",
      "name": "a_number_with_a_leading_zero_is_not_a_number"
+    },
+    {
+     "path": "crates/zikaron-glue/src/anchorproofs.rs",
+     "name": "the_folder_beside_a_package_holds_one_document_per_hash_and_reads_back"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_block_one_place_gives_beside_a_null_is_waited_for_until_two_alike_or_the_null_has_passed_it"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_block_time_two_places_give_alike_stands_beside_a_third"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_late_answer_is_kept_nowhere"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_load_bearing_read_gives_each_question_one_asks_time"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_answers_each_question_by_the_nodes_that_can"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_hands_back_the_answer_its_number_rule_picks"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_question_holds_its_bound"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_that_lacks_a_method_is_still_asked_the_reads_other_questions_and_never_that_method_again"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_range_a_node_refused_is_asked_of_it_once_more_and_again_in_the_next_read"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_receipt_of_another_chain_is_no_floor_of_this_one"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_refusal_the_patience_table_has_no_row_for_is_asked_once_more_before_the_node_is_passed_over"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_rest_row_is_asked_every_question_with_the_json_rpc_nodes_and_bears_witness_alike"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_rest_row_whose_logs_stop_short_is_not_yet_there"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_table_whose_every_node_was_passed_over_is_answered_at_once_and_not_waited_for"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_transaction_held_by_none_is_told_apart_from_one_no_node_answered"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_transaction_known_to_any_node_is_known_whichever_refuses"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "after_a_receipt_two_nodes_at_its_block_are_read_and_the_one_behind_is_passed_over"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "after_its_action_reads_a_receipt_a_head_stands_on_that_block"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "the_scans_per_anchor_question_honours_what_the_node_said_it_lacks"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "two_alike_are_enough_and_the_third_is_not_waited_for"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "two_places_that_have_not_heard_of_a_transaction_do_not_outvote_the_one_holding_it"
     }
    ],
    "nameZh": "读节点应答与拒因表"
   },
   {
    "id": "log-scan",
-   "familyVersion": 5,
+   "familyVersion": 22,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 21
    },
    "home": [
     "crates/app/tests/checks_more/gaps_r20b1.rs",
+    "crates/app/tests/checks_more/settled_kept.rs",
     "crates/zikaron-anchor/src/scan.rs",
+    "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+    "crates/zikaron-anchor/src/scan/notice_tests.rs",
+    "crates/zikaron-anchor/src/scan/width_tests.rs",
+    "crates/zikaron-anchor/src/settled.rs",
     "crates/zikaron-anchor/src/tx.rs",
     "crates/zikaron-anchor/tests/anchoring.rs",
     "crates/zikaron-anchor/tests/rerun.rs",
-    "crates/zikaron-cli/tests/sealedsend.rs"
+    "crates/zikaron-cli/tests/sealedsend.rs",
+    "crates/zikaron-send/src/checked.rs",
+    "crates/zikaron-send/tests/receipt_only.rs",
+    "crates/zikaron-send/tests/settled_logs.rs"
    ],
    "symbols": [
     "zikaron_anchor::scan::logs_over_window",
@@ -1080,24 +1435,56 @@
      "name": "the_fingerprint_gate_waits_out_a_rate_limit"
     },
     {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "a_part_read_under_a_key_since_replaced_is_dropped_and_said_by_nobody"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "a_part_the_desktop_cannot_write_for_the_store_locked_is_told_apart"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "an_audit_is_kept_in_the_checked_room_and_read_back"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "the_command_lines_road_reads_and_keeps_the_facts_the_desktop_checked"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "the_command_lines_road_reads_the_log_reads_the_desktop_settled"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "the_grant_check_pages_task_keeps_the_notice_input_alone"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "the_grant_check_pages_task_reads_and_writes_no_settled_record"
+    },
+    {
+     "path": "crates/app/tests/checks_more/settled_kept.rs",
+     "name": "the_verify_pages_reading_takes_one_nodes_facts_and_an_agreed_reading_does_not"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan.rs",
+     "name": "a_face_reading_asks_its_accessions_receipts_and_blocks_in_one_batch"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan.rs",
+     "name": "a_kept_reads_check_and_tail_go_together_and_a_replaced_block_reads_as_a_whole_read"
+    },
+    {
      "path": "crates/zikaron-anchor/src/scan.rs",
      "name": "a_log_filter_is_written_position_by_position"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_node_that_states_its_block_range_limit_is_read_at_that_number"
+     "name": "a_log_read_is_one_question_for_the_whole_range_and_a_width_refusal_is_read_in_pieces"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_nodes_cut_range_is_remembered_for_the_next_window"
-    },
-    {
-     "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_nodes_remembered_range_keeps_the_narrowest"
-    },
-    {
-     "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_range_shrinks_to_the_stated_limit_or_by_half"
+     "name": "a_notice_whose_transaction_is_not_given_is_no_notice_input"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
@@ -1105,11 +1492,23 @@
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
+     "name": "a_receipt_is_each_nodes_own_word"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan.rs",
+     "name": "a_refusal_naming_no_range_is_passed_on_and_the_range_kept"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan.rs",
      "name": "a_refusals_evidence_is_machine_form_in_no_language"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_refused_range_is_asked_again_before_it_is_split"
+     "name": "a_stretch_two_endpoints_bore_alike_is_served_to_a_table_of_three"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan.rs",
+     "name": "a_transaction_that_is_not_the_one_asked_is_refused_as_not_itself"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
@@ -1117,23 +1516,167 @@
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "a_window_to_the_last_block_ends"
+     "name": "a_window_to_the_last_block_is_one_question"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "an_unfinished_window_is_refused_never_empty"
+     "name": "an_answer_that_is_not_a_log_list_is_refused_never_empty"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "the_range_is_read_from_the_nodes_own_words_only"
+     "name": "any_logs_are_read_in_one_agreed_round_and_kept_once_alike"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "two_nodes_said_alike_keep_their_ranges_apart"
+     "name": "the_accessions_under_a_root_carry_nine_members_and_are_read_whole"
     },
     {
      "path": "crates/zikaron-anchor/src/scan.rs",
-     "name": "two_public_nodes_state_their_range_in_their_own_words"
+     "name": "the_scans_other_questions_are_asked_once_when_refused"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "a_group_of_filters_asks_each_node_in_batches_and_reads_and_keeps_as_one_by_one"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "a_node_that_refuses_batches_is_asked_one_question_at_a_time_and_remembered"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "a_question_the_batch_did_not_bring_is_asked_by_its_read"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "a_rate_limited_batch_is_waited_out_by_the_patience_table"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "a_scans_windows_on_one_chain_are_asked_ahead_together"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "agreement_single_source_and_disagreement_are_each_reads_own"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/ahead_logs_tests.rs",
+     "name": "an_entry_kept_with_no_log_asks_its_tail"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "a_homes_second_read_asks_a_constant_and_new_records_add_their_own"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "a_node_that_refuses_the_range_holds_nothing_back_and_one_left_reads_single_source"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "a_record_in_the_clear_names_no_node_and_serves_alike"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "a_second_read_in_one_action_asks_only_after_the_first"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "an_undecided_notice_is_read_again_next_time"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "kept_and_whole_reads_are_one_through_new_blocks_and_a_replaced_tip"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "one_nodes_reading_serves_only_itself_and_a_split_or_silent_read_keeps_nothing"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/notice_tests.rs",
+     "name": "the_two_forms_log_questions_go_to_a_node_in_one_post"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_cap_of_one_cuts_nothing_and_the_refusal_names_the_cap"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_filter_of_many_subjects_is_read_group_by_group_and_a_full_groups_key_never_moves"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_lack_stands_where_one_block_is_refused_by_the_code_or_the_words_say_so"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_node_answering_the_whole_range_leaves_every_node_asked_the_whole_range_alone"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_node_rate_limited_to_the_end_gives_way_and_what_the_other_read_is_used_and_kept"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_node_ten_blocks_wide_gives_way_after_a_handful_of_questions_and_alone_the_read_fails_by_the_cap"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_piece_refused_later_is_halved_and_the_new_width_goes_on"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "a_width_a_node_answered_is_where_its_next_read_begins"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "another_methods_refusal_naming_a_range_in_the_words_of_a_missing_method_is_a_lack"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "the_widest_node_that_cannot_answer_the_head_of_the_range_gives_way_to_the_one_that_reads_it"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "what_a_cut_read_settles_is_kept_and_the_same_node_is_asked_only_the_new_blocks_next"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/scan/width_tests.rs",
+     "name": "words_saying_the_method_is_not_supported_naming_no_range_are_a_lack"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "a_lack_kept_for_a_rate_limit_and_the_old_marks_are_let_go_as_they_are_read"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "a_part_not_written_for_the_store_locked_is_not_said"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "a_part_not_written_is_said_once_with_why"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "a_read_carried_on_from_an_entry_deleted_meanwhile_is_not_kept"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "a_record_of_refused_widths_an_earlier_version_kept_reads_as_none_and_is_written_over_with_no_word"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "an_action_writes_each_key_it_settled_once_as_it_ends"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "each_part_reads_back_what_it_wrote_and_a_width_is_no_lack"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "kept_lacks_naming_a_range_are_let_go_for_logs_alone"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/settled.rs",
+     "name": "what_a_transaction_carries_is_kept_and_notes_without_it_carry_none"
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
@@ -1233,6 +1776,14 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_call_data_that_carries_an_entry_is_anchor_and_the_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_registry_form_builds_the_calldata_the_law_reads"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_same_answer_recorded_twice_is_one_answer"
     },
     {
@@ -1242,10 +1793,6 @@
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_transport_reader_takes_what_the_law_does_not"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_two_forms_build_the_calldata_the_law_reads"
     },
     {
      "path": "crates/zikaron-anchor/tests/rerun.rs",
@@ -1273,25 +1820,97 @@
     },
     {
      "path": "crates/zikaron-cli/tests/sealedsend.rs",
-     "name": "a_window_too_wide_is_said_in_the_command_lines_words"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/sealedsend.rs",
      "name": "entries_an_agreed_reading_holds_leave_unless_a_transaction_of_theirs_is_out"
     },
     {
      "path": "crates/zikaron-cli/tests/sealedsend.rs",
      "name": "the_senders_evidence_is_said_in_the_command_lines_words"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "a_found_key_reads_back_beside_the_facts_and_one_not_its_addresss_is_none"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "a_part_not_written_for_the_store_locked_is_told_apart"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "a_part_the_room_cannot_write_is_said_with_why"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "a_single_source_fact_marked_proved_reads_back_and_is_taken_for_its_receipt_alone"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "a_single_source_fact_serves_a_single_source_reading_only"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "only_facts_every_run_read_alike_land"
+    },
+    {
+     "path": "crates/zikaron-send/src/checked.rs",
+     "name": "the_record_reads_back_whole_or_not_at_all"
+    },
+    {
+     "path": "crates/zikaron-send/tests/receipt_only.rs",
+     "name": "a_scan_tests_only_the_logs_its_choice_names_and_its_rounds_agree_on_the_rest"
+    },
+    {
+     "path": "crates/zikaron-send/tests/receipt_only.rs",
+     "name": "an_anchor_one_node_read_proved_but_for_its_receipt_is_asked_its_receipt_alone_of_each_node"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "a_capped_node_beside_another_reads_two_sources_once_the_history_is_kept"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "a_node_alone_with_no_record_reads_on_from_another_nodes"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "a_node_refusing_the_whole_range_is_asked_once_and_the_reading_stands_on_the_node_that_answered"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "a_second_process_asks_the_logs_only_after_what_the_first_settled"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "another_node_list_reads_the_whole_range"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "processes_rate_limited_past_patience_never_keep_the_method_lacking"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "the_bare_roads_keep_their_reads_in_the_clear_for_their_owner_naming_no_node"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "the_next_process_does_not_ask_a_node_the_method_it_said_it_lacks"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "two_processes_keeping_reads_at_once_each_keep_theirs"
+    },
+    {
+     "path": "crates/zikaron-send/tests/settled_logs.rs",
+     "name": "what_one_node_read_in_this_action_is_not_lent_to_the_next"
     }
    ],
    "nameZh": "扫日志"
   },
   {
    "id": "tx-send",
-   "familyVersion": 6,
+   "familyVersion": 28,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 27
    },
    "home": [
     "crates/app/src/action/mod.rs",
@@ -1309,6 +1928,7 @@
     "crates/app/tests/asking.rs",
     "crates/app/tests/checks_more/a8_send.rs",
     "crates/app/tests/checks_more/gaps_b11.rs",
+    "crates/app/tests/checks_more/r30b1.rs",
     "crates/app/tests/checks_more/send_r23.rs",
     "crates/app/tests/checks_more/window_b10.rs",
     "crates/app/tests/checks_more/wizard_way_out.rs",
@@ -1325,6 +1945,7 @@
     "crates/zikaron-anchor/tests/gaps.rs",
     "crates/zikaron-anchor/tests/nonce_unread.rs",
     "crates/zikaron-anchor/tests/on_chain.rs",
+    "crates/zikaron-anchor/tests/one_ask.rs",
     "crates/zikaron-anchor/tests/rerun.rs",
     "crates/zikaron-cli/src/sealedsend.rs",
     "crates/zikaron-cli/tests/gas_shapes.rs",
@@ -1338,9 +1959,22 @@
     "crates/zikaron-send/src/sent.rs",
     "crates/zikaron-send/src/shut.rs",
     "crates/zikaron-send/tests/closure.rs",
-    "crates/zikaron-send/tests/on_chain_said.rs"
+    "crates/zikaron-send/tests/on_chain_said.rs",
+    "crates/zikaron-send/tests/r30b1_send_nodes.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
+    {
+     "path": "crates/app/src/chainx.rs",
+     "name": "a_node_is_said_by_its_kind_without_its_code"
+    },
+    {
+     "path": "crates/app/src/window/ledger.rs",
+     "name": "every_reason_a_batch_is_offered_no_price_is_said"
+    },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "a_height_that_does_not_read_as_64_bits_is_named_never_zero"
@@ -1355,7 +1989,23 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "a_node_passed_over_is_named_once_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_saying_not_yet_is_asked_again_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "a_node_serving_another_chain_is_left_out_of_balance_and_fees_and_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_that_gave_nothing_is_asked_nothing_more_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_rest_row_with_no_key_here_is_asked_nothing_and_named_once_in_each_reading"
     },
     {
      "path": "crates/app/tests/asking.rs",
@@ -1367,11 +2017,19 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "an_answer_the_reading_cannot_take_passes_the_node_over_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "the_balance_before_sending_is_pinned_and_compared"
     },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "the_head_is_the_smallest_and_a_node_too_far_behind_is_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "the_questions_outside_a_read_still_ask_a_node_it_passed_over"
     },
     {
      "path": "crates/app/tests/checks_more/a8_send.rs",
@@ -1408,6 +2066,30 @@
     {
      "path": "crates/app/tests/checks_more/gaps_b11.rs",
      "name": "an_internal_error_code_is_the_estimate_refused"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "a_marked_homes_tail_is_asked_again_when_its_ledger_changes"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "a_node_table_change_reads_nothing_while_the_basis_chain_has_no_node"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "a_receipt_this_home_holds_is_on_chain_while_the_node_lags"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "a_table_with_no_node_of_the_chain_is_refused_at_the_estimate"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "the_chain_is_read_again_when_the_node_table_changes"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b1.rs",
+     "name": "the_exit_gate_reads_over_the_nodes_that_serve_the_chain"
     },
     {
      "path": "crates/app/tests/checks_more/send_r23.rs",
@@ -1448,6 +2130,26 @@
     {
      "path": "crates/app/tests/checks_more/window_b10.rs",
      "name": "a_held_resend_is_dropped_when_the_batch_was_included_meanwhile"
+    },
+    {
+     "path": "crates/app/tests/checks_more/window_b10.rs",
+     "name": "a_send_refused_says_why_on_the_sheet_it_was_pressed_on"
+    },
+    {
+     "path": "crates/app/tests/checks_more/window_b10.rs",
+     "name": "each_export_starts_plain"
+    },
+    {
+     "path": "crates/app/tests/checks_more/window_b10.rs",
+     "name": "every_put_all_on_chain_opens_the_sheet_one_way"
+    },
+    {
+     "path": "crates/app/tests/checks_more/window_b10.rs",
+     "name": "the_last_batch_is_drawn_where_a_batch_is_sent_from"
+    },
+    {
+     "path": "crates/app/tests/checks_more/window_b10.rs",
+     "name": "the_last_batch_is_read_off_the_queue_on_disk"
     },
     {
      "path": "crates/app/tests/checks_more/window_b10.rs",
@@ -1555,7 +2257,35 @@
     },
     {
      "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "a_transfer_value_is_written_whole_and_as_before_where_it_fit"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "a_wait_asks_the_head_until_it_moves_and_then_the_receipt"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "a_wait_on_the_lower_of_two_chains_watches_that_chains_head"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "at_the_deadline_not_yet_only_where_a_node_answered_the_receipt_question"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
      "name": "blocks_that_paid_no_priority_fee_are_not_counted"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "once_one_node_gives_the_receipt_the_beats_start_again"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "one_nodes_receipt_alone_does_not_count_and_tables_of_two_and_one_are_as_before"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "one_place_written_twice_is_one_place_for_a_receipt"
     },
     {
      "path": "crates/zikaron-anchor/src/send.rs",
@@ -1564,6 +2294,14 @@
     {
      "path": "crates/zikaron-anchor/src/send.rs",
      "name": "the_gas_limit_follows_the_estimate"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "two_alike_receipts_count_beside_another_and_two_unlike_do_not"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/send.rs",
+     "name": "two_nodes_giving_the_same_receipt_count_and_the_one_behind_is_not_waited_for"
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
@@ -1663,6 +2401,14 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_call_data_that_carries_an_entry_is_anchor_and_the_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_registry_form_builds_the_calldata_the_law_reads"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_same_answer_recorded_twice_is_one_answer"
     },
     {
@@ -1672,10 +2418,6 @@
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_transport_reader_takes_what_the_law_does_not"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_two_forms_build_the_calldata_the_law_reads"
     },
     {
      "path": "crates/zikaron-anchor/tests/answers.rs",
@@ -1707,6 +2449,10 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_range_a_node_refused_is_asked_once_more_and_its_words_are_kept_for_nothing_after"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "a_receipt_one_node_has_and_another_not_yet_is_split_naming_both_sides"
     },
     {
@@ -1715,7 +2461,35 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_stop_reaches_the_askings_inside"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_third_nodes_null_is_no_answer_for_a_block_a_transaction_and_a_receipt"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_third_real_answer_beside_two_alike_is_not_counted_and_named"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "an_unmined_transaction_is_not_yet_as_null_is"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "each_class_is_asked_again_as_its_row_says_and_no_more"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "enough_hands_back_at_once_and_the_one_on_its_way_finds_the_stop_set"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "enough_is_two_places_by_the_kind_of_read"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "every_null_two_alike_two_apart_and_one_beside_failures_are_read_at_once"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
@@ -1724,6 +2498,18 @@
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "not_yet_against_has_is_neither_a_difference_nor_a_reading"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "not_yet_is_waited_for_at_least_a_block"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "one_answer_alone_is_a_single_source_reading"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "one_place_giving_beside_a_null_waits_for_every_question_and_settles_as_before"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
@@ -1739,6 +2525,10 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "the_head_is_the_highest_two_places_reached"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "the_judging_table_names_one_rule_per_method"
     },
     {
@@ -1747,11 +2537,31 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "the_reading_crates_start_threads_in_one_place"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_against_two_and_two_unlike_in_a_table_of_two_differ"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_alike_stand_and_a_silent_third_is_only_missing"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_rounds_alike_make_the_scan_and_the_third_is_left_out"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "within_a_wait_a_split_is_asked_again_until_the_deadline"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "work_on_every_item_at_once_keeps_order_and_survives_a_worker_that_panics"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/estimate.rs",
+     "name": "a_plain_estimate_is_read_the_same_way_without_the_anchor_ceiling"
     },
     {
      "path": "crates/zikaron-anchor/tests/estimate.rs",
@@ -1792,6 +2602,18 @@
     {
      "path": "crates/zikaron-anchor/tests/on_chain.rs",
      "name": "only_this_senders_anchors_through_this_registry_count_each_at_its_earliest"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/one_ask.rs",
+     "name": "a_node_hung_on_the_head_costs_one_ask_and_the_receipt_is_asked_next"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/one_ask.rs",
+     "name": "a_node_hung_on_the_receipt_costs_one_ask_and_the_others_are_asked"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/one_ask.rs",
+     "name": "a_question_is_never_given_more_than_the_wait_left"
     },
     {
      "path": "crates/zikaron-anchor/tests/rerun.rs",
@@ -1955,6 +2777,10 @@
     },
     {
      "path": "crates/zikaron-cli/tests/rerun.rs",
+     "name": "a_node_of_another_chain_is_refused_before_anything_is_signed"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/rerun.rs",
      "name": "a_record_keeps_any_nonce"
     },
     {
@@ -1986,6 +2812,10 @@
      "name": "of_two_sent_at_one_nonce_the_one_in_a_block_is_the_answer"
     },
     {
+     "path": "crates/zikaron-cli/tests/rerun.rs",
+     "name": "the_record_is_sealed_to_the_sending_key"
+    },
+    {
      "path": "crates/zikaron-cli/tests/sealedsend.rs",
      "name": "a_batch_no_node_holds_is_signed_again_only_unused_and_only_on_send"
     },
@@ -1995,15 +2825,35 @@
     },
     {
      "path": "crates/zikaron-cli/tests/sealedsend.rs",
-     "name": "a_window_too_wide_is_said_in_the_command_lines_words"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/sealedsend.rs",
      "name": "entries_an_agreed_reading_holds_leave_unless_a_transaction_of_theirs_is_out"
     },
     {
      "path": "crates/zikaron-cli/tests/sealedsend.rs",
      "name": "the_senders_evidence_is_said_in_the_command_lines_words"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_batch_goes_only_at_a_later_block_time"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_batch_is_held_by_none_only_on_every_nodes_word"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_batchs_void_takes_two_places_and_a_receipt_anywhere_stops_it"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_carried_entry_offered_again_still_carries_its_bytes"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_stuck_batch_without_a_price_says_whether_no_node_of_the_chain_every_node_elsewhere_or_the_price_unread"
+    },
+    {
+     "path": "crates/zikaron-send/src/batch.rs",
+     "name": "a_void_reads_only_the_nodes_whose_nonce_was_read_past_it"
     },
     {
      "path": "crates/zikaron-send/src/batch.rs",
@@ -2016,6 +2866,18 @@
     {
      "path": "crates/zikaron-send/src/batch.rs",
      "name": "what_a_home_has_out_is_read_by_the_transactions_awaited"
+    },
+    {
+     "path": "crates/zikaron-send/src/keep.rs",
+     "name": "the_queue_follows_only_a_reading_that_is_whole_and_keeps_as_read_only_from_a_complete_one"
+    },
+    {
+     "path": "crates/zikaron-send/src/sent.rs",
+     "name": "the_settled_log_reads_are_forgotten_and_the_records_of_sends_stay"
+    },
+    {
+     "path": "crates/zikaron-send/src/shut.rs",
+     "name": "a_mark_naming_its_anchors_is_judged_against_the_ledger"
     },
     {
      "path": "crates/zikaron-send/tests/closure.rs",
@@ -2032,16 +2894,44 @@
     {
      "path": "crates/zikaron-send/tests/on_chain_said.rs",
      "name": "the_on_chain_question_names_a_handshake_as_the_handshake"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_book_call_is_estimated_through_the_same_choice"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_receipt_waited_on_beside_another_chains_node_is_read_landed_and_that_node_is_asked_nothing_past_its_chain"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_receipt_waited_on_where_every_node_serves_another_chain_asks_them_nothing_past_their_chain_and_the_stuck_batch_says_so"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_table_with_no_node_of_the_chain_is_refused_at_the_estimate_by_name"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "the_fence_follows_the_queues_own_receipt_when_no_node_has_indexed_it"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "two_nodes_whose_fee_histories_differ_give_the_lower_number"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "what_is_on_chain_is_the_reading_and_the_queues_own_receipts"
     }
    ],
    "nameZh": "发送、nonce、收据、费率与 gas"
   },
   {
    "id": "node-agreement",
-   "familyVersion": 5,
+   "familyVersion": 23,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 22
    },
    "home": [
     "crates/app/src/auditx.rs",
@@ -2049,19 +2939,39 @@
     "crates/app/src/shell.rs",
     "crates/app/tests/asking.rs",
     "crates/app/tests/checks_more/gaps.rs",
+    "crates/app/tests/checks_more/rest_rows.rs",
     "crates/app/tests/estimate_family.rs",
     "crates/app/tests/heads_unread.rs",
+    "crates/zikaron-anchor/src/action.rs",
     "crates/zikaron-anchor/src/endpoints.rs",
+    "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
     "crates/zikaron-anchor/src/judge.rs",
+    "crates/zikaron-anchor/src/oneread.rs",
     "crates/zikaron-anchor/src/patience.rs",
     "crates/zikaron-anchor/tests/anchoring.rs",
     "crates/zikaron-anchor/tests/asking.rs",
+    "crates/zikaron-anchor/tests/fee_lower_median.rs",
     "crates/zikaron-anchor/tests/gaps.rs",
     "crates/zikaron-anchor/tests/places.rs",
+    "crates/zikaron-cli/tests/questions.rs",
     "crates/zikaron-send/src/agree.rs",
-    "crates/zikaron-send/src/node.rs"
+    "crates/zikaron-send/src/node.rs",
+    "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+    "crates/zikaron-send/tests/rest_rows.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/auditx.rs",
+     "name": "a_first_anchors_contract_is_named_by_what_it_is"
+    },
+    {
+     "path": "crates/app/src/auditx.rs",
+     "name": "a_retired_keys_own_record_is_on_chain"
+    },
+    {
+     "path": "crates/app/src/chainx.rs",
+     "name": "a_node_is_said_by_its_kind_without_its_code"
+    },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "a_height_that_does_not_read_as_64_bits_is_named_never_zero"
@@ -2076,7 +2986,23 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "a_node_passed_over_is_named_once_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_saying_not_yet_is_asked_again_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "a_node_serving_another_chain_is_left_out_of_balance_and_fees_and_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_node_that_gave_nothing_is_asked_nothing_more_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "a_rest_row_with_no_key_here_is_asked_nothing_and_named_once_in_each_reading"
     },
     {
      "path": "crates/app/tests/asking.rs",
@@ -2088,11 +3014,19 @@
     },
     {
      "path": "crates/app/tests/asking.rs",
+     "name": "an_answer_the_reading_cannot_take_passes_the_node_over_in_the_read"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
      "name": "the_balance_before_sending_is_pinned_and_compared"
     },
     {
      "path": "crates/app/tests/asking.rs",
      "name": "the_head_is_the_smallest_and_a_node_too_far_behind_is_named"
+    },
+    {
+     "path": "crates/app/tests/asking.rs",
+     "name": "the_questions_outside_a_read_still_ask_a_node_it_passed_over"
     },
     {
      "path": "crates/app/tests/checks_more/gaps.rs",
@@ -2129,6 +3063,46 @@
     {
      "path": "crates/app/tests/checks_more/gaps.rs",
      "name": "two_nodes_with_different_troubles_say_the_first_nodes_code"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "a_change_of_rest_rows_moves_the_nodes_voids_the_estimate_and_keeps_the_network"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "a_keys_file_the_window_starts_with_keys_a_row_left_without_one"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "a_rest_row_keeps_its_key_on_this_machine_and_only_its_base_url_in_the_ledger"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "a_round_reading_the_whole_range_cuts_none"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "each_reader_of_the_single_source_reading_reads_past_a_refusing_first_node"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "every_round_refused_for_its_width_is_read_in_pieces"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "rounds_rate_limited_or_unanswered_are_not_cut"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "the_chain_is_read_again_only_when_the_nodes_asked_moved"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "the_rest_members_are_their_own_and_a_newer_versions_members_ride_along"
+    },
+    {
+     "path": "crates/app/tests/checks_more/rest_rows.rs",
+     "name": "the_single_source_reading_asks_the_table_in_order_and_names_each_refusal"
     },
     {
      "path": "crates/app/tests/estimate_family.rs",
@@ -2221,6 +3195,98 @@
     {
      "path": "crates/app/tests/heads_unread.rs",
      "name": "latest_blocks_that_do_not_read_are_the_chains_shape"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_chains_floor_is_its_own_nodes_receipts"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_keeper_lives_in_the_action_it_was_opened_with_and_nowhere_else"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_log_question_within_a_held_answer_is_answered_from_it"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_pinned_answer_is_the_actions_and_a_moving_one_is_asked_again"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_raw_transaction_is_held_once_it_hashes_to_the_hash_asked"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_read_asked_again_gives_leave_to_cut_to_every_node_that_refused"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_read_is_cut_where_nobody_answered_and_every_node_that_refused_is_cut"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "a_receipt_lets_go_only_the_heads_below_its_block"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "every_read_of_logs_by_several_nodes_goes_through_the_one_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "only_a_transaction_rebuilt_to_the_asked_hash_is_every_rounds"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "the_cap_on_questions_is_one_to_a_thousand_and_an_action_may_hold_its_own"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/action.rs",
+     "name": "the_head_a_broadcast_went_out_on_is_its_transactions"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints.rs",
+     "name": "a_lack_stands_a_day"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints.rs",
+     "name": "a_rest_rows_logs_are_only_behind_when_they_stop_short"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "a_batch_sends_no_question_of_a_resting_method_and_the_probe_goes_alone"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "a_batchs_limits_are_left_to_the_batch_table"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "a_method_limited_past_the_table_rests_and_its_probe_doubles_the_rest_up_to_thirty_seconds"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "a_node_that_keeps_limiting_rests_though_every_read_stops_short"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "an_answer_breaks_the_row_and_a_time_out_does_not"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "limited_in_an_action_is_a_limit_noted_since_it_opened"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/endpoints/limit_tests.rs",
+     "name": "limits_in_a_row_rest_at_the_count_and_span_of_the_table"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/oneread.rs",
+     "name": "a_receipt_asked_alone_is_not_held_to_one_ask"
+    },
+    {
+     "path": "crates/zikaron-anchor/src/patience.rs",
+     "name": "the_block_a_question_asks_is_its_numbered_block_or_its_last_log_block"
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
@@ -2320,6 +3386,14 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_call_data_that_carries_an_entry_is_anchor_and_the_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_registry_form_builds_the_calldata_the_law_reads"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_same_answer_recorded_twice_is_one_answer"
     },
     {
@@ -2331,12 +3405,12 @@
      "name": "the_transport_reader_takes_what_the_law_does_not"
     },
     {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_two_forms_build_the_calldata_the_law_reads"
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_question_in_flight_ends_with_its_slowest_node_and_leaves_nothing_running"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
-     "name": "a_question_in_flight_ends_with_its_slowest_node_and_leaves_nothing_running"
+     "name": "a_range_a_node_refused_is_asked_once_more_and_its_words_are_kept_for_nothing_after"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
@@ -2348,7 +3422,35 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_stop_reaches_the_askings_inside"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_third_nodes_null_is_no_answer_for_a_block_a_transaction_and_a_receipt"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "a_third_real_answer_beside_two_alike_is_not_counted_and_named"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "an_unmined_transaction_is_not_yet_as_null_is"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "each_class_is_asked_again_as_its_row_says_and_no_more"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "enough_hands_back_at_once_and_the_one_on_its_way_finds_the_stop_set"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "enough_is_two_places_by_the_kind_of_read"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "every_null_two_alike_two_apart_and_one_beside_failures_are_read_at_once"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
@@ -2357,6 +3459,18 @@
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "not_yet_against_has_is_neither_a_difference_nor_a_reading"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "not_yet_is_waited_for_at_least_a_block"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "one_answer_alone_is_a_single_source_reading"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "one_place_giving_beside_a_null_waits_for_every_question_and_settles_as_before"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
@@ -2372,6 +3486,10 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "the_head_is_the_highest_two_places_reached"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "the_judging_table_names_one_rule_per_method"
     },
     {
@@ -2380,11 +3498,51 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "the_reading_crates_start_threads_in_one_place"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_against_two_and_two_unlike_in_a_table_of_two_differ"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_alike_stand_and_a_silent_third_is_only_missing"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
+     "name": "two_rounds_alike_make_the_scan_and_the_third_is_left_out"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "within_a_wait_a_split_is_asked_again_until_the_deadline"
     },
     {
      "path": "crates/zikaron-anchor/tests/asking.rs",
      "name": "work_on_every_item_at_once_keeps_order_and_survives_a_worker_that_panics"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "a_table_that_gives_no_number_is_passed_over_in_its_question_alone"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "no_number_from_any_node_is_no_reading"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "several_tables_give_their_lower_median"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "the_fee_history_is_read_by_its_own_rule"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "the_lower_median_is_still_held_at_the_ceiling"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/fee_lower_median.rs",
+     "name": "two_tables_that_differ_give_the_lower_number"
     },
     {
      "path": "crates/zikaron-anchor/tests/gaps.rs",
@@ -2400,21 +3558,197 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "a_rest_place_and_a_node_on_its_host_are_one_place"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
      "name": "addresses_are_one_place_by_what_they_name"
     },
     {
      "path": "crates/zikaron-anchor/tests/places.rs",
+     "name": "the_answer_two_places_gave_is_counted_by_places_not_rows"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/places.rs",
      "name": "two_nodes_on_one_host_share_a_name_and_are_two_places"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_direct_anchor_asks_the_head_once_and_the_next_run_only_the_logs_after_what_it_settled"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_node_refusing_batches_is_asked_one_by_one_and_the_reading_stands_on_both"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_node_that_does_not_prove_is_named_apart_and_the_reading_is_whole"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_queued_anchor_asks_each_node_the_head_once_and_the_lineage_window_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_queued_anchors_receipt_is_polled_at_one_node_and_its_facts_kept_for_the_next_gate"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_scan_asks_each_transaction_and_block_once_however_many_anchors_they_carry"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_scan_served_from_what_was_settled_checks_the_last_anchors_block_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_send_judges_at_the_actions_lowest_head_and_a_countdown_shows_the_newest_highest"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "a_verify_of_fifty_anchors_with_facts_kept_asks_nothing_per_anchor"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/questions.rs",
+     "name": "an_anchor_the_chain_holds_is_refused_and_leaves_by_the_window_the_send_already_asked"
+    },
+    {
+     "path": "crates/zikaron-send/src/agree.rs",
+     "name": "a_rest_rows_round_runs_with_the_json_rpc_rounds"
+    },
+    {
+     "path": "crates/zikaron-send/src/agree.rs",
+     "name": "a_scan_keeps_what_the_answering_rounds_read_when_another_stands_aside"
+    },
+    {
+     "path": "crates/zikaron-send/src/agree.rs",
+     "name": "every_round_refused_is_read_in_pieces_and_one_read_whole_is_enough"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_block_one_place_gives_beside_a_null_is_waited_for_until_two_alike_or_the_null_has_passed_it"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_block_time_two_places_give_alike_stands_beside_a_third"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_late_answer_is_kept_nowhere"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_load_bearing_read_gives_each_question_one_asks_time"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_answers_each_question_by_the_nodes_that_can"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_hands_back_the_answer_its_number_rule_picks"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_table_question_holds_its_bound"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_node_that_lacks_a_method_is_still_asked_the_reads_other_questions_and_never_that_method_again"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_range_a_node_refused_is_asked_of_it_once_more_and_again_in_the_next_read"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_receipt_of_another_chain_is_no_floor_of_this_one"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_refusal_the_patience_table_has_no_row_for_is_asked_once_more_before_the_node_is_passed_over"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_rest_row_is_asked_every_question_with_the_json_rpc_nodes_and_bears_witness_alike"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_rest_row_whose_logs_stop_short_is_not_yet_there"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_table_whose_every_node_was_passed_over_is_answered_at_once_and_not_waited_for"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_transaction_held_by_none_is_told_apart_from_one_no_node_answered"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "a_transaction_known_to_any_node_is_known_whichever_refuses"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "after_a_receipt_two_nodes_at_its_block_are_read_and_the_one_behind_is_passed_over"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "after_its_action_reads_a_receipt_a_head_stands_on_that_block"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "the_scans_per_anchor_question_honours_what_the_node_said_it_lacks"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "two_alike_are_enough_and_the_third_is_not_waited_for"
+    },
+    {
+     "path": "crates/zikaron-send/src/node.rs",
+     "name": "two_places_that_have_not_heard_of_a_transaction_do_not_outvote_the_one_holding_it"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_book_call_is_estimated_through_the_same_choice"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_receipt_waited_on_beside_another_chains_node_is_read_landed_and_that_node_is_asked_nothing_past_its_chain"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_receipt_waited_on_where_every_node_serves_another_chain_asks_them_nothing_past_their_chain_and_the_stuck_batch_says_so"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "a_table_with_no_node_of_the_chain_is_refused_at_the_estimate_by_name"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "the_fence_follows_the_queues_own_receipt_when_no_node_has_indexed_it"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "two_nodes_whose_fee_histories_differ_give_the_lower_number"
+    },
+    {
+     "path": "crates/zikaron-send/tests/r30b1_send_nodes.rs",
+     "name": "what_is_on_chain_is_the_reading_and_the_queues_own_receipts"
+    },
+    {
+     "path": "crates/zikaron-send/tests/rest_rows.rs",
+     "name": "a_rest_row_that_gave_nothing_is_asked_nothing_more_in_the_read"
     }
    ],
    "nameZh": "多节点一致与链头"
   },
   {
    "id": "os-platform",
-   "familyVersion": 5,
+   "familyVersion": 9,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 8
    },
    "home": [
     "crates/app/tests/checks_more/gaps_b13.rs",
@@ -2462,6 +3796,14 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_missing_a_member_is_told_by_its_shape_before_any_chain"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_with_no_node_to_check_on_is_refused_unwritten"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_misuse_names_its_subject_on_the_first_line_of_stderr"
     },
     {
@@ -2470,7 +3812,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_move_cut_after_its_closing_succession_writes_the_genesis_alone"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_refused_body_is_said_in_the_systems_language_flags_and_all"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_strangers_new_genesis_leaves_an_old_ledger_old"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -2486,6 +3840,30 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_archive_is_audited_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_chain_is_checked_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_given_as_an_input_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_reading_of_an_old_ledger_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_original_asked_for_and_not_listed_is_named"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use"
     },
     {
@@ -2495,6 +3873,10 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_theirs"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "init_on_a_continued_ledger_names_its_one_root"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -2518,18 +3900,6 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_and_the_key_table_agree_cell_by_cell"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_carries_the_whole_exit_table_and_every_reason"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_lists_every_flag_the_code_knows"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_crate_leans_on_nothing_but_the_four_bases"
     },
     {
@@ -2539,6 +3909,14 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_exit_table_is_five_codes_and_they_are_all_different"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_face_verbs_misuse_is_judged_before_anything_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_flag_names_the_code_knows_are_each_named_once"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -2678,11 +4056,19 @@
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
+     "name": "each_notice_is_named_once_with_a_method_of_its_own"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
      "name": "on_and_off_make_and_remove_the_one_link"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
      "name": "the_administrator_dialog_is_read_by_what_it_said"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
+     "name": "the_toolbar_shows_on_the_desktop_alone"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
@@ -2725,10 +4111,10 @@
   },
   {
    "id": "durable-write",
-   "familyVersion": 6,
+   "familyVersion": 17,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 16
    },
    "home": [
     "crates/app/src/home.rs",
@@ -2774,6 +4160,14 @@
     },
     {
      "path": "crates/app/src/home.rs",
+     "name": "a_move_is_said_once_per_place_it_came_from"
+    },
+    {
+     "path": "crates/app/src/home.rs",
+     "name": "a_recorded_home_follows_the_machine_directory_it_lay_in"
+    },
+    {
+     "path": "crates/app/src/home.rs",
      "name": "every_temporary_name_this_product_writes_is_read_as_one"
     },
     {
@@ -2783,6 +4177,10 @@
     {
      "path": "crates/app/src/identity.rs",
      "name": "a_network_cell_this_build_lacks_is_carried"
+    },
+    {
+     "path": "crates/app/src/identity.rs",
+     "name": "delete_is_allowed_only_with_a_backup_or_a_handover"
     },
     {
      "path": "crates/app/src/identity.rs",
@@ -2819,6 +4217,10 @@
     {
      "path": "crates/app/src/machine.rs",
      "name": "idle_is_due_at_the_mark_and_not_before"
+    },
+    {
+     "path": "crates/app/src/machine.rs",
+     "name": "rest_keys_are_sealed_settings_carried_whole_and_never_said"
     },
     {
      "path": "crates/app/src/machine.rs",
@@ -2966,10 +4368,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -3014,6 +4412,14 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_missing_a_member_is_told_by_its_shape_before_any_chain"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_with_no_node_to_check_on_is_refused_unwritten"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_misuse_names_its_subject_on_the_first_line_of_stderr"
     },
     {
@@ -3022,7 +4428,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_move_cut_after_its_closing_succession_writes_the_genesis_alone"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_refused_body_is_said_in_the_systems_language_flags_and_all"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_strangers_new_genesis_leaves_an_old_ledger_old"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -3038,6 +4456,30 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_archive_is_audited_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_chain_is_checked_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_given_as_an_input_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_reading_of_an_old_ledger_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_original_asked_for_and_not_listed_is_named"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use"
     },
     {
@@ -3047,6 +4489,10 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_theirs"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "init_on_a_continued_ledger_names_its_one_root"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -3070,18 +4516,6 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_and_the_key_table_agree_cell_by_cell"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_carries_the_whole_exit_table_and_every_reason"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_lists_every_flag_the_code_knows"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_crate_leans_on_nothing_but_the_four_bases"
     },
     {
@@ -3091,6 +4525,14 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_exit_table_is_five_codes_and_they_are_all_different"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_face_verbs_misuse_is_judged_before_anything_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_flag_names_the_code_knows_are_each_named_once"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -3337,10 +4779,10 @@
   },
   {
    "id": "single-writer",
-   "familyVersion": 6,
+   "familyVersion": 19,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 18
    },
    "home": [
     "crates/app/src/action/home.rs",
@@ -3352,12 +4794,14 @@
     "crates/app/src/task.rs",
     "crates/app/src/window/watch.rs",
     "crates/app/tests/checks_more/a8_gates.rs",
+    "crates/app/tests/checks_more/frame_turn.rs",
     "crates/app/tests/checks_more/gaps.rs",
     "crates/app/tests/checks_more/gaps_b13.rs",
     "crates/app/tests/checks_more/gaps_r20b1.rs",
     "crates/app/tests/checks_more/gaps_r20b2.rs",
     "crates/app/tests/checks_more/handed_off.rs",
     "crates/app/tests/checks_more/mirror_adopt.rs",
+    "crates/app/tests/checks_more/r32b5.rs",
     "crates/app/tests/checks_more/send_r23.rs",
     "crates/zikaron-cli/src/sealed.rs",
     "crates/zikaron-cli/tests/handoff.rs",
@@ -3368,6 +4812,10 @@
     "crates/zikaron-seal/src/writer.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
     {
      "path": "crates/app/tests/checks_more/a8_gates.rs",
      "name": "a_backup_counts_only_once_read_back_and_reopened"
@@ -3399,6 +4847,38 @@
     {
      "path": "crates/app/tests/checks_more/a8_gates.rs",
      "name": "the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_look_lands_only_against_the_baseline_it_asked"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_reading_started_before_a_write_here_lands_nothing_and_is_read_again"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_write_for_a_home_left_is_under_its_own_lock"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "an_empty_slot_asks_for_the_table_and_says_reading"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "letting_the_lock_go_counts_nothing_and_a_write_after_it_is_followed"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_lock_taken_again_behind_stops_by_itself_and_takes_it_once_free"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_look_at_the_disk_is_a_task_behind_the_window"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_next_batch_after_a_write_is_read_with_its_table"
     },
     {
      "path": "crates/app/tests/checks_more/gaps.rs",
@@ -3529,6 +5009,30 @@
      "name": "a_second_instance_reading_a_home_adopts_nothing"
     },
     {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_moves_the_seats_home_and_one_that_does_not_open_moves_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_that_does_not_open_moves_no_other_seat_back"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_first_identity_made_on_the_grantee_seat_is_current_there"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_report_behind_the_receipts_is_asked_again_within_its_bound_then_said"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_seat_whose_home_does_not_open_is_not_entered_in_the_register_either"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "passes_not_drawn_are_not_counted_as_drawn_and_a_language_set_in_a_turn_still_fades"
+    },
+    {
      "path": "crates/app/tests/checks_more/send_r23.rs",
      "name": "a_batch_is_landed_in_flight_before_its_bytes_go"
     },
@@ -3559,6 +5063,10 @@
     {
      "path": "crates/zikaron-cli/src/sealed.rs",
      "name": "a_ledgers_home_is_the_directory_it_is_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/handoff.rs",
+     "name": "a_continued_ledger_is_one_line_and_keeps_its_key_across_the_move"
     },
     {
      "path": "crates/zikaron-cli/tests/handoff.rs",
@@ -3658,11 +5166,19 @@
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
+     "name": "each_notice_is_named_once_with_a_method_of_its_own"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
      "name": "on_and_off_make_and_remove_the_one_link"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
      "name": "the_administrator_dialog_is_read_by_what_it_said"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
+     "name": "the_toolbar_shows_on_the_desktop_alone"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
@@ -3721,10 +5237,10 @@
   },
   {
    "id": "local-seal",
-   "familyVersion": 5,
+   "familyVersion": 10,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 9
    },
    "home": [
     "crates/app/local-data-standard.md",
@@ -3856,10 +5372,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -3919,10 +5431,10 @@
   },
   {
    "id": "passcode-gate",
-   "familyVersion": 5,
+   "familyVersion": 14,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 13
    },
    "home": [
     "crates/app/src/action/mod.rs",
@@ -3938,6 +5450,10 @@
     "crates/zikaron-seal/src/keybox.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
     {
      "path": "crates/app/src/window/gate.rs",
      "name": "a_file_chosen_after_the_password_hands_nothing_over"
@@ -4092,10 +5608,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -4147,10 +5659,10 @@
   },
   {
    "id": "key-file",
-   "familyVersion": 4,
+   "familyVersion": 8,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 7
    },
    "home": [
     "crates/app/src/action/identity.rs",
@@ -4159,6 +5671,7 @@
     "crates/app/src/keystore.rs",
     "crates/app/tests/checks_more/gaps_b10m.rs",
     "crates/app/tests/checks_more/gaps_r21b2.rs",
+    "crates/app/tests/checks_more/r32b5.rs",
     "crates/app/tests/checks_more/seat_landing.rs",
     "crates/app/tests/crypto.rs",
     "crates/zikaron-seal/src/crypto.rs",
@@ -4231,10 +5744,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -4244,6 +5753,30 @@
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "which_kinds_are_renamed_is_judged_once"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_moves_the_seats_home_and_one_that_does_not_open_moves_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_that_does_not_open_moves_no_other_seat_back"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_first_identity_made_on_the_grantee_seat_is_current_there"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_report_behind_the_receipts_is_asked_again_within_its_bound_then_said"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_seat_whose_home_does_not_open_is_not_entered_in_the_register_either"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "passes_not_drawn_are_not_counted_as_drawn_and_a_language_set_in_a_turn_still_fades"
     },
     {
      "path": "crates/app/tests/checks_more/seat_landing.rs",
@@ -4310,17 +5843,19 @@
   },
   {
    "id": "machine-backup",
-   "familyVersion": 6,
+   "familyVersion": 15,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 14
    },
    "home": [
     "crates/app/src/action/identity.rs",
     "crates/app/src/action/mod.rs",
     "crates/app/src/backup.rs",
     "crates/app/src/machine.rs",
+    "crates/app/src/rekey.rs",
     "crates/app/src/restorex.rs",
+    "crates/app/src/window/backup.rs",
     "crates/app/tests/checks_more/a8_gates.rs",
     "crates/app/tests/checks_more/gaps.rs",
     "crates/app/tests/checks_more/gaps_b12.rs",
@@ -4329,6 +5864,14 @@
     "crates/app/tests/checks_more/gate_landing.rs"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
+    {
+     "path": "crates/app/src/backup.rs",
+     "name": "a_backup_password_is_judged_in_one_place"
+    },
     {
      "path": "crates/app/src/backup.rs",
      "name": "a_member_is_plain_segments_on_every_system"
@@ -4367,6 +5910,10 @@
     },
     {
      "path": "crates/app/src/machine.rs",
+     "name": "rest_keys_are_sealed_settings_carried_whole_and_never_said"
+    },
+    {
+     "path": "crates/app/src/machine.rs",
      "name": "the_command_line_anchoring_cell_reads_each_form"
     },
     {
@@ -4384,6 +5931,10 @@
     {
      "path": "crates/app/src/machine.rs",
      "name": "unknown_members_and_the_proxy_cell_are_carried"
+    },
+    {
+     "path": "crates/app/src/window/backup.rs",
+     "name": "the_sheet_that_views_a_backup_asks_to_read_it_and_nothing_else"
     },
     {
      "path": "crates/app/tests/checks_more/a8_gates.rs",
@@ -4555,10 +6106,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -4586,10 +6133,10 @@
   },
   {
    "id": "ui-kit",
-   "familyVersion": 7,
+   "familyVersion": 26,
    "origin": {
     "by": "ZIKARON",
-    "previous": 6
+    "previous": 25
    },
    "home": [
     "crates/app/Cargo.toml",
@@ -4598,8 +6145,10 @@
     "crates/app/src/bin/app.rs",
     "crates/app/src/landing.rs",
     "crates/app/src/lib.rs",
+    "crates/app/src/platform/drops.rs",
     "crates/app/src/platform/linux.rs",
     "crates/app/src/platform/macos.rs",
+    "crates/app/src/platform/menubar.rs",
     "crates/app/src/platform/mod.rs",
     "crates/app/src/platform/unix.rs",
     "crates/app/src/platform/windows.rs",
@@ -4608,21 +6157,26 @@
     "crates/app/src/when.rs",
     "crates/app/src/window/chrome.rs",
     "crates/app/src/window/common.rs",
+    "crates/app/src/window/drive.rs",
     "crates/app/src/window/faces.rs",
     "crates/app/src/window/mod.rs",
+    "crates/app/src/window/skeleton.rs",
     "crates/app/tests/checks_more/a8_skeleton.rs",
     "crates/app/tests/checks_more/gaps.rs",
     "crates/app/tests/checks_more/gaps_r20b2.rs",
     "crates/app/tests/checks_more/motion_in_place.rs",
+    "crates/app/tests/checks_more/r32b5.rs",
     "crates/app/tests/checks_more/segments_in_place.rs",
     "crates/app/tests/checks_more/window_b10_layout.rs",
     "crates/app/tests/checks_more/window_habits.rs",
+    "crates/app/tests/checks_more/wiring_points.rs",
     "crates/app/tests/sync_clock.rs",
     "crates/app/tests/zone_years.rs",
     "crates/zikaron-ui/Cargo.toml",
     "crates/zikaron-ui/fonts/Inter-Medium.ttf",
     "crates/zikaron-ui/fonts/Inter-Regular.ttf",
     "crates/zikaron-ui/fonts/Inter-SemiBold.ttf",
+    "crates/zikaron-ui/fonts/JetBrainsMono-Bold.ttf",
     "crates/zikaron-ui/fonts/JetBrainsMono-Regular.ttf",
     "crates/zikaron-ui/fonts/NotoSansSC-Regular.otf",
     "crates/zikaron-ui/fonts/OFL-Inter.txt",
@@ -4697,7 +6251,9 @@
     "crates/zikaron-ui/tests/reveal.rs",
     "crates/zikaron-ui/tests/row_geometry.rs",
     "crates/zikaron-ui/tests/rows_structure.rs",
+    "crates/zikaron-ui/tests/setting_rows.rs",
     "crates/zikaron-ui/tests/size_with_content.rs",
+    "crates/zikaron-ui/tests/table_sight.rs",
     "crates/zikaron-ui/tests/toast_wrap.rs"
    ],
    "symbols": [
@@ -4735,12 +6291,24 @@
    ],
    "tests": [
     {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
+    {
      "path": "crates/app/src/landing.rs",
      "name": "every_kind_has_one_row"
     },
     {
      "path": "crates/app/src/landing.rs",
      "name": "what_goes_back_goes_back_both_ways"
+    },
+    {
+     "path": "crates/app/src/platform/menubar.rs",
+     "name": "settings_follows_the_window_and_a_press_is_taken_once"
+    },
+    {
+     "path": "crates/app/src/platform/menubar.rs",
+     "name": "the_bar_is_one_closed_table_its_keys_each_once"
     },
     {
      "path": "crates/app/src/platform/windows.rs",
@@ -4760,6 +6328,10 @@
     },
     {
      "path": "crates/app/src/when.rs",
+     "name": "the_default_zone_is_the_systems_and_a_chosen_utc_stays"
+    },
+    {
+     "path": "crates/app/src/when.rs",
      "name": "the_switch_happens_at_the_named_local_second"
     },
     {
@@ -4767,8 +6339,52 @@
      "name": "utc_moment_has_no_t_and_keeps_seconds"
     },
     {
+     "path": "crates/app/src/window/common.rs",
+     "name": "exactly_at_the_fourth_decimal"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "one_wei_is_not_zero"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "rounding_up_carries_across_places"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "six_gwei"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "small_amounts_keep_three_significant_digits"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "the_top_of_u128"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "whole_amounts_keep_four_decimals"
+    },
+    {
+     "path": "crates/app/src/window/common.rs",
+     "name": "zero_is_zero"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "a_mismatch_is_said_by_its_kind_never_its_token"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "each_opening_of_the_identity_card_starts_from_an_empty_form"
+    },
+    {
      "path": "crates/app/src/window/mod.rs",
      "name": "every_task_kind_has_its_own_name"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "the_grant_file_toast_names_the_folder_it_stands_in"
     },
     {
      "path": "crates/app/tests/checks_more/a8_skeleton.rs",
@@ -4867,6 +6483,30 @@
      "name": "switching_the_language_cross_fades_in_place"
     },
     {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_moves_the_seats_home_and_one_that_does_not_open_moves_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_that_does_not_open_moves_no_other_seat_back"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_first_identity_made_on_the_grantee_seat_is_current_there"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_report_behind_the_receipts_is_asked_again_within_its_bound_then_said"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_seat_whose_home_does_not_open_is_not_entered_in_the_register_either"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "passes_not_drawn_are_not_counted_as_drawn_and_a_language_set_in_a_turn_still_fades"
+    },
+    {
      "path": "crates/app/tests/checks_more/segments_in_place.rs",
      "name": "the_records_pages_segment_keeps_the_page_and_shows_the_queue"
     },
@@ -4935,6 +6575,10 @@
      "name": "typing_under_an_overlay_never_lands_in_the_passcode_row"
     },
     {
+     "path": "crates/app/tests/checks_more/wiring_points.rs",
+     "name": "every_registration_point_is_called_by_its_component_and_answered_by_the_product"
+    },
+    {
      "path": "crates/app/tests/sync_clock.rs",
      "name": "the_same_day_says_the_clock_and_another_day_the_date_too"
     },
@@ -4961,6 +6605,14 @@
     {
      "path": "crates/app/tests/zone_years.rs",
      "name": "the_year_is_the_one_where_the_moment_is_shown"
+    },
+    {
+     "path": "crates/zikaron-ui/src/band.rs",
+     "name": "only_the_top_under_a_heading_rule_is_square"
+    },
+    {
+     "path": "crates/zikaron-ui/src/card.rs",
+     "name": "the_heads_pill_shows_its_words_whole"
     },
     {
      "path": "crates/zikaron-ui/src/covers.rs",
@@ -5003,6 +6655,10 @@
      "name": "glass_keeps_its_translucency"
     },
     {
+     "path": "crates/zikaron-ui/src/probe.rs",
+     "name": "a_foot_laid_past_its_row_is_out"
+    },
+    {
      "path": "crates/zikaron-ui/src/secret.rs",
      "name": "a_full_block_takes_no_more"
     },
@@ -5012,7 +6668,7 @@
     },
     {
      "path": "crates/zikaron-ui/src/table.rs",
-     "name": "narrow_the_fixed_columns_give_way_before_the_body"
+     "name": "narrow_the_free_words_give_way_then_the_body_and_last_what_is_kept"
     },
     {
      "path": "crates/zikaron-ui/src/table.rs",
@@ -5101,6 +6757,10 @@
     {
      "path": "crates/zikaron-ui/tests/controls.rs",
      "name": "only_the_system_taken_faces_have_a_fallback_and_the_strong_face_is_the_simplified_semibold"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/controls.rs",
+     "name": "sentences_said_in_one_beat_come_on_screen_in_turn_and_a_later_one_replaces"
     },
     {
      "path": "crates/zikaron-ui/tests/controls.rs",
@@ -5424,11 +7084,19 @@
     },
     {
      "path": "crates/zikaron-ui/tests/motion_frames.rs",
+     "name": "a_folds_height_falls_to_its_head_with_no_step_at_the_end"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/motion_frames.rs",
      "name": "a_list_lights_the_one_row_under_the_pointer"
     },
     {
      "path": "crates/zikaron-ui/tests/motion_frames.rs",
      "name": "a_long_action_keeps_its_width"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/motion_frames.rs",
+     "name": "a_page_grown_shorter_is_placed_by_its_new_height_in_that_frame"
     },
     {
      "path": "crates/zikaron-ui/tests/motion_frames.rs",
@@ -5532,6 +7200,10 @@
     },
     {
      "path": "crates/zikaron-ui/tests/row_geometry.rs",
+     "name": "a_form_rows_words_take_their_width_before_its_trail"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/row_geometry.rs",
      "name": "a_lit_block_keeps_the_gap_to_the_card_and_meets_the_lines"
     },
     {
@@ -5548,7 +7220,11 @@
     },
     {
      "path": "crates/zikaron-ui/tests/row_geometry.rs",
-     "name": "a_tables_lit_row_is_round_on_every_corner"
+     "name": "a_small_inputs_figures_start_where_its_hint_starts"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/row_geometry.rs",
+     "name": "a_tables_lit_row_is_square_only_under_its_head_rule"
     },
     {
      "path": "crates/zikaron-ui/tests/row_geometry.rs",
@@ -5557,6 +7233,10 @@
     {
      "path": "crates/zikaron-ui/tests/row_geometry.rs",
      "name": "chosen_rows_that_touch_are_one_block"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/row_geometry.rs",
+     "name": "each_face_of_an_amount_shows_it_whole_on_hover_where_it_is_cut"
     },
     {
      "path": "crates/zikaron-ui/tests/row_geometry.rs",
@@ -5571,8 +7251,24 @@
      "name": "under_a_scaled_layer_the_row_drawn_under_the_pointer_is_the_one_lit"
     },
     {
+     "path": "crates/zikaron-ui/tests/row_geometry.rs",
+     "name": "what_follows_a_small_or_a_joined_field_starts_outside_its_box"
+    },
+    {
      "path": "crates/zikaron-ui/tests/rows_structure.rs",
      "name": "a_key_in_a_row_is_in_its_row_and_a_loose_key_is_told"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/setting_rows.rs",
+     "name": "a_length_setting_saves_its_parts_total_on_enter"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/setting_rows.rs",
+     "name": "a_setting_saves_on_enter_says_saved_and_says_why_it_will_not"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/setting_rows.rs",
+     "name": "the_words_beside_a_setting_box_stand_off_it"
     },
     {
      "path": "crates/zikaron-ui/tests/size_with_content.rs",
@@ -5591,6 +7287,30 @@
      "name": "new_content_is_first_seen_at_its_own_size"
     },
     {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "a_head_that_sorts_answers_its_press"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "a_key_in_a_row_is_its_own_press_and_a_two_line_name_makes_the_rows_sixty_high"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "a_table_kept_whole_scrolls_sideways_where_its_columns_are_wider_than_its_room"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "narrow_a_span_of_dates_is_kept_whole_and_the_words_give_way"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "the_columns_are_measured_once_per_generation_of_the_data"
+    },
+    {
+     "path": "crates/zikaron-ui/tests/table_sight.rs",
+     "name": "the_rows_a_frame_asks_for_go_with_the_rows_in_sight_not_with_how_many_there_are"
+    },
+    {
      "path": "crates/zikaron-ui/tests/toast_wrap.rs",
      "name": "an_english_toast_breaks_between_words_and_a_chinese_one_anywhere"
     },
@@ -5607,10 +7327,10 @@
   },
   {
    "id": "bilingual-table",
-   "familyVersion": 6,
+   "familyVersion": 19,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 18
    },
    "home": [
     "crates/app/src/lang.rs",
@@ -5705,10 +7425,10 @@
   },
   {
    "id": "app-skeleton",
-   "familyVersion": 6,
+   "familyVersion": 21,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 20
    },
    "home": [
     ".cargo/config.toml",
@@ -5718,6 +7438,7 @@
     "crates/app/src/home.rs",
     "crates/app/src/landing.rs",
     "crates/app/src/local.rs",
+    "crates/app/src/probe.rs",
     "crates/app/src/shell.rs",
     "crates/app/src/task.rs",
     "crates/app/src/trace.rs",
@@ -5727,6 +7448,7 @@
     "crates/app/tests/checks_more/alerts_attention.rs",
     "crates/app/tests/checks_more/gaps_r20b2.rs",
     "crates/app/tests/checks_more/gaps_r21b2.rs",
+    "crates/app/tests/checks_more/r32b5.rs",
     "crates/app/tests/checks_more/refresh_steady.rs",
     "crates/app/tests/checks_more/seat_switch.rs",
     "crates/app/tests/tasks.rs",
@@ -5739,8 +7461,40 @@
    ],
    "tests": [
     {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "a_node_giving_way_by_the_cap_shows_why_and_what_it_said_last"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "a_node_reached_that_refused_is_never_said_unreachable"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "every_next_step_handed_as_then_is_said_whole_with_the_faults_own_evidence"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "every_refusal_whose_next_step_points_to_the_nodes_words_shows_them"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "the_details_shown_carry_values_never_codes"
+    },
+    {
      "path": "crates/app/src/home.rs",
      "name": "a_canonical_path_is_shown_plainly"
+    },
+    {
+     "path": "crates/app/src/home.rs",
+     "name": "a_move_is_said_once_per_place_it_came_from"
+    },
+    {
+     "path": "crates/app/src/home.rs",
+     "name": "a_recorded_home_follows_the_machine_directory_it_lay_in"
     },
     {
      "path": "crates/app/src/home.rs",
@@ -5753,6 +7507,10 @@
     {
      "path": "crates/app/src/landing.rs",
      "name": "what_goes_back_goes_back_both_ways"
+    },
+    {
+     "path": "crates/app/src/window/landing.rs",
+     "name": "a_first_level_read_says_what_it_read_and_an_audit_its_conclusion"
     },
     {
      "path": "crates/app/tests/checks_more/a8_skeleton.rs",
@@ -5852,10 +7610,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -5867,12 +7621,44 @@
      "name": "which_kinds_are_renamed_is_judged_once"
     },
     {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_moves_the_seats_home_and_one_that_does_not_open_moves_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_change_of_data_folder_that_does_not_open_moves_no_other_seat_back"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_first_identity_made_on_the_grantee_seat_is_current_there"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_report_behind_the_receipts_is_asked_again_within_its_bound_then_said"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "a_seat_whose_home_does_not_open_is_not_entered_in_the_register_either"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r32b5.rs",
+     "name": "passes_not_drawn_are_not_counted_as_drawn_and_a_language_set_in_a_turn_still_fades"
+    },
+    {
+     "path": "crates/app/tests/checks_more/refresh_steady.rs",
+     "name": "a_ledger_not_moved_has_its_root_and_takes_no_new_entry"
+    },
+    {
      "path": "crates/app/tests/checks_more/refresh_steady.rs",
      "name": "a_refreshed_table_is_drawn_until_the_new_reading_lands"
     },
     {
      "path": "crates/app/tests/checks_more/refresh_steady.rs",
      "name": "a_report_is_judged_on_what_it_says_alone_and_never_against_a_newer_ledger"
+    },
+    {
+     "path": "crates/app/tests/checks_more/refresh_steady.rs",
+     "name": "an_upgrade_step_queues_without_the_send_card"
     },
     {
      "path": "crates/app/tests/checks_more/refresh_steady.rs",
@@ -5996,6 +7782,14 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_call_data_that_carries_an_entry_is_anchor_and_the_entry"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
+     "name": "the_registry_form_builds_the_calldata_the_law_reads"
+    },
+    {
+     "path": "crates/zikaron-anchor/tests/anchoring.rs",
      "name": "the_same_answer_recorded_twice_is_one_answer"
     },
     {
@@ -6007,12 +7801,16 @@
      "name": "the_transport_reader_takes_what_the_law_does_not"
     },
     {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_two_forms_build_the_calldata_the_law_reads"
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_disk_failure_says_the_systems_words_in_detail"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "a_disk_failure_says_the_systems_words_in_detail"
+     "name": "a_grant_missing_a_member_is_told_by_its_shape_before_any_chain"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_with_no_node_to_check_on_is_refused_unwritten"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6024,7 +7822,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_move_cut_after_its_closing_succession_writes_the_genesis_alone"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_refused_body_is_said_in_the_systems_language_flags_and_all"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_strangers_new_genesis_leaves_an_old_ledger_old"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6040,6 +7850,30 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_archive_is_audited_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_chain_is_checked_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_given_as_an_input_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_reading_of_an_old_ledger_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_original_asked_for_and_not_listed_is_named"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use"
     },
     {
@@ -6049,6 +7883,10 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_theirs"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "init_on_a_continued_ledger_names_its_one_root"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6072,18 +7910,6 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_and_the_key_table_agree_cell_by_cell"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_carries_the_whole_exit_table_and_every_reason"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_lists_every_flag_the_code_knows"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_crate_leans_on_nothing_but_the_four_bases"
     },
     {
@@ -6093,6 +7919,14 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_exit_table_is_five_codes_and_they_are_all_different"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_face_verbs_misuse_is_judged_before_anything_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_flag_names_the_code_knows_are_each_named_once"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6119,10 +7953,10 @@
   },
   {
    "id": "cli-skeleton",
-   "familyVersion": 6,
+   "familyVersion": 21,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 20
    },
    "home": [
     "CLI-SCHEMA.md",
@@ -6152,6 +7986,14 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_missing_a_member_is_told_by_its_shape_before_any_chain"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_with_no_node_to_check_on_is_refused_unwritten"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_misuse_names_its_subject_on_the_first_line_of_stderr"
     },
     {
@@ -6160,7 +8002,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_move_cut_after_its_closing_succession_writes_the_genesis_alone"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_refused_body_is_said_in_the_systems_language_flags_and_all"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_strangers_new_genesis_leaves_an_old_ledger_old"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6176,6 +8030,30 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_archive_is_audited_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_chain_is_checked_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_given_as_an_input_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_reading_of_an_old_ledger_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_original_asked_for_and_not_listed_is_named"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use"
     },
     {
@@ -6185,6 +8063,10 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_theirs"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "init_on_a_continued_ledger_names_its_one_root"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6208,18 +8090,6 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_and_the_key_table_agree_cell_by_cell"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_carries_the_whole_exit_table_and_every_reason"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_lists_every_flag_the_code_knows"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_crate_leans_on_nothing_but_the_four_bases"
     },
     {
@@ -6229,6 +8099,14 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_exit_table_is_five_codes_and_they_are_all_different"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_face_verbs_misuse_is_judged_before_anything_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_flag_names_the_code_knows_are_each_named_once"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -6256,19 +8134,15 @@
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
+     "name": "each_desktop_refusal_is_answered_by_its_own_name_or_the_command_lines"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/contract.rs",
      "name": "every_verb_in_the_table_has_its_arm_in_run"
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
      "name": "every_verb_takes_exactly_the_flags_the_contract_lists"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/contract.rs",
-     "name": "the_cli_schema_flags_by_verb_is_the_table"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/contract.rs",
-     "name": "the_cli_schema_names_every_member_of_the_contract"
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
@@ -6288,11 +8162,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
+     "name": "a_blank_subject_is_refused_as_on_every_road_before_the_desktop_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/desk.rs",
      "name": "a_door_that_breaks_or_cannot_be_reached_is_named"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
      "name": "each_reply_is_answered_by_the_verbs_own_answer"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/desk.rs",
+     "name": "migrate_through_the_desktop_is_done_on_the_desktop_only"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
@@ -6304,11 +8186,7 @@
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
-     "name": "succeed_through_the_desktop_is_done_on_the_desktop_only"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/desk.rs",
-     "name": "the_cli_schema_lists_the_verbs_done_through_the_desktop"
+     "name": "the_output_through_the_desktop_is_the_same_in_either_language"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
@@ -6341,6 +8219,10 @@
     {
      "path": "crates/zikaron-cli/tests/endpoint_unechoed.rs",
      "name": "a_port_past_16_bits_says_the_chain_id_and_the_length_after"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/endpoint_unechoed.rs",
+     "name": "a_rest_rows_chain_and_base_url_are_read_before_any_node_is_asked"
     },
     {
      "path": "crates/zikaron-cli/tests/endpoint_unechoed.rs",
@@ -6428,7 +8310,7 @@
     },
     {
      "path": "crates/zikaron-cli/tests/gaps.rs",
-     "name": "the_two_registry_refusals_are_told_apart_on_the_second_line"
+     "name": "the_registry_refusals_are_told_apart_on_the_second_line"
     },
     {
      "path": "crates/zikaron-cli/tests/key_file.rs",
@@ -6445,6 +8327,10 @@
     {
      "path": "crates/zikaron-cli/tests/mcp_engine.rs",
      "name": "a_refused_token_is_named_where_it_stands"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/mcp_engine.rs",
+     "name": "a_row_of_the_desktops_verbs_can_be_offered_as_a_read_through_the_desktop"
     },
     {
      "path": "crates/zikaron-cli/tests/mcp_engine.rs",
@@ -6499,10 +8385,10 @@
   },
   {
    "id": "packaging-release",
-   "familyVersion": 3,
+   "familyVersion": 4,
    "origin": {
     "by": "ZIKARON",
-    "previous": 2
+    "previous": 3
    },
    "home": [
     "crates/app/build.rs",
@@ -6529,6 +8415,10 @@
     "packaging/macos/build.sh"
    ],
    "tests": [
+    {
+     "path": "crates/app/src/about.rs",
+     "name": "the_about_facts_come_from_their_one_place"
+    },
     {
      "path": "crates/app/src/about.rs",
      "name": "the_notices_are_split_once"
@@ -6594,10 +8484,10 @@
   },
   {
    "id": "ci-toolchain",
-   "familyVersion": 5,
+   "familyVersion": 6,
    "origin": {
     "by": "ZIKARON",
-    "previous": 4
+    "previous": 5
    },
    "home": [
     ".github/workflows/package-windows.yml",
@@ -6630,10 +8520,10 @@
   },
   {
    "id": "family-literals",
-   "familyVersion": 4,
+   "familyVersion": 7,
    "origin": {
     "by": "ZIKARON",
-    "previous": 3
+    "previous": 6
    },
    "home": [
     "crates/app/family-literals.json",
@@ -6658,10 +8548,10 @@
   },
   {
    "id": "structure-pins",
-   "familyVersion": 6,
+   "familyVersion": 17,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 16
    },
    "home": [
     "crates/app/tests/checks.rs",
@@ -6758,6 +8648,10 @@
     },
     {
      "path": "crates/app/tests/checks.rs",
+     "name": "a_rest_rows_own_refusal_is_said_as_its_own"
+    },
+    {
+     "path": "crates/app/tests/checks.rs",
      "name": "a_restore_stages_everything_before_it_lands_anything"
     },
     {
@@ -6798,7 +8692,7 @@
     },
     {
      "path": "crates/app/tests/checks.rs",
-     "name": "deleting_an_identity_drops_its_recovery_seal_and_the_comment_says_so"
+     "name": "deleting_an_identity_drops_its_recovery_seal"
     },
     {
      "path": "crates/app/tests/checks.rs",
@@ -6830,11 +8724,11 @@
     },
     {
      "path": "crates/app/tests/checks.rs",
-     "name": "every_legal_action_names_a_verb_from_the_contract_six_table"
+     "name": "every_legal_action_and_each_action_with_a_verb_names_one"
     },
     {
      "path": "crates/app/tests/checks.rs",
-     "name": "every_legal_action_names_a_verb_that_the_contract_table_carries"
+     "name": "every_legal_action_names_a_verb"
     },
     {
      "path": "crates/app/tests/checks.rs",
@@ -7173,14 +9067,15 @@
   },
   {
    "id": "cli-desktop",
-   "familyVersion": 6,
+   "familyVersion": 26,
    "origin": {
     "by": "ZIKARON",
-    "previous": 5
+    "previous": 25
    },
    "home": [
     "CLI-SCHEMA.md",
     "crates/app/src/action/mod.rs",
+    "crates/app/src/action/rest.rs",
     "crates/app/src/door.rs",
     "crates/app/src/fault.rs",
     "crates/app/src/home.rs",
@@ -7192,13 +9087,16 @@
     "crates/app/src/window/faces.rs",
     "crates/app/src/window/landing.rs",
     "crates/app/src/window/mod.rs",
+    "crates/app/src/window/network.rs",
     "crates/app/src/window/settings.rs",
     "crates/app/tests/checks_more/door_b15.rs",
     "crates/app/tests/checks_more/door_serial.rs",
     "crates/app/tests/checks_more/gaps_r21b2.rs",
+    "crates/app/tests/checks_more/r30b2.rs",
     "crates/zikaron-cli/src/args.rs",
     "crates/zikaron-cli/src/codes.rs",
     "crates/zikaron-cli/src/desk.rs",
+    "crates/zikaron-cli/src/named.rs",
     "crates/zikaron-cli/src/out.rs",
     "crates/zikaron-cli/src/sealed.rs",
     "crates/zikaron-cli/src/sealedsend.rs",
@@ -7217,8 +9115,52 @@
    ],
    "tests": [
     {
+     "path": "crates/app/src/action/mod.rs",
+     "name": "the_config_copied_carries_the_key_just_made"
+    },
+    {
+     "path": "crates/app/src/door.rs",
+     "name": "each_row_of_the_door_makes_the_verb_the_one_table_names_there"
+    },
+    {
+     "path": "crates/app/src/door.rs",
+     "name": "every_desktop_code_has_one_row_in_the_door_table"
+    },
+    {
+     "path": "crates/app/src/door.rs",
+     "name": "what_refused_goes_through_the_door_by_the_command_lines_own_reason"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "a_node_giving_way_by_the_cap_shows_why_and_what_it_said_last"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "a_node_reached_that_refused_is_never_said_unreachable"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "every_next_step_handed_as_then_is_said_whole_with_the_faults_own_evidence"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "every_refusal_whose_next_step_points_to_the_nodes_words_shows_them"
+    },
+    {
+     "path": "crates/app/src/fault.rs",
+     "name": "the_details_shown_carry_values_never_codes"
+    },
+    {
      "path": "crates/app/src/home.rs",
      "name": "a_canonical_path_is_shown_plainly"
+    },
+    {
+     "path": "crates/app/src/home.rs",
+     "name": "a_move_is_said_once_per_place_it_came_from"
+    },
+    {
+     "path": "crates/app/src/home.rs",
+     "name": "a_recorded_home_follows_the_machine_directory_it_lay_in"
     },
     {
      "path": "crates/app/src/home.rs",
@@ -7250,6 +9192,10 @@
     },
     {
      "path": "crates/app/src/machine.rs",
+     "name": "rest_keys_are_sealed_settings_carried_whole_and_never_said"
+    },
+    {
+     "path": "crates/app/src/machine.rs",
      "name": "the_command_line_anchoring_cell_reads_each_form"
     },
     {
@@ -7269,8 +9215,28 @@
      "name": "unknown_members_and_the_proxy_cell_are_carried"
     },
     {
+     "path": "crates/app/src/window/landing.rs",
+     "name": "a_first_level_read_says_what_it_read_and_an_audit_its_conclusion"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "a_mismatch_is_said_by_its_kind_never_its_token"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "each_opening_of_the_identity_card_starts_from_an_empty_form"
+    },
+    {
      "path": "crates/app/src/window/mod.rs",
      "name": "every_task_kind_has_its_own_name"
+    },
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "the_grant_file_toast_names_the_folder_it_stands_in"
+    },
+    {
+     "path": "crates/app/src/window/network.rs",
+     "name": "the_nodes_source_is_said_in_the_nodes_own_title"
     },
     {
      "path": "crates/app/src/window/settings.rs",
@@ -7282,19 +9248,11 @@
     },
     {
      "path": "crates/app/src/window/settings.rs",
-     "name": "the_line_under_the_box_takes_room_only_with_words"
-    },
-    {
-     "path": "crates/app/src/window/settings.rs",
      "name": "the_line_under_the_switch_says_the_expiry_or_why_not"
     },
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
      "name": "a_door_that_cannot_open_is_kept_by_name"
-    },
-    {
-     "path": "crates/app/tests/checks_more/door_b15.rs",
-     "name": "a_passcode_action_is_left_to_the_desktop"
     },
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
@@ -7318,7 +9276,23 @@
     },
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
+     "name": "a_window_not_shown_answers_the_door_and_still_locks"
+    },
+    {
+     "path": "crates/app/tests/checks_more/door_b15.rs",
+     "name": "an_anchor_over_nodes_at_two_heads_asks_each_node_the_window_once"
+    },
+    {
+     "path": "crates/app/tests/checks_more/door_b15.rs",
+     "name": "an_anchor_through_the_door_asks_each_node_what_the_command_line_asks"
+    },
+    {
+     "path": "crates/app/tests/checks_more/door_b15.rs",
      "name": "anchor_goes_the_way_the_setting_says"
+    },
+    {
+     "path": "crates/app/tests/checks_more/door_b15.rs",
+     "name": "each_flag_of_the_door_table_reaches_its_action"
     },
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
@@ -7335,10 +9309,6 @@
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
      "name": "the_door_follows_the_lock_and_the_home"
-    },
-    {
-     "path": "crates/app/tests/checks_more/door_b15.rs",
-     "name": "the_door_table_is_the_contracts_and_each_flag_reaches_its_action"
     },
     {
      "path": "crates/app/tests/checks_more/door_b15.rs",
@@ -7386,10 +9356,6 @@
     },
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
-     "name": "an_adoption_through_the_door_is_the_adoption_pages_action"
-    },
-    {
-     "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "every_keyed_kind_is_renamed_by_the_one_naming"
     },
     {
@@ -7401,12 +9367,48 @@
      "name": "which_kinds_are_renamed_is_judged_once"
     },
     {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "a_desktop_refusal_says_its_evidence_in_each_language_and_the_output_keeps_one"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "a_faults_evidence_of_words_is_kept_in_both_languages"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "a_reading_for_a_key_change_is_no_steps_transaction"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "a_reading_over_a_replaced_node_table_lands_nothing"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "every_worded_evidence_is_made_in_both_languages"
+    },
+    {
+     "path": "crates/app/tests/checks_more/r30b2.rs",
+     "name": "the_writing_rules_go_through_the_door_by_their_own_names"
+    },
+    {
+     "path": "crates/zikaron-cli/src/desk.rs",
+     "name": "every_path_flag_goes_whole_by_the_kind_its_row_declares"
+    },
+    {
      "path": "crates/zikaron-cli/src/sealed.rs",
      "name": "a_ledgers_home_is_the_directory_it_is_in"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_disk_failure_says_the_systems_words_in_detail"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_missing_a_member_is_told_by_its_shape_before_any_chain"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_grant_with_no_node_to_check_on_is_refused_unwritten"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -7418,7 +9420,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_move_cut_after_its_closing_succession_writes_the_genesis_alone"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "a_refused_body_is_said_in_the_systems_language_flags_and_all"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_rest_keys_file_is_misuse_by_its_flag_and_its_key_is_never_said_back"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "a_strangers_new_genesis_leaves_an_old_ledger_old"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -7434,6 +9448,30 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_archive_is_audited_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_chain_is_checked_by_the_law_it_was_written_in"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_given_as_an_input_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_ledger_takes_no_new_entry_until_it_is_moved_and_moves_once"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_old_reading_of_an_old_ledger_is_read_by_that_law"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "an_original_asked_for_and_not_listed_is_named"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "anchor_refuses_to_quietly_drop_the_endpoints_it_will_not_use"
     },
     {
@@ -7443,6 +9481,10 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "every_verb_the_shell_runs_marks_the_trace_and_the_bases_it_leans_on_mark_theirs"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "init_on_a_continued_ledger_names_its_one_root"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -7466,18 +9508,6 @@
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_and_the_key_table_agree_cell_by_cell"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_carries_the_whole_exit_table_and_every_reason"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "the_cli_schema_lists_every_flag_the_code_knows"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_crate_leans_on_nothing_but_the_four_bases"
     },
     {
@@ -7487,6 +9517,14 @@
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
      "name": "the_exit_table_is_five_codes_and_they_are_all_different"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_face_verbs_misuse_is_judged_before_anything_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/cli.rs",
+     "name": "the_flag_names_the_code_knows_are_each_named_once"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -7514,19 +9552,15 @@
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
+     "name": "each_desktop_refusal_is_answered_by_its_own_name_or_the_command_lines"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/contract.rs",
      "name": "every_verb_in_the_table_has_its_arm_in_run"
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
      "name": "every_verb_takes_exactly_the_flags_the_contract_lists"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/contract.rs",
-     "name": "the_cli_schema_flags_by_verb_is_the_table"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/contract.rs",
-     "name": "the_cli_schema_names_every_member_of_the_contract"
     },
     {
      "path": "crates/zikaron-cli/tests/contract.rs",
@@ -7546,11 +9580,19 @@
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
+     "name": "a_blank_subject_is_refused_as_on_every_road_before_the_desktop_is_asked"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/desk.rs",
      "name": "a_door_that_breaks_or_cannot_be_reached_is_named"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
      "name": "each_reply_is_answered_by_the_verbs_own_answer"
+    },
+    {
+     "path": "crates/zikaron-cli/tests/desk.rs",
+     "name": "migrate_through_the_desktop_is_done_on_the_desktop_only"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
@@ -7562,11 +9604,7 @@
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
-     "name": "succeed_through_the_desktop_is_done_on_the_desktop_only"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/desk.rs",
-     "name": "the_cli_schema_lists_the_verbs_done_through_the_desktop"
+     "name": "the_output_through_the_desktop_is_the_same_in_either_language"
     },
     {
      "path": "crates/zikaron-cli/tests/desk.rs",
@@ -7579,6 +9617,14 @@
     {
      "path": "crates/zikaron-glue/src/door.rs",
      "name": "a_frame_reads_whole_or_not_at_all"
+    },
+    {
+     "path": "crates/zikaron-glue/src/door.rs",
+     "name": "every_own_reason_reads_back_by_its_word"
+    },
+    {
+     "path": "crates/zikaron-glue/src/door.rs",
+     "name": "every_rule_reads_back_by_its_word"
     },
     {
      "path": "crates/zikaron-glue/src/door.rs",
@@ -7694,6 +9740,14 @@
     },
     {
      "path": "crates/zikaron-os/src/machine.rs",
+     "name": "a_machine_directory_inside_the_folder_is_kept_relative_and_follows_a_copied_home"
+    },
+    {
+     "path": "crates/zikaron-os/src/machine.rs",
+     "name": "a_pointer_is_settled_to_its_one_form_and_never_laid"
+    },
+    {
+     "path": "crates/zikaron-os/src/machine.rs",
      "name": "the_machine_directory_is_read_level_by_level"
     },
     {
@@ -7726,11 +9780,19 @@
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
+     "name": "each_notice_is_named_once_with_a_method_of_its_own"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
      "name": "on_and_off_make_and_remove_the_one_link"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
      "name": "the_administrator_dialog_is_read_by_what_it_said"
+    },
+    {
+     "path": "crates/zikaron-os/src/unix.rs",
+     "name": "the_toolbar_shows_on_the_desktop_alone"
     },
     {
      "path": "crates/zikaron-os/src/unix.rs",
@@ -7777,10 +9839,10 @@
   },
   {
    "id": "qr-code",
-   "familyVersion": 1,
+   "familyVersion": 2,
    "origin": {
     "by": "ZIKARON",
-    "previous": null
+    "previous": 1
    },
    "home": [
     "crates/app/src/qr.rs",
@@ -7833,10 +9895,10 @@
   },
   {
    "id": "sealed-layer",
-   "familyVersion": 3,
+   "familyVersion": 12,
    "origin": {
     "by": "ZIKARON",
-    "previous": 2
+    "previous": 11
    },
    "home": [
     "crates/app/src/keybox.rs",
@@ -7892,11 +9954,27 @@
    "tests": [
     {
      "path": "crates/app/tests/checks_more/cli_writes.rs",
-     "name": "a_credential_of_another_master_key_is_dropped_and_a_bad_one_counts_no_passcode_try"
+     "name": "a_new_master_key_takes_the_credential_back_as_it_takes_effect"
+    },
+    {
+     "path": "crates/app/tests/checks_more/cli_writes.rs",
+     "name": "a_program_key_is_made_past_the_passcode_shown_once_and_deleted_at_once"
+    },
+    {
+     "path": "crates/app/tests/checks_more/cli_writes.rs",
+     "name": "a_record_not_in_its_shape_is_taken_back_said_once_and_counts_no_passcode_try"
+    },
+    {
+     "path": "crates/app/tests/checks_more/cli_writes.rs",
+     "name": "adding_a_program_key_off_with_a_bad_note_or_past_the_limit_is_refused_by_name"
     },
     {
      "path": "crates/app/tests/checks_more/cli_writes.rs",
      "name": "an_expired_credential_is_removed_and_writing_alone_goes_off_said_by_name"
+    },
+    {
+     "path": "crates/app/tests/checks_more/cli_writes.rs",
+     "name": "the_credential_record_holds_no_program_key_and_the_key_is_read_in_one_place"
     },
     {
      "path": "crates/app/tests/checks_more/cli_writes.rs",
@@ -7916,23 +9994,55 @@
     },
     {
      "path": "crates/zikaron-seal/src/credential.rs",
-     "name": "a_credential_is_four_members_owner_only_and_opens_to_the_master_key"
+     "name": "a_key_never_added_deleted_or_not_in_its_form_opens_nothing_by_one_name"
     },
     {
      "path": "crates/zikaron-seal/src/credential.rs",
-     "name": "a_credential_that_never_expires_opens_at_any_time"
+     "name": "a_note_is_one_short_line_and_the_keys_are_bounded"
     },
     {
      "path": "crates/zikaron-seal/src/credential.rs",
-     "name": "a_credential_with_another_member_or_a_changed_byte_is_refused"
+     "name": "a_reader_meanwhile_reads_a_whole_record"
     },
     {
      "path": "crates/zikaron-seal/src/credential.rs",
-     "name": "an_expired_credential_is_refused_by_name_and_removed"
+     "name": "a_record_is_three_members_owner_only_and_holds_no_key"
+    },
+    {
+     "path": "crates/zikaron-seal/src/credential.rs",
+     "name": "a_record_not_in_its_shape_is_refused_and_removed"
+    },
+    {
+     "path": "crates/zikaron-seal/src/credential.rs",
+     "name": "a_record_that_never_expires_opens_at_any_time"
+    },
+    {
+     "path": "crates/zikaron-seal/src/credential.rs",
+     "name": "deleting_one_key_leaves_the_other"
+    },
+    {
+     "path": "crates/zikaron-seal/src/credential.rs",
+     "name": "one_key_opens_wherever_it_is_brought"
+    },
+    {
+     "path": "crates/zikaron-seal/src/credential.rs",
+     "name": "the_record_is_judged_in_one_order"
     },
     {
      "path": "crates/zikaron-seal/src/ground.rs",
      "name": "the_four_read_as_set_or_not_set"
+    },
+    {
+     "path": "crates/zikaron-seal/src/identities.rs",
+     "name": "a_row_made_for_a_reroot_names_its_old_root"
+    },
+    {
+     "path": "crates/zikaron-seal/src/identities.rs",
+     "name": "a_seat_names_its_next_and_former_keys"
+    },
+    {
+     "path": "crates/zikaron-seal/src/identities.rs",
+     "name": "a_seat_names_its_root_generation_and_key_in_office"
     },
     {
      "path": "crates/zikaron-seal/src/machine.rs",
@@ -7945,6 +10055,22 @@
     {
      "path": "crates/zikaron-seal/src/pens.rs",
      "name": "a_handed_ledger_is_refused_by_its_handoff_and_the_list_names_no_ledger"
+    },
+    {
+     "path": "crates/zikaron-seal/src/queue.rs",
+     "name": "a_batch_never_crosses_a_succession"
+    },
+    {
+     "path": "crates/zikaron-seal/src/queue.rs",
+     "name": "a_face_entry_goes_alone_on_its_chain_and_cuts_no_batch"
+    },
+    {
+     "path": "crates/zikaron-seal/src/queue.rs",
+     "name": "a_succession_goes_on_every_chain_before_anything_after_it"
+    },
+    {
+     "path": "crates/zikaron-seal/src/queue.rs",
+     "name": "an_entry_is_queued_where_its_place_puts_it"
     },
     {
      "path": "crates/zikaron-seal/src/queue.rs",
@@ -7987,10 +10113,10 @@
   },
   {
    "id": "one-file",
-   "familyVersion": 2,
+   "familyVersion": 4,
    "origin": {
     "by": "ZIKARON",
-    "previous": 1
+    "previous": 3
    },
    "home": [
     "crates/zikaron-cli/tests/handoff.rs",
@@ -8002,6 +10128,10 @@
     "crates/zikaron-glue/src/read.rs"
    ],
    "tests": [
+    {
+     "path": "crates/zikaron-cli/tests/handoff.rs",
+     "name": "a_continued_ledger_is_one_line_and_keeps_its_key_across_the_move"
+    },
     {
      "path": "crates/zikaron-cli/tests/handoff.rs",
      "name": "a_file_that_is_no_handoff_or_not_one_line_is_refused_by_name"
@@ -8052,17 +10182,425 @@
     }
    ],
    "nameZh": "单文件容器"
+  },
+  {
+   "id": "face-core",
+   "familyVersion": 2,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": 1
+   },
+   "home": [
+    "crates/zikaron-face/Cargo.toml",
+    "crates/zikaron-face/src/bin/zkf.rs",
+    "crates/zikaron-face/src/carried.rs",
+    "crates/zikaron-face/src/consent.rs",
+    "crates/zikaron-face/src/input.rs",
+    "crates/zikaron-face/src/lib.rs",
+    "crates/zikaron-face/src/names.rs",
+    "crates/zikaron-face/src/reading.rs",
+    "crates/zikaron-face/src/shapes.rs",
+    "crates/zikaron-face/tests/zkf_edges.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "a_character_device_is_read_to_its_end"
+    },
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "a_named_pipe_is_misuse_and_never_blocks"
+    },
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "an_argument_that_is_not_utf8_is_a_bad_argument"
+    },
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "the_first_barred_value_is_named"
+    },
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "the_signer_s_consent_holds_under_its_root_alone"
+    },
+    {
+     "path": "crates/zikaron-face/tests/zkf_edges.rs",
+     "name": "the_sixteen_mebibyte_bound"
+    }
+   ],
+   "nameZh": "面法核"
+  },
+  {
+   "id": "face-glue",
+   "familyVersion": 5,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": 4
+   },
+   "home": [
+    "crates/zikaron-glue/src/face.rs",
+    "crates/zikaron-glue/src/facegate.rs",
+    "crates/zikaron-send/src/face.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "a_consent_text_reads_back_and_holds_under_its_root_alone"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "a_display_name_is_laid_alone_and_copied_as_itself"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "a_display_name_is_written_in_nfc_within_the_table"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "an_account_is_its_platforms_ascii_name"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "only_an_anchor_call_with_the_entry_after_its_word_carries_it"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "records_with_two_clocks_on_one_chain_are_no_table"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "the_five_shapes_are_the_cores"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "the_input_holds_the_basis_records_and_pile_the_core_reads"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "the_keys_in_reach_are_the_root_and_every_key_handed_on_under_it"
+    },
+    {
+     "path": "crates/zikaron-glue/src/face.rs",
+     "name": "the_moment_is_a_second_before_the_earliest_head"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "a_consent_is_given_held_or_left_to_sign_here"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "a_home_entry_a_later_seated_one_stands_in_for_is_owed_nothing"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "a_home_entry_not_seated_is_told_by_where_it_stands"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "a_reroot_and_an_origin_take_the_home_and_a_sealed_seat_writes_nothing"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "every_write_asks_the_table_the_key_and_the_home_first"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "no_home_says_what_the_ledger_and_the_table_name"
+    },
+    {
+     "path": "crates/zikaron-glue/src/facegate.rs",
+     "name": "the_home_that_stands_is_opened_again_when_the_ledger_names_another"
+    },
+    {
+     "path": "crates/zikaron-send/src/face.rs",
+     "name": "a_chain_ends_at_its_last_block_at_or_before_the_moment"
+    },
+    {
+     "path": "crates/zikaron-send/src/face.rs",
+     "name": "a_chain_with_no_book_is_left_out_and_none_left_is_no_input"
+    }
+   ],
+   "nameZh": "面法粘合件"
+  },
+  {
+   "id": "background-audit",
+   "familyVersion": 1,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": null
+   },
+   "home": [
+    "crates/zikaron-send/src/behind.rs",
+    "crates/zikaron-send/tests/behind.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "a_result_is_kept_by_its_key_and_read_back_after_a_restart"
+    },
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "a_step_before_the_result_runs_first_and_its_error_is_the_audits"
+    },
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "an_audit_gives_way_to_a_read_in_front"
+    },
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "an_audit_is_not_audited_then_auditing_then_its_result"
+    },
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "audits_asked_wait_in_one_queue_and_run_in_turn"
+    },
+    {
+     "path": "crates/zikaron-send/tests/behind.rs",
+     "name": "the_steps_state_is_read_while_it_runs"
+    }
+   ],
+   "nameZh": "后台审计"
+  },
+  {
+   "id": "page-reads",
+   "familyVersion": 1,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": null
+   },
+   "home": [
+    "crates/app/src/reads.rs",
+    "crates/app/tests/checks_more/frame_turn.rs",
+    "crates/app/tests/frame_reads.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/app/src/reads.rs",
+     "name": "a_cell_derives_once_per_key"
+    },
+    {
+     "path": "crates/app/src/reads.rs",
+     "name": "a_reading_lands_only_of_the_generation_last_asked_and_the_old_stays_shown"
+    },
+    {
+     "path": "crates/app/src/reads.rs",
+     "name": "a_watched_file_changed_from_outside_is_seen_and_no_other"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_look_lands_only_against_the_baseline_it_asked"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_reading_started_before_a_write_here_lands_nothing_and_is_read_again"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "a_write_for_a_home_left_is_under_its_own_lock"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "an_empty_slot_asks_for_the_table_and_says_reading"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "letting_the_lock_go_counts_nothing_and_a_write_after_it_is_followed"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_lock_taken_again_behind_stops_by_itself_and_takes_it_once_free"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_look_at_the_disk_is_a_task_behind_the_window"
+    },
+    {
+     "path": "crates/app/tests/checks_more/frame_turn.rs",
+     "name": "the_next_batch_after_a_write_is_read_with_its_table"
+    },
+    {
+     "path": "crates/app/tests/frame_reads.rs",
+     "name": "a_drawing_file_reads_no_disk_and_checks_nothing"
+    },
+    {
+     "path": "crates/app/tests/frame_reads.rs",
+     "name": "a_read_put_in_a_page_is_caught"
+    },
+    {
+     "path": "crates/app/tests/frame_reads.rs",
+     "name": "every_exception_is_a_drawing_file_that_needs_it"
+    },
+    {
+     "path": "crates/app/tests/frame_reads.rs",
+     "name": "every_pressed_landing_on_the_road_is_there"
+    },
+    {
+     "path": "crates/app/tests/frame_reads.rs",
+     "name": "the_road_every_pass_takes_reads_no_disk"
+    }
+   ],
+   "nameZh": "窗的读页与画帧"
+  },
+  {
+   "id": "key-office",
+   "familyVersion": 1,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": null
+   },
+   "home": [
+    "crates/app/src/action/office.rs",
+    "crates/app/tests/key_office.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "a_key_change_written_settles_the_open_desk_on_the_new_key_in_the_same_row"
+    },
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "a_register_moved_outside_the_window_is_followed_and_not_put_back"
+    },
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "an_identity_added_is_followed_whole_and_switched_back_by_hand"
+    },
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "deleting_the_identity_in_use_when_the_next_ones_home_does_not_open_stands_the_desk_with_the_register"
+    },
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "no_key_change_of_any_source_adds_a_row_or_switches_the_identity"
+    },
+    {
+     "path": "crates/app/tests/key_office.rs",
+     "name": "the_key_in_office_followed_from_the_ledger_settles_the_open_desk"
+    }
+   ],
+   "nameZh": "换钥立件"
+  },
+  {
+   "id": "identity-page",
+   "familyVersion": 1,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": null
+   },
+   "home": [
+    "crates/app/src/window/identity.rs",
+    "crates/app/tests/checks_more/identity_page.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/app/src/window/identity.rs",
+     "name": "a_key_files_backup_is_judged_once"
+    },
+    {
+     "path": "crates/app/src/window/identity.rs",
+     "name": "an_unnamed_identity_is_said_by_its_address_cut_short"
+    },
+    {
+     "path": "crates/app/tests/checks_more/identity_page.rs",
+     "name": "a_passcode_part_filled_moves_on_by_itself"
+    },
+    {
+     "path": "crates/app/tests/checks_more/identity_page.rs",
+     "name": "a_setting_rows_typing_belongs_to_its_home"
+    },
+    {
+     "path": "crates/app/tests/checks_more/identity_page.rs",
+     "name": "an_identity_is_named_in_one_place_everywhere"
+    }
+   ],
+   "nameZh": "身份页"
+  },
+  {
+   "id": "first-run",
+   "familyVersion": 2,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": 1
+   },
+   "home": [
+    "crates/app/src/steps.rs",
+    "crates/app/src/window/wizard.rs",
+    "crates/app/tests/checks_more/first_run.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/app/src/window/wizard.rs",
+     "name": "copies_the_address_whole_from_its_row"
+    },
+    {
+     "path": "crates/app/src/window/wizard.rs",
+     "name": "the_gas_code_names_the_chosen_networks_chain"
+    },
+    {
+     "path": "crates/app/tests/checks_more/first_run.rs",
+     "name": "a_step_of_the_products_own_is_one_variant_said_by_its_own_name"
+    },
+    {
+     "path": "crates/app/tests/checks_more/first_run.rs",
+     "name": "the_column_of_steps_is_measured_once_and_kept"
+    }
+   ],
+   "nameZh": "首启向导"
+  },
+  {
+   "id": "deploy-table",
+   "familyVersion": 1,
+   "origin": {
+    "by": "ZIKARON",
+    "previous": null
+   },
+   "home": [
+    "crates/app/src/deploy.rs"
+   ],
+   "tests": [
+    {
+     "path": "crates/app/src/deploy.rs",
+     "name": "a_network_equal_to_a_row_is_that_row"
+    },
+    {
+     "path": "crates/app/src/deploy.rs",
+     "name": "a_rows_chain_and_registry_name_it_whatever_its_nodes"
+    },
+    {
+     "path": "crates/app/src/deploy.rs",
+     "name": "every_row_is_well_formed_and_names_are_distinct"
+    }
+   ],
+   "nameZh": "部署表"
   }
  ],
  "inNoComponent": [
   {
-   "why": "this product's own page table, which the kit reads only through `trait Pages` (`zikaron_ui::nav`); each product writes its own.",
+   "why": "this product's own name as the window and the system show it (`app_name::APP_NAME`): the bundle, the desktop entry and the Windows version strings take it from here; each product spells its own.",
+   "paths": [
+    "crates/app/src/app_name.rs"
+   ]
+  },
+  {
+   "why": "this product's own readers of the face table: which chains and which entries each of its pages gives the one reading (`zikaron_send::face::input`), and where the reading lands; each product writes its own.",
+   "paths": [
+    "crates/app/src/facex.rs"
+   ]
+  },
+  {
+   "why": "this product's own face-entry actions: where its desktop writes each of the five shapes (the bodies are the glue's `face::Writer`, the consent the glue's `face::Consent` signed by its signing port), its gates on its own face table and queue; each product writes its own.",
+   "paths": [
+    "crates/app/src/action/face.rs"
+   ]
+  },
+  {
+   "why": "this product's own page table: its answers to the page table's skeleton (`window/skeleton.rs`, which answers `trait Pages` of `zikaron_ui::nav`): what each route draws and titles, which routes are details, what a rail item counts, its toolbar keys, what entering a page does and which old page a route stands for; each product writes its own.",
    "paths": [
     "crates/app/src/window/pages.rs"
    ]
   },
   {
-   "why": "this product's window start and its windowless drivers and probes over its own places; each product writes its own, opening the window at the kit's least size (`MIN_W` × `MIN_H`, which `ui-kit`'s test reads there) and handing the desktop channel its frame waker.",
+   "why": "this product's own windowless probes and scenes over its own places, beside the window's start and the family's probes (`window/drive.rs`); each product writes its own.",
    "paths": [
     "crates/app/src/window/probes.rs"
    ]
@@ -8070,24 +10608,25 @@
   {
    "why": "this product's own pages and sheets, declared by `window/mod.rs` and reached through its page table; each product writes its own.",
    "paths": [
-    "crates/app/src/window/backup.rs",
+    "crates/app/src/window/about.rs",
     "crates/app/src/window/check.rs",
     "crates/app/src/window/grants.rs",
     "crates/app/src/window/home.rs",
-    "crates/app/src/window/identity.rs",
     "crates/app/src/window/kit.rs",
+    "crates/app/src/window/mirror.rs",
     "crates/app/src/window/others.rs",
+    "crates/app/src/window/persona.rs",
+    "crates/app/src/window/reroot.rs",
     "crates/app/src/window/shared.rs",
     "crates/app/src/window/vault.rs",
     "crates/app/src/window/verify.rs",
-    "crates/app/src/window/wizard.rs",
+    "crates/app/src/window/wizard_own.rs",
     "crates/app/src/window/works.rs"
    ]
   },
   {
-   "why": "this product's own tables, its seats and its compiled-in deployments; each product writes its own.",
+   "why": "this product's own seats (their names, the word a refusal names a seat by); each product writes its own.",
    "paths": [
-    "crates/app/src/deploy.rs",
     "crates/app/src/roles.rs"
    ]
   },
@@ -8101,27 +10640,27 @@
   {
    "why": "this product's own action handlers, reached only through the action layer's dispatch in `action/mod.rs`.",
    "paths": [
-    "crates/app/src/action/adopt.rs",
     "crates/app/src/action/anchor.rs",
     "crates/app/src/action/archive.rs",
     "crates/app/src/action/audit.rs",
     "crates/app/src/action/badge.rs",
+    "crates/app/src/action/chain.rs",
     "crates/app/src/action/check.rs",
     "crates/app/src/action/delivery.rs",
-    "crates/app/src/action/depth.rs",
     "crates/app/src/action/diligence.rs",
     "crates/app/src/action/genesis.rs",
     "crates/app/src/action/grant.rs",
     "crates/app/src/action/grant_file.rs",
     "crates/app/src/action/grants.rs",
+    "crates/app/src/action/issue.rs",
     "crates/app/src/action/keys.rs",
     "crates/app/src/action/kit.rs",
     "crates/app/src/action/ledger.rs",
     "crates/app/src/action/reader.rs",
     "crates/app/src/action/readnet.rs",
     "crates/app/src/action/revoke.rs",
+    "crates/app/src/action/rotate.rs",
     "crates/app/src/action/sentinel.rs",
-    "crates/app/src/action/succeed.rs",
     "crates/app/src/action/vault.rs",
     "crates/app/src/action/verify.rs"
    ]
@@ -8130,15 +10669,14 @@
    "why": "this product's own features (record packages, grants and their vault, retraction, mirrors, verification and its read-only networks, the first-run wizard and the rest), reached from the components' files only through wiring.",
    "paths": [
     "crates/app/src/addressedx.rs",
-    "crates/app/src/adoptx.rs",
     "crates/app/src/anchorx.rs",
     "crates/app/src/badgex.rs",
     "crates/app/src/checkedx.rs",
     "crates/app/src/checkx.rs",
     "crates/app/src/deliveryx.rs",
-    "crates/app/src/depthx.rs",
     "crates/app/src/diligx.rs",
     "crates/app/src/entryx.rs",
+    "crates/app/src/exports.rs",
     "crates/app/src/fetchx.rs",
     "crates/app/src/firstrun.rs",
     "crates/app/src/gitx.rs",
@@ -8149,15 +10687,16 @@
     "crates/app/src/lastread.rs",
     "crates/app/src/ledgerx.rs",
     "crates/app/src/mirror.rs",
+    "crates/app/src/noticex.rs",
     "crates/app/src/payloadx.rs",
+    "crates/app/src/peekx.rs",
     "crates/app/src/pinned.rs",
-    "crates/app/src/probe.rs",
     "crates/app/src/readerx.rs",
     "crates/app/src/readnets.rs",
     "crates/app/src/recordsx.rs",
-    "crates/app/src/rekey.rs",
     "crates/app/src/relicx.rs",
     "crates/app/src/retractx.rs",
+    "crates/app/src/rotatex.rs",
     "crates/app/src/sentinelx.rs",
     "crates/app/src/succeedx.rs",
     "crates/app/src/supplyx.rs",
@@ -8173,9 +10712,11 @@
    "why": "this product's own command-line modules, reached from the components' files only through the verb table and the product's entry, kit and ledger calls.",
    "paths": [
     "crates/zikaron-cli/src/chain.rs",
-    "crates/zikaron-cli/src/docs.rs",
     "crates/zikaron-cli/src/entropy.rs",
     "crates/zikaron-cli/src/entry.rs",
+    "crates/zikaron-cli/src/grantpack.rs",
+    "crates/zikaron-cli/src/hopin.rs",
+    "crates/zikaron-cli/src/issuing.rs",
     "crates/zikaron-cli/src/kitout.rs",
     "crates/zikaron-cli/src/ledger.rs"
    ]
@@ -8183,26 +10724,35 @@
   {
    "why": "this product's own, declared only by their crate's root; the components do not depend on them.",
    "paths": [
+    "crates/zikaron-anchor/src/book.rs",
     "crates/zikaron-anchor/src/deploy.rs",
     "crates/zikaron-anchor/src/input.rs",
-    "crates/zikaron-anchor/src/kit.rs",
-    "crates/zikaron-anchor/src/mpt.rs",
+    "crates/zikaron-anchor/src/revoke.rs",
     "crates/zikaron-glue/src/addressed.rs",
     "crates/zikaron-glue/src/anchoredon.rs",
     "crates/zikaron-glue/src/basis.rs",
+    "crates/zikaron-glue/src/book.rs",
     "crates/zikaron-glue/src/extract.rs",
     "crates/zikaron-glue/src/grantfile.rs",
     "crates/zikaron-glue/src/kitnames.rs",
     "crates/zikaron-glue/src/mirror.rs",
+    "crates/zikaron-glue/src/notices.rs",
     "crates/zikaron-glue/src/recordcheck.rs",
     "crates/zikaron-glue/src/recording.rs",
     "crates/zikaron-glue/src/retraction.rs",
     "crates/zikaron-glue/src/select.rs",
     "crates/zikaron-glue/src/tidy.rs",
     "crates/zikaron-seal/src/addressed.rs",
+    "crates/zikaron-seal/src/exports.rs",
+    "crates/zikaron-seal/src/lastaudit.rs",
     "crates/zikaron-seal/src/readnets.rs",
+    "crates/zikaron-send/src/book.rs",
     "crates/zikaron-send/src/fingerprint.rs",
-    "crates/zikaron-send/src/recipient.rs"
+    "crates/zikaron-send/src/issue.rs",
+    "crates/zikaron-send/src/notices.rs",
+    "crates/zikaron-send/src/one.rs",
+    "crates/zikaron-send/src/recipient.rs",
+    "crates/zikaron-send/src/withdraw.rs"
    ]
   },
   {
@@ -8238,16 +10788,118 @@
    "paths": [
     "crates/zikaron-cli/src/mcptools.rs"
    ]
+  },
+  {
+   "why": "this product's own move of its ledger from its first law to its second (`zikaron/1` to `zikaron/2`, law §12.6), read off its own ledger and chain; no other product of the family has that law to move from.",
+   "paths": [
+    "crates/app/src/action/upgrade.rs",
+    "crates/app/src/upgradex.rs"
+   ]
+  },
+  {
+   "why": "this product's own desktop and command line answering one judgement over its own ledger, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/one_rule.rs"
+   ]
+  },
+  {
+   "why": "this product's own network page (its RPC node rows and REST cards) driven through its own probe; each product tests its own pages.",
+   "paths": [
+    "crates/app/tests/checks_more/network_page.rs"
+   ]
+  },
+  {
+   "why": "this product's own vault versions, record names, grant package names, export and verify pages and refusal words, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r30b3.rs"
+   ]
+  },
+  {
+   "why": "this product's own key change sheet, rail, drops left untaken, signed grant form, handed-off shell, imported mark, first-run ledger step, gas code line, local data header, dropped file lists and file-or-folder dialog, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r30b4.rs"
+   ]
+  },
+  {
+   "why": "this product's own home pending card, key change after a handover, given address refusals and reader refusals, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r33b2.rs"
+   ]
+  },
+  {
+   "why": "this product's own report asked again behind its receipts, node table read again, write and send gates as said, wizard opening by itself, sheets counted as up and tail check that writes nothing, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r30fc.rs"
+   ]
+  },
+  {
+   "why": "this product's own test fixtures for the write side's revocation (kit/2 §7.1): a node of the chain with the revocation contract, and a grant as written before the member; reached only by this product's tests, each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/venue.rs",
+    "crates/zikaron-cli/tests/support/old_grant.rs"
+   ]
+  },
+  {
+   "why": "this product's own answers to the components' registration points (what else follows a seat's home when the data folder changes, the owed anchors and the entries behind this home's receipts by its own reckoning), called by one name from the components' files so they carry no product content; each product writes its own.",
+   "paths": [
+    "crates/app/src/own.rs"
+   ]
+  },
+  {
+   "why": "this product's own answers to the window's registration points (its task kinds' names and which run long, what it does each turn, its own alerts, what its identity card and menu add, its own reckoning of a stale report), called by one name from the window's component files; each product writes its own.",
+   "paths": [
+    "crates/app/src/window/own.rs"
+   ]
+  },
+  {
+   "why": "this product's own task kinds and what the task pool asks of each (waited for at quit, keeping its chain reads, reading nodes, its name, its keeper, carried in one action), read by the pool's file as `task::Kind`; each product writes its own.",
+   "paths": [
+    "crates/app/src/kinds.rs"
+   ]
+  },
+  {
+   "why": "this product's own codes and verbs (its refusals, output keys, flag words and law field names; each verb's flag list, the flags taken more than once, the verbs done on the desktop by hand, every flag's name, which function answers which verb, its program's name), read by the command line's skeleton files by these names; each product writes its own.",
+   "paths": [
+    "crates/zikaron-cli/src/codes_own.rs",
+    "crates/zikaron-cli/src/verbs_own.rs"
+   ]
+  },
+  {
+   "why": "this product's own table of the desktop's verbs (read as one by the command line and the desktop's door) and its writing rules on the door, read by the components' files by these names; each product writes its own.",
+   "paths": [
+    "crates/zikaron-glue/src/doorrules.rs",
+    "crates/zikaron-glue/src/doorverbs.rs"
+   ]
+  },
+  {
+   "why": "this product's own face verbs on the command line (`face-table` and the five face writes): which chains and nodes each road reads the face table on, and the answers each verb prints; the gate they ask is the glue's (`facegate`), and each product writes its own entry to it.",
+   "paths": [
+    "crates/zikaron-cli/src/faceverbs.rs"
+   ]
+  },
+  {
+   "why": "this product's own queue placing and the door's handover write, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r34b4.rs"
+   ]
+  },
+  {
+   "why": "this product's own sheets saying a refusal once (no toast over what a sheet shows) and an empty note pressed, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r34b7.rs"
+   ]
+  },
+  {
+   "why": "this product's own sheets each as tall as what it holds with no scroll bar, every scene of both seats read windowless, declared by the shared test root (`checks.rs`); each product writes its own.",
+   "paths": [
+    "crates/app/tests/checks_more/r34n10.rs"
+   ]
   }
  ],
  "ownTests": [
   {
-   "why": "They pin this product's own ledger law (roots, entries, retraction, succession, cosigning, history and its hashes, the audit and its input, trie proofs, chain readings and deployments); each product writes its own.",
+   "why": "They pin this product's own ledger law (roots, entries, retraction, succession, history and its hashes, the audit and its input, trie proofs, chain readings and deployments); each product writes its own.",
    "tests": [
-    {
-     "path": "crates/app/tests/checks.rs",
-     "name": "a_cosigning_is_bound_to_the_head_it_was_written_against"
-    },
     {
      "path": "crates/app/tests/checks.rs",
      "name": "a_retraction_is_an_open_type_entry_the_core_accepts_and_this_desk_reads"
@@ -8283,10 +10935,6 @@
     {
      "path": "crates/app/tests/checks.rs",
      "name": "the_audit_input_is_resolved_level_by_level_in_one_place"
-    },
-    {
-     "path": "crates/app/tests/checks.rs",
-     "name": "the_depth_reading_comes_from_the_kit_core_itself"
     },
     {
      "path": "crates/app/tests/checks.rs",
@@ -8346,19 +10994,7 @@
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "a_key_the_trie_does_not_hold_answers_absent"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "a_proof_leads_to_the_value_and_a_tampered_one_leads_nowhere"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "a_proof_of_a_short_root_verifies_too"
-    },
-    {
-     "path": "crates/zikaron-anchor/tests/anchoring.rs",
-     "name": "the_audit_input_is_the_fragment_plus_the_three_the_ledger_side_holds"
+     "name": "the_audit_input_is_the_fragment_plus_the_two_the_ledger_side_holds"
     },
     {
      "path": "crates/zikaron-anchor/tests/anchoring.rs",
@@ -8446,10 +11082,6 @@
      "name": "the_exports_land_where_the_one_table_says"
     },
     {
-     "path": "crates/app/tests/checks_more/door_b15.rs",
-     "name": "a_cosignature_is_both_halves_or_none_judged_once"
-    },
-    {
      "path": "crates/app/tests/checks_more/gaps.rs",
      "name": "a_grant_window_past_the_ceiling_is_refused_and_nothing_lands"
     },
@@ -8468,10 +11100,6 @@
     {
      "path": "crates/app/tests/checks_more/gaps_r21b2.rs",
      "name": "a_code_with_white_space_reads_as_the_clean_code_typed_or_in_a_file"
-    },
-    {
-     "path": "crates/zikaron-cli/tests/cli.rs",
-     "name": "a_document_the_law_refused_never_reaches_the_out_path"
     },
     {
      "path": "crates/zikaron-cli/tests/cli.rs",
@@ -8667,6 +11295,15 @@
     {
      "path": "crates/app/tests/checks_more/a8_send.rs",
      "name": "a_test_run_alone_gets_its_own_process_machine_and_home"
+    }
+   ]
+  },
+  {
+   "why": "It pins this product's own detail row for an entry's type (its own words for its own kinds); each product writes its own.",
+   "tests": [
+    {
+     "path": "crates/app/src/window/mod.rs",
+     "name": "the_type_row_says_the_kind_in_words"
     }
    ]
   }

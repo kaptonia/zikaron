@@ -1,0 +1,1 @@
+sec 7.4: the successor's seq-4 twin of its succession is reachable only from its seq-5 entry, which it anchors in the second of its own handing off; the record is one at which it has retired, DISCARDED, and timeliness reads that second by position against the successor's retiring seq: the seq-4 twin is timely, a fork with the succession, the seq-5 entry RETIRED.

@@ -1,27 +1,7 @@
-//! DEFLATE (RFC 1951) and its zlib wrapper (RFC 1950): the only decompression in this crate.
-//!
-//! ─── Why write it ourselves ───
-//!
-//! git stores objects zlib-compressed, and recomputing the content hash git anchors byte for byte needs the
-//! inflated bytes. The shipped build may not start child processes (checked by the self-check suite), so
-//! `git cat-file` is not an option. Rather than add a third-party crate outside the dependency boundary,
-//! this is a pure function of a public specification: bytes in, bytes out, no key, disk or network. It is
-//! easy to verify: hash the inflated bytes with the core's `cryptox::sha256` and compare with `git cat-file`.
-//!
-//! ─── Nothing is guessed ───
-//!
-//! Wherever reading cannot continue it returns `None`: a truncated stream, a bad code length table or an
-//! out-of-range back reference stops at once. The most common decompressor hole, a back reference reaching
-//! before the start of the output, is guarded in [`copy_back`], which checks before copying.
-
-/// A bitwise read cursor, LSB first (RFC 1951 §3.1.1).
 struct Bits<'a> {
     src: &'a [u8],
-    /// The next byte to read.
     at: usize,
-    /// Bits accumulated.
     acc: u32,
-    /// How many bits are accumulated.
     n: u32,
 }
 
@@ -51,14 +31,12 @@ impl<'a> Bits<'a> {
         Some(v)
     }
 
-    /// Drop the bits short of a byte to return to a byte boundary (needed by stored blocks).
     fn align(&mut self) {
         let drop = self.n % 8;
         self.acc >>= drop;
         self.n -= drop;
     }
 
-    /// Take one byte from the aligned position.
     fn byte(&mut self) -> Option<u8> {
         if self.n >= 8 {
             let v = (self.acc & 0xff) as u8;
@@ -72,16 +50,12 @@ impl<'a> Bits<'a> {
     }
 }
 
-/// A canonical Huffman table, arranged by code length (RFC 1951 §3.2.2).
 struct Huff {
-    /// How many codes of each length.
     counts: [u16; 16],
-    /// Symbols sorted by (code length, symbol).
     symbols: Vec<u16>,
 }
 
 impl Huff {
-    /// Build from a code length table. Symbols with length zero take no code.
     fn new(lengths: &[u8]) -> Option<Huff> {
         let mut counts = [0u16; 16];
         for &l in lengths {
@@ -91,7 +65,6 @@ impl Huff {
             counts[l as usize] += 1;
         }
         counts[0] = 0;
-        // Reject an oversubscribed table (more codes than the lengths can hold).
         let mut left: i32 = 1;
         for l in 1..16 {
             left <<= 1;
@@ -133,7 +106,6 @@ impl Huff {
     }
 }
 
-/// Bases and extra bits of length codes 257..287 (RFC 1951 §3.2.5).
 const LEN_BASE: [u16; 29] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
     163, 195, 227, 258,
@@ -141,7 +113,6 @@ const LEN_BASE: [u16; 29] = [
 const LEN_EXTRA: [u8; 29] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
-/// Bases and extra bits of distance codes 0..29.
 const DIST_BASE: [u16; 30] = [
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
     2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
@@ -150,11 +121,8 @@ const DIST_EXTRA: [u8; 30] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
     13,
 ];
-/// The read order of the code length table's own table (RFC 1951 §3.2.7).
 const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
-/// Copy a back reference. One reaching before the start of the output stops at once: this is the key safety
-/// check here.
 fn copy_back(out: &mut Vec<u8>, dist: usize, len: usize) -> Option<()> {
     if dist == 0 || dist > out.len() {
         return None;
@@ -181,8 +149,6 @@ fn fixed_tables() -> Option<(Huff, Huff)> {
     Some((Huff::new(&lit)?, Huff::new(&dist)?))
 }
 
-/// Inflate a raw DEFLATE stream. `cap` limits the output; exceeding it stops decoding (so a compression bomb
-/// goes nowhere).
 pub fn inflate(src: &[u8], cap: usize) -> Option<Vec<u8>> {
     let mut b = Bits::new(src);
     let mut out: Vec<u8> = Vec::new();
@@ -298,11 +264,6 @@ pub fn inflate(src: &[u8], cap: usize) -> Option<Vec<u8>> {
     }
 }
 
-/// The zlib wrapper (RFC 1950): a two-byte header followed by raw DEFLATE.
-///
-/// Only method 8 (deflate) is accepted, and streams with `FDICT` set are refused (git never writes them).
-/// The trailing Adler-32 is not checked: a git object's integrity check is its hash, which the caller
-/// computes with `cryptox::sha256`.
 pub fn inflate_zlib(src: &[u8], cap: usize) -> Option<Vec<u8>> {
     let cmf = *src.first()?;
     let flg = *src.get(1)?;

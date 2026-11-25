@@ -1,14 +1,8 @@
-//! Shutdown (the app quitting) cuts an exchange in flight within a slice (`SLICE`, never its deadline) and refuses
-//! any started afterwards, both with `Fail::Closed`; an exchange that already ended keeps its answer and its
-//! connection is not handed out again; reopening lets exchanges through. Its own test binary, since the shutdown
-//! flag is process-wide.
-
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 use zikaron_net::{close_down, cuts, open_up, parse, post_json, set_choice, Ask, Choice, Fail, Kind, Limits, Proxy, SLICE};
 
-/// How long a cut may take: a few slices (the slice is the longest any wait goes before it looks at the flag).
 const CUT_WITHIN: Duration = Duration::from_millis(SLICE.as_millis() as u64 * 4);
 
 #[test]
@@ -25,7 +19,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
                 let mut buf = [0u8; 4096];
                 let _ = s.read(&mut buf);
                 h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                // Never answers: only shutdown ends the exchange before its deadline.
                 std::thread::sleep(Duration::from_secs(30));
             });
         }
@@ -45,7 +38,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
     assert_eq!(said, Some(Fail::Closed));
     assert!(took < CUT_WITHIN, "cut within a slice, not at the deadline: {took:?}");
     assert_eq!(cuts(), cut_before + 1, "the cut leaves its trace: one exchange cut");
-    // Not retried after the cut: the peer saw one request.
     assert_eq!(held.load(std::sync::atomic::Ordering::SeqCst), 1);
     let t = parse(&format!("http://127.0.0.1:{port}/")).expect("address");
     assert_eq!(post_json(&t, b"{}", &limits, Ask::Read).err(), Some(Fail::Closed), "an exchange after closing down never opens");
@@ -56,7 +48,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
     let t = parse(&format!("http://127.0.0.1:{closed}/")).expect("address");
     assert!(matches!(post_json(&t, b"{}", &limits, Ask::Read), Err(Fail::Connect(_))), "open again: the exchange goes out");
 
-    // A handshake in flight (the peer accepted and stays silent) is also cut at once.
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
     let took_it = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -86,7 +77,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
     assert!(took < CUT_WITHIN, "cut within a slice, not at the deadline: {took:?}");
     open_up();
 
-    // A tunnel in flight (the proxy accepted and stays silent) is also cut at once.
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let proxy = l.local_addr().expect("addr").port();
     let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -118,7 +108,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
     open_up();
     set_choice(Choice::Off);
 
-    // Half an answer in when the cut comes: closed, not a short answer judged as is.
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
     let half = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -151,8 +140,6 @@ fn closing_down_cuts_what_is_in_flight_and_refuses_what_comes_after() {
     assert!(took < CUT_WITHIN, "cut within a slice, not at the deadline: {took:?}");
     open_up();
 
-    // An exchange that ended before the cut keeps its answer; its kept connection is dropped by the cut, so the
-    // next exchange after reopening comes on a new connection.
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
     let conns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

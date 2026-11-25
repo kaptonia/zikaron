@@ -1,13 +1,6 @@
-//! The address half of a node item is read everywhere by one reader (`rpc::read_address`), as its spelling is
-//! by the one spelling reader. The app's node cell (`SetEndpoints`) and the check page refuse an item whose
-//! address does not read, as the command line does; an item already on disk is read by its spelling alone and
-//! kept (named where it is used), never silently dropped. Places are set before any vault or shell use
-//! (`vault_open`); each test runs alone in its own process.
-
 use super::vault_open;
 use app::action::{apply, Action, Applied};
 
-/// The address forms, each with whether the address reads (`rpc::read_address`).
 const FORMS: [(&str, bool); 11] = [
     ("1==https://a", false),
     ("1=wss://a.example", false),
@@ -53,8 +46,6 @@ fn the_node_cell_reads_an_address_as_the_command_line_does() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The check page's typed nodes are read the same way: an item whose address does not read is refused by name
-/// before anything is asked.
 #[test]
 fn the_check_page_reads_an_address_as_the_command_line_does() {
     if super::alone_in(module_path!(), "the_check_page_reads_an_address_as_the_command_line_does") {
@@ -90,17 +81,12 @@ fn the_check_page_reads_an_address_as_the_command_line_does() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// An item already on disk (saved by an older version that did not read addresses) is read by its spelling
-/// alone and kept, never silently dropped; where it is used, its address is named (`SETTINGS_SHAPE`).
 #[test]
 fn an_item_on_disk_whose_address_does_not_read_is_kept() {
     assert!(app::chainx::Endpoint::parse("1==https://a").is_some());
     assert!(app::chainx::Endpoint::typed("1==https://a").is_err());
 }
 
-/// More kernel locks than this process may hold at once (`zikaron_os::LOCKS_MAX`): taking a home's writer lock
-/// at the app is refused by name (the limit said), never taken as a reader or as nothing; once one lock is let
-/// go, the same home is taken as its writer. Runs alone in its own process: it fills the process's lock list.
 #[test]
 fn a_lock_past_the_process_limit_is_refused_by_name_at_the_app() {
     if super::alone_in(module_path!(), "a_lock_past_the_process_limit_is_refused_by_name_at_the_app") {
@@ -124,10 +110,6 @@ fn a_lock_past_the_process_limit_is_refused_by_name_at_the_app() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A home's writer lock released while children are being spawned on other threads (the system-proxy reading
-/// spawns one): the next take of the same home is a writer every time, never a reader blocked by a child's
-/// inherited copy of the lock. Children start through `zikaron_os::spawn`, as the product's do; the test runs
-/// alone in its own process so no other test spawns any.
 #[cfg(unix)]
 #[test]
 fn a_lock_let_go_while_children_start_is_taken_again_as_a_writer() {
@@ -146,7 +128,7 @@ fn a_lock_let_go_while_children_start_is_taken_again_as_a_writer() {
             std::thread::spawn(move || {
                 let mut n = 0usize;
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    if let Ok(mut c) = zikaron_os::spawn(std::process::Command::new("/usr/bin/true").stdin(std::process::Stdio::null())) {
+                    if let Ok(mut c) = zikaron_os::spawn(std::process::Command::new("true").stdin(std::process::Stdio::null())) {
                         begun.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = c.wait();
                         n += 1;
@@ -156,7 +138,6 @@ fn a_lock_let_go_while_children_start_is_taken_again_as_a_writer() {
             })
         })
         .collect();
-    // The takes start once children are starting (the starters' first child), however busy the machine is.
     let from = std::time::Instant::now();
     while begun.load(std::sync::atomic::Ordering::SeqCst) == 0 {
         assert!(from.elapsed() < std::time::Duration::from_secs(20), "no child started");

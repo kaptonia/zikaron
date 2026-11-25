@@ -1,118 +1,61 @@
-//! Endpoints: a JSON-RPC question-and-answer channel, plus recording and replay.
-//!
-//! A recording is a scan's whole conversation with a node. On replay, a question the recording lacks is an
-//! error, never a guess: filling in a "probably empty" answer would let a recording with a hole quietly
-//! answer something else. So [`Replay`] returns [`Trouble::NotServed`] and the scan stops.
-//!
-//! Answers are matched by (method, params), not by order: a scan may ask the same question twice and the
-//! order is up to the scan. The key is the method plus the canonical bytes of the params; two entries with
-//! the same key and different answers make the recording self-contradictory.
-//!
-//! One closed rule widens a question: a log question naming senders (a second topic) that the recording
-//! lacks is answered with what the recording holds for the same question without that topic, handed back as
-//! recorded. The replay does not filter it; the scan judges every log it gets. Recordings made before log
-//! questions named senders thus answer as they did. No other question is ever widened.
-
 use std::collections::BTreeMap;
 use crate::wire::{self, Body, W};
 use zikaron::json::{canon_bytes, Value};
 
-/// Where an endpoint cannot go on.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Trouble {
-    /// The recording lacks this question.
     NotServed(String),
-    /// The node returned an error (it declined), as it sent it.
     Node(String),
-    /// The way to the node broke, or what came back could not be read or made here ([`Broke`]).
     Transport(Broke),
-    /// The recording contradicts itself: two answers to one question.
     Contradiction(String),
 }
 
-/// How the way to a node broke, or what this side could not read or make of it: structure only, never a
-/// sentence. Each end says it in its own words (the desktop from its language table, the command line in its
-/// own); what reaches evidence or `detail` is its machine form ([`Broke::evidence`], also its `Debug`): a code,
-/// the node in its safe form, numbers, and the transport's or the node's own words where there are any. Every
-/// reader that tells one failure from another matches on this, never on words.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Broke {
-    /// `node` did not finish within `deadline` (this call's total deadline).
     Late { node: String, deadline: std::time::Duration },
-    /// `node`'s answer passed its end (`max` bytes).
     Overlong { node: String, max: usize },
-    /// `node` answered with this HTTP status, and not with the node's word (a gateway's page, a bare refusal).
     Status { node: String, code: u16 },
-    /// The answer is not JSON.
     NotJson,
-    /// `node`'s answer is JSON, but not a JSON-RPC answer to this question.
     Shapeless { node: String },
-    /// The leg to a proxy failed (the proxy and its failure in `said`): the node was never reached.
     Proxy { node: String, said: String },
-    /// The proxy asked who is calling: no credentials were given with it (`given` false), or the ones given
-    /// were refused (`given` true); the proxy's words in `said`. The node was never reached.
     ProxyCredentials { node: String, given: bool, said: String },
-    /// The question stopped as the process wound down.
     Closed { node: String },
-    /// A connection layer failed (name, connect, handshake, certificate, the stream), as the transport says it:
-    /// the node and the system's detail, or the https adapter's layer code and its end's words.
     Said(String),
-    /// Asking this node stopped short (its round was cut off before an answer came).
     Short,
-    /// What came back does not read as the answer to `method` (`eth_blockNumber`, `eth_getTransactionCount`, …).
     Unread { method: String },
-    /// No endpoint to ask.
     NoEndpoint,
-    /// The private key is outside the curve's range.
     KeyRange,
-    /// The transaction could not be signed.
     Unsigned,
-    /// The registry form names no contract.
     NoRegistry,
-    /// The node echoed another hash than the transaction signed.
     EchoNotOurs,
-    /// An inclusion proof could not be assembled from the node's answers ([`ProofGap`]).
     Proof(ProofGap),
+    Unserved { node: String, method: String },
+    NoKey { node: String },
+    LogsBehind { node: String },
+    HeadBehind { node: String, block: u64 },
 }
 
-/// What an inclusion proof lacked when it was assembled from a node's answers. Closed; its machine form is its
-/// name.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ProofGap {
-    /// The transaction does not read (the reader's own finding).
     TxUnread(String),
-    /// The transaction is not in a block yet.
     NotInBlock,
-    /// The block header does not re-encode.
     HeaderUnbuilt,
-    /// The re-encoded header does not read back.
     HeaderUnread,
-    /// The re-encoded header is not the hash the node gave.
     HeaderHash,
-    /// The block carries no transaction list.
     NoTxList,
-    /// A transaction in the block does not read.
     BlockTxUnread(String),
-    /// A receipt does not re-encode.
     ReceiptUnbuilt,
-    /// The transaction is not in the block it names.
     NotInItsBlock,
-    /// The transaction root built here is not the header's.
     TxRoot,
-    /// The receipt root built here is not the header's.
     ReceiptRoot,
-    /// The transaction has no sender in this grammar.
     NoSender,
-    /// The parent block's header does not re-encode.
     ParentUnbuilt,
-    /// `eth_getProof` gave no account proof.
     NoAccountProof,
-    /// The account proof holds something that is not a byte string.
+    AccountProof,
     AccountProofShape,
 }
 
 impl Broke {
-    /// The machine form: a code, then the node, numbers and the transport's or the node's own words.
     pub fn evidence(&self) -> String {
         match self {
             Broke::Late { node, deadline } => format!("TIMEOUT {node} {}ms", deadline.as_millis()),
@@ -133,6 +76,10 @@ impl Broke {
             Broke::NoRegistry => "NO_REGISTRY".to_string(),
             Broke::EchoNotOurs => "ECHO_NOT_OURS".to_string(),
             Broke::Proof(g) => format!("PROOF {g:?}"),
+            Broke::Unserved { node, method } => format!("NOT_SERVED {node} {method}"),
+            Broke::NoKey { node } => format!("NO_KEY_HERE {node}"),
+            Broke::LogsBehind { node } => format!("LOGS_NOT_YET {node}"),
+            Broke::HeadBehind { node, block } => format!("HEAD_NOT_YET {node} {block}"),
         }
     }
 }
@@ -143,36 +90,25 @@ impl std::fmt::Debug for Broke {
     }
 }
 
-/// The codes a proxy's question about credentials leads its machine form with (none given, the ones given
-/// refused): the command line's `token` for an unreached endpoint is the same word.
 pub const PROXY_ASKS: &str = "PROXY_CREDENTIALS_MISSING";
 pub const PROXY_REFUSES: &str = "PROXY_CREDENTIALS_REFUSED";
 
-/// This call's total deadline passed (`url` did not finish within `deadline`).
 pub fn late(url: &str, deadline: std::time::Duration) -> Trouble {
     Trouble::Transport(Broke::Late { node: zikaron_net::sayable(url), deadline })
 }
 
-/// The answer passed its end (`max` bytes).
 pub fn overlong(url: &str, max: usize) -> Trouble {
     Trouble::Transport(Broke::Overlong { node: zikaron_net::sayable(url), max })
 }
 
-/// The leg to a proxy failed (`zikaron_net::Fail::Proxy`, the proxy and its failure in `said`): the node was
-/// never reached.
 pub fn proxy_leg(url: &str, said: &str) -> Trouble {
     Trouble::Transport(Broke::Proxy { node: zikaron_net::sayable(url), said: said.to_string() })
 }
 
-/// The proxy asked who is calling (`zikaron_net::Fail::ProxyCredentials`): no credentials were given with it
-/// (`given` false), or the ones given were refused (`given` true); the node was never reached.
 pub fn proxy_credentials(url: &str, given: bool, said: &str) -> Trouble {
     Trouble::Transport(Broke::ProxyCredentials { node: zikaron_net::sayable(url), given, said: said.to_string() })
 }
 
-/// Whether evidence in machine form ([`Broke::evidence`], or a `Debug` that carries it) says the proxy asked for
-/// credentials: `Some(given)`, `None` otherwise. For a reader that holds only the evidence (the command line's
-/// answer, for every verb); a reader holding the trouble matches on it.
 pub fn proxy_credentials_of(said: &str) -> Option<bool> {
     if said.contains(PROXY_REFUSES) {
         Some(true)
@@ -183,12 +119,10 @@ pub fn proxy_credentials_of(said: &str) -> Option<bool> {
     }
 }
 
-/// The answer was not the node's word, and came with this HTTP status (a gateway's page, a bare refusal).
 pub fn status(url: &str, code: u16) -> Trouble {
     Trouble::Transport(Broke::Status { node: zikaron_net::sayable(url), code })
 }
 
-/// The HTTP status a trouble says the answer came with ([`status`]); `None` for any other.
 pub fn status_of(t: &Trouble) -> Option<u16> {
     match t {
         Trouble::Transport(Broke::Status { code, .. }) => Some(*code),
@@ -196,21 +130,12 @@ pub fn status_of(t: &Trouble) -> Option<u16> {
     }
 }
 
-/// The answer is JSON, but not a JSON-RPC answer to this question (no `result` and no `error`, both, an
-/// array, another question's `id`).
 pub fn shapeless(url: &str) -> Trouble {
     Trouble::Transport(Broke::Shapeless { node: zikaron_net::sayable(url) })
 }
 
-/// The question a broadcast asks: carried once, on a new connection, never asked again. Named here, where
-/// the answer is read, and nowhere else.
 pub const BROADCAST: &str = "eth_sendRawTransaction";
 
-/// Whether an answer is the node's word to the question numbered `id`, and if so what it says: a JSON
-/// object carrying `result` with `error` absent or null and that `id` (a null `result` is a valid empty
-/// answer), or a non-null `error` with `result` absent and that `id`, a null `id` or none (JSON-RPC lets a
-/// node that could not read the request's id answer its error so: a gateway's rate limit often does). Both,
-/// neither, an array, a result under another or no `id`, an error under another `id`: `None`.
 fn node_word(v: &W, id: u64) -> Option<Result<W, Trouble>> {
     if !matches!(v.body, Body::Obj(_)) {
         return None;
@@ -225,11 +150,6 @@ fn node_word(v: &W, id: u64) -> Option<Result<W, Trouble>> {
     }
 }
 
-/// The one reading of a node's answer, for every endpoint. The node's word ([`node_word`]) is read whatever
-/// the HTTP status (nodes often send a well-formed error with a 4xx or 5xx). Anything else is read by the
-/// status: 429, 401, 403 and every other status outside 2xx are named with their status ([`status`]); a 2xx
-/// answer that is not JSON is [`Broke::NotJson`]; one that is JSON without the shape of an answer is
-/// [`shapeless`]. Nothing else ever reads as an answer: a gateway's JSON page is not "the result is empty".
 pub fn read_answer(url: &str, id: u64, got: &zikaron_net::Answer) -> Result<W, Trouble> {
     let v = wire::parse(&got.body);
     if let Some(said) = v.as_ref().and_then(|v| node_word(v, id)) {
@@ -242,10 +162,6 @@ pub fn read_answer(url: &str, id: u64, got: &zikaron_net::Answer) -> Result<W, T
     }
 }
 
-/// Ask a node one question over the one transport and read its answer ([`read_answer`]): the one place the
-/// command line's endpoint ([`Http`]) and the app's https endpoint both ask through. A broadcast
-/// ([`BROADCAST`]) is carried once on a new connection; every other question is a read. `said` puts a
-/// transport failure in the caller's words.
 pub fn ask_node(
     url: &str,
     target: &zikaron_net::Target,
@@ -266,7 +182,46 @@ pub fn ask_node(
     read_answer(url, id, &got)
 }
 
-/// `limits` with a deadline no longer than `within` (none stays none only when `within` is zero).
+pub type Batched = Vec<Option<Result<W, Trouble>>>;
+
+pub type Ask<'a> = (&'a str, Value);
+
+pub fn ask_batch(
+    url: &str,
+    target: &zikaron_net::Target,
+    limits: &Limits,
+    first_id: u64,
+    asks: &[Ask<'_>],
+    said: &dyn Fn(zikaron_net::Fail) -> Trouble,
+) -> Result<Batched, Trouble> {
+    let body: Vec<Value> = asks
+        .iter()
+        .enumerate()
+        .map(|(i, (method, p))| {
+            Value::Obj(vec![
+                ("id".into(), Value::Int(first_id + i as u64)),
+                ("jsonrpc".into(), Value::Str("2.0".into())),
+                ("method".into(), Value::Str((*method).into())),
+                ("params".into(), p.clone()),
+            ])
+        })
+        .collect();
+    let got = zikaron_net::post_json(target, &canon_bytes(&Value::Arr(body)), limits, zikaron_net::Ask::Read).map_err(said)?;
+    let parsed = wire::parse(&got.body);
+    if let Some(e) = parsed.as_ref().filter(|v| matches!(v.body, Body::Obj(_))).and_then(|v| v.member("error")).filter(|e| !e.is_null()) {
+        return Err(Trouble::Node(wire::write(e)));
+    }
+    if !(200..300).contains(&got.status) {
+        return Err(status(url, got.status));
+    }
+    let rows = match parsed {
+        Some(W { body: Body::Arr(rows), .. }) => rows,
+        Some(_) => return Err(shapeless(url)),
+        None => return Err(Trouble::Transport(Broke::NotJson)),
+    };
+    Ok((0..asks.len()).map(|i| rows.iter().find_map(|r| node_word(r, first_id + i as u64).filter(|_| r.member("id").and_then(|x| x.as_u64()) == Some(first_id + i as u64)))).collect())
+}
+
 pub fn within(limits: Limits, within: std::time::Duration) -> Limits {
     let deadline = match (limits.deadline.is_zero(), within.is_zero()) {
         (_, true) => limits.deadline,
@@ -276,21 +231,27 @@ pub fn within(limits: Limits, within: std::time::Duration) -> Limits {
     Limits { deadline, ..limits }
 }
 
-/// A question-and-answer channel.
 pub trait Endpoint {
     fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble>;
-    /// [`Endpoint::call`] given no longer than `within` (a wait with a deadline of its own, as a receipt
-    /// wait has). Channels without a clock (a recording) ask as `call` does.
     fn call_within(&mut self, method: &str, params: &Value, within: std::time::Duration) -> Result<W, Trouble> {
         let _ = within;
         self.call(method, params)
     }
-    /// A name for people (which endpoint a reading came from).
+    fn waits_out_limits(&self, method: &str) -> bool {
+        let _ = method;
+        false
+    }
+    fn asks_a_node(&self) -> bool {
+        true
+    }
+    fn call_batch(&mut self, asks: &[Ask<'_>]) -> Option<Result<Batched, Trouble>> {
+        let _ = asks;
+        None
+    }
+    fn another(&self) -> Option<Box<dyn Endpoint + Send>> {
+        None
+    }
     fn name(&self) -> String;
-    /// The key that keeps facts about different endpoints apart (e.g. a per-node cache). Unlike the name
-    /// ([`zikaron_net::sayable`]: scheme, host and port), it includes the path ([`zikaron_net::place_key`]), so
-    /// two endpoints on one host stay distinct. There is no default, so a wrapper cannot silently merge places by
-    /// name; a channel without an address returns its name.
     fn place(&self) -> String;
 }
 
@@ -301,8 +262,6 @@ fn key(method: &str, params: &Value) -> String {
     k
 }
 
-/// Recording keys use one rule: params inside the zikaron-v1 §3 value domain use canonical bytes (as the asking side
-/// does); params outside it (which should not occur) use the transport spelling.
 fn key_of(method: &str, params: &W) -> String {
     match wire::to_core(params) {
         Some(v) => key(method, &v),
@@ -310,25 +269,19 @@ fn key_of(method: &str, params: &W) -> String {
     }
 }
 
-/// Replay: one recording answers a whole scan offline.
 pub struct Replay {
     who: String,
     answers: BTreeMap<String, Result<W, String>>,
-    /// Keys actually asked in this run (recorded but unasked keys are slack, not errors).
     pub asked: Vec<String>,
 }
 
 impl Replay {
-    /// Build a replay channel from a recording's exchange array.
     pub fn new(who: impl Into<String>, exchanges: &[W]) -> Result<Replay, Trouble> {
         let mut answers: BTreeMap<String, Result<W, String>> = BTreeMap::new();
         for e in exchanges {
             let m = e.member("method").and_then(|x| x.as_str()).unwrap_or("");
             let p = e.member("params").cloned().unwrap_or(W::of(Body::Arr(Vec::new())));
             let k = key_of(m, &p);
-            // Read as a live answer is read: `result` with `error` absent or null, or a non-null `error`
-            // without `result`. An exchange holding neither, or both, holds no answer: the question is not
-            // served, never replayed as an empty result.
             let a = match (e.member("result"), e.member("error").filter(|x| !x.is_null())) {
                 (Some(r), None) => Ok(r.clone()),
                 (None, Some(err)) => Err(wire::write(err)),
@@ -346,8 +299,6 @@ impl Replay {
 }
 
 impl Replay {
-    /// The recorded answer to a question. Not recorded is an error, never a guess: by zikaron-v1 §9.4 an
-    /// incomplete read gives no report.
     pub fn answer(&mut self, k: &str) -> Result<W, Trouble> {
         match self.answers.get(k) {
             None => Err(Trouble::NotServed(k.to_string())),
@@ -357,8 +308,6 @@ impl Replay {
     }
 }
 
-/// The one wider question a replay may answer in place of a log question naming senders: the same question
-/// with only its first topic (`None` for every other question).
 fn without_senders(method: &str, params: &Value) -> Option<Value> {
     if method != "eth_getLogs" {
         return None;
@@ -392,45 +341,25 @@ impl Endpoint for Replay {
     fn name(&self) -> String {
         self.who.clone()
     }
-    /// No address: the place is the name.
     fn place(&self) -> String {
         self.name()
     }
 }
 
-/// The environment names and the two bounds of one call live in the transport (`zikaron_net`); they are
-/// named here too, so the callers of this crate keep one path.
 pub use zikaron_net::{env, Limits};
 
-/// The way out (straight, or through a proxy) is the transport's; the command line chooses it through here,
-/// so the callers of this crate keep one path.
 pub use zikaron_net::{follow_the_terminal, proxy_of, read_address, set_choice, Choice, NotAProxy, NotAnAddress, SystemProxies};
 
-/// Why the latest connection went without the system's configuration script and was not made (the transport's
-/// note); the command line says it with the failure.
 pub use zikaron_net::{script_trouble_last, PacTrouble};
 
-/// Why an endpoint spelling does not read. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NotAnEndpoint {
-    /// No `=` between the chain id and the address.
     NoEquals,
-    /// The chain id is not a whole number that fits 64 bits.
     ChainNotInt,
-    /// Nothing after the `=` (white space alone included).
     NoAddress,
-    /// White space inside the value (around the `=`, inside the address): one item holds none, so a spelling
-    /// cut at white space (the app's cell) and one taken whole (the command line) never read it two ways.
     InnerSpace,
 }
 
-/// The one reading of an endpoint's spelling, `<chain id>=<address>`, for the app's cells and the command
-/// line's `--endpoint` alike: split at the first `=` (an address may hold more); white space at either end of
-/// the value is not part of it, and white space anywhere else (around the `=`, inside the address) is
-/// [`NotAnEndpoint::InnerSpace`]; the chain id is a decimal whole number within 64 bits (leading zeros and a
-/// leading `+` read as the same number); the address must not be empty. Read left to right: a chain id that
-/// does not read is said before white space after it. The address itself is the transport's to read
-/// (`zikaron_net::parse`), where it is used.
 pub fn endpoint_spec(spec: &str) -> Result<(u64, String), NotAnEndpoint> {
     let (c, address) = spec.split_once('=').ok_or(NotAnEndpoint::NoEquals)?;
     let chain: u64 = c.trim().parse().map_err(|_| NotAnEndpoint::ChainNotInt)?;
@@ -444,10 +373,6 @@ pub fn endpoint_spec(spec: &str) -> Result<(u64, String), NotAnEndpoint> {
     Ok((chain, address.to_string()))
 }
 
-/// A real endpoint: JSON-RPC over the one transport (`zikaron_net`), `http` or `https`.
-///
-/// The address is read by `zikaron_net::parse` (scheme and host without regard to case), the exchange and the
-/// TLS configuration are the transport's; this side builds the JSON-RPC request and reads its answer.
 pub struct Http {
     url: String,
     target: zikaron_net::Target,
@@ -456,21 +381,17 @@ pub struct Http {
 }
 
 impl Http {
-    /// `http://host[:port]/path` or `https://…`, the scheme in any case; any other spelling gives `None`.
     pub fn new(url: &str) -> Option<Http> {
         let target = zikaron_net::parse(url)?;
         Some(Http { url: url.trim().to_string(), target, next_id: 1, limits: Limits::from_env() })
     }
 
-    /// Replace the bounds (when the caller sets a deadline).
     pub fn with_limits(mut self, limits: Limits) -> Http {
         self.limits = limits;
         self
     }
 }
 
-/// A transport failure as structure ([`Broke`]): the deadline, the cap, a proxy and the process winding down
-/// by name, every other layer with the endpoint and the layer's own words.
 pub fn transport_said(url: &str, f: &zikaron_net::Fail) -> Trouble {
     let url = &zikaron_net::sayable(url);
     match f {
@@ -500,6 +421,15 @@ impl Endpoint for Http {
     fn call(&mut self, method: &str, params: &Value) -> Result<W, Trouble> {
         self.ask(method, params, self.limits)
     }
+    fn call_batch(&mut self, asks: &[Ask<'_>]) -> Option<Result<Batched, Trouble>> {
+        let first = self.next_id;
+        self.next_id += asks.len() as u64;
+        let url = self.url.clone();
+        Some(ask_batch(&self.url, &self.target, &self.limits, first, asks, &|f| transport_said(&url, &f)))
+    }
+    fn another(&self) -> Option<Box<dyn Endpoint + Send>> {
+        Some(Box::new(Http { url: self.url.clone(), target: self.target.clone(), next_id: 1, limits: self.limits }))
+    }
     fn call_within(&mut self, method: &str, params: &Value, within: std::time::Duration) -> Result<W, Trouble> {
         self.ask(method, params, self::within(self.limits, within))
     }
@@ -511,7 +441,6 @@ impl Endpoint for Http {
     }
 }
 
-/// Record every question and answer on a real channel, in the fixture shape.
 pub struct Recorder {
     inner: Box<dyn Endpoint>,
     pub exchanges: Vec<W>,
@@ -537,7 +466,6 @@ impl Recorder {
             )),
             Err(_) => {}
         }
-        // Transport failures are not recorded: they are not what the node said.
         if !matches!(out, Err(Trouble::Transport(_)) | Err(Trouble::NotServed(_)) | Err(Trouble::Contradiction(_))) {
             self.exchanges.push(W::of(Body::Obj(rec)));
         }
@@ -554,6 +482,23 @@ impl Endpoint for Recorder {
         let out = self.inner.call_within(method, params, within);
         self.record(method, params, out)
     }
+    fn call_batch(&mut self, asks: &[Ask<'_>]) -> Option<Result<Batched, Trouble>> {
+        let out = self.inner.call_batch(asks)?;
+        if let Ok(got) = &out {
+            for ((method, params), a) in asks.iter().zip(got) {
+                if let Some(Ok(w)) = a {
+                    let _ = self.record(method, params, Ok(w.clone()));
+                }
+            }
+        }
+        Some(out)
+    }
+    fn waits_out_limits(&self, method: &str) -> bool {
+        self.inner.waits_out_limits(method)
+    }
+    fn asks_a_node(&self) -> bool {
+        self.inner.asks_a_node()
+    }
     fn name(&self) -> String {
         self.inner.name()
     }
@@ -566,8 +511,6 @@ impl Endpoint for Recorder {
 mod tests {
     use super::*;
 
-    /// Two endpoints on one host with different paths share a name but are two places; a recording's place is
-    /// its name.
     #[test]
     fn two_nodes_said_alike_are_two_places() {
         let eth = Http::new("https://node.example/eth/k1").expect("an address");

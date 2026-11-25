@@ -1,13 +1,3 @@
-//! Public tests for three gates: single writer (reader and other-machine modes refuse every ledger write as
-//! read-only), the passcode gate (counting before judging, an unreadable count, the derivation floor, each seal
-//! bound to its parameters and salt) and the whole-machine backup (the envelope, read refusals, the write's
-//! read-back).
-//!
-//! Each test runs alone in its own process ([`super::alone_in`]) on its own temporary machine directory with
-//! places set by [`super::vault_open`]. Every test except the floor test sets the light derivation level first
-//! ([`light_vault`]); the floor test runs the factory level. No test touches the real machine directory, the
-//! real vault or the network.
-
 use app::action::{apply, apply_settled, Action, Applied};
 use app::fault::Known;
 use app::shell::Shell;
@@ -15,21 +5,15 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use zikaron::json::Value;
 
-/// The passcode [`super::vault_open`] sets.
 const PIN: &str = "27618394";
-/// A passcode of the right shape that is not this run's.
 const OTHER_PIN: &str = "81726354";
-/// The backups' password.
 const PW: &str = "zikaron-a8-backup-probe";
 
-/// Set the light derivation level ([`app::keybox::PROBE_KDF`]), then this process's places and vault
-/// ([`super::vault_open`]): passcode [`PIN`], vault open.
 fn light_vault() {
     assert!(app::keybox::set_light_kdf(None), "the light level set once, before any derivation");
     super::vault_open();
 }
 
-/// A fresh folder of this process for `name`.
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("zk-a8-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -37,8 +21,6 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-/// Every file under `dir` (relative name, bytes) in name order, except `skip`: what "not one byte changed"
-/// compares.
 fn files(dir: &Path, skip: &[&str]) -> Vec<(String, Vec<u8>)> {
     fn walk(root: &Path, at: &Path, out: &mut Vec<(String, Vec<u8>)>) {
         let Ok(list) = std::fs::read_dir(at) else { return };
@@ -59,8 +41,6 @@ fn files(dir: &Path, skip: &[&str]) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// Make a folder read-only; returns its previous permissions for [`reopen`]. Unix only: Windows ignores the
-/// read-only attribute on a folder, so files are still written into it.
 #[cfg(unix)]
 fn shut(dir: &Path) -> std::fs::Permissions {
     let was = std::fs::metadata(dir).expect("metadata").permissions();
@@ -70,13 +50,11 @@ fn shut(dir: &Path) -> std::fs::Permissions {
     was
 }
 
-/// Restore a folder's previous permissions.
 #[cfg(unix)]
 fn reopen(dir: &Path, was: std::fs::Permissions) {
     std::fs::set_permissions(dir, was).expect("back");
 }
 
-/// A JSON document with the member at `path` changed by `f` (an array step is its index), written canonically.
 fn edit(bytes: &[u8], path: &[&str], f: impl FnOnce(&mut Value)) -> Vec<u8> {
     let mut v = zikaron::json::parse(bytes).ok().expect("the document reads");
     let mut at = &mut v;
@@ -91,14 +69,12 @@ fn edit(bytes: &[u8], path: &[&str], f: impl FnOnce(&mut Value)) -> Vec<u8> {
     zikaron::json::canon_bytes(&v)
 }
 
-/// A hex text with its last digit changed.
 fn flip(v: &mut Value) {
     let Value::Str(s) = v else { panic!("not text: {v:?}") };
     let last = s.pop().expect("not empty");
     s.push(if last == '0' { '1' } else { '0' });
 }
 
-/// The member at `path` of a JSON document.
 fn member(bytes: &[u8], path: &[&str]) -> Value {
     let mut v = zikaron::json::parse(bytes).ok().expect("the document reads");
     for k in path {
@@ -122,26 +98,14 @@ fn put_vault(b: &[u8]) {
     std::fs::write(app::keybox::path().expect("the vault's place"), b).expect("the vault written");
 }
 
-// ═════════════════════ Single writer ═════════════════════
-
-/// The entries a sample of each member needs: a ledger with a first entry, a record and a grant.
 struct Ids {
     genesis: String,
     history: String,
     grant: String,
     probe: String,
-    heir: String,
     draft: app::grantx::Draft,
 }
 
-/// The adoption rows the samples carry (four cells per line, well formed).
-fn rows() -> String {
-    format!("31337 0x{} entry 0x{}", "ab".repeat(32), "cd".repeat(32))
-}
-
-/// One sample of every member of the closed action table (completeness checked against [`Action::NAMES`]).
-/// Ledger-writing members carry inputs that pass every check before the write gate, so the only refusal left
-/// is the mode's.
 fn every(ids: &Ids) -> Vec<Action> {
     use app::secret::Secret;
     let s = String::new;
@@ -189,6 +153,10 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::ReadChain,
         Action::ReadChainTime,
         Action::SetEndpoints { specs: s() },
+        Action::SetLogAsks { n: 7 },
+        Action::SetRestMode { on: true },
+        Action::AddRest { base: "https://api.etherscan.io/v2/api".into(), key: app::secret::Secret::of("a8-key") },
+        Action::RemoveRest { base: "https://api.etherscan.io/v2/api".into() },
         Action::Genesis { statement: "a8 again".into() },
         Action::Adopt { dir: s() },
         Action::ReadLedger,
@@ -211,24 +179,35 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::SendBatch { count: 1 },
         Action::BumpFee { tx: format!("0x{}", "ef".repeat(32)), cap: 1 },
         Action::PickKit { from: s(), to: s(), ids: s() },
-        Action::ExportKit { from: s(), to: s(), ids: s(), attach: s(), note: s(), out: s(), form: "folder".into(), recipient: String::new(), recipient_key: String::new(), originals: "none".into() },
+        Action::ExportKit { from: s(), to: s(), ids: s(), attach: s(), note: s(), out: s(), form: "folder".into(), recipient: String::new(), recipient_key: String::new(), originals: "none".into(), companion: true },
         Action::VetAttachments { paths: Vec::new() },
-        Action::ReadDepth { work: s() },
+        Action::Peek { ask: app::peekx::Ask::Size { path: s() } },
         Action::DraftGrant { draft: Box::new(ids.draft.clone()), exclusive: false, terms_file: None },
         Action::QueueEntry { id: s() },
         Action::ReadGrants,
         Action::CheckClash { work: s(), from: s(), to: s() },
         Action::Revoke { grant: ids.grant.clone(), case: "a8".into() },
+        Action::MigrateGrants,
         Action::ReadStory { grant: s() },
-        Action::VerifyAnchors { rows: s() },
-        Action::Cosign { rows: rows(), attestor: format!("0x{}", "66".repeat(20)), attestation: format!("0x{}", "88".repeat(65)) },
-        Action::AdoptAnchors { rows: rows(), attestor: s(), attestation: s() },
-        Action::ListKeyAnchors { address: s() },
-        Action::ReadClaim { text: s() },
-        Action::AttestFor { text: s(), pin: Secret::default() },
-        Action::LookAtKey { to: s() },
-        Action::Succeed { to: ids.heir.clone(), kind: app::succeedx::KIND_HANDOVER.into(), effective: s(), statement_md: s() },
+        Action::Upgrade,
+        Action::UpgradeCost,
+        Action::Rotate { step: app::action::RotateStep::Write },
+        Action::MoveChain { chain: "31338".into(), registry: format!("0x{}", "12".repeat(20)), from_block: "0".into(), nodes: "http://127.0.0.1:9".into() },
         Action::ReadBook { address: s(), dir: s() },
+        Action::FaceReread,
+        Action::FaceBooks,
+        Action::FaceHome { chain: 31337 },
+        Action::FaceAccount { platform: "x".into(), handle: "a8".into(), note: s() },
+        Action::FaceKey { address: format!("0x{}", "13".repeat(20)), role: "payout".into(), note: s(), consent: s(), sign_here: true, pin: Secret::default() },
+        Action::FaceName { name: "a8".into() },
+        Action::FaceRelease { subject: format!("0x{}", "ab".repeat(32)) },
+        Action::FaceReseat { entry: format!("0x{}", "ab".repeat(32)) },
+        Action::FaceConsent { identity: format!("0x{}", "13".repeat(20)), role: "payout".into(), pin: Secret::default() },
+        Action::FaceReroot { to: format!("0x{}", "14".repeat(20)) },
+        Action::FaceOrigin { from: format!("0x{}", "15".repeat(20)) },
+        Action::FaceRerootMake { answers: Vec::new(), label: "a8".into(), chain: 31337 },
+        Action::FaceRerootFee { go: false },
+        Action::FaceJoined { root: format!("0x{}", "14".repeat(20)), to: format!("0x{}", "15".repeat(20)) },
         Action::RememberAddress { address: s() },
         Action::ForgetAddress { address: s() },
         Action::Diligence { address: s(), dir: s(), work: s(), from: s(), to: s() },
@@ -237,6 +216,8 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::ExtractOriginals { kit: s(), to: s() },
         Action::CheckDelivery { path: s(), expect: s() },
         Action::CheckPayload { typed: s(), ledgers: s(), endpoints: s(), registry: s(), from_block: s(), now: s(), file: s(), terms: s() },
+        Action::AuditCheck,
+        Action::AuditOthers,
         Action::ImportGrant { typed: s() },
         Action::ImportGrantDir { dir: s() },
         Action::SetUpstream { grant: s(), dir: s() },
@@ -249,7 +230,7 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::SetAppearance { appearance: s() },
         Action::ExportBadge { grant: s(), out: s() },
         Action::CopyGrantCode { grant: s() },
-        Action::ExportGrantFile { id: s(), to: s() },
+        Action::ExportGrantFile { id: s(), to: s(), original: String::new(), seal_to: String::new(), key: None },
         Action::SetPublish { url: s() },
         Action::CheckPublished { local: s() },
         Action::FetchLedger { from: s(), password: Secret::default() },
@@ -267,12 +248,14 @@ fn every(ids: &Ids) -> Vec<Action> {
         Action::SetCliDesktop { on: true },
         Action::SetCliAlone { lasts: app::machine::Lasts::Never, pin: String::new().into() },
         Action::CliAloneOff,
+        Action::CliPassAdd { note: "a8".into(), pin: String::new().into() },
+        Action::CliPassDrop { tag: "0000000000000000".into() },
+        Action::CleanExports { yes: String::new() },
         Action::SendAsked { count: 1 },
         Action::SetProxy { choice: s() },
     ]
 }
 
-/// Wait until the shell has no task in flight, receiving what lands.
 fn settle(shell: &mut Shell) {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !shell.tasks.flying().is_empty() && std::time::Instant::now() < until {
@@ -282,17 +265,11 @@ fn settle(shell: &mut Shell) {
     shell.drain();
 }
 
-/// The fields the samples rely on before the write gate, as a writer would have them: content taken, gas shown
-/// for one, the heir's key looked at (no anchors). Memory only.
-fn ready(shell: &mut Shell, ids: &Ids, content: &app::anchorx::Content) {
+fn ready(shell: &mut Shell, content: &app::anchorx::Content) {
     shell.content = Some(content.clone());
     shell.gas = Some((1, 21_000));
-    shell.sighting = Some((ids.heir.clone(), 0, 0));
 }
 
-/// Drive every ledger-writing member, plus recording with files, through the action layer in `mode`: each is
-/// refused as read-only and not one byte of the home is written. `Cosign` (the co-signature's local check)
-/// writes nothing in any mode.
 fn drive_read_only(shell: &mut Shell, mode: &str, root: &Path, ids: &Ids, content: &app::anchorx::Content) -> usize {
     let skip = [app::lock::LOCK_FILE];
     settle(shell);
@@ -301,14 +278,9 @@ fn drive_read_only(shell: &mut Shell, mode: &str, root: &Path, ids: &Ids, conten
     writes.push(Action::RecordWork { note_md: "a8".into(), files: vec![ids.probe.clone()], for_: None });
     let mut refused = 0;
     for a in writes {
-        ready(shell, ids, content);
+        ready(shell, content);
         let name = a.name();
         let got = apply_settled(shell, a);
-        if name == "Cosign" {
-            // Nothing to refuse: it writes nothing (the byte comparison below checks that).
-            assert!(!matches!(got, Applied::Started(_)), "{mode} Cosign: {got:?}");
-            continue;
-        }
         let f = match got {
             Applied::Trouble(f) => f,
             Applied::RecordedBatch { ids, stopped: Some((0, _, f)), .. } if ids.is_empty() => f,
@@ -322,9 +294,6 @@ fn drive_read_only(shell: &mut Shell, mode: &str, root: &Path, ids: &Ids, conten
     refused
 }
 
-/// In reader and other-machine modes every ledger write is refused by name as read-only and the home is
-/// unchanged; the home is opened read-only both ways (another live writer holds the lock; the writer mark names
-/// another machine).
 #[test]
 fn every_ledger_write_is_refused_as_read_only_in_both_reader_modes() {
     if super::alone_in(module_path!(), "every_ledger_write_is_refused_as_read_only_in_both_reader_modes") {
@@ -335,7 +304,6 @@ fn every_ledger_write_is_refused_as_read_only_in_both_reader_modes() {
     let root = base.join("home");
     let ctx = zikaron_ui::egui::Context::default();
     let boot = || Shell::boot(zikaron_ui::skin::dress(&ctx));
-    // The writer: a ledger with a first entry, a record and a grant.
     let mut w = boot();
     super::seated(&mut w, &root);
     let opened = apply(&mut w, Action::OpenHome { root: root.display().to_string() });
@@ -353,52 +321,36 @@ fn every_ledger_write_is_refused_as_read_only_in_both_reader_modes() {
         other => panic!("record: {other:?}"),
     };
     let draft = app::grantx::Draft { grantee: format!("0x{}", "33".repeat(20)), work: content.hex(), terms: format!("0x{}", "44".repeat(32)), ..Default::default() };
+    super::venue::in_venue(&mut w, &super::venue::venue());
     let grant = match apply_settled(&mut w, Action::DraftGrant { draft: Box::new(draft.clone()), exclusive: false, terms_file: None }) {
         Applied::Granted { id, .. } => id,
         other => panic!("grant: {other:?}"),
     };
-    let ids = Ids { genesis, history, grant, probe: probe.display().to_string(), heir: format!("0x{}", "77".repeat(20)), draft };
-    // The samples cover the closed table, member for member.
+    let ids = Ids { genesis, history, grant, probe: probe.display().to_string(), draft };
     let names: BTreeSet<&str> = every(&ids).iter().map(|a| a.name()).collect();
     assert_eq!(names, Action::NAMES.iter().copied().collect::<BTreeSet<&str>>(), "one sample of every member");
     assert_eq!(every(&ids).len(), Action::NAMES.len(), "one sample each");
     let set: Vec<&str> = every(&ids).iter().filter(|a| a.writes_ledger()).map(|a| a.name()).collect();
-    assert!(set.len() >= 10, "the ledger-writing set: {set:?}");
-    // Cosign for the writer: nothing written.
-    let skip = [app::lock::LOCK_FILE];
-    settle(&mut w);
-    let before = files(&root, &skip);
-    ready(&mut w, &ids, &content);
-    let cosign = every(&ids).into_iter().find(|a| a.name() == "Cosign").expect("Cosign");
-    let _ = apply_settled(&mut w, cosign);
-    settle(&mut w);
-    assert_eq!(files(&root, &skip), before, "Cosign writes nothing for a writer either");
-    // Reader: the writer is still open, so this instance cannot take the lock.
+    assert!(set.len() >= 9, "the ledger-writing set: {set:?}");
     let mut r = boot();
     let opened = apply(&mut r, Action::OpenHome { root: root.display().to_string() });
     assert!(matches!(opened, Applied::Homed { mode: app::lock::Mode::Reader, .. }), "{opened:?}");
     settle(&mut w);
     let n = drive_read_only(&mut r, "reader", &root, &ids, &content);
-    assert_eq!(n, set.len(), "every member but Cosign, and recording with files");
+    assert_eq!(n, set.len() + 1, "every member, and recording with files");
     drop(r);
     drop(w);
-    // Other machine: no other instance here; the writer mark names another machine.
     let home = app::home::Home::open(&root).expect("the home");
     std::fs::write(app::lock::mark_path(&home), "0123456789abcdef0123456789abcdef\n").expect("another machine's mark");
     let mut o = boot();
     let opened = apply(&mut o, Action::OpenHome { root: root.display().to_string() });
     assert!(matches!(opened, Applied::Homed { mode: app::lock::Mode::OtherMachine, .. }), "{opened:?}");
     let n = drive_read_only(&mut o, "otherMachine", &root, &ids, &content);
-    assert_eq!(n, set.len());
+    assert_eq!(n, set.len() + 1);
     drop(o);
     let _ = std::fs::remove_dir_all(&base);
 }
 
-// ═════════════════════ The passcode gate ═════════════════════
-
-/// Counting comes before judging (`keybox::unlock`): if the wrong-try count cannot be written back, the attempt
-/// is refused by name and no derivation runs, even for the right passcode; once writable, the right passcode
-/// opens and clears the count. Unix only, as [`shut`].
 #[cfg(unix)]
 #[test]
 fn the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it() {
@@ -408,13 +360,11 @@ fn the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it() {
     light_vault();
     app::keybox::lock();
     let wrong = |b: &[u8]| member(b, &[app::keybox::member::WRONG]);
-    // Counted: a wrong try is written, and its derivation ran.
     let d = app::cryptx::derivations();
     assert_eq!(known(app::keybox::unlock(OTHER_PIN)), Some(Known::PinWrong));
     assert_eq!(app::cryptx::derivations(), d + 1, "one derivation");
     assert_eq!(wrong(&vault()), Value::Int(1), "the try is on disk");
     assert_eq!(app::keybox::tries_left().ok(), Some(4));
-    // The count cannot be written: no derivation, for a wrong passcode or the right one.
     let held = vault();
     let m = super::checks_machine();
     let was = shut(&m);
@@ -425,8 +375,6 @@ fn the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it() {
         assert_eq!(app::cryptx::derivations(), d, "{form}: no derivation ran");
         let f = got.err().unwrap_or_else(|| panic!("{form}: refused"));
         assert_ne!(f.which(), Some(Known::PinWrong), "{form}: not judged: {}", f.said());
-        // Writing the count is what failed, said with the vault's own file (the vault lock was taken: its file is
-        // there).
         assert!(f.tail().starts_with(&format!("{}:", m.join(app::places::keybox_file()).display())), "{form}: the count's write named: {}", f.tail());
         said.push(f.said().to_string());
     }
@@ -434,13 +382,10 @@ fn the_wrong_count_is_written_before_the_derivation_and_none_runs_without_it() {
     assert!(said.iter().all(|s| !s.is_empty()), "named: {said:?}");
     assert_eq!(vault(), held, "the vault as it was");
     assert_eq!(app::keybox::state().ok(), Some(app::keybox::State::Locked { wrong: 1 }), "not opened");
-    // Writable again: the right passcode opens and the count is cleared.
     app::keybox::unlock(PIN).expect("opens");
     assert_eq!(app::keybox::tries_left().ok(), Some(5));
 }
 
-/// A wrong-try count that is missing or not an integer refuses the whole vault file by name (`KEYBOX_SHAPE`)
-/// and is never read as zero; no derivation runs and the file is not rewritten.
 #[test]
 fn a_wrong_count_missing_or_not_an_integer_refuses_the_whole_vault() {
     if super::alone_in(module_path!(), "a_wrong_count_missing_or_not_an_integer_refuses_the_whole_vault") {
@@ -485,8 +430,6 @@ fn a_wrong_count_missing_or_not_an_integer_refuses_the_whole_vault() {
     assert_eq!(app::keybox::tries_left().ok(), Some(4), "the count as written");
 }
 
-/// Stored derivation parameters below the floor (scrypt n=262144 r=8 p=1) are refused as `KDF_BELOW_FLOOR`
-/// before any derivation, without counting a wrong try or rewriting the file.
 #[test]
 fn stored_parameters_below_the_factory_floor_are_refused_by_name_and_not_counted() {
     if super::alone_in(module_path!(), "stored_parameters_below_the_factory_floor_are_refused_by_name_and_not_counted") {
@@ -517,8 +460,6 @@ fn stored_parameters_below_the_factory_floor_are_refused_by_name_and_not_counted
     app::keybox::unlock(PIN).expect("the parameters as written open");
 }
 
-/// Each seal authenticates its derivation parameters and salt: changing them makes the affected slots, the
-/// sealed primary id, the passcode seal or the recovery seal refuse to open.
 #[test]
 fn each_seal_authenticates_its_parameters_and_salt() {
     if super::alone_in(module_path!(), "each_seal_authenticates_its_parameters_and_salt") {
@@ -534,20 +475,17 @@ fn each_seal_authenticates_its_parameters_and_salt() {
     assert_eq!(app::keybox::get(&acct).ok().flatten(), Some(vec![7u8; 32]));
     assert_eq!(app::keybox::primary().ok().flatten().map(|(i, _)| i), Some(id.clone()));
     let good = vault();
-    // Open: the recorded parameters.
     for (form, cell, to) in [("n", m::N, 4u64), ("r", m::R, 16), ("p", m::P, 2)] {
         put_vault(&edit(&good, &[m::KDF, cell], |v| *v = Value::Int(to)));
         assert_eq!(known(app::keybox::get(&acct)), Some(Known::KeyboxSlot), "{form}: the slot");
         assert_eq!(known(app::keybox::primary()), Some(Known::KeyboxSlot), "{form}: the sealed id");
     }
-    // Open: a salt.
     put_vault(&edit(&good, &[m::SLOTS, "0", m::SALT], flip));
     assert_eq!(known(app::keybox::get(&acct)), Some(Known::KeyboxSlot), "the slot's salt");
     put_vault(&edit(&good, &[m::PRIMARY, m::ID, m::SALT], flip));
     assert_eq!(known(app::keybox::primary()), Some(Known::KeyboxSlot), "the sealed id's salt");
     put_vault(&good);
     assert_eq!(app::keybox::get(&acct).ok().flatten(), Some(vec![7u8; 32]), "as written");
-    // Locked: the passcode seal and the recovery seal.
     app::keybox::lock();
     let not_open = |form: &str| {
         assert_ne!(app::keybox::state().ok(), Some(app::keybox::State::Open), "{form}: not opened");
@@ -570,9 +508,6 @@ fn each_seal_authenticates_its_parameters_and_salt() {
     assert_eq!(app::keybox::get(&acct).ok().flatten(), Some(vec![7u8; 32]));
 }
 
-// ═════════════════════ The whole-machine backup ═════════════════════
-
-/// A shell with an identity and its home with a first entry, so a backup holds something.
 fn machine_with_a_ledger(base: &Path) -> Shell {
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = Shell::boot(zikaron_ui::skin::dress(&ctx));
@@ -584,7 +519,6 @@ fn machine_with_a_ledger(base: &Path) -> Shell {
     shell
 }
 
-/// A backup's three parts: the magic line, the head line (without its newline), the ciphertext.
 fn parts(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let magic = app::backup::MAGIC;
     assert!(bytes.starts_with(magic), "the first line is the magic");
@@ -601,8 +535,6 @@ fn joined(magic: &[u8], head: &[u8], body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The backup envelope (`backup.rs`): a magic line, a canonical JSON plain head, then XChaCha20-Poly1305
-/// ciphertext authenticated over both lines, so changing one byte of either is refused.
 #[test]
 fn the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines() {
     if super::alone_in(module_path!(), "the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines") {
@@ -615,7 +547,6 @@ fn the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines() {
     let bytes = std::fs::read(&made.path).expect("the file");
     let (magic, head, body) = parts(&bytes);
     assert_eq!(magic, app::backup::MAGIC);
-    // The head: canonical JSON, in the clear.
     let h = zikaron::json::parse(&head).ok().expect("the head reads");
     assert_eq!(zikaron::json::canon_bytes(&h), head, "canonical");
     assert_eq!(member(&head, &["app"]), Value::Str(app::backup::APP.into()));
@@ -631,7 +562,6 @@ fn the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines() {
     };
     let salt = hex(member(&head, &["kdf", "salt"]));
     let nonce: [u8; 24] = hex(member(&head, &["nonce"])).try_into().expect("a 24-byte nonce");
-    // The rest is ciphertext: no plain package in it.
     assert!(!body.windows(b"registry".len()).any(|w| w == b"registry"), "the package is not in the clear");
     let mut key = [0u8; 32];
     assert!(app::cryptx::scrypt(PW.as_bytes(), &salt, num("n"), num("r"), num("p"), &mut key));
@@ -645,7 +575,6 @@ fn the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines() {
     head_line.push(b'\n');
     assert!(app::cryptx::xchacha_open(&key, &nonce, &head_line, &body).is_none(), "the head line alone is not the additional data");
     assert!(app::cryptx::xchacha_open(&key, &nonce, &magic, &body).is_none(), "the magic alone is not the additional data");
-    // One byte of the head line changed: refused.
     let created = b"1800000000";
     let at = head.windows(created.len()).position(|w| w == created).expect("the creation time in the head");
     let mut altered = head.clone();
@@ -657,13 +586,10 @@ fn the_backup_envelope_is_magic_head_and_ciphertext_bound_to_both_lines() {
     magic2[0] ^= 0x01;
     std::fs::write(&path, joined(&magic2, &head, &body)).unwrap();
     assert_eq!(known(app::backup::peek(&path, PW)), Some(Known::BackupNotOurs), "a magic byte changed");
-    // As written, it opens.
     assert_eq!(app::backup::peek(&made.path, PW).ok(), Some(made.summary.clone()));
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Every backup read refusal (not ours, newer format, wrong shape, wrong password) is named on all three read
-/// paths and leaves the vault, the wrong-try count and every machine file unchanged.
 #[test]
 fn every_backup_read_refusal_is_named_and_touches_no_vault_or_count() {
     if super::alone_in(module_path!(), "every_backup_read_refusal_is_named_and_touches_no_vault_or_count") {
@@ -676,7 +602,6 @@ fn every_backup_read_refusal_is_named_and_touches_no_vault_or_count() {
     let made = app::backup::export(&base.join("out"), PW, 1_800_000_000).expect("a backup");
     let good = std::fs::read(&made.path).expect("the file");
     let (magic, head, body) = parts(&good);
-    // One wrong try on record, so a reset or an increment would show.
     assert_eq!(known(app::keybox::unlock(OTHER_PIN)), Some(Known::PinWrong));
     let head_with = |path: &[&str], v: Value| joined(&magic, &edit(&head, path, |x| *x = v), &body);
     let without_created = {
@@ -720,9 +645,6 @@ fn every_backup_read_refusal_is_named_and_touches_no_vault_or_count() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A backup counts only once read back and reopened with its password; a backup that cannot be written is
-/// refused by name, leaves no file and keeps the last backup's record. (The read-back mismatch branch,
-/// `BACKUP_NOT_LANDED`, cannot be reached from here.) Unix only, as [`shut`].
 #[cfg(unix)]
 #[test]
 fn a_backup_counts_only_once_read_back_and_reopened() {
@@ -741,9 +663,6 @@ fn a_backup_counts_only_once_read_back_and_reopened() {
     let m = record("landed");
     assert_eq!(m.backup.as_ref().map(|b| (b.at, b.path.clone())), Some((t1, made.path.display().to_string())));
     assert_eq!(m.backup_failed, None);
-    // Cannot be written: refused by name, no file, the last backup kept. The failure is recorded where the
-    // backup task ends, whatever failed inside it (`gate_landing::a_backup_that_fails_anywhere_in_its_task_is_recorded`),
-    // not by the export itself.
     let closed = base.join("closed");
     std::fs::create_dir_all(&closed).unwrap();
     let was = shut(&closed);
@@ -755,7 +674,6 @@ fn a_backup_counts_only_once_read_back_and_reopened() {
     let m = record("not landed");
     assert_eq!(m.backup_failed, None, "the export itself records no failure");
     assert_eq!(m.backup.as_ref().map(|b| b.at), Some(t1), "the last backup kept");
-    // The next successful backup lands, and no failure stands.
     let next = app::backup::export(&closed, PW, t3).expect("lands");
     assert_eq!(app::backup::peek(&next.path, PW).ok(), Some(next.summary.clone()));
     let m = record("landed again");

@@ -1,10 +1,3 @@
-//! What a contract said when it reverted (`said::reverted`, `said::reverted_of`): the error's `data` read by
-//! Solidity's error encoding, the member that carries the refusal (`Refusal::Reverted`) unchanged. Each form
-//! below is one line of the table: the contract's sentence (plain, empty, with control characters, past the
-//! cap, not UTF-8, at another offset), each way its body fails to decode, a compiler panic (named, unnamed,
-//! too wide, of the wrong length), a declared error, no data, too few bytes; and where `data` sits in the
-//! node's error (absent, not text, nested, not hex).
-
 use zikaron_anchor::said::{refusal_of, reverted, reverted_of, Refusal, Reverted, REASON_CAP};
 
 fn word(n: u64) -> Vec<u8> {
@@ -13,7 +6,6 @@ fn word(n: u64) -> Vec<u8> {
     w
 }
 
-/// `Error(string)` encoded with the given offset, length word and text bytes (padded to a word).
 fn error_string(offset: u64, len: u64, text: &[u8]) -> Vec<u8> {
     let mut b = vec![0x08, 0xc3, 0x79, 0xa0];
     b.extend(word(offset));
@@ -60,7 +52,6 @@ fn the_revert_data_is_read_by_its_encoding() {
     for (form, bytes, want) in cases {
         let got = reverted_of(&bytes);
         match (&got, &want) {
-            // An unreadable body is said with its hex, as given.
             (Reverted::Unreadable(h), Reverted::Unreadable(_)) => assert_eq!(h, &zikaron::hexfmt::encode(&bytes), "{form}"),
             _ => assert_eq!(got, want, "{form}"),
         }

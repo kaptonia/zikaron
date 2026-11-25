@@ -1,0 +1,1 @@
+sec 7.4/12.6: the old root key is no part of the new segment's lineage, which is seeded with k2; its entry is EXCLUDED and its record DISCARDED.

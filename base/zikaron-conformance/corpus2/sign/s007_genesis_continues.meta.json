@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s007_genesis_continues.bin",
+ "note": "sec 5.1/6.1: B6 of a genesis carrying continues",
+ "predicted": {
+  "digest": "0x63b0cffed342392474864ebd23eac850fab93f4d5ca4281f4c13880fc9e0d8db",
+  "presig": "0x090cf85ec5cb3c2f0e3897551eaa2ce7f0e1b15e3ba369f807e0d633f6535525",
+  "sig": "0x870df0050c735db29928716cc617588d1c6c67eefc252c5c03d13dc1f67859c23abeea2435360c2319af71ec62c4ba15c37bbc7312756b25df44010647506ca51b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

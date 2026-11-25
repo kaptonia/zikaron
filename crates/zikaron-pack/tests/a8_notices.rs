@@ -1,13 +1,9 @@
-//! The third-party licence summary has a single generator, checked by scanning the workspace's shipped sources
-//! (crate sources and build scripts, the release tool, packaging scripts and workflows), read only.
-
 use std::path::{Path, PathBuf};
 
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every file under `dir` with one of `exts`, skipping build output.
 fn walk(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -23,8 +19,6 @@ fn walk(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The shipped sources by workspace-relative path, with comment lines removed (Rust `//`, shell and workflow
-/// `#`), so the scan sees code, not prose mentioning the same words.
 fn shipped() -> Vec<(String, String)> {
     let root = workspace();
     let mut files = Vec::new();
@@ -68,26 +62,20 @@ fn holding(files: &[(String, String)], needle: &str) -> Vec<String> {
     files.iter().filter(|(_, c)| c.contains(needle)).map(|(n, _)| n.clone()).collect()
 }
 
-/// The third-party licence summary has exactly one generator, per target, honouring `license-file`: the only
-/// code that asks cargo for a target-filtered dependency tree (`--filter-platform`) and the only code reading a
-/// crate's `license_file` are in `crates/zikaron-pack/src/notices.rs`; `notices::make` is called only by the
-/// app's build script (with the target being built), the packaging tool's `notices` command (`--target`
-/// required) and the Windows package; and every packaging script that puts `THIRD-PARTY-LICENSES.txt` into a
-/// package writes it with that command for a target, or installs the file so written.
 #[test]
 fn the_licence_summary_has_exactly_one_generator() {
     const GENERATOR: &str = "crates/zikaron-pack/src/notices.rs";
     let files = shipped();
     assert_eq!(holding(&files, "--filter-platform"), vec![GENERATOR], "the per-target dependency tree is asked in one place");
     assert_eq!(holding(&files, "license_file"), vec![GENERATOR], "a crate's `license-file` is read in one place");
-    assert_eq!(holding(&files, "fn notices_of("), vec![GENERATOR], "the summary is assembled in one place");
+    for ingredient in ["\"license\"", ".license", "\"COPYING\""] {
+        assert_eq!(holding(&files, ingredient), vec![GENERATOR], "the summary is assembled in one place ({ingredient})");
+    }
     let generator = &files.iter().find(|(n, _)| n == GENERATOR).expect("the generator").1;
     assert!(generator.contains("\"--filter-platform\", target"), "the ask is filtered to the target it is given");
     assert_eq!(generator.matches("pub fn make(").count(), 1, "one entry");
-    // Its callers: each passes a target.
     let mut callers = holding(&files, "notices::make(");
     callers.sort();
-    // The release tool, where it is present, makes the repository's root summary for one named target.
     if let Some(i) = callers.iter().position(|c| c == "tools/release/src/main.rs") {
         let release = &files.iter().find(|(n, _)| n == "tools/release/src/main.rs").expect("the release tool").1;
         assert!(release.contains("notices::make(\"cargo\", &out.join(\"Cargo.toml\"), \"aarch64-apple-darwin\","), "the release tool makes the root summary for a named target");
@@ -99,7 +87,6 @@ fn the_licence_summary_has_exactly_one_generator() {
     assert!(of("crates/zikaron-pack/src/main.rs").contains("\"--target is required\""), "the packaging tool's command wants a target");
     let windows = of("crates/zikaron-pack/src/windows.rs");
     assert!(windows.contains("crate::notices::make(&cargo, &root.join(\"Cargo.toml\"), target,"), "the Windows package makes it for its target");
-    // Packaging scripts: a summary placed in a package is the command's `--out`, or a copy of it.
     let mut scripts = 0;
     for (name, code) in files.iter().filter(|(n, _)| n.starts_with("packaging/")) {
         let lines: Vec<&str> = code.lines().filter(|l| l.contains("THIRD-PARTY-LICENSES.txt")).collect();

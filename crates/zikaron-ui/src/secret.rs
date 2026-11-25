@@ -1,48 +1,21 @@
-//! Secret strings: passcodes, passwords, recovery words and private keys all use this type.
-//!
-//! A plain `String` leaks: `clear()` only sets the length to zero and leaves the bytes on the heap; a growing
-//! `String` moves to a larger allocation and frees the old one unwiped; and a derived `Debug` prints it in
-//! plain text. This type marks a value as secret and owns wiping, staying in place and masked debug output.
-//!
-//! 1. Wiped when dropped: `Drop` writes zeros over the whole allocation (capacity included); deleting
-//! characters or clearing also zeros the freed part at once.
-//! 2. Never moves: it reserves [`CAP`] bytes when built and only edits inside that block; text that does not
-//! fit is not taken (the input control learns how much was taken from `insert_text`), so no old block is ever
-//! left behind.
-//! 3. Debug is masked: `Debug` prints only "secret · N chars".
-//!
-//! The input control edits this block through [`egui::TextBuffer`] without first copying into a `String`.
-//! Copies egui makes within a frame (undo stack, previous text) are outside this type: the undo stack is
-//! cleared every frame by the input control (`input::secret_field`), and the previous-text copy is a temporary
-//! inside egui's frame. Both are plain `String`s egui frees without wiping, so their bytes can stay in freed
-//! memory until it is reused; this type does not reach them.
-
-/// Most bytes one secret holds. Eight passcode cells, twelve words (a whole phrase pasted into one cell is
-/// about a hundred bytes), backup passwords and hex private keys all fit well within it; what does not fit is
-/// not taken, and the block never moves.
 pub const CAP: usize = 1024;
 
 pub struct Secret {
     buf: String,
-    /// Whether some text handed in was not taken (it did not fit the block): what the secret holds is then
-    /// shorter than what was given, so a place that keeps it (a key file, a backup) refuses it by name.
     overflowed: bool,
 }
 
 impl Secret {
-    /// An empty secret (the whole block reserved at once).
     pub fn new() -> Secret {
         Secret { buf: String::with_capacity(CAP), overflowed: false }
     }
 
-    /// Build from text (a tail that does not fit is not taken).
     pub fn of(s: &str) -> Secret {
         let mut out = Secret::new();
         out.push_str(s);
         out
     }
 
-    /// Read the text. The name is the reminder: this is plain text.
     pub fn expose(&self) -> &str {
         &self.buf
     }
@@ -51,15 +24,10 @@ impl Secret {
         self.buf.is_empty()
     }
 
-    /// Length in characters, not bytes.
     pub fn chars(&self) -> usize {
         self.buf.chars().count()
     }
 
-    /// Append text; characters that do not fit are not taken (and the secret remembers it, [`overflowed`]).
-    /// Returns how many were taken.
-    ///
-    /// [`overflowed`]: Secret::overflowed
     pub fn push_str(&mut self, s: &str) -> usize {
         let mut n = 0;
         for c in s.chars() {
@@ -73,17 +41,14 @@ impl Secret {
         n
     }
 
-    /// Whether some text handed in was not taken because the block was full (cleared with the secret).
     pub fn overflowed(&self) -> bool {
         self.overflowed
     }
 
-    /// Append one character (not taken when it does not fit; returns false).
     pub fn push(&mut self, c: char) -> bool {
         self.push_str(c.encode_utf8(&mut [0u8; 4])) == 1
     }
 
-    /// Remove the last character; the freed bytes are zeroed.
     pub fn pop(&mut self) {
         let n = self.chars();
         if n > 0 {
@@ -91,14 +56,12 @@ impl Secret {
         }
     }
 
-    /// Clear; the freed bytes are zeroed.
     pub fn clear(&mut self) {
         let n = self.chars();
         self.remove_chars(0..n);
         self.overflowed = false;
     }
 
-    /// Remove a character range (by character index); the freed bytes are zeroed.
     fn remove_chars(&mut self, r: std::ops::Range<usize>) {
         let start = byte_at(&self.buf, r.start);
         let end = byte_at(&self.buf, r.end);
@@ -110,8 +73,6 @@ impl Secret {
         wipe_tail(&mut self.buf, old);
     }
 
-    /// Insert text at a character index; characters that do not fit are not taken. Returns how many were
-    /// inserted.
     fn insert_chars(&mut self, text: &str, at: usize) -> usize {
         let at_b = byte_at(&self.buf, at);
         let room = self.buf.capacity().saturating_sub(self.buf.len());
@@ -125,30 +86,23 @@ impl Secret {
             take += c.len_utf8();
             n += 1;
         }
-        // It fits the capacity, so `insert_str` does not move.
         self.buf.insert_str(at_b, &text[..take]);
         n
     }
 }
 
-/// The byte offset of a character index (past the end means the end).
 fn byte_at(s: &str, ch: usize) -> usize {
     s.char_indices().nth(ch).map(|(b, _)| b).unwrap_or(s.len())
 }
 
-/// After shrinking, zero `[new length, old length)` (within capacity, so nothing moves): the platform piece's
-/// one wipe (`zikaron_os::wipe_string_tail`).
 fn wipe_tail(s: &mut String, old: usize) {
     zikaron_os::wipe_string_tail(s, old);
 }
 
-/// Wipe plain text held in hand. Everything that held plain-text bytes calls this: the platform piece's one
-/// wipe (`zikaron_os::wipe`).
 pub use zikaron_os::wipe;
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        // Zero the whole allocation, including unused capacity (where deleted characters used to be).
         zikaron_os::wipe_string(&mut self.buf);
     }
 }
@@ -165,7 +119,6 @@ impl From<&str> for Secret {
     }
 }
 
-/// Take in a `String` and zero it in place, so its heap is zeros when returned to the allocator.
 impl From<String> for Secret {
     fn from(mut s: String) -> Self {
         let out = Secret::of(&s);
@@ -184,8 +137,6 @@ impl Clone for Secret {
 
 impl PartialEq for Secret {
     fn eq(&self, other: &Self) -> bool {
-        // Compare every byte before answering (no early return on the first difference); with different
-        // lengths, the shorter span is still walked.
         let a = self.buf.as_bytes();
         let b = other.buf.as_bytes();
         let mut diff = (a.len() != b.len()) as u8;
@@ -252,7 +203,6 @@ mod tests {
         assert_eq!(s.buf.as_ptr(), before, "不许挪窝");
         let d = format!("{s:?}");
         assert!(!d.contains("xym2"), "调试输出印出了明文:{d}");
-        // Deleted parts were zeroed: everything past the length within capacity is zero.
         let len = s.buf.len();
         s.clear();
         let v = unsafe { s.buf.as_mut_vec() };

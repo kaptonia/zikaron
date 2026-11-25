@@ -1,14 +1,7 @@
-//! A disk image (UDIF) records a name for each partition block in its property list, localized to the
-//! building machine's language (on a Chinese system, a Chinese word and full-width brackets around the
-//! partition kind). The names are rewritten to one neutral form (`disk image (Apple_HFS : 0)`), keeping the
-//! partition kind and number. The property list sits between the data and the 512-byte trailer; its length in
-//! the trailer is the only other field that changes (the checksums cover the data, not the names).
-
 const TRAILER: usize = 512;
 const XML_OFFSET: usize = 0xD8;
 const XML_LENGTH: usize = 0xE0;
 
-/// Rewrite the partition names of the UDIF image `img`. Returns the image and how many names changed.
 pub fn neutral_names(img: &[u8]) -> Result<(Vec<u8>, usize), String> {
     if img.len() < TRAILER {
         return Err("too short to be a disk image".into());
@@ -27,7 +20,6 @@ pub fn neutral_names(img: &[u8]) -> Result<(Vec<u8>, usize), String> {
     let mut rest = xml;
     let mut changed = 0;
     loop {
-        // Each name is the string after a `Name` or `CFName` key.
         let next = ["<key>Name</key>", "<key>CFName</key>"].iter().filter_map(|k| rest.find(k).map(|i| (i, k.len()))).min();
         let Some((i, kl)) = next else {
             out.push_str(rest);
@@ -54,8 +46,6 @@ pub fn neutral_names(img: &[u8]) -> Result<(Vec<u8>, usize), String> {
     Ok((img2, changed))
 }
 
-/// Localized words and brackets around `Apple_HFS` and its number → `disk image (Apple_HFS : 0)`; a name
-/// without an `Apple_` kind keeps only its ASCII letters, digits and spaces.
 fn neutral_name(name: &str) -> String {
     let Some(at) = name.find("Apple_") else {
         return name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '_').collect::<String>().trim().to_string();

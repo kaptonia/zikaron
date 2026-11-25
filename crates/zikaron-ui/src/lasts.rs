@@ -1,22 +1,10 @@
-//! **The length box** (how long something lasts, or a time of day): one field-toned bar as tall as a field, cut
-//! into equal parts by hairlines, one part per unit ("days, hours, minutes"; "hour, minute"). In each part the
-//! number (monospace, right-aligned, three digits at most) and its unit (small, second ink) sit together in the
-//! middle; a click anywhere in the part types into its number. A part past its most turns its number and the
-//! bar's edge red; turned off, the whole bar is faint and takes nothing.
-//!
-//! The numbers are read here too ([`read`]): every page that asks for a length in these parts reads it the same
-//! way, each with its own most per part.
-
 use crate::paint;
 use crate::palette::{c, C};
 use crate::tokens::{self, Type};
 
-/// The number in each part (three digits at most), and the room between it and its unit.
 pub const NUM_W: f32 = 40.0;
 pub const GAP: f32 = 6.0;
 
-/// The box: `values[i]` typed before `units[i]`, `hint` in an empty number, `bad[i]` that part past its most.
-/// Returns each part's number's response.
 pub fn boxed(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&str], hint: &str, bad: &[bool], enabled: bool) -> Vec<egui::Response> {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), tokens::INPUT_H), egui::Sense::hover());
     let id = egui::Id::new(("span-box", id_salt));
@@ -67,7 +55,7 @@ pub fn boxed(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&
     for value in values.iter_mut() {
         *value = digits(value);
     }
-    let edge = if bad.iter().any(|b| *b) {
+    let edge = if bad.iter().any(|b| *b) || crate::input::told(ui) {
         crate::input::Edge::Bad
     } else if out.iter().any(|r| r.has_focus()) {
         crate::input::Edge::Focus
@@ -81,7 +69,6 @@ pub fn boxed(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&
     out
 }
 
-/// A frame shape at the faint strength of a control that is off.
 fn faint(s: egui::Shape) -> egui::Shape {
     match s {
         egui::Shape::Vec(v) => egui::Shape::Vec(v.into_iter().map(faint).collect()),
@@ -94,7 +81,6 @@ fn faint(s: egui::Shape) -> egui::Shape {
     }
 }
 
-/// One number as typed, kept to digits without leading zeros.
 pub fn digits(typed: &str) -> String {
     let d: String = typed.chars().filter(|ch| ch.is_ascii_digit()).collect();
     match d.trim_start_matches('0') {
@@ -104,18 +90,13 @@ pub fn digits(typed: &str) -> String {
     }
 }
 
-/// The numbers of a box read against its parts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
-    /// Nothing typed yet.
     Empty,
-    /// These parts are past their most (or do not read as a number).
     Over(Vec<bool>),
-    /// The total, every part times its unit (an empty part is zero).
     Total(u64),
 }
 
-/// Read `cells` against `parts`, each `(most, unit)`: the most a part takes and what one of it is worth.
 pub fn read(cells: &[String], parts: &[(u64, u64)]) -> Read {
     if cells.iter().all(|x| x.is_empty()) {
         return Read::Empty;

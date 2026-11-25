@@ -1,99 +1,60 @@
-//! Settings: role, size cap, chain endpoints and basis, and assorted local bookkeeping. The file holds no
-//! path of the home itself, so any copy of a home is equivalent (see the `home` module header).
-//!
-//! Reading takes only the members it knows; any other member (written by an older or newer version) has no
-//! effect and is written back unchanged (`Settings::extra`).
-
 use crate::fault::{classify, Fault, Known};
 use crate::home::{Home, Slot};
 use crate::key::Address;
 use crate::roles::Role;
 use zikaron::json::{self, Value};
 
-/// The settings file name.
 pub const FILE: &str = zikaron_seal::ground::SETTINGS_FILE;
 
-/// Default size cap in bytes. The cap can be changed but not removed.
+fn turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub const CAP_DEFAULT: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Where and when the last bundle was exported.
-///
-/// This is a destination the person chose, not a record of where this home is, so copying the home carries
-/// it along unchanged. That keeps copies equivalent; writing the home's own path into the home would not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MirrorRecord {
     pub path: String,
     pub at: u64,
 }
 
-/// A registered git repository: its path and the last anchored commit.
-///
-/// Like [`MirrorRecord`], this is content the person chose, not the home's location.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoRecord {
     pub path: String,
-    /// The commit anchored last (forty bare hex digits); empty when never anchored.
     pub last_commit: String,
 }
 
-/// Default self-audit period in seconds. Zero means it runs only when the person clicks.
 pub const AUDIT_EVERY_DEFAULT: u64 = 300;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub role: Role,
     pub cap_bytes: u64,
-    /// Chain endpoints as `<chain id>=<url>`. Configuration, not a path, so copies stay equivalent.
     pub endpoints: Vec<String>,
-    /// The last bundle export; `None` means never exported.
+    pub rest: Vec<String>,
+    pub rest_on: bool,
+    pub log_asks: Option<u64>,
     pub mirror: Option<MirrorRecord>,
-    /// The three basis fields (law §9.4): chain, registry, and the block to scan from. Empty means not
-    /// configured: the self-audit clock cannot query the chain, the UI says so, and an offline pass is never
-    /// shown as an online one.
     pub chain_id: Option<u64>,
     pub registry: Option<Address>,
     pub from_block: u64,
-    /// Self-audit period in seconds.
+    pub earlier: Vec<zikaron_seal::ground::Earlier>,
     pub audit_every: u64,
-    /// The registered git repository.
     pub repo: Option<RepoRecord>,
-    /// Address book, purely local: only what the person pasted in. This layer never discovers or enumerates
-    /// addresses, so it never becomes a directory.
     pub book: Vec<String>,
-    /// Where each vault grant's upstream bytes are stored (local bookkeeping, not part of any entry).
     pub upstreams: Vec<(String, String)>,
-    /// Vault re-check period in seconds; zero means it never runs by itself.
     pub review_every: u64,
-    /// Keys the sentinel has already alerted (`sentinelx::key_of`); each event alerts once.
     pub alarmed: Vec<String>,
-    /// Interface language. `None` means never chosen (Chinese by default); written only once chosen.
+    pub swept: Vec<String>,
     pub lang: Option<crate::lang::Lang>,
-    /// Time zone for displayed moments; `None` reads as UTC.
     pub zone: Option<crate::when::Zone>,
-    /// Members this version does not know (written by a newer version), kept and written back unchanged so
-    /// the newer version still finds them after an older one has saved.
     pub extra: Vec<(String, Value)>,
-    /// Auto anchor, off by default. On: estimate gas and show the confirmation card right after recording.
-    /// Off: only add to the ledger and wait for the person to anchor by hand. Anchoring costs money and cannot
-    /// be undone, so it is not spent on the person's behalf by default. Written only when on, so a file that
-    /// never touched it stays byte-identical.
     pub auto_anchor: bool,
-    /// Display only: the records and ledger pages hide what remains on this machine after a deletion (a
-    /// deleted entry that was never published, and its local deletion). Off by default; nothing else reads it.
     pub hide_local_deletions: bool,
-    /// Which choice this home's network came from: a row of the known deployments table, or "custom" taken
-    /// from what its identity recorded (`None` when configured by hand or not configured). Cleared when the
-    /// person changes the basis or nodes, so the UI shows the row's name only while it is accurate.
     pub network: Option<String>,
-    /// Publish address: where the person puts record bundles on static hosting; `https://` only. The
-    /// publish-address pointer in grant files uses it, and "check publication" fetches each file against it.
-    /// Any other form reads as not configured.
     pub publish: Option<String>,
-    /// The person's own names for held grants (`0x…` grant id, name), typed when adding a grant. Purely
-    /// local: sealed with the rest of this file, never in any entry or export.
     pub grant_notes: Vec<(String, String)>,
-    /// The person's own names for issuers (lower-case `0x…` address, name), typed when adding a grant; every
-    /// grant from that issuer shows it. Purely local, as above.
     pub issuer_notes: Vec<(String, String)>,
 }
 
@@ -105,16 +66,21 @@ impl Default for Settings {
             role: Role::Author,
             cap_bytes: CAP_DEFAULT,
             endpoints: Vec::new(),
+            rest: Vec::new(),
+            rest_on: false,
+            log_asks: None,
             mirror: None,
             chain_id: None,
             registry: None,
             from_block: 0,
+            earlier: Vec::new(),
             audit_every: AUDIT_EVERY_DEFAULT,
             repo: None,
             book: Vec::new(),
             upstreams: Vec::new(),
             review_every: REVIEW_EVERY_DEFAULT,
             alarmed: Vec::new(),
+            swept: Vec::new(),
             lang: None,
             zone: None,
             auto_anchor: false,
@@ -128,11 +94,10 @@ impl Default for Settings {
     }
 }
 
-/// The members this version reads and writes; any other is kept as it came (`Settings::extra`).
-const MEMBERS: [&str; 21] = [
-    "alarmed", "auditEvery", "autoAnchor", "book", "capBytes", "chainId", "endpoints", "fromBlock", "grantNotes",
-    "hideLocalDeletions", "issuerNotes", "lang", "mirror", "network", "publish", "registry", "repo", "reviewEvery", "role",
-    "upstreams", "zone",
+const MEMBERS: [&str; 26] = [
+    "alarmed", "auditEvery", "autoAnchor", "book", "capBytes", "chainId", "earlier", "endpoints", "fromBlock", "grantNotes",
+    "hideLocalDeletions", "issuerNotes", "lang", "mirror", "network", "publish", "registry", "repo", zikaron_seal::ground::REST,
+    zikaron_seal::ground::REST_ON, zikaron_seal::ground::LOG_ASKS, "reviewEvery", "role", "swept", "upstreams", "zone",
 ];
 
 fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
@@ -143,11 +108,8 @@ fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
 }
 
 impl Settings {
-    /// Read. A missing file returns the defaults: "never set" is not an error.
     pub fn read(home: &Home) -> Result<Settings, Fault> {
         let p = home.dir(Slot::Settings).join(FILE);
-        // Sealed (`local::Doc::Settings`). A locked vault or a file that does not open is an error, not
-        // defaults: reading defaults would let the next write overwrite the person's settings.
         let Some(bytes) = crate::local::read(&p, crate::local::Doc::Settings)? else {
             return Ok(Settings::default());
         };
@@ -189,17 +151,19 @@ impl Settings {
             }
             None => None,
         };
-        // The three basis fields and the nodes are read where the command line reads them too
-        // (`zikaron_seal::ground`).
         let ground = zikaron_seal::ground::of_settings(&v);
         Ok(Settings {
             role,
             cap_bytes: cap,
             endpoints: ground.endpoints,
+            rest: ground.rest,
+            rest_on: ground.rest_on,
+            log_asks: ground.log_asks.filter(|n| zikaron_anchor::action::asks_within(*n)),
             mirror,
             chain_id: ground.chain_id,
             registry: ground.registry.map(Address),
             from_block: ground.from_block,
+            earlier: ground.earlier,
             audit_every: match field(&v, "auditEvery") {
                 Some(Value::Int(n)) => *n,
                 _ => AUDIT_EVERY_DEFAULT,
@@ -239,6 +203,16 @@ impl Settings {
                     .collect(),
                 _ => Vec::new(),
             },
+            swept: match field(&v, "swept") {
+                Some(Value::Arr(a)) => a
+                    .iter()
+                    .filter_map(|x| match x {
+                        Value::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
             lang: match field(&v, "lang") {
                 Some(Value::Str(x)) => crate::lang::Lang::ALL.iter().copied().find(|l| l.as_str() == x),
                 _ => None,
@@ -266,9 +240,23 @@ impl Settings {
         })
     }
 
-    /// Write. Overwriting old settings is intended, so this writes directly (documents, not settings, must
-    /// refuse overwriting).
     pub fn write(&self, home: &Home) -> Result<(), Fault> {
+        let _turn = turn();
+        self.write_now(home)?;
+        crate::reads::wrote(crate::reads::Copies::Settings);
+        Ok(())
+    }
+
+    pub fn amend(home: &Home, f: impl FnOnce(&mut Settings)) -> Result<Settings, Fault> {
+        let _turn = turn();
+        let mut s = Settings::read(home)?;
+        f(&mut s);
+        s.write_now(home)?;
+        crate::reads::wrote(crate::reads::Copies::Settings);
+        Ok(s)
+    }
+
+    fn write_now(&self, home: &Home) -> Result<(), Fault> {
         let mut m = vec![
             ("auditEvery".to_string(), Value::Int(self.audit_every)),
             ("capBytes".to_string(), Value::Int(self.cap_bytes)),
@@ -281,13 +269,15 @@ impl Settings {
         if let Some(r) = self.registry {
             m.push(("registry".to_string(), Value::Str(r.hex())));
         }
+        if !self.earlier.is_empty() {
+            m.push((zikaron_seal::ground::EARLIER.to_string(), Value::Arr(self.earlier.iter().map(|e| e.value()).collect())));
+        }
         if let Some(n) = &self.network {
             m.push(("network".to_string(), Value::Str(n.clone())));
         }
         if let Some(u) = &self.publish {
             m.push(("publish".to_string(), Value::Str(u.clone())));
         }
-        // Written only when there are any, so a settings file that never had a note stays byte-identical.
         for (key, what, rows) in [("grantNotes", "grant", &self.grant_notes), ("issuerNotes", "issuer", &self.issuer_notes)] {
             if !rows.is_empty() {
                 let mut rows = rows.clone();
@@ -323,6 +313,15 @@ impl Settings {
                 Value::Arr(self.endpoints.iter().map(|x| Value::Str(x.clone())).collect()),
             ));
         }
+        if !self.rest.is_empty() {
+            m.push((zikaron_seal::ground::REST.to_string(), Value::Arr(self.rest.iter().map(|x| Value::Str(x.clone())).collect())));
+        }
+        if self.rest_on {
+            m.push((zikaron_seal::ground::REST_ON.to_string(), Value::Bool(true)));
+        }
+        if let Some(n) = self.log_asks {
+            m.push((zikaron_seal::ground::LOG_ASKS.to_string(), Value::Int(n)));
+        }
         if let Some(mr) = &self.mirror {
             m.push((
                 "mirror".to_string(),
@@ -349,6 +348,11 @@ impl Settings {
             ks.sort();
             m.push(("alarmed".to_string(), Value::Arr(ks.into_iter().map(Value::Str).collect())));
         }
+        if !self.swept.is_empty() {
+            let mut ks = self.swept.clone();
+            ks.sort();
+            m.push(("swept".to_string(), Value::Arr(ks.into_iter().map(Value::Str).collect())));
+        }
         if let Some(l) = self.lang {
             m.push(("lang".to_string(), Value::Str(l.as_str().to_string())));
         }
@@ -362,31 +366,40 @@ impl Settings {
             m.push(("hideLocalDeletions".to_string(), Value::Bool(true)));
         }
         m.push(("reviewEvery".to_string(), Value::Int(self.review_every)));
-        // Members this version does not know go back unchanged.
         for (k, v) in &self.extra {
             if !m.iter().any(|(n, _)| n == k) {
                 m.push((k.clone(), v.clone()));
             }
         }
         let bytes = json::canon_bytes(&Value::Obj(m));
-        // Every disk write goes through `local::put` (sealed, written aside, then renamed).
         crate::local::put(&home.dir(Slot::Settings), FILE, crate::local::Doc::Settings, &bytes)
     }
 
-    /// Whether usage exceeds the cap, computed from the bytes on disk now. Returns (used, cap) when over.
+    pub fn ground(&self) -> zikaron_seal::ground::Ground {
+        zikaron_seal::ground::Ground {
+            chain_id: self.chain_id,
+            registry: self.registry.map(|r| r.0),
+            from_block: self.from_block,
+            endpoints: self.endpoints.clone(),
+            earlier: self.earlier.clone(),
+            publish: self.publish.clone(),
+            rest: self.rest.clone(),
+            rest_on: self.rest_on,
+            log_asks: self.log_asks,
+        }
+    }
+
+    pub fn log_asks(&self) -> u64 {
+        self.log_asks.filter(|n| zikaron_anchor::action::asks_within(*n)).unwrap_or(zikaron_anchor::action::ASKS_DEFAULT)
+    }
+
     pub fn over_cap(&self, home: &Home) -> Result<Option<(u64, u64)>, Fault> {
         let used = home.usage()?;
         Ok(if used > self.cap_bytes { Some((used, self.cap_bytes)) } else { None })
     }
 }
 
-/// Move a whole home to another path.
-///
-/// The target must lie outside this home ([`outside_home`]) and be empty (nothing is overwritten); files are
-/// copied one by one, then compared byte for byte. On failure the copy is left in place, the error is
-/// returned, and the old home is not touched: after a failed move, the old home must still be the valid one.
 pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
-    // Public functions emit their trace mark, so direct calls that bypass `apply` (tests, CLI) are traced too.
     crate::trace::mark(crate::feature::Feature::H3);
     outside_home(from.root(), to)?;
     if to.exists() && std::fs::read_dir(to).map(|mut d| d.next().is_some()).unwrap_or(false) {
@@ -395,19 +408,13 @@ pub fn migrate(from: &Home, to: &std::path::Path) -> Result<Home, Fault> {
     copy_tree(from.root(), to)?;
     let diffs = compare_tree(from.root(), to)?;
     if !diffs.is_empty() {
-        return Err(Fault::known(Known::CopyMismatch, crate::lang::filln(crate::lang::Key::Tail210, &[&(diffs.len()).to_string(), &(diffs.join(" ")).to_string()])));
+        return Err(Fault::known(Known::CopyMismatch, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail210, &[&(diffs.len()).to_string(), &(diffs.join(" ")).to_string()]))));
     }
     let home = Home::open(to)?;
     crate::home::write_pointer(to)?;
     Ok(home)
 }
 
-/// A move target must not be this home's root or lie under it: copying a tree into itself would copy the copy
-/// again, one level deeper each time, until the path grew too long, leaving a half-nested tree in the old
-/// home. This is decided from the two paths before any byte is written. Both are compared as real paths
-/// (symbolic links resolved; for a target that does not exist yet, its deepest existing ancestor is resolved
-/// and the rest appended). The reverse case (old root under the target) needs no check: such a target is not
-/// empty.
 pub fn outside_home(root: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> {
     let root = std::fs::canonicalize(root).map_err(|e| classify(&e, &root.display().to_string()))?;
     let target = real_path(to)?;
@@ -417,8 +424,6 @@ pub fn outside_home(root: &std::path::Path, to: &std::path::Path) -> Result<(), 
     Ok(())
 }
 
-/// The real path of a place that may not exist yet: its deepest existing ancestor resolved, the rest appended
-/// (a `..` in that rest steps back over a name that does not exist, so it cannot be a link).
 fn real_path(p: &std::path::Path) -> Result<std::path::PathBuf, Fault> {
     use std::path::Component;
     let mut rest: Vec<Component> = Vec::new();
@@ -462,8 +467,6 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), Fault> 
             zikaron_glue::landing::land_bytes(&dst, &bytes)
                 .map_err(|t| Fault::of_landing(t))?;
         }
-        // Other shapes (symbolic links, device files) are not moved: a home should not contain them, and
-        // moving them would lose their meaning.
     }
     Ok(())
 }
@@ -488,7 +491,6 @@ fn compare_tree(a: &std::path::Path, b: &std::path::Path) -> Result<Vec<String>,
     Ok(bad)
 }
 
-/// A list of `{<what>: key, name: text}` rows under `key`; malformed rows are skipped.
 fn pairs(v: &Value, key: &str, what: &str) -> Vec<(String, String)> {
     match field(v, key) {
         Some(Value::Arr(a)) => a

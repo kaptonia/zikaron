@@ -1,25 +1,15 @@
-//! The read-only strip on top of every page, the self-audit and re-check timers, and the alerts page with
-//! the rail's count.
-
 use super::*;
 
-/// One line of the alerts page: its mark, what it is, how it stands now, and where "go to" leads.
 struct AlertLine {
     mark: Mark,
     title: String,
     said: String,
-    /// The settled place (the link is named after it).
     go: Option<Place>,
-    /// Where a click leads: the page itself, so arriving opens what the line is about (the check fold, the
-    /// grouping by issuer).
     to: Option<Place>,
-    /// The watched item the line reads (none for a sentinel alarm).
     item: Option<crate::watchx::Item>,
 }
 
 impl Win {
-    /// The strip at the top of every page: a broken chain (read only; go restore), a ledger handed over, or
-    /// not writable for another reason. Always shown, never silent.
     pub(super) fn banner(&mut self, ui: &mut egui::Ui, now: f64) {
         if let Some(v) = self.shell.old_view.clone() {
             let back = states::banner(ui, states::Banner::Bad, &fill1(Key::OldDataBar, &crate::when::day(v.at)), |ui| key::key(ui, t(Key::OldDataBack), Role::Secondary, true).clicked());
@@ -31,6 +21,15 @@ impl Win {
         match self.shell.banner() {
             crate::shell::Banner::None => {}
             crate::shell::Banner::Handed(_) => states::note_box(ui, t(Key::HandedBarPlain)),
+            crate::shell::Banner::HandedOff => states::note_box(ui, t(Key::PenAwayBar)),
+            crate::shell::Banner::Unfetched(_) if self.route() == crate::nav::Route::Section(Section::Data) => {}
+            crate::shell::Banner::Unfetched(s) => {
+                let title = mark_title(&s);
+                let go = states::banner(ui, states::Banner::Bad, &title, |ui| key::key(ui, t(Key::NavLook), Role::Secondary, true).clicked());
+                if go {
+                    self.go(Place::Settings(Section::Data), now);
+                }
+            }
             crate::shell::Banner::Broken => {
                 let go = states::banner(ui, states::Banner::Bad, t(Key::BrokenBar), |ui| key::key(ui, t(Key::DoRecover), Role::Secondary, true).clicked());
                 if go {
@@ -51,13 +50,7 @@ impl Win {
         }
     }
 
-    /// The self-audit and re-check timers: when due, start a background task (the frame touches no disk or
-    /// network). A period of zero never runs by itself; with the basis incomplete, no node, or a task already
-    /// in flight, nothing starts and nothing is said.
     pub(super) fn tick(&mut self, ctx: &egui::Context, now: f64) {
-        // egui draws only on events, so each thing on a clock requests a frame for the moment it falls due, or it
-        // would never fire: the look at the disk while the command line writes alone (`Shell::follow_wake`, every
-        // second), and the configured self-audit and re-check periods. One wake, the earliest, asked here only.
         let mut wake: Option<f64> = self.shell.follow_wake(now);
         if self.shell.home.is_some() && !self.shell.endpoints.is_empty() {
             for (every, kind) in [(self.shell.settings.audit_every, crate::task::Kind::Audit), (self.shell.settings.review_every, crate::task::Kind::Review)] {
@@ -66,6 +59,10 @@ impl Win {
                     let due = last + every as f64 - now;
                     wake = Some(wake.map_or(due, |w: f64| w.min(due)));
                 }
+            }
+            if let Some(at) = self.shell.audit_lag_at().filter(|_| !self.shell.tasks.in_flight(crate::task::Kind::Audit)) {
+                let due = at - now;
+                wake = Some(wake.map_or(due, |w: f64| w.min(due)));
             }
         }
         if let Some(d) = wake {
@@ -77,22 +74,20 @@ impl Win {
         if self.shell.review_due(now, self.last_tick) {
             apply(&mut self.shell, Action::ReviewVault);
         }
-        // A marked home whose tail can be checked now (nodes back, the ledger moved): check it once.
         if self.shell.take_tail_due() {
             apply(&mut self.shell, Action::CheckTail);
         }
-        // `audit_stale` covers a stale report in hand, `audit_due` the period: either one audits now.
-        if !self.shell.audit_stale() && !self.shell.audit_due(now, self.last_tick) {
+        let (stale, due, lags) = (self.shell.audit_stale(), self.shell.audit_due(now, self.last_tick), self.shell.audit_lags(now));
+        if !stale && !due && !lags {
             return;
         }
         self.last_tick = now;
+        if stale && !due && !lags && self.own_recount() {
+            return;
+        }
         apply(&mut self.shell, Action::Audit);
     }
 
-    /// The lines the alerts page shows: only what needs attention — a watched item that warns or is bad; never
-    /// one that is fine or not yet read, never the whole-machine backup (its state lives in settings, local data,
-    /// and in the settings check). When the queue row says the same as the unanchored row above it and leads to
-    /// the same place, the two merge into one line. Sentinel alarms follow, one line each.
     fn alert_lines(&self) -> Vec<AlertLine> {
         let role = self.shell.settings.role;
         let mut out: Vec<AlertLine> = Vec::new();
@@ -113,6 +108,14 @@ impl Win {
             let to = row.gap.map(gap_target);
             out.push(AlertLine { mark: light_mark(row.light), title: t(item_key(row.item)).to_string(), said, go, to, item: Some(row.item) });
         }
+        if let Some(ids) = self.shell.audit_lag_stopped() {
+            let mut named: Vec<String> = ids.iter().take(3).map(|id| format!("{}…", &id[..id.len().min(10)])).collect();
+            if ids.len() > 3 {
+                named.push(format!("+{}", ids.len() - 3));
+            }
+            let key = if self.shell.settings.audit_every > 0 { Key::U3LagStopped } else { Key::U3LagStoppedHand };
+            out.push(AlertLine { mark: Mark::Warn, title: t(Key::ItemAuditLabel).to_string(), said: fill1(key, &named.join(t(Key::ListJoin))), go: None, to: None, item: None });
+        }
         for a in &self.shell.alarms {
             let said = match a.kind {
                 crate::sentinelx::Kind::Revoked => fill1(Key::AlarmRevokedOf, &self.held_record_name(&a.grant)),
@@ -124,19 +127,15 @@ impl Win {
         out
     }
 
-    /// The rail's count: the lines on the alerts page (each one needs something done).
     pub(super) fn alert_count(&self) -> usize {
         self.alert_lines().len()
     }
 
-    /// Alerts: a mark, the item and its state. Entries waiting to go on chain carry "put all on chain" at the
-    /// line's end; every other line is clicked whole and leads where it is handled (its chevron says so).
-    /// Nothing to attend to: a check and one sentence in the card.
     pub(super) fn alerts_page(&mut self, ui: &mut egui::Ui, now: f64) {
         self.ensure_rows(now);
         self.ensure_grants(now);
         let lines = self.alert_lines();
-        let can_send = self.shell.queue.sendable() > 0 || self.shell.rows.as_ref().is_some_and(|(r, _)| !crate::kitx::unanchored(&r.iter().collect::<Vec<_>>()).1.is_empty());
+        let can_send = self.send_all_ready();
         let mut go: Option<Place> = None;
         let mut send = false;
         stagger(ui, 0, |ui| {
@@ -156,7 +155,7 @@ impl Win {
                 }
             });
         });
-        // The last chain read's sentence with its code goes under details; the rail says it in plain words.
+        stagger(ui, 1, |ui| self.last_batch_card(ui, false));
         if let Some((k, detail)) = self.shell.status.clone() {
             stagger(ui, 1, |ui| {
                 card::form(ui, |ui, f| {
@@ -173,11 +172,9 @@ impl Win {
     }
 }
 
-/// The all-clear card's padding: 20 at the sides, 44 above and below.
 const ALL_CLEAR_PAD_X: f32 = 20.0;
 const ALL_CLEAR_PAD_Y: f32 = 44.0;
 
-/// The all-clear state: a large check, 10 below it one sentence in the second ink, centred.
 fn all_clear(ui: &mut egui::Ui, s: &str) {
     const MARK: f32 = 40.0;
     let w = ui.available_width();
@@ -185,4 +182,26 @@ fn all_clear(ui: &mut egui::Ui, s: &str) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, MARK + 10.0 + text.size().y), egui::Sense::hover());
     mark::paint_mark(ui.ctx(), ui.painter(), egui::pos2(rect.center().x, rect.top() + MARK / 2.0), Mark::Ok, MARK);
     ui.painter().galley(egui::pos2(rect.center().x - text.size().x / 2.0, rect.top() + MARK + 10.0), text, c(C::Ink2));
+}
+
+pub(super) fn mark_title(s: &crate::restorex::State) -> String {
+    match s {
+        crate::restorex::State::Unfetched => t(Key::FetchLedgerTitle).to_string(),
+        crate::restorex::State::NewerElsewhere { missing, .. } => fill1(Key::FetchNewerTitle, &missing.to_string()),
+    }
+}
+
+impl Win {
+    pub(super) fn marked_title(&self) -> Option<String> {
+        match self.shell.set_up_seat() {
+            Some(crate::shell::SetUp::Fetch) => self.shell.unfetched.as_ref().map(mark_title),
+            _ => None,
+        }
+    }
+
+    pub(super) fn genesis_offered(&mut self) {
+        if self.ux.wizard.is_none() && self.shell.take_unwritten_due() {
+            crate::action::ask_unwritten(&mut self.shell);
+        }
+    }
 }

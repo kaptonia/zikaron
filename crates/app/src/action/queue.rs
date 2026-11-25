@@ -1,57 +1,87 @@
 use super::*;
 
-/// The batch of `count` sendable entries from the shell's copy of the queue, with this home's chain, registry and
-/// that chain's nodes (refused by name when any is missing).
 pub(super) fn batch(shell: &Shell, count: usize) -> Result<Batch, crate::fault::Fault> {
     if count == 0 {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::QueueEmpty,
-            crate::lang::t(crate::lang::Key::Tail029).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail029).to_string()),
         ));
     }
-    let ids = shell.queue.take_ids(count);
-    if ids.is_empty() {
+    let Some((chain, ids)) = shell.next_lane_here(count) else {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::QueueEmpty,
-            crate::lang::t(crate::lang::Key::Tail030).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail030).to_string()),
         ));
-    }
+    };
+    batch_on(shell, chain, ids)
+}
+
+fn batch_on(shell: &Shell, chain: u64, ids: Vec<String>) -> Result<Batch, crate::fault::Fault> {
     let hashes = crate::queue::Queue::hashes(&ids)?;
-    let chain = shell.settings.chain_id.ok_or_else(|| {
+    shell.settings.chain_id.ok_or_else(|| {
         crate::fault::Fault::known(crate::fault::Known::NoChainId, String::new())
     })?;
-    let registry = shell.settings.registry.ok_or_else(|| {
-        crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new())
-    })?;
+    let registry = registry_on(shell, chain)?;
     let urls: Vec<crate::chainx::NodeAddr> = shell.endpoints.iter().filter(|e| e.chain == chain).map(|e| e.url.clone()).collect();
     if urls.is_empty() {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::NoEndpoint,
-            crate::lang::filln(crate::lang::Key::Tail031, &[&(chain).to_string()]),
+            crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail031, &[&(chain).to_string()])),
         ));
     }
-    Ok(Batch { ids, hashes, chain, registry: registry.0, urls, backoff: shell.send_backoff.clone() })
+    let carried = carried_here(shell, &ids, chain);
+    if let (Some(_), crate::facex::State::Read(b)) = (&carried, &shell.persona) {
+        if let Err(barred) = zikaron_glue::facegate::sealed(&b.table) {
+            return Err(super::face::barred(barred));
+        }
+    }
+    Ok(Batch { ids, hashes, chain, registry: registry.0, urls, backoff: shell.send_backoff.clone(), basis: shell.lanes(), carried })
 }
 
-/// What estimating a batch needs, read on the UI thread without any network call: the batch size and the
-/// sender's question (its chain, the call to estimate, byte-identical to the real transaction, and that chain's
-/// nodes).
+pub(super) fn carried_here(shell: &Shell, ids: &[String], chain: u64) -> Option<Vec<u8>> {
+    let root = shell.home.as_ref()?.root().to_path_buf();
+    carried_from(&root, &carry_of(shell, ids, chain), ids, chain)
+}
+
+pub(super) enum Carry {
+    Nothing,
+    Face(String),
+    Unplaced,
+}
+
+pub(super) fn carry_of(shell: &Shell, ids: &[String], chain: u64) -> Carry {
+    let [id] = ids else { return Carry::Nothing };
+    match shell.carried_on(id) {
+        Some(Some(c)) if c == chain => Carry::Face(id.to_ascii_lowercase()),
+        Some(_) => Carry::Nothing,
+        None => Carry::Unplaced,
+    }
+}
+
+pub(super) fn carried_from(root: &std::path::Path, carry: &Carry, ids: &[String], chain: u64) -> Option<Vec<u8>> {
+    let pile = || crate::home::Home::open(root).ok().and_then(|h| h.ledger().ok()).and_then(|l| l.pile().ok()).map(|p| p.items);
+    match carry {
+        Carry::Nothing => None,
+        Carry::Face(id) => pile()?.into_iter().find(|b| zikaron::hexfmt::encode(&zikaron::cryptox::sha256(b)) == *id),
+        Carry::Unplaced => zikaron_send::batch::carried_of(&pile()?, ids, chain),
+    }
+}
+
 pub(super) struct GasAsk {
     count: usize,
     ask: zikaron_send::batch::GasAsk,
+    lane: (u64, Vec<String>),
 }
 
-/// The UI-thread half of gas estimation: the batch, the anchor key's address and the nodes. Nothing here
-/// touches the network; [`estimate_on`] does, on the task's thread.
 pub(super) fn gas_ask(shell: &Shell, count: usize) -> Result<GasAsk, crate::fault::Fault> {
     let b = batch(shell, count)?;
     let who = shell.anchor.ok_or_else(|| {
         crate::fault::Fault::known(
             crate::fault::Known::KeychainMissing,
-            crate::lang::t(crate::lang::Key::Tail032).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail032).to_string()),
         )
     })?;
-    let data = zikaron_anchor::send::registry_calldata(&b.hashes);
+    let data = b.calldata();
     let call = zikaron_anchor::send::estimate_call(&who.0, &b.registry, &data);
     let eps: Vec<crate::chainx::Endpoint> = shell
         .endpoints
@@ -59,109 +89,82 @@ pub(super) fn gas_ask(shell: &Shell, count: usize) -> Result<GasAsk, crate::faul
         .filter(|e| e.chain == b.chain)
         .cloned()
         .collect();
-    Ok(GasAsk { count, ask: zikaron_send::batch::GasAsk { chain: b.chain, call, data, eps } })
+    Ok(GasAsk { count, lane: (b.chain, b.ids.clone()), ask: zikaron_send::batch::GasAsk { chain: b.chain, call, data, eps } })
 }
 
-/// Estimates gas once on the task's thread, by the sender's one rule (`zikaron_send::batch::estimate`, the command
-/// line's too), through this side's endpoints; the estimate lands as `Done::Gas` with the nodes left out said here.
 pub(super) fn estimate_on(a: GasAsk) -> Result<crate::task::Done, crate::fault::Fault> {
     crate::chainx::speak();
     let e = zikaron_send::batch::estimate(&a.ask)?;
     let fees_left = e.fees_left.iter().map(crate::chainx::said_of).collect();
-    Ok(crate::task::Done::Gas { count: a.count, gas: e.gas, calldata: e.calldata, fees: e.fees, fees_left, head_time: e.head_time })
+    Ok(crate::task::Done::Gas { count: a.count, gas: e.gas, calldata: e.calldata, fees: e.fees, fees_left, head_time: e.head_time, lane: a.lane })
 }
 
-/// The "show before send" check: whether gas was estimated for this batch, at this count.
-///
-/// Kept separate so sending can only be reached through it.
 pub(super) fn gas_shown(shell: &Shell, count: usize) -> Result<u64, crate::fault::Fault> {
     match shell.gas {
         Some((n, g)) if n == count => Ok(g),
         _ => Err(crate::fault::Fault::known(
             crate::fault::Known::GasNotShown,
-            crate::lang::filln(crate::lang::Key::Tail035, &[&(count).to_string()]),
+            crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail035, &[&(count).to_string()])),
         )),
     }
 }
 
 pub(super) fn send_batch(shell: &mut Shell, count: usize) -> Result<Spawned, crate::fault::Fault> {
-    // Show before send: gas must have been estimated for this exact batch size.
     let gas = Some(gas_shown(shell, count)?);
-    // Anchoring does not require the ledger to be writable: anchoring hashes of recorded bytes appends
-    // nothing, and the succession entry itself must be anchorable, or the new key can never verify it and the
-    // handover stalls. So the handed-over refusal is let through while the others (lock, broken chain, pen)
-    // still block, and entries queued before a handover can still reach the chain.
-    if let Err(f) = shell.may_write_entries() {
-        if !f.said().starts_with("HANDED_OVER") {
-            return Err(f);
-        }
-    }
-    let b = batch(shell, count)?;
+    shell.may_send_entries()?;
+    let b = match shell.gas_lane.clone() {
+        Some((chain, ids)) if ids.len() == count && ids.iter().all(|id| shell.queue.step_on(id, chain).is_some_and(|s| !s.in_flight())) => batch_on(shell, chain, ids)?,
+        _ => batch(shell, count)?,
+    };
     let secret = signing_key(shell, crate::sign::Use::Anchor)?;
     let root = shell
         .home
         .as_ref()
         .map(|h| h.root().to_path_buf())
         .ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
-    // The private key bytes never enter this layer: the `Secret` is moved whole into the background task, lent
-    // only through its signing port (`sign`, the sender's `Signer`) for exactly one signature, and zeroed when
-    // dropped. The fee reading comes
-    // with the estimate; tests that set gas directly without estimating use `Fees::fallback`.
     let fees = shell.fees.unwrap_or_else(zikaron_anchor::send::Fees::fallback);
-    // What the exit gate needs is taken here; the chain is read in the task as its last step before sending.
     let ask = crate::exitgate::ask_of(shell)?;
-    // Whether the chain already holds these anchors is asked from this home's scan window, as the gate reads it.
-    let start = shell.settings.from_block;
-    Ok(shell.tasks.spawn(Kind::Anchor, move || anchor_batch(b, secret, root, gas, fees, ask, start)))
+    Ok(shell.tasks.spawn(Kind::Anchor, move || anchor_batch(b, secret, root, gas, fees, ask)))
 }
 
-/// Resumes waiting for submitted transactions: entries the queue file records as submitted without a receipt
-/// get a task that only waits for the receipt, without resending. Called on home opening and by the window's
-/// periodic check; skipped while an anchor task is in flight. Returns whether a task started.
 pub fn resume(shell: &mut Shell) -> bool {
-    // This flag only means "cannot resume now". It is cleared on every call so a stale reason never lingers
-    // (a changed home, a settled batch or a node added back should clear it at once).
     shell.resume_blocked = None;
-    if shell.tasks.in_flight(Kind::Anchor) || !shell.writable() {
+    if shell.tasks.in_flight(Kind::Anchor) || !shell.may_send() {
         return false;
     }
     let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return false };
-    let Some((txs, chain, ids)) = shell.queue.submitted().into_iter().next() else { return false };
+    let Some((txs, chain, ids)) = zikaron_send::batch::out_first(&shell.queue) else { return false };
     let urls = receipt_urls(shell, chain, None);
     if urls.is_empty() {
-        // A failed resume must be visible: a submitted batch is waiting for a receipt, but the current
-        // settings have no node for its chain (basis changed, node removed). Silently returning false would
-        // retry every fifteen seconds while those entries wait forever and never join the next batch. It is
-        // recorded on the shell and the queue page shows it.
         shell.resume_blocked = Some(chain);
         return false;
     }
     let wait = shell.anchor_wait;
     let backoff = shell.receipt_backoff.clone();
-    let (sender, nonce) = (sender_of(shell), batch_nonce(shell, &ids));
+    let (sender, nonce) = (sender_of(shell, chain), batch_nonce(shell, &ids));
     let hand = shell.lock.as_ref().map(crate::lock::Lock::hand);
+    let carry = carry_of(shell, &ids, chain);
     matches!(
-        shell.tasks.spawn_turnless(Kind::Anchor, move || confirm_batch(hand, root, urls, chain, txs, ids, None, wait, &backoff, sender, nonce)),
+        shell.tasks.spawn_turnless(Kind::Anchor, move || {
+            let carried = carried_from(&root, &carry, &ids, chain);
+            confirm_batch(hand, root, urls, chain, txs, ids, None, wait, &backoff, sender, nonce, carried)
+        }),
         Spawned::Started
     )
 }
 
-/// The account a batch is sent from and the registry it calls, read on the UI thread. Used to judge a batch no
-/// node holds (via the account's on-chain nonce) and to resend it (`confirm_batch`). `None` if either is
-/// missing.
-fn sender_of(shell: &Shell) -> Option<zikaron_send::batch::Sender> {
-    Some(zikaron_send::batch::Sender { from: shell.anchor?.0, registry: shell.settings.registry?.0 })
+fn registry_on(shell: &Shell, chain: u64) -> Result<crate::key::Address, crate::fault::Fault> {
+    shell.basis_chains().into_iter().find(|(c, _, _)| *c == chain).map(|(_, r, _)| r).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new()))
 }
 
-/// The nonce the queue records for these entries' batch (`None` in files written by versions that did not
-/// record it).
+fn sender_of(shell: &Shell, chain: u64) -> Option<zikaron_send::batch::Sender> {
+    Some(zikaron_send::batch::Sender { from: shell.anchor?.0, registry: registry_on(shell, chain).ok()?.0 })
+}
+
 fn batch_nonce(shell: &Shell, ids: &[String]) -> Option<u64> {
     ids.first().and_then(|id| shell.queue.step_of(id)).and_then(crate::queue::Step::nonce)
 }
 
-/// Runs once right after unlocking to catch up on what was missed while locked: the self-audit (raising missed
-/// notices once each), the vault review with its sentinel, and the receipt wait of a submitted batch. Each
-/// starts only where it can (a home with a basis and nodes); nothing is reported for what cannot start.
 pub(super) fn catch_up(shell: &mut Shell) -> Applied {
     let audit = shell.audit_stale() && matches!(start_audit(shell), Ok(Spawned::Started));
     let review = shell.home.is_some()
@@ -173,30 +176,34 @@ pub(super) fn catch_up(shell: &mut Shell) -> Applied {
     Applied::CaughtUp { audit, review, resume }
 }
 
-/// Runs one self-audit right after a batch is confirmed on chain (its label moves the pen as usual). If it
-/// cannot start (no basis or nodes), the audit's own refusal is reported.
-pub fn audit_after_send(shell: &mut Shell) {
+pub fn audit_after_send(shell: &mut Shell, landed: &Done) {
+    if let Done::Anchored { tx, chain, state, sent, kept, .. } = landed {
+        if let Some((1, block)) = receipt_of(state) {
+            if super::audit::merge_sent(shell, *chain, tx, block, *sent, kept.as_ref()) {
+                return;
+            }
+        }
+    }
     if let Err(f) = start_audit(shell) {
         shell.faults.push(f);
     }
 }
 
-/// After a broadcast lands, waits for the receipt (called where the shell receives task results).
 pub fn wait_submitted(shell: &mut Shell, tx: String, chain: u64, url: crate::chainx::NodeAddr, ids: Vec<String>, gas: Option<u64>) {
     let Some(root) = shell.home.as_ref().map(|h| h.root().to_path_buf()) else { return };
     let urls = receipt_urls(shell, chain, Some(&url));
     let wait = shell.anchor_wait;
     let backoff = shell.receipt_backoff.clone();
-    // Await every transaction of the batch: the one just sent and those it replaces (the queue file records
-    // them all).
     let txs = ids.first().and_then(|id| shell.queue.step_of(id)).and_then(|s| s.awaited()).map(|(t, _)| t).unwrap_or_else(|| vec![tx]);
-    let (sender, nonce) = (sender_of(shell), batch_nonce(shell, &ids));
+    let (sender, nonce) = (sender_of(shell, chain), batch_nonce(shell, &ids));
     let hand = shell.lock.as_ref().map(crate::lock::Lock::hand);
-    let _ = shell.tasks.spawn_turnless(Kind::Anchor, move || confirm_batch(hand, root, urls, chain, txs, ids, gas, wait, &backoff, sender, nonce));
+    let carry = carry_of(shell, &ids, chain);
+    let _ = shell.tasks.spawn_turnless(Kind::Anchor, move || {
+        let carried = carried_from(&root, &carry, &ids, chain);
+        confirm_batch(hand, root, urls, chain, txs, ids, gas, wait, &backoff, sender, nonce, carried)
+    });
 }
 
-/// Where to ask for the receipt: the endpoint that accepted the transaction first, then this chain's other
-/// configured endpoints (deduplicated).
 pub(super) fn receipt_urls(shell: &Shell, chain: u64, taken: Option<&crate::chainx::NodeAddr>) -> Vec<crate::chainx::NodeAddr> {
     let mut out: Vec<crate::chainx::NodeAddr> = taken.cloned().into_iter().collect();
     for e in shell.endpoints.iter().filter(|e| e.chain == chain) {
@@ -207,35 +214,27 @@ pub(super) fn receipt_urls(shell: &Shell, chain: u64, taken: Option<&crate::chai
     out
 }
 
-/// The balance gate's comparison (`zikaron_send::batch::funds_check`): a balance at least equal to the maximum
-/// spend passes (exactly enough included); one wei less is refused by name with both numbers ([`funds_tail`]).
 pub fn funds_check(need: u128, have: u128) -> Result<(), crate::fault::Fault> {
     Ok(zikaron_send::batch::funds_check(need, have)?)
 }
 
-/// Formats the receipt state (`Done::Anchored.state` is written and parsed only here).
 pub fn receipt_state(status: u64, block: u64) -> String {
     format!("status {status} · block {block}")
 }
 
-/// Parses the receipt state back into status and block, if it describes a receipt ([`receipt_state`]).
 pub fn receipt_of(state: &str) -> Option<(u64, u64)> {
     let (status, block) = state.strip_prefix("status ")?.split_once(" · block ")?;
     Some((status.parse().ok()?, block.parse().ok()?))
 }
 
-/// The state written when no node answered the receipt query (parsed by [`receipt_unheard`]).
 fn unheard_state(said: &str) -> String {
     format!("unreachable: {said}")
 }
 
-/// Whether the receipt state says no node answered ([`unheard_state`]).
 pub fn receipt_unheard(state: &str) -> bool {
     state.starts_with(&unheard_state(""))
 }
 
-/// Whether the receipt status is not 1 (included but execution failed, which is not an anchor). Only this case
-/// keeps the plain wording of `SEND_FAILED`.
 pub fn receipt_failed(state: &str) -> bool {
     state
         .strip_prefix("status ")
@@ -244,24 +243,28 @@ pub fn receipt_failed(state: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Formats the balance gate's evidence tail (written and parsed only here).
 pub fn funds_tail(need: u128, have: u128) -> String {
     format!("need={need} have={have}")
 }
 
-/// Parses the required and current amounts from the evidence tail (`None` if absent, as in a node refusal,
-/// whose message lacks the two numbers).
+pub fn funds_tail_of(need: u128, have: u128, key: &crate::key::Address) -> String {
+    format!("{} {}", funds_tail(need, have), funds_key_word(key))
+}
+
+pub fn funds_key_word(key: &crate::key::Address) -> String {
+    format!("key={}", key.hex())
+}
+
+pub fn funds_key(tail: &str) -> Option<crate::key::Address> {
+    tail.split_whitespace().find_map(|x| x.strip_prefix("key=")).and_then(crate::key::Address::parse)
+}
+
 pub fn funds_of(tail: &str) -> Option<(u128, u128)> {
     let need = tail.split_whitespace().find_map(|x| x.strip_prefix("need="))?.parse().ok()?;
     let have = tail.split_whitespace().find_map(|x| x.strip_prefix("have="))?.parse().ok()?;
     Some((need, have))
 }
 
-/// Hands this batch to the sender (`zikaron_send::batch::anchor`) for this home, on the task's thread: earlier
-/// transactions of these entries asked about by hash, the chain asked whether it holds them already, the balance
-/// and exit gates, the signature through this desktop's key (`sign`), the batch landed as submitted before its
-/// bytes go, and the broadcast. It goes only as far as "submitted": `Done::Submitted` is returned and the shell
-/// starts the receipt wait (`confirm_batch`).
 pub(super) fn anchor_batch(
     b: Batch,
     secret: crate::key::Secret,
@@ -269,13 +272,10 @@ pub(super) fn anchor_batch(
     gas: Option<u64>,
     fees: zikaron_anchor::send::Fees,
     ask: crate::exitgate::Ask,
-    start: u64,
 ) -> Result<Done, crate::fault::Fault> {
     let desk = crate::sendx::Desk::open(&root)?;
     let ids = b.ids.clone();
-    zikaron_send::batch::anchor(&desk, b, &secret, gas, fees, ask, start).map(submitted).map_err(|f| {
-        // Failed after the batch was landed in flight (no node answered the broadcast; its bytes may be in a pool):
-        // the batch is out, awaited by its hash, and the refusal carries that transaction (`Fault::out`).
+    zikaron_send::batch::anchor(&desk, b, &secret, gas, fees, ask).map(submitted).map_err(|f| {
         match zikaron_send::keep::read(&desk).ok().and_then(|q| zikaron_send::batch::out_for(&q, &ids)).and_then(|(txs, _, _)| txs.last().cloned()) {
             Some(tx) => f.sent_out(tx),
             None => f,
@@ -283,23 +283,12 @@ pub(super) fn anchor_batch(
     })
 }
 
-/// A batch the sender put out (or found out already), as the shell receives it.
 fn submitted(s: zikaron_send::batch::Sent) -> Done {
     Done::Submitted { tx: s.tx, chain: s.chain, url: s.url, ids: s.ids, gas: s.gas, queue: s.queue }
 }
 
-/// Resends a stuck batch with higher fees, on the person's request: only the batch whose last transaction is
-/// `tx`, only when the last receipt wait offered a resend (`Shell::stuck`, `Offer::Resend`), and never above the
-/// fee cap shown on the card (`cap`). If the offer has since risen above it, the resend is refused by name (the
-/// card shows the new figure), so the cost never exceeds what was seen. Every reason a resend is not possible is
-/// named as `GAS_NOT_SHOWN` (the resend's show-before-send gate): no offer for this transaction, the price not
-/// above its cap, the price unread, or already resent `queue::RESENDS_MAX` times.
 pub(super) fn bump_batch(shell: &mut Shell, tx: &str, cap: u64) -> Result<Spawned, crate::fault::Fault> {
-    if let Err(f) = shell.may_write_entries() {
-        if !f.said().starts_with("HANDED_OVER") {
-            return Err(f);
-        }
-    }
+    shell.may_send_entries()?;
     let not_shown = |why: &str| crate::fault::Fault::known(crate::fault::Known::GasNotShown, format!("{tx} · {why}"));
     let stuck = shell.stuck.clone().filter(|s| s.txs.last().map(String::as_str) == Some(tx)).ok_or_else(|| not_shown("no resend offered for this transaction"))?;
     let fees = match stuck.offer {
@@ -314,32 +303,23 @@ pub(super) fn bump_batch(shell: &mut Shell, tx: &str, cap: u64) -> Result<Spawne
     if ids.is_empty() {
         return Err(crate::fault::Fault::known(crate::fault::Known::QueueEmpty, tx.to_string()));
     }
-    let registry = shell.settings.registry.ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoRegistry, String::new()))?;
+    let registry = registry_on(shell, stuck.chain)?;
     let urls = receipt_urls(shell, stuck.chain, None);
     if urls.is_empty() {
-        return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, crate::lang::filln(crate::lang::Key::Tail031, &[&stuck.chain.to_string()])));
+        return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail031, &[&stuck.chain.to_string()]))));
     }
-    let b = Batch { hashes: crate::queue::Queue::hashes(&ids)?, ids, chain: stuck.chain, registry: registry.0, urls, backoff: shell.send_backoff.clone() };
+    let b = Batch { hashes: crate::queue::Queue::hashes(&ids)?, ids, chain: stuck.chain, registry: registry.0, urls, backoff: shell.send_backoff.clone(), basis: shell.lanes(), carried: None };
     let secret = signing_key(shell, crate::sign::Use::Anchor)?;
     let root = shell.home.as_ref().map(|h| h.root().to_path_buf()).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
     let ask = crate::exitgate::ask_of(shell)?;
-    let start = shell.settings.from_block;
-    Ok(shell.tasks.spawn(Kind::Anchor, move || resend_batch(b, stuck, fees, secret, root, ask, start)))
+    Ok(shell.tasks.spawn(Kind::Anchor, move || resend_batch(b, stuck, fees, secret, root, ask)))
 }
 
-/// The resend task, the sender's (`zikaron_send::batch::resend`): the chain asked whether it holds these anchors,
-/// the balance for the new cap, the exit gate, the same key signing the same transaction again, the new hash
-/// recorded with the batch before the single broadcast.
-fn resend_batch(b: Batch, stuck: crate::task::Stuck, fees: zikaron_anchor::send::Fees, secret: crate::key::Secret, root: std::path::PathBuf, ask: crate::exitgate::Ask, start: u64) -> Result<Done, crate::fault::Fault> {
+fn resend_batch(b: Batch, stuck: crate::task::Stuck, fees: zikaron_anchor::send::Fees, secret: crate::key::Secret, root: std::path::PathBuf, ask: crate::exitgate::Ask) -> Result<Done, crate::fault::Fault> {
     let desk = crate::sendx::Desk::open(&root)?;
-    zikaron_send::batch::resend(&desk, b, stuck, fees, &secret, ask, start).map(submitted)
+    zikaron_send::batch::resend(&desk, b, stuck, fees, &secret, ask).map(submitted)
 }
 
-/// Waits at most `wait` for the receipt, holding no lock (the sender's receipt wait, `zikaron_send::batch::wait`):
-/// included, reverted, not yet, held by no node and judged by its nonce (void and requeued, or offered again);
-/// then settles what it heard under the home's writer lock (`zikaron_send::batch::settle` through
-/// `lock::settling`: the shell's, or taken for that one write while the command line writes alone). The receipt
-/// state is written here ([`state_of`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn confirm_batch(
     hand: Option<crate::lock::Hand>,
@@ -353,14 +333,41 @@ pub(super) fn confirm_batch(
     backoff: &[std::time::Duration],
     sender: Option<zikaron_send::batch::Sender>,
     nonce: Option<u64>,
+    carried: Option<Vec<u8>>,
 ) -> Result<Done, crate::fault::Fault> {
-    let desk = crate::sendx::Desk::open(&root)?;
-    // This batch is out: a wait or a settling that fails says so with its transaction (`Fault::out`), never as
-    // nothing sent.
+    let mut d = anchored(settled_wait(hand, &root, urls, chain, txs, ids, gas, wait, backoff, sender, nonce, carried)?);
+    if let Done::Anchored { whole, .. } = &mut d {
+        use crate::queue::Kept as _;
+        let at = crate::reads::ticket(crate::reads::Copies::Queue);
+        *whole = Some((crate::queue::Queue::read(&crate::home::Home::bare(root.clone())), at));
+    }
+    Ok(d)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settled_wait(
+    hand: Option<crate::lock::Hand>,
+    root: &std::path::Path,
+    urls: Vec<crate::chainx::NodeAddr>,
+    chain: u64,
+    txs: Vec<String>,
+    ids: Vec<String>,
+    gas: Option<u64>,
+    wait: std::time::Duration,
+    backoff: &[std::time::Duration],
+    sender: Option<zikaron_send::batch::Sender>,
+    nonce: Option<u64>,
+    carried: Option<Vec<u8>>,
+) -> Result<zikaron_send::batch::Landed, crate::fault::Fault> {
+    let desk = crate::sendx::Desk::open(root)?;
     let out = |f: crate::fault::Fault| f.sent_out(txs.last().cloned().unwrap_or_default());
-    let heard = zikaron_send::batch::wait(urls, chain, txs.clone(), ids, gas, wait, backoff, sender, nonce).map_err(|t| out(t.into()))?;
-    let l = crate::lock::settling(hand.as_ref(), &root, || zikaron_send::batch::settle(&desk, heard)).map_err(out)?.map_err(out)?;
-    Ok(Done::Anchored {
+    let mut heard = zikaron_send::batch::wait(urls, chain, txs.clone(), ids, gas, wait, backoff, sender, nonce, carried.as_deref()).map_err(|t| out(t.into()))?;
+    zikaron_send::batch::landed_facts(&desk, &mut heard);
+    crate::lock::settling(hand.as_ref(), root, || zikaron_send::batch::settle(&desk, heard)).map_err(out)?.map_err(out)
+}
+
+fn anchored(l: zikaron_send::batch::Landed) -> Done {
+    Done::Anchored {
         tx: l.tx,
         chain: l.chain,
         confirmed: l.confirmed,
@@ -373,11 +380,49 @@ pub(super) fn confirm_batch(
         stuck: l.stuck,
         voided: l.voided,
         waited: l.waited,
-    })
+        kept: l.kept,
+        whole: None,
+    }
 }
 
-/// The receipt state as `Done::Anchored.state` carries it (parsed back by [`receipt_of`], [`receipt_unheard`],
-/// [`receipt_failed`]).
+pub fn await_out(shell: &mut Shell) -> Result<Spawned, crate::fault::Fault> {
+    if let Some(s) = shell.unfetched.as_ref() {
+        return Err(crate::restorex::fault(s));
+    }
+    let Some((txs, chain, ids)) = zikaron_send::batch::out_first(&shell.queue) else {
+        return Err(crate::fault::Fault::known(crate::fault::Known::QueueEmpty, String::new()));
+    };
+    let root = shell.home.as_ref().map(|h| h.root().to_path_buf()).ok_or_else(|| crate::fault::Fault::known(crate::fault::Known::NoHome, String::new()))?;
+    let urls = receipt_urls(shell, chain, None);
+    if urls.is_empty() {
+        return Err(crate::fault::Fault::known(crate::fault::Known::NoEndpoint, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail031, &[&chain.to_string()]))));
+    }
+    let switch = shell.machine.cli_anchor;
+    let again = match switch {
+        zikaron_seal::machine::CliAnchor::Send => {
+            let registry = registry_on(shell, chain)?;
+            let b = Batch { hashes: crate::queue::Queue::hashes(&ids)?, ids: ids.clone(), chain, registry: registry.0, urls: urls.clone(), backoff: shell.send_backoff.clone(), basis: shell.lanes(), carried: None };
+            Some((b, signing_key(shell, crate::sign::Use::Anchor)?, crate::exitgate::ask_of(shell)?))
+        }
+        _ => None,
+    };
+    let wait = shell.anchor_wait;
+    let backoff = shell.receipt_backoff.clone();
+    let (sender, nonce) = (sender_of(shell, chain), batch_nonce(shell, &ids));
+    let hand = shell.lock.as_ref().map(crate::lock::Lock::hand);
+    let carry = carry_of(shell, &ids, chain);
+    Ok(shell.tasks.spawn_turnless(Kind::Anchor, move || {
+        let carried = carried_from(&root, &carry, &ids, chain);
+        let l = settled_wait(hand, &root, urls, chain, txs, ids.clone(), None, wait, &backoff, sender, nonce, carried)?;
+        match (zikaron_send::batch::again_at(&l, switch), again) {
+            (Some((stuck, fees)), Some((b, secret, ask))) if zikaron_send::batch::out_for(&zikaron_send::keep::read(&crate::sendx::Desk::open(&root)?)?, &ids).map(|(t, _, _)| t).as_ref() == Some(&stuck.txs) => {
+                resend_batch(b, stuck, fees, secret, root, ask)
+            }
+            _ => Ok(anchored(l)),
+        }
+    }))
+}
+
 fn state_of(r: &zikaron_send::batch::Receipt) -> String {
     use zikaron_send::batch::Receipt;
     match r {

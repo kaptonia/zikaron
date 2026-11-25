@@ -5,10 +5,16 @@
 //! On Windows targets it also writes a compiled resource file (version info and icon) directly, without a
 //! resource compiler, and passes it to the linker. On macOS targets it records that the app is built for
 //! SDK 26 (`macos_sdk.rs`).
+//!
+//! It also gives the build the moment of its source (`ZIKARON_SOURCE_EPOCH`, `about::source_epoch`, the about
+//! window's date): `SOURCE_DATE_EPOCH` when the build is given one (a package build), else the time of the commit the
+//! source stands at, read from the repository; neither, nothing (the about window then shows no date). One commit gives
+//! one moment however often it is built.
 
 use std::path::{Path, PathBuf};
 
 include!("macos_sdk.rs");
+include!("src/app_name.rs");
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -16,10 +22,12 @@ fn main() {
     println!("cargo:rerun-if-changed={}", workspace.join("Cargo.lock").display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=macos_sdk.rs");
+    println!("cargo:rerun-if-changed=src/app_name.rs");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     if let Some(arg) = macos_sdk_link_arg() {
         println!("cargo:rustc-link-arg-bins={arg}");
     }
+    source_epoch(&workspace);
     let target = std::env::var("TARGET").expect("TARGET");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let notices = zikaron_pack::notices::make(&cargo, &workspace.join("Cargo.toml"), &target, &["app"], &[])
@@ -132,12 +140,12 @@ fn version_info(version: &str) -> Vec<u8> {
     }
     let strings: Vec<Vec<u8>> = [
         ("CompanyName", "Kaptonia"),
-        ("FileDescription", "ZIKARON"),
+        ("FileDescription", APP_NAME),
         ("FileVersion", version),
         ("InternalName", "zikaron-desk"),
         ("LegalCopyright", "Copyright Kaptonia. MIT License."),
         ("OriginalFilename", "zikaron-desk.exe"),
-        ("ProductName", "ZIKARON"),
+        ("ProductName", APP_NAME),
         ("ProductVersion", version),
     ]
     .iter()
@@ -150,4 +158,32 @@ fn version_info(version: &str) -> Vec<u8> {
     let var = block("Translation", &translation, 4, false, &[]);
     let var_info = block("VarFileInfo", &[], 0, true, &[var]);
     block("VS_VERSION_INFO", &fixed, fixed.len() as u16, false, &[string_info, var_info])
+}
+
+/// The moment of the source this build is of, for the about window (`ZIKARON_SOURCE_EPOCH`): `SOURCE_DATE_EPOCH` when
+/// set, else the commit time of the repository's head; empty when neither reads. The build reruns when either changes
+/// (the variable, the head or the branch it names), and only then.
+fn source_epoch(workspace: &Path) {
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(workspace).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    };
+    for which in ["HEAD", "packed-refs"] {
+        if let Some(p) = git(&["rev-parse", "--path-format=absolute", "--git-path", which]) {
+            if Path::new(&p).exists() {
+                println!("cargo:rerun-if-changed={p}");
+            }
+        }
+    }
+    if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(p) = git(&["rev-parse", "--path-format=absolute", "--git-path", &branch]) {
+            if Path::new(&p).exists() {
+                println!("cargo:rerun-if-changed={p}");
+            }
+        }
+    }
+    let given = std::env::var("SOURCE_DATE_EPOCH").ok().filter(|v| v.trim().parse::<u64>().is_ok());
+    let epoch = given.or_else(|| git(&["log", "-1", "--format=%ct", "HEAD"]).filter(|v| v.parse::<u64>().is_ok())).unwrap_or_default();
+    println!("cargo:rustc-env=ZIKARON_SOURCE_EPOCH={}", epoch.trim());
 }

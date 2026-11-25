@@ -1,0 +1,1 @@
+sec 8.2: the root's succession at seq 2, after a gap, moved the seat to k2, so the root's own entry at seq 3 differs from the authority in force and records AUTHORITY_MISMATCH, soft since the walk is not certain: the seat that moved is the seat the next entry is graded against.

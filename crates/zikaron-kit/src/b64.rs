@@ -1,6 +1,3 @@
-//! base64url (RFC 4648 §5), unpadded and canonical: the unused bits of the last character are zero (kit spec
-//! §1). The only encoder and decoder in the crate.
-
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 fn value(c: u8) -> Option<u32> {
@@ -33,8 +30,6 @@ pub fn encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Decode; empty input, a byte outside the alphabet, length ≡ 1 (mod 4) or nonzero unused bits give `None`
-/// (kit law §6.2 step 3a).
 pub fn decode(s: &[u8]) -> Option<Vec<u8>> {
     if s.is_empty() || s.len() % 4 == 1 {
         return None;
@@ -43,7 +38,6 @@ pub fn decode(s: &[u8]) -> Option<Vec<u8>> {
     for &c in s {
         vals.push(value(c)?);
     }
-    // The unused bits of the last character must be zero.
     match s.len() % 4 {
         2 => {
             if vals[vals.len() - 1] & 0x0f != 0 {

@@ -1,11 +1,5 @@
 use super::*;
 
-/// The check page, run on a background thread with no privileges: it reads no key, writes no home, sends no
-/// transaction and saves no settings.
-///
-/// Endpoints and basis come from the page; empty fields borrow the open home's (read only), so it works
-/// without an identity. Reading files, scanning the chain and judging all happen in `checkx::run`; here the
-/// input only passes a shape check before going to the background.
 pub(super) fn check_payload(
     shell: &mut Shell,
     typed: &str,
@@ -17,22 +11,17 @@ pub(super) fn check_payload(
     (file, terms): (String, String),
 ) -> Result<Spawned, crate::fault::Fault> {
     let injected = crate::checkx::now_of(now)?;
-    // The shape check only asks whether the input is empty; reading files and decoding happen in the
-    // background.
     if typed.trim().is_empty() {
         return Err(crate::fault::Fault::known(
             crate::fault::Known::FieldMissing,
-            crate::lang::t(crate::lang::Key::Tail065).to_string(),
+            crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail065).to_string()),
         ));
     }
     let typed = typed.trim().to_string();
     let mut shelf = shelf_of(shell, ledgers);
     shelf.reads = read_nets_now()?;
-    // Endpoints: the page's if filled; otherwise the home's configured ones (read-only).
     let mut eps: Vec<crate::chainx::Endpoint> = Vec::new();
     let mut bad: Vec<String> = Vec::new();
-    // A refused line is reported as `chainx::typed` words it, never echoing the line itself, which may carry
-    // a node's API key. One sentence per line.
     for line in endpoints.lines().map(str::trim).filter(|l| !l.is_empty()) {
         match crate::chainx::typed(line) {
             Ok(e) => eps.push(e),
@@ -42,9 +31,6 @@ pub(super) fn check_payload(
     if !bad.is_empty() {
         return Err(crate::fault::Fault::known(crate::fault::Known::SettingsShape, bad.join(" · ")));
     }
-    // Every field typed on the page is shape-checked before anything is borrowed or reported missing: an
-    // unreadable registry or start block is refused by name here, never hidden behind "no registry
-    // configured". Missing fields are reported later, where the check reads them.
     let registry_typed = registry.trim();
     let typed_registry = match registry_typed {
         "" => None,
@@ -52,14 +38,11 @@ pub(super) fn check_payload(
     };
     let typed_from: Option<u64> = match from_block.trim() {
         "" => None,
-        f => Some(f.parse().map_err(|_| crate::fault::Fault::known(crate::fault::Known::SettingsShape, crate::lang::filln(crate::lang::Key::Tail025, &[&format!("{f:?}")])))?),
+        f => Some(f.parse().map_err(|_| crate::fault::Fault::known(crate::fault::Known::SettingsShape, crate::lang::both_of(|| crate::lang::filln(crate::lang::Key::Tail025, &[&format!("{f:?}")]))))?),
     };
     if eps.is_empty() {
         eps = shell.endpoints.clone();
     }
-    // Compute the main chain id once, shared by the basis and chain time: the single endpoint's chain; with
-    // several chains, the home's configured chain if it is among them; otherwise none. Chain time needs only a
-    // chain id, so it must not depend on the basis, which also needs a registry.
     let chain: Option<u64> = {
         let mut chains: Vec<u64> = eps.iter().map(|e| e.chain).collect();
         chains.sort_unstable();
@@ -71,7 +54,6 @@ pub(super) fn check_payload(
             _ => None,
         }
     };
-    // Basis: the chain id from above, registry and start block from the page, or the home's when not filled.
     let ground: Result<crate::auditx::Ground, crate::fault::Fault> = (|| {
         let reg = match typed_registry {
             Some(r) => r,
@@ -85,12 +67,13 @@ pub(super) fn check_payload(
         let chain = chain.ok_or_else(|| {
             crate::fault::Fault::known(
                 crate::fault::Known::NoChainId,
-                if eps.is_empty() { String::new() } else { crate::lang::t(crate::lang::Key::Tail067).to_string() },
+                crate::lang::both_of(|| if eps.is_empty() { String::new() } else { crate::lang::t(crate::lang::Key::Tail067).to_string() }),
             )
         })?;
-        Ok(crate::auditx::Ground { chain, registry: reg, from_block: from, to_block: from, senders: Vec::new() })
+        Ok(crate::auditx::Ground { chain, registry: reg, from_block: from, to_block: from, senders: Vec::new(), earlier: Vec::new() })
     })();
     shell.checked = None;
+    shell.check_asked = Some(CheckAsk { typed: typed.clone(), shelf: shelf.clone(), eps: eps.clone(), ground: ground.clone(), injected, chain });
     Ok(shell.tasks.spawn(Kind::Check, move || {
         crate::task::stage_at(Kind::Check, 0);
         let hops = crate::checkx::hops_of(&typed)?;
@@ -99,9 +82,44 @@ pub(super) fn check_payload(
     }))
 }
 
-/// The record place for a page that reads a single place (reader, diligence). More than one non-empty line
-/// (split at `\n`, `\r` or both) is refused by name rather than silently reading only the first; the error
-/// carries the line count.
+#[derive(Clone, Debug)]
+pub struct CheckAsk {
+    pub typed: String,
+    pub shelf: crate::supplyx::Shelf,
+    pub eps: Vec<crate::chainx::Endpoint>,
+    pub ground: Result<crate::auditx::Ground, crate::fault::Fault>,
+    pub injected: Option<u64>,
+    pub chain: Option<u64>,
+}
+
+pub(super) fn audit_check(shell: &mut Shell) -> Result<(), crate::fault::Fault> {
+    let (Some(x), Some(asked)) = (shell.checked.as_ref(), shell.check_asked.clone()) else {
+        return Err(crate::fault::Fault::known(crate::fault::Known::FieldMissing, crate::lang::both_of(|| crate::lang::t(crate::lang::Key::Tail065).to_string())));
+    };
+    let work = move || -> Result<crate::checkx::Audit, crate::fault::Fault> {
+        let hops = crate::checkx::hops_of(&asked.typed)?;
+        let x = crate::checkx::run_whole(hops, asked.shelf, asked.eps, asked.ground, asked.injected, asked.chain);
+        match (&x.basis, &x.basis_why) {
+            (Ok(_), _) => Ok(crate::checkx::Audit::of(&x)),
+            (Err(_), Some(f)) => Err(f.clone()),
+            (Err(said), None) => Err(crate::fault::Fault::unknown(said.clone())),
+        }
+    };
+    shell.audits.ask(x.audit_key, crate::sendx::behind::Job { keeper: Kind::keeper(), work: Box::new(work) });
+    behind_turn(shell);
+    Ok(())
+}
+
+pub fn behind_turn(shell: &mut Shell) {
+    if shell.tasks.in_flight(Kind::Behind) || !shell.audits.waiting() {
+        return;
+    }
+    let audits = shell.audits.clone();
+    let _ = shell.tasks.spawn(Kind::Behind, move || Ok(Done::Behind { taken: audits.run_each(|| {
+        crate::task::land_part(Done::Behind { taken: 0 });
+    }) }));
+}
+
 pub fn one_place(dir: &str) -> Result<&str, crate::fault::Fault> {
     let lines = dir.split(['\n', '\r']).filter(|l| !l.trim().is_empty()).count();
     if lines > 1 {
@@ -110,16 +128,18 @@ pub fn one_place(dir: &str) -> Result<&str, crate::fault::Fault> {
     Ok(dir.trim())
 }
 
-/// The places the check page and vault re-check take material from (`supplyx::Shelf`): every seat's home in
-/// the local register, the vault's kept grant file and recorded upstream locations, and the places the person
-/// gives (one line per hop). Only paths and addresses; disk reads happen in the background.
 pub fn shelf_of(shell: &Shell, manual: &str) -> crate::supplyx::Shelf {
     let mut homes: Vec<(String, std::path::PathBuf)> = Vec::new();
     if let Some(reg) = shell.identities.as_ref() {
         for row in &reg.rows {
             for seat in row.seats() {
                 if let (Some(a), Some(h)) = (row.address(seat), row.home(seat)) {
-                    homes.push((a.hex(), h));
+                    homes.push((a.hex(), h.clone()));
+                    if let Some(o) = row.office(seat) {
+                        for k in std::iter::once(o.current).chain(o.former.iter().copied()).map(Address).filter(|k| *k != a) {
+                            homes.push((k.hex(), h.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -135,8 +155,6 @@ pub fn shelf_of(shell: &Shell, manual: &str) -> crate::supplyx::Shelf {
     }
 }
 
-/// The read-only networks currently in the machine directory, for paths that read someone else's material.
-/// No machine directory means no table; an unreadable table refuses the action by name.
 pub fn read_nets_now() -> Result<Vec<crate::readnets::Net>, crate::fault::Fault> {
     match crate::home::machine_dir() {
         Ok(m) => crate::readnets::read(&m),

@@ -1,13 +1,3 @@
-//! Anchoring: one path for each of the two forms (§9.1).
-//!
-//! - Registry form: a call to a contract that emits `Anchored(address indexed, bytes32 indexed)`; each
-//! anchored 32-byte word must sit at an aligned offset of the calldata the sender signs (plain ABI encoding
-//! puts every argument at a multiple of 32).
-//! - Bare form: a transaction to oneself whose calldata is exactly `k × 32` bytes, each word one anchor.
-//!
-//! The anchor key never holds funds beyond fees, never delegates and never has code (law §5.7, §9.3). This
-//! module signs bytes in the chain's form; where the key comes from and whether to send are decided above.
-
 use crate::rlp;
 use crate::rpc::{Broke, Endpoint, Trouble};
 use crate::tx;
@@ -15,50 +5,33 @@ use zikaron::cryptox;
 use zikaron::hexfmt;
 use zikaron::json::Value;
 
-/// The two anchoring forms.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Form {
-    /// Call `anchor` / `anchorMany` on a registry contract.
     Registry,
-    /// Send to oneself; calldata is the words.
-    Bare,
 }
 
-/// The highest priority fee an anchor pays, and the one it pays when the chain's priority fees cannot be read
-/// (wei per gas; 1 gwei).
 pub const PRIORITY_FEE: u64 = 1_000_000_000;
-/// Fee cap when the chain's base fee cannot be read (wei per gas; 3 gwei). A fallback only: the cap is
-/// normally computed from the base fee.
 pub const MAX_FEE: u64 = 3_000_000_000;
-/// The most gas an anchor ever carries: the ceiling of [`limit_for`], and the limit a transaction carries when
-/// no estimate stands behind it (the command line's `anchor`, the fallback pair). An estimate above it is
-/// refused before anything is shown or sent.
 pub const GAS_LIMIT: u64 = 200_000;
 
-/// The gas limit a transaction carries for the node's estimate: one and a half times the estimate, rounded
-/// up, held at [`GAS_LIMIT`]. The one place this number is worked out: the balance check before sending, the
-/// confirmation card and the signed transaction all read it through [`Fees::gas_limit`].
+pub const PLAIN_GAS_MAX: u64 = u64::MAX / 3 * 2;
+
 pub fn limit_for(estimate: u64) -> u64 {
     estimate.saturating_mul(3).div_ceil(2).min(GAS_LIMIT)
 }
-/// Why an estimate gives no gas figure to send with. Closed; each caller says each member in its own terms.
+
+pub fn plain_limit_for(estimate: u64) -> u64 {
+    u64::try_from((estimate as u128 * 3).div_ceil(2)).unwrap_or(u64::MAX)
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoGas<E> {
-    /// The transport broke, or the node refused in the network kind (the caller's judgement): it says nothing
-    /// about the call.
     Network(E),
-    /// The node answered the estimate and refused: sending would revert.
     Refused(E),
-    /// The answer is not text.
     NotText(Value),
-    /// The text is not a `0x` quantity of at most 128 bits.
     Unreadable(String),
-    /// Above [`GAS_LIMIT`]: on chain it would run out of gas with the fee still paid.
     OverCap(u128),
 }
 
-/// The call an estimate asks the node about: the very transaction's `from`, `to` and `data`, so the estimate
-/// is of the bytes that are sent.
 pub fn estimate_call(from: &[u8; 20], to: &[u8; 20], data: &[u8]) -> Value {
     Value::Obj(vec![
         ("data".into(), Value::Str(hexfmt::encode(data))),
@@ -67,14 +40,6 @@ pub fn estimate_call(from: &[u8; 20], to: &[u8; 20], data: &[u8]) -> Value {
     ])
 }
 
-/// One gas estimate, the one rule the app and the command line both take; each brings its own way of asking (the app
-/// its endpoints, whose estimates the judging table reads by the largest: an estimate is a quantity each node works
-/// out, not a fact, `judge::rule_of`; the command line its one node). The estimate is asked at one pinned block,
-/// `head` (the app's smallest head every endpoint has reached): asked at `latest`, two endpoints a block apart
-/// estimate over two different states and disagree over a call neither refuses. A failure the caller judges of the
-/// network kind says nothing about the call; any other refusal means the call would revert. The answer is read as a
-/// quantity of at most 128 bits, and one above [`GAS_LIMIT`] is refused by the node's own number before anything is
-/// shown or sent.
 pub fn estimate_gas<E>(
     head: impl FnOnce() -> Result<u64, E>,
     ask: impl FnOnce(&Value) -> Result<Value, E>,
@@ -96,7 +61,18 @@ pub fn estimate_gas<E>(
     Ok(n as u64)
 }
 
-/// A `0x` quantity that fits in 128 bits (hex digits in either case after a lowercase `0x`).
+pub fn estimate_plain_gas<E>(
+    head: impl FnOnce() -> Result<u64, E>,
+    ask: impl FnOnce(&Value) -> Result<Value, E>,
+    call: Value,
+    is_network: impl Fn(&E) -> bool,
+) -> Result<u64, NoGas<E>> {
+    match estimate_gas(head, ask, call, is_network) {
+        Err(NoGas::OverCap(n)) if n <= PLAIN_GAS_MAX as u128 => Ok(n as u64),
+        other => other,
+    }
+}
+
 fn quantity_128(x: &str) -> Option<u128> {
     let body = x.strip_prefix("0x")?;
     if body.is_empty() || body.len() > 32 || !body.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -105,51 +81,30 @@ fn quantity_128(x: &str) -> Option<u128> {
     u128::from_str_radix(body, 16).ok()
 }
 
-/// How much both fee fields of a replacement must rise over the transaction it replaces, in percent: the
-/// replacement rule of the nodes' transaction pools (go-ethereum's `txpool.pricebump`, ten by default).
 pub const REPLACE_BUMP_PERCENT: u64 = 10;
 
-/// How many blocks the priority fee is read over, ending at the pinned block (`eth_feeHistory`).
 pub const TIP_BLOCKS: u64 = 20;
-/// Which percentile of each block's paid priority fees is asked (the median).
 pub const TIP_PERCENTILE: u64 = 50;
 
-/// This transaction's two fee fields, fee cap and priority fee, in wei per gas, and where they came from, with
-/// the gas limit it carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Fees {
     pub max_fee: u64,
     pub priority: u64,
-    /// The gas limit the transaction carries: [`GAS_LIMIT`] until an estimate is known
-    /// ([`Fees::with_estimate`]).
     pub gas_limit: u64,
-    /// The cap was computed from a base fee the chain gave ([`Fees::of`]); `false` for the fallback pair. What
-    /// reads "fallback or not" reads this, never the numbers: a base fee of exactly 1 gwei with the priority fee
-    /// at its ceiling makes the computed pair equal to the fallback pair.
     pub from_chain: bool,
 }
 
 impl Fees {
-    /// The fallback when the base fee cannot be read.
     pub fn fallback() -> Fees {
         Fees { max_fee: MAX_FEE, priority: PRIORITY_FEE, gas_limit: GAS_LIMIT, from_chain: false }
     }
 
-    /// The one fee rule, from what the chain says: the priority fee is `tip` (the median of paid priority
-    /// fees, [`tip_of`]) held at most [`PRIORITY_FEE`], and [`PRIORITY_FEE`] when it could not be read; the cap
-    /// is base fee × 2 + priority fee (the base fee grows at most one eighth per block, so double covers
-    /// several blocks). Without a base fee the whole pair is the fallback. The app and the command line both
-    /// come here, each with the facts it read.
     pub fn of(base_fee: Option<u64>, tip: Option<u64>) -> Fees {
         let Some(base) = base_fee else { return Fees::fallback() };
         let priority = tip.map(|t| t.min(PRIORITY_FEE)).unwrap_or(PRIORITY_FEE);
         Fees { max_fee: base.saturating_mul(2).saturating_add(priority), priority, gas_limit: GAS_LIMIT, from_chain: true }
     }
 
-    /// The fees a replacement of a transaction sent with `old` carries (same nonce, same gas limit): the one fee
-    /// rule's pair read now (`now`, [`Fees::of`]), each field at least [`REPLACE_BUMP_PERCENT`] above the old
-    /// one (a node takes a replacement only when both fields rise by that much), and the priority fee never
-    /// above the cap. Where it came from is where `now` came from.
     pub fn replacing(old: Fees, now: Fees) -> Fees {
         let up = |x: u64| x.saturating_mul(100 + REPLACE_BUMP_PERCENT).div_ceil(100).max(x.saturating_add(1));
         let max_fee = now.max_fee.max(up(old.max_fee));
@@ -157,22 +112,19 @@ impl Fees {
         Fees { max_fee, priority, gas_limit: old.gas_limit, from_chain: now.from_chain }
     }
 
-    /// These fees for a transaction the node estimated at `estimate` gas: the gas limit becomes
-    /// [`limit_for`]`(estimate)`; the fee fields stay.
     pub fn with_estimate(self, estimate: u64) -> Fees {
         Fees { gas_limit: limit_for(estimate), ..self }
     }
 
-    /// The most this transaction can spend in wei: fee cap times the gas limit it carries. The balance check
-    /// before sending and the confirmation card read it; it is what the node checks at broadcast (`insufficient
-    /// funds for gas * price + value`).
+    pub fn with_plain_estimate(self, estimate: u64) -> Fees {
+        Fees { gas_limit: plain_limit_for(estimate), ..self }
+    }
+
     pub fn cap_wei(self) -> u128 {
         self.max_fee as u128 * self.gas_limit as u128
     }
 }
 
-/// The parameters of the priority-fee question at the pinned block `block`: [`TIP_BLOCKS`] blocks ending
-/// there, each block's [`TIP_PERCENTILE`] percentile of paid priority fees.
 pub fn tip_params(block: u64) -> Value {
     Value::Arr(vec![
         Value::Str(format!("0x{TIP_BLOCKS:x}")),
@@ -181,13 +133,6 @@ pub fn tip_params(block: u64) -> Value {
     ])
 }
 
-/// The priority fee a fee history says (its `reward` member: one list per block, holding that block's median
-/// paid priority fee): the median of those block medians (the lower one of the middle two for an even
-/// count), over the blocks whose median is not zero. A block that paid no priority fee at all (an empty
-/// block, or one of transactions paying none) says nothing about what a transaction must pay to get in, and
-/// on a chain of many such blocks counting them would make the fee zero and leave a transaction waiting. When
-/// every block's median is zero, the fee is zero, as the chain says. `None` when it cannot be read: no answer
-/// (`null`), no `reward`, no block, or any entry not a `0x` quantity.
 pub fn tip_of(history: &Value) -> Option<u64> {
     let Some(Value::Arr(blocks)) = history.member("reward") else { return None };
     let mut tips: Vec<u64> = Vec::with_capacity(blocks.len());
@@ -205,10 +150,6 @@ pub fn tip_of(history: &Value) -> Option<u64> {
     Some(over[(over.len() - 1) / 2])
 }
 
-/// The base fee a block says (its `baseFeePerGas`), read one way for every caller (the app over several nodes,
-/// the command line over its one): a `0x` quantity of at most 32 hex digits, leading zeros allowed, whose value
-/// fits 64 bits. Anything else (missing, not a string, not hex, longer, larger) is unread, and the caller's
-/// rule for an unread base fee applies.
 pub fn base_fee_of(block: &Value) -> Option<u64> {
     let body = block.member("baseFeePerGas")?.as_str()?.strip_prefix("0x")?;
     if body.is_empty() || body.len() > 32 || !body.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -217,13 +158,8 @@ pub fn base_fee_of(block: &Value) -> Option<u64> {
     u128::from_str_radix(body, 16).ok().and_then(|n| u64::try_from(n).ok())
 }
 
-/// The fees one node says (the command line's `anchor`, which has one node): its head, that block's base fee
-/// and the priority fees paid up to it, then [`Fees::of`]. Whatever it does not answer, or answers in another
-/// shape, counts as unread.
 pub fn read_fees(ep: &mut dyn Endpoint) -> Fees {
     crate::seam();
-    // Each answer read as its question's decision reads it (`judge::read_as_decided`): a fee history's
-    // fractional `gasUsedRatio` never makes its `reward` unreadable.
     let mut ask = |method: &str, params: &Value| crate::patience::ask(ep, method, params).ok().and_then(|w| crate::judge::read_as_decided(method, params, &w));
     let Some(head) = ask("eth_blockNumber", &Value::Arr(vec![])).as_ref().and_then(|v| v.as_str().and_then(quantity)) else {
         return Fees::fallback();
@@ -234,15 +170,10 @@ pub fn read_fees(ep: &mut dyn Endpoint) -> Fees {
     Fees::of(base, tip)
 }
 
-/// The head one node says (`eth_blockNumber`, read as its question's decision reads it, as [`read_fees`] reads
-/// it); `None` when it does not answer, or answers in another shape. The command line's `scan` of a home takes its
-/// window's last block from here.
 pub fn read_head(ep: &mut dyn Endpoint) -> Option<u64> {
     head_of(ep).ok()
 }
 
-/// [`read_head`] with what stopped it: the node's trouble as it came, or an answer that does not read as a height
-/// (`Broke::Unread`).
 pub fn head_of(ep: &mut dyn Endpoint) -> Result<u64, Trouble> {
     crate::seam();
     let params = Value::Arr(vec![]);
@@ -253,8 +184,7 @@ pub fn head_of(ep: &mut dyn Endpoint) -> Result<u64, Trouble> {
         .ok_or_else(|| Trouble::Transport(Broke::Unread { method: "eth_blockNumber".into() }))
 }
 
-/// A `0x` quantity that fits in 64 bits.
-fn quantity(x: &str) -> Option<u64> {
+pub(crate) fn quantity(x: &str) -> Option<u64> {
     let body = x.strip_prefix("0x")?;
     if body.is_empty() || body.len() > 16 || !body.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -262,17 +192,14 @@ fn quantity(x: &str) -> Option<u64> {
     u64::from_str_radix(body, 16).ok()
 }
 
-/// The cap of the fallback fees.
 pub fn fee_cap_wei() -> u128 {
     Fees::fallback().cap_wei()
 }
 
-/// Selector of `anchor(bytes32)`.
 pub fn selector_anchor() -> [u8; 4] {
     selector("anchor(bytes32)")
 }
 
-/// Selector of `anchorMany(bytes32[])`.
 pub fn selector_anchor_many() -> [u8; 4] {
     selector("anchorMany(bytes32[])")
 }
@@ -282,7 +209,6 @@ fn selector(sig: &str) -> [u8; 4] {
     [h[0], h[1], h[2], h[3]]
 }
 
-/// Registry-form calldata: `anchor` for one hash, `anchorMany` for several.
 pub fn registry_calldata(hashes: &[[u8; 32]]) -> Vec<u8> {
     if hashes.len() == 1 {
         let mut out = selector_anchor().to_vec();
@@ -291,7 +217,7 @@ pub fn registry_calldata(hashes: &[[u8; 32]]) -> Vec<u8> {
     }
     let mut out = selector_anchor_many().to_vec();
     let mut head = [0u8; 32];
-    head[24..].copy_from_slice(&32u64.to_be_bytes());  // Array offset: after one head word.
+    head[24..].copy_from_slice(&32u64.to_be_bytes());
     out.extend_from_slice(&head);
     let mut len = [0u8; 32];
     len[24..].copy_from_slice(&(hashes.len() as u64).to_be_bytes());
@@ -302,16 +228,12 @@ pub fn registry_calldata(hashes: &[[u8; 32]]) -> Vec<u8> {
     out
 }
 
-/// Bare-form calldata: the words back to back.
-pub fn bare_calldata(hashes: &[[u8; 32]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(hashes.len() * 32);
-    for h in hashes {
-        out.extend_from_slice(h);
-    }
+pub fn carried_calldata(entry: &[u8]) -> Vec<u8> {
+    let mut out = registry_calldata(&[cryptox::sha256(entry)]);
+    out.extend_from_slice(entry);
     out
 }
 
-/// An EIP-1559 transaction to be signed.
 pub struct Unsigned {
     pub chain_id: u64,
     pub nonce: u64,
@@ -319,7 +241,7 @@ pub struct Unsigned {
     pub max_fee: u64,
     pub gas: u64,
     pub to: [u8; 20],
-    pub value: u64,
+    pub value: u128,
     pub data: Vec<u8>,
 }
 
@@ -332,24 +254,21 @@ impl Unsigned {
             rlp::quantity(self.max_fee),
             rlp::quantity(self.gas),
             rlp::bytes(&self.to),
-            rlp::quantity(self.value),
+            rlp::scalar(&self.value.to_be_bytes()),
             rlp::bytes(&self.data),
             rlp::list(&[]),
         ]
     }
 
-    /// Signing payload: `0x02 || rlp([...])`.
     pub fn payload(&self) -> Vec<u8> {
         let mut p = vec![2u8];
         p.extend_from_slice(&rlp::list(&self.fields()));
         p
     }
 
-    /// Sign the whole transaction; returns the raw bytes and the hash.
     pub fn sign(&self, key: &[u8; 32]) -> Option<(Vec<u8>, [u8; 32])> {
         let digest = cryptox::keccak256(&self.payload());
         let (r, s, v) = cryptox::sign_digest(key, &digest)?;
-        // `sign_digest` returns v as 27/28 (the EIP-191 convention); typed transactions need yParity.
         let y = v.checked_sub(27)?;
         let mut full = self.fields();
         full.push(rlp::scalar(&[y]));
@@ -362,26 +281,14 @@ impl Unsigned {
     }
 }
 
-/// Where a broadcast transaction ended up. Three named states: "included with status N", "not included yet"
-/// and "lost sight of it" differ, and folding them into an `Option` would print a slow inclusion on a real
-/// chain as a failure.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Confirm {
-    /// The receipt arrived.
     Included { status: u64, block_number: u64 },
-    /// Not included by the deadline. Normal on a real chain, not a verdict.
     NotYet,
-    /// The endpoint went silent while waiting. The bytes were already broadcast, so all that can be said is
-    /// that it is out of sight.
     Unreachable(String),
-    /// Some nodes give the receipt and others still say "not yet", after the judging table's re-asks
-    /// (`judge::NOT_YET_PAUSES`): the receipt is not taken on the word of some nodes alone. Each list names its
-    /// nodes in order.
     Split { has: Vec<String>, not_yet: Vec<String> },
 }
 
-/// The result of one anchoring. The transaction hash is always present: the bytes were broadcast and must be
-/// traceable.
 pub struct Sent {
     pub tx: [u8; 32],
     pub form: Form,
@@ -389,25 +296,11 @@ pub struct Sent {
 }
 
 impl Sent {
-    /// Whether this transaction counts as anchored. Decided here, not in the shell: §9.1 says a transaction
-    /// with status other than 1 is no anchor in either form.
     pub fn anchored(&self) -> bool {
         matches!(self.confirm, Confirm::Included { status: 1, .. })
     }
 }
 
-/// Send one or more anchors, wait for inclusion and bring back the receipt status.
-///
-/// The node's hash echo only shows it took the bytes. A call that reverts for lack of gas and a transaction
-/// priced below the base fee that never gets included echo exactly like a success, and §9.1 says a status
-/// other than 1 is no anchor. So the receipt is awaited.
-///
-/// The caller sets the wait: six seconds is shorter than a block on any real chain. Not included by then is
-/// "not yet"; an endpoint lost after broadcast is "out of sight"; neither is a failure verdict.
-///
-/// This joins [`read_fees`], [`broadcast`] and [`confirm`], all on the one node given. Callers that persist
-/// "submitted" between the two stages use them directly, so after a restart they wait for the same transaction
-/// without resending.
 pub fn anchor(
     ep: &mut dyn Endpoint,
     key: &[u8; 32],
@@ -425,33 +318,16 @@ pub fn anchor(
     Ok(Sent { tx: hash, form, confirm })
 }
 
-/// Why [`anchor_estimated`] sent nothing, or did not get its answer.
 #[derive(Debug)]
 pub enum NotSent {
-    /// The estimate gave no gas figure ([`estimate_gas`]): nothing was broadcast.
     Gas(NoGas<Trouble>),
-    /// The nonce could not be asked, or signing failed: nothing was broadcast.
     Send(Trouble),
-    /// The node answered the nonce question with something that is not a quantity (that answer as a law value, for
-    /// the caller to say in its own words; `None` when it is not one): nothing was broadcast.
     Nonce(Option<Value>),
-    /// The signed transaction's hash could not be landed where the caller keeps it (the caller's words):
-    /// nothing was broadcast, so a rerun never meets a transaction it has no record of.
     Land(String),
-    /// The broadcast itself failed (the node refused it, its echo was not the hash signed, or the transport
-    /// broke): the hash was landed before it, and the bytes may be in a pool, so the hash goes with the trouble.
+    Funds,
     Broadcast([u8; 32], Trouble),
 }
 
-/// [`anchor`] with the estimate before the send (the command line's `anchor`, which has one node): its fees,
-/// then one estimate of this very transaction at the head that node gives ([`estimate_gas`], the rule the app
-/// takes), the limit it carries following that estimate ([`limit_for`]), then broadcast and wait. An estimate
-/// the node refuses, or one above [`GAS_LIMIT`], sends nothing. Of what the node says, a refusal about the
-/// call itself (the one table's `said::refuses_the_call`: a member about the call, or the node's JSON-RPC
-/// error with a numeric `code` the table does not name) is the call's refusal; a rate limit, a missing
-/// method, credentials, a wrong chain, an error without a numeric `code`, a page at an HTTP status, a
-/// transport failure, a recording that lacks the question or contradicts itself is the network's.
-/// Returns what was sent with the limit it carried.
 #[allow(clippy::too_many_arguments)]
 pub fn anchor_estimated(
     ep: &mut dyn Endpoint,
@@ -463,16 +339,9 @@ pub fn anchor_estimated(
     calldata_override: Option<Vec<u8>>,
     wait: std::time::Duration,
 ) -> Result<(Sent, u64), NotSent> {
-    anchor_landed(ep, key, chain_id, form, registry, hashes, calldata_override, wait, None, &mut |_, _| Ok(()))
+    anchor_landed(ep, key, chain_id, form, registry, hashes, calldata_override, wait, None, &mut |_, _| Ok(()), &mut |_, _, _| Ok(()))
 }
 
-/// [`anchor_estimated`] with the two things a sender that keeps its own record of what it sent needs (the
-/// command line's direct `anchor`): the nonce to sign at (`None`: the node's pending one; `Some`: the nonce of
-/// transactions sent earlier that no node holds and whose nonce is unused, [`Earlier::Unused`], so at most one
-/// of them can ever be included), and `land`, called with the nonce and the hash once the transaction is
-/// signed and before it is broadcast: a hash it cannot land sends nothing ([`NotSent::Land`]), so no
-/// transaction ever goes out that a rerun would not ask about first. A broadcast that fails after it answers
-/// with that hash ([`NotSent::Broadcast`]).
 #[allow(clippy::too_many_arguments)]
 pub fn anchor_landed(
     ep: &mut dyn Endpoint,
@@ -485,6 +354,7 @@ pub fn anchor_landed(
     wait: std::time::Duration,
     nonce: Option<u64>,
     land: &mut dyn FnMut(u64, &[u8; 32]) -> Result<(), String>,
+    funds: &mut dyn FnMut(&mut dyn Endpoint, u128, &[u8; 20]) -> Result<(), ()>,
 ) -> Result<(Sent, u64), NotSent> {
     crate::seam();
     let fees = read_fees(ep);
@@ -496,19 +366,16 @@ pub fn anchor_landed(
             let w = crate::patience::ask(ep, method, params)?;
             crate::judge::read_as_decided(method, params, &w).ok_or_else(|| Trouble::Transport(Broke::Unread { method: method.to_string() }))
         };
-        // The head is not the call: a node that will not give it says nothing about the call either.
         let head = match ask("eth_blockNumber", &Value::Arr(vec![])) {
             Ok(v) => v.as_str().and_then(quantity).ok_or_else(|| Trouble::Transport(Broke::Unread { method: "eth_blockNumber".into() })),
             Err(Trouble::Node(m)) => Err(Trouble::Transport(Broke::Said(m))),
             Err(t) => Err(t),
         };
-        // Read by the one judgement the app takes too (`said::refuses_the_call`): only a refusal about the
-        // call itself says the call would revert; a rate limit, a missing method, credentials, a wrong chain
-        // or words that are not the node's coded refusal say nothing about it, as a broken transport does not.
         estimate_gas(|| head, |params| ask("eth_estimateGas", params), call, |t| !crate::said::refuses_the_call(t))
     }
     .map_err(NotSent::Gas)?;
     let fees = fees.with_estimate(gas);
+    funds(&mut *ep, fees.cap_wei(), &from).map_err(|_| NotSent::Funds)?;
     let nonce = match nonce {
         Some(n) => n,
         None => {
@@ -523,23 +390,13 @@ pub fn anchor_landed(
     Ok((Sent { tx: hash, form, confirm }, fees.gas_limit))
 }
 
-/// What becomes of transactions sent at one nonce that no node holds and none of which has a receipt (dropped
-/// from every pool, or their nonce used by another transaction). Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Unheld {
-    /// Their nonce is used on chain and, asked once more, none has a receipt: void, never to be included.
     Void,
-    /// Their nonce is unused: they may be sent again at that very nonce (at most one of them can be included).
     Unused,
-    /// Not judged: the account's nonce on chain was not read, or a receipt was heard on asking again.
     Wait,
 }
 
-/// The one rule for transactions no node holds, judged by the sending account's nonce on chain (`latest`,
-/// what blocks have used) against theirs (`mine`): past it, every one of them is asked for its receipt once more
-/// (`none_included`: a node past the nonce has the block, and the receipt if it was one of these) and they are
-/// void when none has one; not past it, unused. The app's queue (a batch no node holds) and the command line's
-/// direct `anchor` (a rerun, [`earlier`]) both judge by this, each with its own way of asking.
 pub fn unheld(on_chain: Option<u64>, mine: u64, none_included: impl FnOnce() -> bool) -> Unheld {
     match on_chain {
         None => Unheld::Wait,
@@ -551,34 +408,20 @@ pub fn unheld(on_chain: Option<u64>, mine: u64, none_included: impl FnOnce() -> 
     }
 }
 
-/// Where transactions sent earlier for the same anchoring stand, asked of one node by their hashes before
-/// anything new is signed (the command line's direct `anchor`, on a rerun). Closed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Earlier {
-    /// One of them has its receipt (the first that does, in the order sent): included, with its status and block.
     Included { tx: [u8; 32], status: u64, block_number: u64 },
-    /// The node holds one of them and none has a receipt: in flight. Nothing new is signed.
     Held { tx: [u8; 32] },
-    /// None is held or included, and their nonce is used on chain ([`Unheld::Void`]): void.
     Void,
-    /// None is held or included, and their nonce is unused ([`Unheld::Unused`]): sendable again at it.
     Unused { nonce: u64 },
-    /// The node did not answer one of the questions, answered one in another shape, or a receipt was heard
-    /// on asking again: nothing can be said, and nothing new is signed (`tx`, the last sent; the words).
     Unread { tx: [u8; 32], said: String },
 }
 
-/// Ask one node where the transactions sent earlier stand (`sent`: each one's nonce and hash, in the order
-/// sent; not empty): each one's receipt, then whether the node holds each, then the account's nonce on chain
-/// judged by [`unheld`] against the largest nonce they were sent at. Every question goes through the patience
-/// table. A receipt is read by its status and block, a held transaction as an object carrying its hash, the
-/// nonce as a quantity; `null` is "no"; anything else is [`Earlier::Unread`].
 pub fn earlier(ep: &mut dyn Endpoint, from: &[u8; 20], sent: &[(u64, [u8; 32])]) -> Earlier {
     crate::seam();
     let last = sent.last().map(|(_, h)| *h).unwrap_or([0u8; 32]);
     let unread = |said: String| Earlier::Unread { tx: last, said };
     let by_hash = |h: &[u8; 32]| Value::Arr(vec![Value::Str(hexfmt::encode(h))]);
-    // One receipt: a receipt (its status and block), not yet (`None`), or unread (the words).
     let receipt = |ep: &mut dyn Endpoint, h: &[u8; 32]| -> Result<Option<(u64, u64)>, String> {
         let w = crate::patience::ask(ep, "eth_getTransactionReceipt", &by_hash(h)).map_err(|t| format!("eth_getTransactionReceipt {t:?}"))?;
         if w.is_null() {
@@ -637,9 +480,6 @@ pub fn earlier(ep: &mut dyn Endpoint, from: &[u8; 20], sent: &[(u64, [u8; 32])])
     }
 }
 
-/// Sign and broadcast one transaction; returns its hash when the echo matches. A mismatched echo, a node
-/// refusal and a transport failure each return as they are. Signing and submitting live apart ([`sign_for`]
-/// and [`submit`]), so one signed transaction can go to several endpoints with its nonce fixed.
 #[allow(clippy::too_many_arguments)]
 pub fn broadcast(
     ep: &mut dyn Endpoint,
@@ -657,7 +497,6 @@ pub fn broadcast(
     Ok(hash)
 }
 
-/// Sign this transaction with the nonce read from `ep`; returns the raw bytes and hash. Nothing is sent.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_for(
     ep: &mut dyn Endpoint,
@@ -676,14 +515,10 @@ pub fn sign_for(
     sign_at(key, chain_id, form, registry, hashes, calldata_override, fees, nonce)
 }
 
-/// The nonce question for `from`: `pending`, so while an earlier batch is still in the pool the new one follows
-/// it and does not reuse its nonce (reusing it would replace the earlier one or be refused as underpriced).
 pub fn nonce_params(from: &[u8; 20]) -> Value {
     Value::Arr(vec![Value::Str(hexfmt::encode(from)), Value::Str("pending".into())])
 }
 
-/// Sign this transaction with the nonce given (asked of several nodes by the caller and judged by the one
-/// table: the largest pending nonce, `judge::rule_of`); returns the raw bytes and hash. Nothing is sent.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_at(
     key: &[u8; 32],
@@ -710,21 +545,21 @@ pub fn sign_at(
     unsigned.sign(key).ok_or(Trouble::Transport(Broke::Unsigned))
 }
 
-/// Where this transaction goes and what it carries: a registry's `anchor`/`anchorMany`, or to oneself with the
-/// words. The one place signing, estimating and the command line's record of what it sent ([`earlier`]) take
-/// them from, so the estimate is of the sent bytes and a rerun is known by them.
-pub fn target(form: Form, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], calldata_override: Option<Vec<u8>>, from: [u8; 20]) -> Result<([u8; 20], Vec<u8>), Trouble> {
+#[allow(clippy::too_many_arguments)]
+pub fn sign_plain(key: &[u8; 32], chain_id: u64, to: [u8; 20], value: u128, data: &[u8], fees: Fees, nonce: u64) -> Result<(Vec<u8>, [u8; 32]), Trouble> {
+    let unsigned = Unsigned { chain_id, nonce, max_priority_fee: fees.priority, max_fee: fees.max_fee, gas: fees.gas_limit, to, value, data: data.to_vec() };
+    unsigned.sign(key).ok_or(Trouble::Transport(Broke::Unsigned))
+}
+
+pub fn target(form: Form, registry: Option<[u8; 20]>, hashes: &[[u8; 32]], calldata_override: Option<Vec<u8>>, _from: [u8; 20]) -> Result<([u8; 20], Vec<u8>), Trouble> {
     Ok(match form {
         Form::Registry => {
             let r = registry.ok_or(Trouble::Transport(Broke::NoRegistry))?;
             (r, calldata_override.unwrap_or_else(|| registry_calldata(hashes)))
         }
-        Form::Bare => (from, calldata_override.unwrap_or_else(|| bare_calldata(hashes))),
     })
 }
 
-/// Hand the signed transaction to one node; done when the echo matches. The same bytes sent to several nodes
-/// are one transaction (same hash).
 pub fn submit(ep: &mut dyn Endpoint, raw: &[u8], hash: &[u8; 32]) -> Result<(), Trouble> {
     crate::seam();
     let sent = ep.call("eth_sendRawTransaction", &Value::Arr(vec![Value::Str(hexfmt::encode(raw))]))?;
@@ -735,13 +570,10 @@ pub fn submit(ep: &mut dyn Endpoint, raw: &[u8], hash: &[u8; 32]) -> Result<(), 
     Ok(())
 }
 
-/// Wait for the receipt until the caller's deadline. No `?` anywhere: the transaction is already out, so this
-/// only says "included with status N", "not yet" or "out of sight".
 pub fn confirm(ep: &mut dyn Endpoint, hash: &[u8; 32], wait: std::time::Duration) -> Confirm {
     confirm_each(&mut [ep], hash, wait, &RECEIPT_BACKOFF)
 }
 
-/// The pauses between rounds of asking for a receipt: doubling from the first, held at the last.
 pub const RECEIPT_BACKOFF: [std::time::Duration; 4] = [
     std::time::Duration::from_millis(250),
     std::time::Duration::from_millis(500),
@@ -749,23 +581,6 @@ pub const RECEIPT_BACKOFF: [std::time::Duration; 4] = [
     std::time::Duration::from_millis(2000),
 ];
 
-/// Ask each endpoint for the same receipt, round after round until the caller's deadline. A receipt counts when
-/// every endpoint that answered gives it, alike (block and status, `judge::RECEIPT_FACTS`); an endpoint that does
-/// not answer is passed over. When some give it and others say "not yet" (nodes a block or two apart), it is asked
-/// again round after round like "not yet", and still split at the deadline it is [`Confirm::Split`], naming both
-/// sides: one node's word alone does not anchor anything, and a split is no outcome while the wait lasts. With no
-/// wait (one round) it is asked again after each of the judging table's pauses (`judge::not_yet_pauses`) instead. A
-/// round in which every endpoint fails (rate limited, down for a moment) is not an answer: the transaction is
-/// already out, and a node that refuses one round may give the receipt the next, so the rounds go on, paused by
-/// `backoff` (the product's is [`RECEIPT_BACKOFF`]; a test gives its own so no wall clock is waited; an empty list
-/// does not pause). At the deadline it is "not yet" when any endpoint ever answered (it did not know the receipt),
-/// and "out of sight" (with the last sentence) when none ever did. Asking only the endpoint that took the broadcast
-/// would wait forever once that endpoint went down.
-///
-/// The wait is one deadline over every question: each question is given only the wait left
-/// ([`Endpoint::call_within`]), and once it is spent no further endpoint is asked, so a node that does not
-/// answer cannot stretch the wait by a whole deadline of its own. A wait of zero asks one round, each
-/// endpoint within its own deadline.
 pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::time::Duration, backoff: &[std::time::Duration]) -> Confirm {
     if eps.is_empty() {
         return Confirm::Unreachable(Broke::NoEndpoint.evidence());
@@ -777,17 +592,24 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
     let mut round = 0usize;
     let split_pauses = crate::judge::not_yet_pauses();
     let mut split_rounds = 0usize;
-    // The last whole round's split, when it was one: with a deadline, nodes a block or two apart are ordinary, so
-    // a split is asked again until the deadline and named only if it still stands then.
     let mut split: Option<(Vec<String>, Vec<String>)> = None;
+    let mut seen = false;
+    let mut base: Option<u64> = None;
+    let mut watched = false;
+    let mut ask_receipt = true;
     loop {
-        // This round's receipts (by node) and the nodes that said "not yet".
         let mut has: Vec<(String, (u64, u64))> = Vec::new();
+        let mut has_names: Vec<String> = Vec::new();
         let mut not_yet: Vec<String> = Vec::new();
-        // A round the deadline cut before every node was asked decides nothing: a receipt is never taken on the
-        // word of the nodes asked before the cut.
         let mut cut = false;
-        for ep in eps.iter_mut() {
+        let mut first_not_yet = false;
+        for (at, ep) in eps.iter_mut().enumerate() {
+            if !ask_receipt {
+                break;
+            }
+            if at == 1 && !wait.is_zero() && !seen && has.is_empty() && not_yet.len() == 1 {
+                break;
+            }
             let asked = if wait.is_zero() {
                 ep.call("eth_getTransactionReceipt", &q)
             } else {
@@ -796,16 +618,20 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                     cut = true;
                     break;
                 }
+                let left = left.min(ONE_ASK);
                 ep.call_within("eth_getTransactionReceipt", &q, left)
             };
             match asked {
                 Ok(r) if !r.is_null() => match (tx::qty_u64(&r, "status"), tx::qty_u64(&r, "blockNumber")) {
                     (Some(status), Some(block_number)) => {
                         ever_answered = true;
-                        has.push((ep.name(), (status, block_number)));
+                        if !seen {
+                            round = 0;
+                        }
+                        seen = true;
+                        has.push((ep.place(), (status, block_number)));
+                        has_names.push(ep.name());
                     }
-                    // This endpoint's receipt is incomplete: it answered (so the deadline says "not yet", not "out of
-                    // sight"); note the sentence and ask the next one.
                     _ => {
                         ever_answered = true;
                         last = Some(Broke::Unread { method: "eth_getTransactionReceipt".into() }.evidence());
@@ -813,6 +639,7 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                 },
                 Ok(_) => {
                     ever_answered = true;
+                    first_not_yet |= at == 0;
                     not_yet.push(ep.name());
                 }
                 Err(e) => last = Some(format!("{e:?}")),
@@ -821,13 +648,11 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
         if !cut {
             split = None;
         }
-        if let Some((_, first)) = has.first().filter(|_| !cut) {
-            let alike = has.iter().all(|(_, r)| r == first);
-            let (status, block_number) = *first;
-            match (alike, not_yet.is_empty()) {
-                (true, true) => return Confirm::Included { status, block_number },
-                // Split with no wait: asked again after the judging table's pauses, then named.
-                (true, false) if wait.is_zero() => match split_pauses.get(split_rounds) {
+        let none_had = has.is_empty();
+        if !has.is_empty() && !cut {
+            match taken(&has, not_yet.len()) {
+                Taken::Counts((status, block_number)) => return Confirm::Included { status, block_number },
+                Taken::Split if wait.is_zero() => match split_pauses.get(split_rounds) {
                     Some(pause) => {
                         split_rounds += 1;
                         if !pause.is_zero() {
@@ -835,12 +660,10 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                         }
                         continue;
                     }
-                    None => return Confirm::Split { has: has.into_iter().map(|(n, _)| n).collect(), not_yet },
+                    None => return Confirm::Split { has: has_names, not_yet },
                 },
-                // Split within a wait: asked again like "not yet" until the deadline.
-                (true, false) => split = Some((has.into_iter().map(|(n, _)| n).collect(), not_yet)),
-                // Receipts that differ: no reading this round.
-                (false, _) => {}
+                Taken::Split => split = Some((has_names, not_yet)),
+                Taken::Differ => {}
             }
         }
         let now = std::time::Instant::now();
@@ -853,16 +676,83 @@ pub fn confirm_each(eps: &mut [&mut dyn Endpoint], hash: &[u8; 32], wait: std::t
                 false => Confirm::Unreachable(last.unwrap_or_else(|| Broke::NoEndpoint.evidence())),
             };
         }
-        if let Some(pause) = backoff.get(round.min(backoff.len().saturating_sub(1))) {
-            std::thread::sleep((*pause).min(deadline - now));
-        }
+        let pause = backoff.get(round.min(backoff.len().saturating_sub(1))).map_or(std::time::Duration::ZERO, |p| (*p).min(deadline - now));
         round += 1;
+        if !watched && !wait.is_zero() && !seen && none_had && first_not_yet && !cut {
+            watched = true;
+            base = crate::action::head_at_broadcast(hash);
+            ask_receipt = base.is_none();
+        }
+        if !ask_receipt {
+            let head = crate::action::after_a_beat(pause, || head_within(&mut *eps[0], deadline));
+            match (head, base) {
+                (Some(h), Some(b)) if h <= b => continue,
+                _ => {
+                    base = None;
+                    ask_receipt = true;
+                    round = 0;
+                }
+            }
+            continue;
+        }
+        if !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken {
+    Counts((u64, u64)),
+    Split,
+    Differ,
+}
+
+pub fn taken(has: &[(String, (u64, u64))], not_yet: usize) -> Taken {
+    let mut groups: Vec<((u64, u64), usize)> = Vec::new();
+    for (_, r) in has {
+        if !groups.iter().any(|(g, _)| g == r) {
+            groups.push((*r, crate::endpoints::distinct_places(has.iter().filter(|(_, x)| x == r).map(|(n, _)| n.as_str()))));
+        }
+    }
+    let two: Vec<(u64, u64)> = groups.iter().filter(|(_, n)| *n >= 2).map(|(g, _)| *g).collect();
+    match (two.as_slice(), groups.as_slice()) {
+        ([one], _) => Taken::Counts(*one),
+        ([], [(one, n)]) if counts(*n, not_yet) => Taken::Counts(*one),
+        ([], [_]) => Taken::Split,
+        _ => Taken::Differ,
+    }
+}
+
+pub fn counts(given: usize, not_yet: usize) -> bool {
+    given >= 2 || (given == 1 && not_yet == 0)
+}
+
+fn head_within(ep: &mut dyn Endpoint, deadline: std::time::Instant) -> Option<u64> {
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+        return None;
+    }
+    let left = left.min(ONE_ASK);
+    ep.call_within("eth_blockNumber", &Value::Arr(Vec::new()), left).ok().as_ref().and_then(crate::action::height)
+}
+
+pub const ONE_ASK: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(test)]
 mod fee_tests {
     use super::*;
+
+    #[test]
+    fn a_transfer_value_is_written_whole_and_as_before_where_it_fit() {
+        let tx = |value: u128| Unsigned { chain_id: 1, nonce: 2, max_priority_fee: 3, max_fee: 4, gas: 21_000, to: [0x22; 20], value, data: Vec::new() };
+        for v in [0u64, 1, 0x7f, 0x80, 0xff, 0x100, u64::MAX] {
+            assert_eq!(tx(u128::from(v)).fields()[6], crate::rlp::quantity(v), "{v}");
+        }
+        let wide = u128::from(u64::MAX) + 1;
+        assert_eq!(tx(wide).fields()[6], [&[0x89u8, 1][..], &[0u8; 8]].concat(), "nine bytes, the leading one first");
+        assert_eq!(tx(u128::MAX).fields()[6], [&[0x90u8][..], &[0xffu8; 16]].concat());
+    }
 
     fn history(tips: &[u64]) -> Value {
         Value::Obj(vec![(
@@ -871,9 +761,6 @@ mod fee_tests {
         )])
     }
 
-    /// The priority fee is the median of the block medians (the lower middle for an even count), held at the
-    /// ceiling; anything unread is the ceiling; the cap is base fee × 2 + priority fee; no base fee is the
-    /// fallback pair.
     #[test]
     fn the_fee_rule_reads_the_chain_and_holds_its_ceiling() {
         assert_eq!(tip_of(&history(&[5, 1, 4, 2, 3])), Some(3));
@@ -888,15 +775,11 @@ mod fee_tests {
         assert_eq!(Fees::of(Some(u64::MAX), Some(1)).max_fee, u64::MAX);
         assert_eq!(Fees::of(None, Some(1)), Fees::fallback());
         assert!(!Fees::fallback().from_chain);
-        // A base fee of 1 gwei with the priority fee at its ceiling: the numbers of the fallback, from the chain.
         let even = Fees::of(Some(PRIORITY_FEE), Some(PRIORITY_FEE * 5));
         assert_eq!((even.max_fee, even.priority), (MAX_FEE, PRIORITY_FEE));
         assert!(even.from_chain);
     }
 
-    /// Blocks that paid no priority fee are not counted, one line per form: zeros among paid blocks (left out, odd
-    /// and even counts left), one paid block among zeros (its fee), every block zero (zero, as the chain says), one
-    /// block zero, no block, a zero next to an unreadable entry (unread wins).
     #[test]
     fn blocks_that_paid_no_priority_fee_are_not_counted() {
         assert_eq!(tip_of(&history(&[0, 5, 0, 1, 3])), Some(3), "three paid blocks: their median");
@@ -910,8 +793,6 @@ mod fee_tests {
         assert_eq!(Fees::of(Some(10), tip_of(&history(&[0, 0, 0]))).priority, 0, "all zero: no priority fee");
     }
 
-    /// The gas limit for an estimate: one and a half times it, rounded up, held at the ceiling; the fees carry
-    /// it and the cap is worked from it.
     #[test]
     fn the_gas_limit_follows_the_estimate() {
         assert_eq!(limit_for(0), 0);
@@ -929,7 +810,6 @@ mod fee_tests {
         assert_eq!(fee_cap_wei(), MAX_FEE as u128 * GAS_LIMIT as u128);
     }
 
-    /// One reading of a block's base fee for both ends: leading zeros read, more than 64 bits unread.
     #[test]
     fn a_base_fee_is_read_one_way() {
         let b = |x: &str| Value::Obj(vec![("baseFeePerGas".into(), Value::Str(x.into()))]);
@@ -945,7 +825,6 @@ mod fee_tests {
     }
 }
 
-/// One anchor the chain already holds: the hash, the transaction that carried it, and its block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OnChain {
     pub hash: [u8; 32],
@@ -953,10 +832,6 @@ pub struct OnChain {
     pub block: u64,
 }
 
-/// Why one node did not say whether it holds the anchors ([`on_chain`]): its head question failed (the node's
-/// trouble as it came, or an answer that is not a height), or the registry's logs over the window were not read
-/// (the scan's refusal). Structure, as every other failure to read the chain: each road classifies it by the one
-/// table and says it in its own words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotSaid {
     Head(Trouble),
@@ -964,8 +839,6 @@ pub enum NotSaid {
 }
 
 impl NotSaid {
-    /// The node's own failure under it: what the head question met, or what the log question met (the node's word,
-    /// or the way's structure). `None` for a log window refused for its shape or cut short.
     pub fn trouble(&self) -> Option<Trouble> {
         use crate::scan::{Asked, Refusal};
         match self {
@@ -976,7 +849,13 @@ impl NotSaid {
         }
     }
 
-    /// The machine form: the question and what it met.
+    pub fn cut(&self) -> bool {
+        match self {
+            NotSaid::Logs(r) => r.cut(),
+            NotSaid::Head(_) => false,
+        }
+    }
+
     pub fn evidence(&self) -> String {
         match self {
             NotSaid::Head(t) => format!("eth_blockNumber {t:?}"),
@@ -985,40 +864,333 @@ impl NotSaid {
     }
 }
 
-/// Which of `hashes` the sender `from` already anchored through `registry` on chain `chain`, as the registry's
-/// logs say from block `start` to the head: the anchor scan's own reader (`scan::logs_over_window`: asked with
-/// patience, the range shrunk where the node limits it, never fewer logs than asked), every log judged here again
-/// (the registry, topic 0, this sender, one of these hashes; the node's filtering is not trusted). Each hash once,
-/// with the transaction and block of its earliest log. A head that does not read, or a range the node does not
-/// answer, is [`NotSaid`], with what the node met: whether a hash is on chain is never guessed, so nothing is to be
-/// sent on a guess.
-pub fn on_chain(ep: &mut dyn Endpoint, chain: u64, registry: &[u8; 20], from: &[u8; 20], hashes: &[[u8; 32]], start: u64) -> Result<Vec<OnChain>, NotSaid> {
-    crate::seam();
+pub fn on_chain(ep: &mut dyn Endpoint, chain: u64, registries: &[[u8; 20]], from: &[u8; 20], hashes: &[[u8; 32]], start: u64) -> Result<Vec<OnChain>, NotSaid> {
     if hashes.is_empty() {
         return Ok(Vec::new());
     }
+    held(ep, chain, registries, from, hashes, start).map(|h| h.found)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub found: Vec<OnChain>,
+    pub latest: Option<u64>,
+}
+
+pub fn held(ep: &mut dyn Endpoint, chain: u64, registries: &[[u8; 20]], from: &[u8; 20], hashes: &[[u8; 32]], start: u64) -> Result<Held, NotSaid> {
+    crate::seam();
     let head = head_of(ep).map_err(NotSaid::Head)?;
-    let mut sender = [0u8; 32];
-    sender[12..].copy_from_slice(from);
     let t0 = crate::scan::topic0();
-    let filter = crate::scan::LogFilter { addresses: vec![*registry], topics: vec![crate::scan::Topic::One(t0), crate::scan::Topic::One(sender), crate::scan::Topic::AnyOf(hashes.to_vec())] };
+    let filter = crate::scan::LogFilter { addresses: registries.to_vec(), topics: vec![crate::scan::Topic::One(t0), crate::scan::Topic::One(word_of(from)), crate::scan::Topic::Any] };
     let logs = crate::scan::logs_over_window(ep, chain, &filter, start.min(head), head).map_err(NotSaid::Logs)?;
+    Ok(held_in(&logs, registries, from, hashes))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn held_among(ep: &mut dyn Endpoint, chain: u64, registries: &[[u8; 20]], lineage: &[[u8; 20]], from: &[u8; 20], hashes: &[[u8; 32]], start: u64, head: Option<u64>, nodes: &str) -> Result<Held, NotSaid> {
+    crate::seam();
+    let head = match head {
+        Some(h) => h,
+        None => head_of(ep).map_err(NotSaid::Head)?,
+    };
+    let filter = crate::scan::lineage_filter(registries, lineage);
+    let logs = crate::scan::logs_judged_over(ep, chain, &filter, start.min(head), head.max(start), nodes).map_err(NotSaid::Logs)?;
+    Ok(held_in(&logs, registries, from, hashes))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn held_among_asks(ep: &dyn Endpoint, chain: u64, registries: &[[u8; 20]], lineage: &[[u8; 20]], start: u64, head: u64, nodes: &str) -> Vec<crate::rpc::Ask<'static>> {
+    let filter = crate::scan::lineage_filter(registries, lineage);
+    crate::scan::log_asks(ep, chain, &filter, start.min(head), head.max(start), Some(nodes))
+}
+
+fn word_of(a: &[u8; 20]) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(a);
+    w
+}
+
+fn anchors_of<'a>(logs: &'a [crate::wire::W], registries: &'a [[u8; 20]], senders: &'a [[u8; 32]]) -> impl Iterator<Item = ([u8; 32], Option<[u8; 32]>, u64)> + 'a {
+    let t0 = crate::scan::topic0();
     let h32 = |w: Option<&crate::wire::W>| -> Option<[u8; 32]> { hexfmt::decode(w?.as_str()?)?.try_into().ok() };
-    let mut found: Vec<OnChain> = Vec::new();
-    for log in &logs {
+    logs.iter().filter_map(move |log| {
         let address = log.member("address").and_then(|a| a.as_str()).and_then(hexfmt::decode);
         let topics = log.member("topics").and_then(|t| t.as_arr()).unwrap_or(&[]);
-        let (Some(t), Some(s), Some(hash)) = (h32(topics.first()), h32(topics.get(1)), h32(topics.get(2))) else { continue };
-        if address.as_deref() != Some(&registry[..]) || t != t0 || s != sender || !hashes.contains(&hash) {
+        let (Some(t), Some(s), Some(hash)) = (h32(topics.first()), h32(topics.get(1)), h32(topics.get(2))) else { return None };
+        if !address.is_some_and(|a| registries.iter().any(|r| a[..] == r[..])) || t != t0 || !senders.contains(&s) {
+            return None;
+        }
+        let block = log.member("blockNumber").and_then(|b| b.as_str()).and_then(quantity)?;
+        Some((hash, h32(log.member("transactionHash")), block))
+    })
+}
+
+fn held_in(logs: &[crate::wire::W], registries: &[[u8; 20]], from: &[u8; 20], hashes: &[[u8; 32]]) -> Held {
+    let mut out = Held::default();
+    let me = [word_of(from)];
+    for (hash, tx, block) in anchors_of(logs, registries, &me) {
+        let Some(tx) = tx else { continue };
+        out.latest = Some(out.latest.map_or(block, |l| l.max(block)));
+        if !hashes.contains(&hash) {
             continue;
         }
-        let (Some(tx), Some(block)) = (h32(log.member("transactionHash")), log.member("blockNumber").and_then(|b| b.as_str()).and_then(quantity)) else { continue };
-        match found.iter_mut().find(|f| f.hash == hash) {
+        match out.found.iter_mut().find(|f| f.hash == hash) {
             Some(f) if f.block <= block => {}
             Some(f) => *f = OnChain { hash, tx, block },
-            None => found.push(OnChain { hash, tx, block }),
+            None => out.found.push(OnChain { hash, tx, block }),
         }
     }
-    found.sort_by_key(|f| (f.block, f.hash));
-    Ok(found)
+    out.found.sort_by_key(|f| (f.block, f.hash));
+    out
+}
+
+pub fn latest_of(ep: &mut dyn Endpoint, chain: u64, registries: &[[u8; 20]], senders: &[[u8; 20]], hashes: &[[u8; 32]], start: u64) -> Result<Option<u64>, NotSaid> {
+    crate::seam();
+    if senders.is_empty() || hashes.is_empty() {
+        return Ok(None);
+    }
+    let head = head_of(ep).map_err(NotSaid::Head)?;
+    let words: Vec<[u8; 32]> = senders.iter().map(word_of).collect();
+    let t0 = crate::scan::topic0();
+    let filter = crate::scan::LogFilter { addresses: registries.to_vec(), topics: vec![crate::scan::Topic::One(t0), crate::scan::Topic::AnyOf(words.clone()), crate::scan::Topic::Any] };
+    let logs = crate::scan::logs_over_window(ep, chain, &filter, start.min(head), head).map_err(NotSaid::Logs)?;
+    Ok(latest_in(&logs, registries, &words, hashes))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn latest_among(ep: &mut dyn Endpoint, chain: u64, registries: &[[u8; 20]], lineage: &[[u8; 20]], senders: &[[u8; 20]], hashes: &[[u8; 32]], start: u64, head: Option<u64>, nodes: &str) -> Result<Option<u64>, NotSaid> {
+    crate::seam();
+    if senders.is_empty() || hashes.is_empty() {
+        return Ok(None);
+    }
+    let head = match head {
+        Some(h) => h,
+        None => head_of(ep).map_err(NotSaid::Head)?,
+    };
+    let filter = crate::scan::lineage_filter(registries, lineage);
+    let logs = crate::scan::logs_judged_over(ep, chain, &filter, start.min(head), head.max(start), nodes).map_err(NotSaid::Logs)?;
+    let words: Vec<[u8; 32]> = senders.iter().map(word_of).collect();
+    Ok(latest_in(&logs, registries, &words, hashes))
+}
+
+fn latest_in(logs: &[crate::wire::W], registries: &[[u8; 20]], words: &[[u8; 32]], hashes: &[[u8; 32]]) -> Option<u64> {
+    anchors_of(logs, registries, words).filter(|(hash, _, _)| hashes.contains(hash)).map(|(_, _, block)| block).max()
+}
+
+pub fn block_time(ep: &mut dyn Endpoint, number: u64) -> Result<u64, Trouble> {
+    crate::seam();
+    let w = crate::patience::ask(ep, "eth_getBlockByNumber", &block_time_params(number))?;
+    crate::wire::to_core(&crate::wire::project(&w, &["timestamp"]))
+        .and_then(|v| v.member("timestamp").and_then(|t| t.as_str()).and_then(quantity))
+        .ok_or_else(|| Trouble::Transport(Broke::Unread { method: "eth_getBlockByNumber".into() }))
+}
+
+pub fn block_time_params(number: u64) -> Value {
+    Value::Arr(vec![Value::Str(format!("0x{number:x}")), Value::Bool(false)])
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use crate::wire::{Body, W};
+
+    struct Waited {
+        name: &'static str,
+        heads: Vec<Option<u64>>,
+        receipts: Vec<Result<Option<u64>, ()>>,
+        asked: Vec<&'static str>,
+        at: Vec<std::time::Instant>,
+    }
+
+    impl Waited {
+        fn new(name: &'static str, heads: Vec<Option<u64>>, receipts: Vec<Result<Option<u64>, ()>>) -> Waited {
+            Waited { name, heads, receipts, asked: Vec::new(), at: Vec::new() }
+        }
+    }
+
+    fn nth<T: Clone>(xs: &[T], n: usize) -> T {
+        xs.get(n).or(xs.last()).cloned().expect("a scene")
+    }
+
+    impl Endpoint for Waited {
+        fn call(&mut self, method: &str, _: &Value) -> Result<W, Trouble> {
+            let refused = || Trouble::Node("{\"code\":-32000,\"message\":\"unavailable\"}".into());
+            match method {
+                "eth_blockNumber" => {
+                    let n = self.asked.iter().filter(|m| **m == "head").count();
+                    self.asked.push("head");
+                    nth(&self.heads, n).map(|h| W::of(Body::Str(format!("0x{h:x}")))).ok_or_else(refused)
+                }
+                "eth_getTransactionReceipt" => {
+                    let n = self.asked.iter().filter(|m| **m == "receipt").count();
+                    self.asked.push("receipt");
+                    self.at.push(std::time::Instant::now());
+                    match nth(&self.receipts, n) {
+                        Ok(Some(b)) => Ok(crate::wire::parse(format!("{{\"blockHash\":\"0x{}\",\"blockNumber\":\"0x{b:x}\",\"status\":\"0x1\"}}", "ab".repeat(32)).as_bytes()).expect("json")),
+                        Ok(None) => Ok(W::of(Body::Null)),
+                        Err(()) => Err(refused()),
+                    }
+                }
+                _ => Ok(W::of(Body::Null)),
+            }
+        }
+        fn name(&self) -> String {
+            self.name.into()
+        }
+        fn place(&self) -> String {
+            self.name.into()
+        }
+    }
+
+    const LONG: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn broadcast_at_0x10() -> crate::action::Opened {
+        let a = crate::action::open(None);
+        crate::action::note("held", "eth_blockNumber", &Value::Arr(Vec::new()), &W::of(Body::Str("0x10".into())));
+        crate::action::sent("held", Some(&[1; 32]));
+        a
+    }
+
+    #[test]
+    fn a_wait_asks_the_head_until_it_moves_and_then_the_receipt() {
+        let mut node = Waited::new("resumed", vec![Some(0x10)], vec![Ok(None), Ok(Some(0x10))]);
+        let got = confirm_each(&mut [&mut node], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x10 });
+        assert_eq!(node.asked, ["receipt", "receipt"], "no head the broadcast went out on: the receipt each beat");
+        let _action = broadcast_at_0x10();
+        let mut node = Waited::new("taker", vec![Some(0x10), Some(0x10), Some(0x10), Some(0x11)], vec![Ok(None), Ok(Some(0x11))]);
+        let got = confirm_each(&mut [&mut node], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x11 });
+        assert_eq!(node.asked, ["receipt", "head", "head", "head", "head", "receipt"], "the head until it moved, then the receipt");
+        let mut node = Waited::new("taker", vec![None], vec![Ok(None), Ok(None), Ok(Some(0x10))]);
+        let got = confirm_each(&mut [&mut node], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x10 });
+        assert_eq!(node.asked, ["receipt", "head", "receipt", "receipt"], "a head that does not read: the receipt each beat");
+        let mut node = Waited::new("taker", vec![Some(0x10), Some(0x11)], vec![Ok(None), Ok(None), Ok(Some(0x12))]);
+        let got = confirm_each(&mut [&mut node], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x12 });
+        assert_eq!(node.asked, ["receipt", "head", "head", "receipt", "receipt"], "past the head it started on, the receipt each beat, its head watched no more");
+        let mut node = Waited::new("late", vec![Some(0x11), Some(0x12)], vec![Ok(None), Ok(Some(0x11))]);
+        let got = confirm_each(&mut [&mut node], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x11 });
+        assert_eq!(node.asked, ["receipt", "head", "receipt"], "the head already past the broadcast's: the receipt next");
+    }
+
+    #[test]
+    fn a_wait_on_the_lower_of_two_chains_watches_that_chains_head() {
+        let none = Value::Arr(Vec::new());
+        let raw = [0x02u8, 0xf8, 0x6b, 0x01];
+        let tx = zikaron::cryptox::keccak256(&raw);
+        let broadcast = Value::Arr(vec![Value::Str(hexfmt::encode(&raw))]);
+        let wait = std::time::Duration::from_secs(5);
+        {
+            let _action = crate::action::open(None);
+            let mut high = crate::endpoints::remembering("high", Box::new(Waited::new("high", vec![Some(0x1000)], vec![Ok(None)])));
+            let mut low = crate::endpoints::remembering("low", Box::new(Waited::new("low", vec![Some(0x10)], vec![Ok(None)])));
+            high.call("eth_blockNumber", &none).expect("the higher chain's head");
+            low.call("eth_blockNumber", &none).expect("the lower chain's head");
+            let _ = low.call(crate::rpc::BROADCAST, &broadcast);
+            assert_eq!(crate::action::head_at_broadcast(&tx), Some(0x10), "the lower chain's own head");
+            let mut node = Waited::new("low", vec![Some(0x10), Some(0x11)], vec![Ok(None), Ok(Some(0x11))]);
+            let started = std::time::Instant::now();
+            let got = confirm_each(&mut [&mut node], &tx, wait, &[]);
+            assert_eq!(got, Confirm::Included { status: 1, block_number: 0x11 }, "read, never \"not yet\" at the deadline");
+            assert!(started.elapsed() < wait / 2, "in a moment: {:?}", started.elapsed());
+            assert_eq!(node.asked, ["receipt", "head", "head", "receipt"], "that chain's head until it passed 0x10, then the receipt");
+        }
+        let _action = crate::action::open(None);
+        let mut high = crate::endpoints::remembering("high", Box::new(Waited::new("high", vec![Some(0x1000)], vec![Ok(None)])));
+        let mut a = crate::endpoints::remembering("low-a", Box::new(Waited::new("low-a", vec![Some(0x12)], vec![Ok(None)])));
+        let mut b = crate::endpoints::remembering("low-b", Box::new(Waited::new("low-b", vec![Some(0x11)], vec![Ok(None)])));
+        for n in [&mut high, &mut a, &mut b] {
+            n.call("eth_blockNumber", &none).expect("a head");
+        }
+        let _ = a.call(crate::rpc::BROADCAST, &broadcast);
+        let _ = b.call(crate::rpc::BROADCAST, &broadcast);
+        assert_eq!(crate::action::head_at_broadcast(&tx), Some(0x12), "kept by the node that went first, unset by none");
+        let mut node = Waited::new("low-a", vec![Some(0x12), Some(0x13)], vec![Ok(None), Ok(Some(0x13))]);
+        let got = confirm_each(&mut [&mut node], &tx, wait, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x13 });
+        assert_eq!(node.asked, ["receipt", "head", "head", "receipt"], "the head watched past 0x12, then the receipt");
+    }
+
+    #[test]
+    fn at_the_deadline_not_yet_only_where_a_node_answered_the_receipt_question() {
+        let beat = [std::time::Duration::from_millis(10)];
+        let wait = std::time::Duration::from_millis(100);
+        let _action = broadcast_at_0x10();
+        let mut still = Waited::new("taker", vec![Some(0x10)], vec![Ok(None)]);
+        assert_eq!(confirm_each(&mut [&mut still], &[1; 32], wait, &beat), Confirm::NotYet);
+        assert_eq!(still.asked.iter().filter(|m| **m == "receipt").count(), 1, "the head stood still: the receipt asked once");
+        let mut dark = Waited::new("taker", vec![Some(0x10)], vec![Err(())]);
+        assert!(matches!(confirm_each(&mut [&mut dark], &[1; 32], wait, &beat), Confirm::Unreachable(_)));
+        assert!(!dark.asked.contains(&"head"), "no head asked: {:?}", dark.asked);
+    }
+
+    #[test]
+    fn once_one_node_gives_the_receipt_the_beats_start_again() {
+        let long = std::time::Duration::from_millis(1500);
+        let beats = [std::time::Duration::ZERO, std::time::Duration::ZERO, long, long];
+        let mut first = Waited::new("first", vec![None], vec![Ok(None), Ok(None), Ok(Some(0x10))]);
+        let mut behind = Waited::new("behind", vec![Some(0x10)], vec![Ok(None), Ok(Some(0x10))]);
+        let got = confirm_each(&mut [&mut first, &mut behind], &[1; 32], LONG, &beats);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x10 });
+        let gap = behind.at[1].duration_since(behind.at[0]);
+        assert!(gap < long / 2, "the node behind asked again after the shortest beat: {gap:?}");
+    }
+
+    #[test]
+    fn two_nodes_giving_the_same_receipt_count_and_the_one_behind_is_not_waited_for() {
+        let mut a = Waited::new("a", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut b = Waited::new("b", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut behind = Waited::new("behind", vec![Some(0x0e)], vec![Ok(None)]);
+        let got = confirm_each(&mut [&mut a, &mut b, &mut behind], &[1; 32], LONG, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x10 });
+        assert_eq!(behind.asked.iter().filter(|m| **m == "receipt").count(), 1, "asked once, never waited for");
+        let (mut a, mut b, mut behind) = (Waited::new("a", vec![], vec![Ok(Some(0x10))]), Waited::new("b", vec![], vec![Ok(Some(0x10))]), Waited::new("behind", vec![], vec![Ok(None)]));
+        assert_eq!(confirm_each(&mut [&mut a, &mut b, &mut behind], &[1; 32], std::time::Duration::ZERO, &[]), Confirm::Included { status: 1, block_number: 0x10 }, "one look: two alike count");
+    }
+
+    #[test]
+    fn one_nodes_receipt_alone_does_not_count_and_tables_of_two_and_one_are_as_before() {
+        let wait = std::time::Duration::from_millis(60);
+        let mut a = Waited::new("a", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut b = Waited::new("b", vec![Some(0x0e)], vec![Ok(None)]);
+        let mut c = Waited::new("c", vec![Some(0x0e)], vec![Ok(None)]);
+        assert_eq!(confirm_each(&mut [&mut a, &mut b, &mut c], &[1; 32], wait, &[]), Confirm::Split { has: vec!["a".into()], not_yet: vec!["b".into(), "c".into()] });
+        let mut a = Waited::new("a", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut b = Waited::new("b", vec![Some(0x0e)], vec![Ok(None)]);
+        assert_eq!(confirm_each(&mut [&mut a, &mut b], &[1; 32], wait, &[]), Confirm::Split { has: vec!["a".into()], not_yet: vec!["b".into()] }, "a table of two waits for both");
+        let mut one = Waited::new("one", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        assert_eq!(confirm_each(&mut [&mut one], &[1; 32], wait, &[]), Confirm::Included { status: 1, block_number: 0x10 }, "a table of one: its node's word");
+    }
+
+    #[test]
+    fn two_alike_receipts_count_beside_another_and_two_unlike_do_not() {
+        let wait = std::time::Duration::from_millis(60);
+        let mut a = Waited::new("a", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut b = Waited::new("b", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut other = Waited::new("other", vec![Some(0x12)], vec![Ok(Some(0x11))]);
+        let got = confirm_each(&mut [&mut a, &mut b, &mut other], &[1; 32], wait, &[]);
+        assert_eq!(got, Confirm::Included { status: 1, block_number: 0x10 }, "two alike count beside a third that differs");
+        let mut a = Waited::new("a", vec![Some(0x12)], vec![Ok(Some(0x10))]);
+        let mut other = Waited::new("other", vec![Some(0x12)], vec![Ok(Some(0x11))]);
+        let got = confirm_each(&mut [&mut a, &mut other], &[1; 32], wait, &[]);
+        assert!(!matches!(got, Confirm::Included { .. }), "a table of two whose receipts differ: {got:?}");
+        assert_eq!(taken(&[("a".into(), (1, 0x10)), ("b".into(), (1, 0x11)), ("c".into(), (1, 0x10)), ("d".into(), (1, 0x11))], 0), Taken::Differ, "two against two");
+        assert_eq!(taken(&[("a".into(), (1, 0x10))], 1), Taken::Split, "one beside a not yet: asked again");
+        assert_eq!(taken(&[("a".into(), (1, 0x10))], 0), Taken::Counts((1, 0x10)), "one alone: counts");
+    }
+
+    #[test]
+    fn one_place_written_twice_is_one_place_for_a_receipt() {
+        let twice = |r: (u64, u64)| -> Vec<(String, (u64, u64))> { vec![("http://127.0.0.1:8545".into(), r), ("http://127.0.0.1:8545".into(), r)] };
+        assert_eq!(taken(&twice((1, 0x10)), 1), Taken::Split, "one place twice beside a not yet");
+        let mut three = twice((1, 0x10));
+        three.push(("http://127.0.0.2:8545".into(), (1, 0x11)));
+        assert_eq!(taken(&three, 0), Taken::Differ, "one place twice beside another receipt");
+        three.push(("http://127.0.0.3:8545".into(), (1, 0x10)));
+        assert_eq!(taken(&three, 0), Taken::Counts((1, 0x10)), "two places alike");
+    }
+
 }

@@ -1,8 +1,3 @@
-//! Continues `io_said.rs`: a failing landing is `E_IO` naming the operation and the target path (each of the
-//! three landing ways forced unsupported by the platform layer); a failing write of the temporary file is
-//! `E_IO` naming `write` and the temporary path, and no temporary file is left. Its own test binary with a
-//! single test, because the forced failures (and the file-size limit) are process-wide.
-
 #![cfg(unix)]
 
 use zikaron_store::{Code, EntryName, LedgerDir};
@@ -18,7 +13,6 @@ fn name() -> EntryName {
     EntryName::parse(&"c".repeat(64)).expect("a name")
 }
 
-/// The files in a ledger's directory, by name.
 fn names_in(dir: &std::path::Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).expect("listed").map(|e| e.expect("entry").file_name().to_string_lossy().into_owned()).collect();
     v.sort();
@@ -37,13 +31,10 @@ unsafe extern "C" {
     fn signal(sig: i32, handler: usize) -> usize;
 }
 
-/// `RLIMIT_FSIZE` and `SIGXFSZ`: the same numbers on macOS and Linux.
 const RLIMIT_FSIZE: i32 = 1;
 const SIGXFSZ: i32 = 25;
 const SIG_IGN: usize = 1;
 
-/// Run `f` with no file of this process allowed to grow past zero bytes (a write past it fails with the
-/// system's "file too large", the signal it would send ignored); the limit is put back after.
 fn with_no_room<T>(f: impl FnOnce() -> T) -> T {
     let mut was = Rlimit { cur: 0, max: 0 };
     // SAFETY: plain system calls on a struct of the system's layout (two 64-bit counts on both systems).
@@ -60,14 +51,10 @@ fn with_no_room<T>(f: impl FnOnce() -> T) -> T {
     got
 }
 
-/// A landing that fails (every way unsupported) reports `E_IO` with each way's operation and the target
-/// path; a failing write of the temporary file reports `E_IO` with `write` and the temporary path. Neither
-/// leaves a file behind.
 #[test]
 fn a_landing_or_a_temporary_write_that_fails_says_the_operation_and_path() {
     let base = scratch("said");
 
-    // The landing: none of the three ways supported.
     let l = LedgerDir::open_or_create(base.join("no-way")).expect("a ledger");
     zikaron_os::pretend_unsupported(zikaron_os::way::LINK | zikaron_os::way::RENAME_NEW | zikaron_os::way::CLAIM);
     let t = l.append(&name(), b"one").err();
@@ -82,8 +69,6 @@ fn a_landing_or_a_temporary_write_that_fails_says_the_operation_and_path() {
     assert!(said.contains(&target), "the target path said: {said}");
     assert!(names_in(l.root()).is_empty(), "nothing landed, the temporary file gone: {:?}", names_in(l.root()));
 
-    // The landing by the third way: the name claimed, then the rename over the claim failing for the system's
-    // own reason (the temporary file taken away before it): the rename's words, both paths, the claim gone.
     let l = LedgerDir::open_or_create(base.join("rename-fails")).expect("a ledger");
     let staged = l.stage(&name(), b"one").expect("staged");
     let tmp = staged.tmp_path().display().to_string();
@@ -98,7 +83,6 @@ fn a_landing_or_a_temporary_write_that_fails_says_the_operation_and_path() {
     assert!(said.starts_with(&format!("replacing rename {tmp} \u{2192} {target}: ")), "{said}");
     assert!(names_in(l.root()).is_empty(), "the claim is not left: {:?}", names_in(l.root()));
 
-    // The temporary file's bytes cannot be written: `write <tmp>` and the system's words, nothing left.
     let l = LedgerDir::open_or_create(base.join("no-room")).expect("a ledger");
     let t = with_no_room(|| l.append(&name(), b"one").err()).expect("refused");
     assert_eq!(t.code, Code::Io);

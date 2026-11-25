@@ -1,13 +1,8 @@
-//! A sheet's title with its tabs on the same line: the title at the left, the tabs at the right end, each as
-//! wide as its words and 16 apart, no line under the row. The chosen tab is in the body ink and heavier, a
-//! two-point blue line under its words that slides to the tab chosen next.
-
 use crate::motion::{self, Curve};
 use crate::palette::{c, C};
 use crate::tokens::{self, Type};
 use egui::{pos2, vec2, Rect};
 
-/// The title and the tabs; returns the tab clicked when it is not the current one.
 pub fn title_tabs(ui: &mut egui::Ui, title: &str, id_salt: &str, labels: &[&str], current: usize) -> Option<usize> {
     let id = ui.id().with(("zikaron-head-tabs", id_salt));
     let w = ui.available_width();
@@ -43,7 +38,6 @@ pub fn title_tabs(ui: &mut egui::Ui, title: &str, id_salt: &str, labels: &[&str]
         let font = if on { font_on.clone() } else { Type::Body.font() };
         p.text(pos2(r.left() + 1.0, r.center().y), egui::Align2::LEFT_CENTER, *l, font, colour);
         if on {
-            // Already chosen: nothing to press.
             crate::hand::sink(ui.ctx(), resp.id);
         }
     }

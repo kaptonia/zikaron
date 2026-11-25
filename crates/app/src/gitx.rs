@@ -1,36 +1,13 @@
-//! Reads a git repository (the anchoring desk's third input kind) without starting any child process.
-//!
-//! The shipped build may not start child processes (enforced by the self-check
-//! `the_shipped_app_starts_no_child_process_at_all`), and `git cat-file` would be one. So this module reads
-//! the object store itself: loose objects in `objects/xx/yyyy…`, packed ones in `objects/pack/*.idx` and
-//! `*.pack`, with decompression through [`crate::zlibx`].
-//!
-//! "The bytes of the HEAD commit object" has an exact definition: the bytes `git cat-file commit <id>`
-//! prints, i.e. the object without its `commit <len>\0` header. The anchored content is their sha256
-//! (computed by the core's `cryptox::sha256`), so anyone can recompute it with
-//! `git cat-file commit HEAD | shasum -a 256`.
-//!
-//! Every point where reading cannot continue returns a named [`Fault`] (not a repository, HEAD unresolved,
-//! object missing, decompression failed). Nothing is guessed: a guessed hash would be anchored on chain, and
-//! what is on chain cannot be undone.
-
 use crate::fault::{classify, Fault, Known};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The largest size one object may inflate to. Commit objects are far smaller; this stops corrupt files and
-/// compression bombs.
 pub const OBJECT_MAX: usize = 64 * 1024 * 1024;
 
-/// The most ancestors counted. A count that cannot finish is refused by name rather than reported as a
-/// truncated number.
 pub const ANCESTOR_MAX: usize = 500_000;
 
-/// The deepest delta chain. The depth is carried through every path (see `Repo::object_at`), so nothing can
-/// reset it to zero.
 pub const DELTA_MAX: usize = 64;
 
-/// git's four object kinds. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Commit,
@@ -70,11 +47,8 @@ impl Kind {
     }
 }
 
-/// An object name (sha1, twenty bytes).
 pub type Oid = [u8; 20];
 
-/// An object name as forty bare hex digits (git's spelling, no `0x`). Spelled by the core's `hexfmt`, with
-/// the law §1 `0x` prefix dropped.
 fn oid_hex(o: &Oid) -> String {
     let s = zikaron::hexfmt::encode(o);
     s.strip_prefix("0x").unwrap_or(&s).to_string()
@@ -86,8 +60,6 @@ fn oid_of_hex(s: &str) -> Option<Oid> {
     if bare.len() != 40 || !bare.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    // The core's `decode` takes the law §1 form (with `0x`); git's ref files hold bare digits, so the prefix
-    // is added here and hex parsing stays in the core.
     let b = zikaron::hexfmt::decode(&format!("0x{}", bare.to_ascii_lowercase()))?;
     let mut o = [0u8; 20];
     o.copy_from_slice(&b);
@@ -98,16 +70,9 @@ fn bad(what: &str) -> Fault {
     Fault::known(Known::GitShape, what.to_string())
 }
 
-// ───────────────────────── Pack files ─────────────────────────
-
-/// An `.idx` / `.pack` pair. The index is read wholly into memory (only tens of bytes per object); the pack
-/// file is sliced as needed.
 struct Pack {
     pack: PathBuf,
-    /// Object name → offset in the pack file.
     at: HashMap<Oid, u64>,
-    /// The pack file's bytes, read once and kept. Counting ancestors touches tens of thousands of objects;
-    /// rereading a pack of hundreds of megabytes per object would make the count effectively never finish.
     bytes: std::cell::RefCell<Option<std::rc::Rc<Vec<u8>>>>,
 }
 
@@ -122,7 +87,6 @@ fn be64(b: &[u8], at: usize) -> Option<u64> {
 }
 
 impl Pack {
-    /// This pack file's bytes. Read once, then handed out by reference.
     fn raw(&self) -> Result<std::rc::Rc<Vec<u8>>, Fault> {
         if let Some(b) = self.bytes.borrow().as_ref() {
             return Ok(b.clone());
@@ -134,7 +98,6 @@ impl Pack {
         Ok(b)
     }
 
-    /// Read a v2 index (`\377tOc` plus version 2). Other versions are refused by name.
     fn open(idx: &Path, pack: &Path) -> Result<Pack, Fault> {
         let b = std::fs::read(idx).map_err(|e| classify(&e, &idx.display().to_string()))?;
         if b.get(..4) != Some(&[0xff, b't', b'O', b'c']) || be32(&b, 4) != Some(2) {
@@ -142,9 +105,6 @@ impl Pack {
         }
         let n = be32(&b, 8 + 255 * 4).ok_or_else(|| bad(crate::lang::t(crate::lang::Key::Tail117)))? as usize;
         let names: usize = 8 + 256 * 4;
-        // Check the count against the file length before allocating with it: a corrupt index can claim four
-        // billion objects, and `with_capacity` would then ask for tens of GB and the process would be killed
-        // without a message.
         let sized = |a: usize, w: usize| -> Result<usize, Fault> {
             n.checked_mul(w)
                 .and_then(|x| a.checked_add(x))
@@ -176,7 +136,6 @@ impl Pack {
     }
 }
 
-/// A variable-length number in a pack file (seven low bits per group, high bit continues).
 fn varint(b: &[u8], at: &mut usize) -> Option<u64> {
     let mut v: u64 = 0;
     let mut shift = 0;
@@ -194,7 +153,6 @@ fn varint(b: &[u8], at: &mut usize) -> Option<u64> {
     }
 }
 
-/// A variable-length number in a delta (different from the one above: high part first, each group adds one).
 fn ofs_varint(b: &[u8], at: &mut usize) -> Option<u64> {
     let mut x = *b.get(*at)?;
     *at += 1;
@@ -207,7 +165,6 @@ fn ofs_varint(b: &[u8], at: &mut usize) -> Option<u64> {
     Some(v)
 }
 
-/// A little-endian fixed-width number in a delta (bytes picked by a bitmap).
 fn packed_size(b: &[u8], at: &mut usize, mask: u8, bytes: usize, default: usize) -> Option<usize> {
     let mut v: usize = 0;
     for i in 0..bytes {
@@ -219,7 +176,6 @@ fn packed_size(b: &[u8], at: &mut usize, mask: u8, bytes: usize, default: usize)
     Some(if v == 0 { default } else { v })
 }
 
-/// Apply a delta (git's delta format).
 fn undelta(base: &[u8], delta: &[u8]) -> Option<Vec<u8>> {
     let mut at = 0usize;
     let want_base = varint(delta, &mut at)? as usize;
@@ -244,7 +200,6 @@ fn undelta(base: &[u8], delta: &[u8]) -> Option<Vec<u8>> {
             out.extend_from_slice(delta.get(at..at + n)?);
             at += n;
         } else {
-            // Reserved zero opcode: git never writes it, and this layer does not guess its meaning.
             return None;
         }
     }
@@ -254,31 +209,22 @@ fn undelta(base: &[u8], delta: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-// ───────────────────────── A repository ─────────────────────────
-
-/// An opened git repository.
 pub struct Repo {
-    /// The `.git` location (for a bare repository, its root).
     git: PathBuf,
     packs: Vec<Pack>,
 }
 
-/// A commit, read as the three things this layer needs.
 pub struct Commit {
-    /// The bytes `git cat-file commit <id>` prints, byte for byte.
     pub bytes: Vec<u8>,
     pub parents: Vec<Oid>,
-    /// Commit subject: the first line of the message.
     pub subject: String,
 }
 
 impl Repo {
-    /// Recognize an object name from forty hex digits. `None` when unrecognized.
     pub fn oid(hex: &str) -> Option<Oid> {
         oid_of_hex(hex)
     }
 
-    /// Open a repository. Given a work tree root (containing `.git`) or a bare repository.
     pub fn open(dir: &Path) -> Result<Repo, Fault> {
         if dir.as_os_str().is_empty() {
             return Err(bad(crate::lang::t(crate::lang::Key::Tail123)));
@@ -287,7 +233,6 @@ impl Repo {
         let git = if dot.is_dir() {
             dot
         } else if dot.is_file() {
-            // Work trees and submodules: `.git` is a file saying `gitdir: …`.
             let t = std::fs::read_to_string(&dot).map_err(|e| classify(&e, &dot.display().to_string()))?;
             let p = t
                 .lines()
@@ -330,7 +275,6 @@ impl Repo {
         &self.git
     }
 
-    /// The commit HEAD points to. Symbolic refs are resolved step by step; failure is named.
     pub fn head(&self) -> Result<Oid, Fault> {
         let p = self.git.join("HEAD");
         let t = std::fs::read_to_string(&p).map_err(|e| classify(&e, &p.display().to_string()))?;
@@ -342,7 +286,6 @@ impl Repo {
                     .ok_or_else(|| bad(&crate::lang::filln(crate::lang::Key::Tail125, &[&(p.display()).to_string()])))
             }
         };
-        // The ref chain is followed at most this many steps: a cycle has nowhere to go.
         for _ in 0..8 {
             match self.resolve_ref(&name)? {
                 Ref::Oid(o) => return Ok(o),
@@ -353,8 +296,6 @@ impl Repo {
     }
 
     fn resolve_ref(&self, name: &str) -> Result<Ref, Fault> {
-        // Names may not contain `..`: a ref name is a relative path inside the repository, and going outside
-        // is a bad name.
         if name.is_empty() || name.split('/').any(|s| s == ".." || s.is_empty()) {
             return Err(bad(&crate::lang::filln(crate::lang::Key::Tail127, &[&format!("{:?}", name)])));
         }
@@ -390,16 +331,10 @@ impl Repo {
         Err(Fault::known(Known::RefMissing, name.to_string()))
     }
 
-    /// An object's kind and content. The content excludes the `<kind> <len>\0` header.
     pub fn object(&self, id: &Oid) -> Result<(Kind, Vec<u8>), Fault> {
         self.object_at(id, 0)
     }
 
-    /// As above, with the delta depth carried through.
-    ///
-    /// Offset deltas (type 6) and ref deltas (type 7) both carry the depth. If ref deltas restarted at zero, a
-    /// pack where A refers to B by name and B to A would recurse until the stack overflowed, killing the
-    /// process without a named refusal.
     fn object_at(&self, id: &Oid, depth: usize) -> Result<(Kind, Vec<u8>), Fault> {
         if depth > DELTA_MAX {
             return Err(bad(crate::lang::t(crate::lang::Key::Tail129)));
@@ -445,7 +380,6 @@ impl Repo {
         Ok(Some((kind, body)))
     }
 
-    /// Take one object from a pack file. Deltas nest at most this deep.
     fn from_pack(&self, raw: &[u8], off: u64, depth: usize) -> Result<(Kind, Vec<u8>), Fault> {
         if depth > DELTA_MAX {
             return Err(bad(crate::lang::t(crate::lang::Key::Tail137)));
@@ -503,7 +437,6 @@ impl Repo {
         }
     }
 
-    /// A commit, read as three things. Anything other than a commit is refused by name.
     pub fn commit(&self, id: &Oid) -> Result<Commit, Fault> {
         let (kind, bytes) = self.object(id)?;
         if kind != Kind::Commit {
@@ -521,7 +454,6 @@ impl Repo {
                 }
             }
         }
-        // The message follows the first blank line; the subject is the message's first line.
         let subject = text
             .split_once("\n\n")
             .map(|(_, m)| m.lines().next().unwrap_or("").to_string())
@@ -529,14 +461,10 @@ impl Repo {
         Ok(Commit { bytes, parents, subject })
     }
 
-    /// How many commits are reachable from this one (including itself, the same as `git rev-list --count`).
-    /// When the count cannot finish it says so by name, instead of giving a truncated number.
     pub fn ancestors(&self, head: &Oid) -> Result<usize, Fault> {
         Ok(self.ancestor_set(head)?.len())
     }
 
-    /// The reachable set itself. A count cannot answer "is it on this lineage", so places asking that take
-    /// the set (see `anchorx::since`).
     pub fn ancestor_set(&self, head: &Oid) -> Result<std::collections::HashSet<Oid>, Fault> {
         let mut seen: std::collections::HashSet<Oid> = std::collections::HashSet::new();
         let mut stack = vec![*head];
@@ -563,18 +491,14 @@ enum Ref {
     Sym(String),
 }
 
-/// A repository's reading now: HEAD, its object bytes, subject, ancestor count.
 pub struct Head {
     pub commit: String,
-    /// The sha256 of the bytes of `git cat-file commit HEAD` (computed by the core). This is the anchored
-    /// content.
     pub content: [u8; 32],
     pub subject: String,
     pub ancestors: usize,
     pub bytes: usize,
 }
 
-/// Read a repository's HEAD. The only owner of the anchoring desk's git-repository input.
 pub fn head_of(dir: &Path) -> Result<Head, Fault> {
     let repo = Repo::open(dir)?;
     let id = repo.head()?;

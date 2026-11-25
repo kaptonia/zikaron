@@ -1,8 +1,3 @@
-//! The window and the command line: importing again, the passcode-taking actions, the recovery words' secret
-//! type, the read-only bar, the backup lamp, English first-layer sentences, the record place, the failed-backup
-//! mark, the backup package's byte form, and typed node items never echoed. Places are set before any vault or
-//! shell use (`vault_open`); each test runs alone in its own process.
-
 use super::vault_open;
 use app::action::{apply, apply_settled, Action, Applied};
 
@@ -15,9 +10,6 @@ fn settled(shell: &mut app::shell::Shell, k: app::task::Kind) {
     shell.drain();
 }
 
-/// One import, landed: the code it was refused with (empty when it landed). Read from the import's own answer
-/// (`apply_settled` waits for it), never from the trouble list, where other work the landing starts (the home it
-/// enters) puts what it finds.
 fn import(shell: &mut app::shell::Shell, form: app::action::ImportForm, label: &str) -> String {
     match apply_settled(shell, Action::ImportIdentity { form, seat: app::roles::Role::Author, label: label.into(), network: app::deploy::CUSTOM.into() }) {
         Applied::Trouble(f) => f.which().map(|k| k.as_str().to_string()).unwrap_or_default(),
@@ -32,11 +24,6 @@ fn rows() -> Vec<(String, String)> {
 const WORDS_A: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const WORDS_B: &str = "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
-/// Importing again, one line per form, refused by name with nothing written: the same identity under the same
-/// name (`IDENTITY_EXISTS`); the same identity under another name (`IDENTITY_HERE_AS`, the row keeps its name);
-/// another identity under a name already used here (`IDENTITY_NAME_TAKEN`, no row added); a key imported again
-/// with a key file named (refused before the file is written). A new identity under a new name, and one with no
-/// name, land.
 #[test]
 fn importing_an_identity_again_is_answered_by_name() {
     if super::alone_in(module_path!(), "importing_an_identity_again_is_answered_by_name") {
@@ -56,7 +43,6 @@ fn importing_an_identity_again_is_answered_by_name() {
     assert_eq!(rows(), one, "no row added");
     assert_eq!(import(&mut shell, words(WORDS_B), ""), "", "another identity, no name");
     assert_eq!(rows().len(), 2);
-    // A key, imported (secondary: no key file needed), then again with a key file named.
     let s = app::key::generate().expect("a key");
     let mut slot = Some(s);
     let hex = app::key::reveal_once(&mut slot).expect("its hex");
@@ -73,10 +59,6 @@ fn importing_an_identity_again_is_answered_by_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The actions that take the passcode themselves (set, open, change, reseal, the two recoveries) are named by one
-/// closed function (`gate_pin`), apart from the passcode gate (`pin_asked`): each returns the passcode it hands
-/// on, and forgetting wipes it (and every other passcode cell the action carries) in place, before anything is
-/// handed.
 #[test]
 fn the_gates_own_mouths_name_the_passcode_they_hand_and_forget_it() {
     let typed = || app::secret::Secret::from(String::from("q7w8e9r0"));
@@ -87,7 +69,6 @@ fn the_gates_own_mouths_name_the_passcode_they_hand_and_forget_it() {
         Action::Reseal { pin: typed() },
         Action::RecoverWords { words: typed(), pin: typed(), again: typed() },
         Action::RecoverKeystore { path: String::new(), password: typed(), pin: typed(), again: typed() },
-        // Actions that open the vault with the passcode inside their own task take the passcode themselves too.
         Action::SetPrimary { id: String::new(), pin: typed() },
         Action::RestoreBackup { path: String::new(), password: typed(), how: app::action::RestoreHow::Settings { pin: typed() } },
         Action::RestoreBackup { path: String::new(), password: typed(), how: app::action::RestoreHow::Locked { pin: typed(), again: typed() } },
@@ -98,14 +79,10 @@ fn the_gates_own_mouths_name_the_passcode_they_hand_and_forget_it() {
         a.forget_pin();
         assert_eq!(a.gate_pin().map(|p| p.expose().len()), Some(0), "{}: wiped", a.name());
     }
-    let asked = Action::AttestFor { text: String::new(), pin: typed() };
+    let asked = Action::RevealWords { pin: typed() };
     assert!(asked.gate_pin().is_none() && asked.pin_asked().is_some(), "an action that passes the gate is not a gate mouth");
 }
 
-/// The twelve words shown to a person are held in the secret type (each word one block, zeroed when cleared and
-/// when dropped; the type's own tests check the bytes), one line per form: shown after the passcode (twelve
-/// words), hidden (gone), shown again then locked (gone), shown again then quit (gone, with the unconfirmed words).
-/// The fresh words' display copy is the same type.
 #[test]
 fn the_words_shown_are_secrets_and_are_let_go() {
     if super::alone_in(module_path!(), "the_words_shown_are_secrets_and_are_let_go") {
@@ -141,9 +118,6 @@ fn the_words_shown_are_secrets_and_are_let_go() {
     assert!(shell.words.is_none() && shell.new_words.is_none(), "quit");
 }
 
-/// The bar over a home opened read-only says why: a writer mark naming another machine (`other_machine`), or a
-/// writer mark this version cannot read (`mark_unread`, never "another machine writes"); both keep the person's
-/// way to write from this machine. The sentence is the table's, in both languages.
 #[test]
 fn the_bar_says_a_mark_that_does_not_read_as_such() {
     if super::alone_in(module_path!(), "the_bar_says_a_mark_that_does_not_read_as_such") {
@@ -169,9 +143,6 @@ fn the_bar_says_a_mark_that_does_not_read_as_such() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The backup lamp's four colours, one line per form, in both the watch table and the setup point: backed up
-/// and none behind is green; behind is amber; never backed up is grey (said, not red); a last backup attempt that
-/// failed is red, even over a backup on record. A count not yet measured stays grey.
 #[test]
 fn the_backup_lamp_has_four_colours() {
     use app::firstrun::{backup_point, Shade};
@@ -179,7 +150,7 @@ fn the_backup_lamp_has_four_colours() {
     let b = |count: u64| app::machine::Backed { at: 1, path: String::new(), count };
     let (two, four) = (b(2), b(4));
     let lamp = |backup: (Option<&app::machine::Backed>, Option<u64>, Option<u64>)| {
-        let t = app::watchx::author(None, 0, None, backup, None, None);
+        let t = app::watchx::author(None, 0, None, backup, None, None, None);
         t.into_iter().find(|r| r.item == Item::Backup).map(|r| (r.light, r.gap.map(|g| g.say))).expect("the backup row")
     };
     for (form, backup, light, say, shade) in [
@@ -197,11 +168,6 @@ fn the_backup_lamp_has_four_colours() {
     }
 }
 
-/// The English first layer has no Chinese evidence words, as a class: the Chinese gloss enters a fault only
-/// through `said()` / `evidence()`, and the window never calls either (its first layer shows the table's sentence,
-/// `human()` / `next()`; the evidence goes under Details and to the log). In English, every first-layer sentence a
-/// refusal can give is free of CJK: each known fault's (with a Chinese tail), each refused file's, by fault, by
-/// the system's error and by an unknown fault.
 #[test]
 fn the_english_first_layer_has_no_cjk() {
     if super::alone_in(module_path!(), "the_english_first_layer_has_no_cjk") {
@@ -234,10 +200,6 @@ fn the_english_first_layer_has_no_cjk() {
     }
 }
 
-/// The record place on the reader and diligence pages is a single place: more than one non-empty line is refused
-/// by name (`PLACE_ONE_LINE`, its tail the line count), one line per form: two lines, three lines, two lines
-/// ended CRLF, two lines split by a lone CR. One line (with a trailing newline, or blank lines around it) is read
-/// as that line. Both pages refuse on the spot, before any task starts.
 #[test]
 fn a_place_on_more_than_one_line_is_refused_by_name() {
     if super::alone_in(module_path!(), "a_place_on_more_than_one_line_is_refused_by_name") {
@@ -271,9 +233,6 @@ fn a_place_on_more_than_one_line_is_refused_by_name() {
     }
 }
 
-/// The failed-backup mark is this machine's record of its own attempt: a backup made while an earlier failed
-/// attempt's mark stood carries it in its machine settings, and restoring that backup does not bring the red
-/// back; an export that lands clears the mark before anything else is written.
 #[test]
 fn a_restored_backup_brings_no_failed_mark_back() {
     if super::alone_in(module_path!(), "a_restored_backup_brings_no_failed_mark_back") {
@@ -293,10 +252,6 @@ fn a_restored_backup_brings_no_failed_mark_back() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
-/// The backup package writes every share of bytes in one place, `backup::transcribe`: in the package's assembly
-/// (`package_bytes`) every share (keys, files, machine settings, read-only networks, register) goes through it,
-/// with no other byte spelling; the form is the package's own (`0x` and lowercase hex), so packages written by
-/// older versions hold the same bytes.
 #[test]
 fn every_share_of_the_backup_package_is_transcribed_in_one_place() {
     let text = super::read_src_file("backup.rs").expect("backup.rs");
@@ -312,11 +267,6 @@ fn every_share_of_the_backup_package_is_transcribed_in_one_place() {
     assert_eq!(app::backup::transcribe(b""), "0x");
 }
 
-/// No node item a person types reaches a sentence as typed: on the check page, node lines that do not read (white
-/// space in them, a user name in the address, a non-numeric port), each carrying a key, are refused as an
-/// addresses' shape error with every line shown as the node reader renders it, so the key appears in neither the
-/// sentence, the evidence nor the next step; the settings' node cells (`SetEndpoints`) refuse the same lines the
-/// same way.
 #[test]
 fn a_node_line_typed_wrong_is_refused_without_its_key() {
     if super::alone_in(module_path!(), "a_node_line_typed_wrong_is_refused_without_its_key") {
@@ -328,7 +278,6 @@ fn a_node_line_typed_wrong_is_refused_without_its_key() {
     let ctx = zikaron_ui::egui::Context::default();
     let mut shell = app::shell::Shell::boot(zikaron_ui::skin::dress(&ctx));
     let seen = |f: &app::fault::Fault| format!("{} {} {} {} {}", f.said(), f.tail(), f.evidence(), f.human(), f.raw());
-    // The check page, all three lines at once.
     let a = apply(&mut shell, Action::CheckPayload { typed: "0x01".into(), ledgers: String::new(), endpoints: lines.join("\n"), registry: String::new(), from_block: String::new(), now: String::new(), file: String::new(), terms: String::new() });
     let Applied::Trouble(f) = a else { panic!("refused on the spot: {a:?}") };
     assert_eq!(f.which(), Some(app::fault::Known::SettingsShape));
@@ -336,7 +285,6 @@ fn a_node_line_typed_wrong_is_refused_without_its_key() {
     for line in &lines {
         assert!(f.tail().contains(&zikaron_net::sayable(line)) || f.tail().contains(&zikaron_net::sayable(line.split_once('=').map(|(_, u)| u).unwrap_or(line))), "each line said as a node is: {}", f.tail());
     }
-    // The settings' node cells.
     let base = std::env::temp_dir().join(format!("zk-r20b4-nodes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     answers!(apply(&mut shell, Action::OpenHome { root: base.display().to_string() }), Applied::Homed { .. });

@@ -1,8 +1,3 @@
-//! Drop zones and file rows. A drop zone is a dashed, lightly tinted block that turns blue while a file hovers
-//! or the pointer is over it; the whole block is clickable (the caller opens the system picker). Chosen, it
-//! turns into a green-edged block naming the file. The drag veil covers the whole window while a file is
-//! dragged over a page that takes drops as a whole.
-
 use crate::icons::{self, Glyph};
 use crate::motion::{self, Curve};
 use crate::paint;
@@ -10,28 +5,21 @@ use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 use egui::{pos2, vec2, Rect};
 
-/// What a drop zone received this frame.
 #[derive(Default, Debug, Clone)]
 pub struct Drop {
-    /// Paths dropped on it this frame.
     pub dropped: Vec<String>,
-    /// Something is being dragged over the window.
     pub hovering: bool,
-    /// The zone was clicked (the caller opens the system picker).
     pub clicked: bool,
 }
 
-/// Whether files are being dragged over the window now.
 pub fn dragging(ctx: &egui::Context) -> bool {
     ctx.input(|i| !i.raw.hovered_files.is_empty())
 }
 
-/// Take the files dropped this frame (the first taker gets them).
 pub fn take_dropped(ctx: &egui::Context) -> Vec<String> {
     ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files)).into_iter().filter_map(|f| f.path.map(|p| p.display().to_string())).collect()
 }
 
-/// The zones that took drops in the last pass and in this one, in drawing order.
 #[derive(Clone, Default)]
 struct Zones {
     pass: u64,
@@ -54,10 +42,6 @@ fn zones_at(ctx: &egui::Context, pass: u64) -> Zones {
     }
 }
 
-/// One frame has one receiver: of the zones that took drops last pass, the one under the pointer, else the
-/// first drawn (the window does not say where a file lands, so the pointer is known only sometimes). Only the
-/// receiver lights up while a file is dragged, and only it takes the file: the lit zone is the one that gets
-/// it.
 fn is_receiver(ctx: &egui::Context, me: egui::Id) -> bool {
     let pass = crate::motion::pass(ctx);
     let pointer = ctx.input(|i| i.pointer.latest_pos());
@@ -77,9 +61,7 @@ fn register(ctx: &egui::Context, me: egui::Id, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(zones_id(), z));
 }
 
-/// A dashed rounded outline (dashes are drawn twice the stroke long and one stroke apart by the callers).
 pub fn dashed(p: &egui::Painter, rect: Rect, radius: f32, stroke: egui::Stroke, dash: f32, gap: f32) {
-    // Walk the outline: straight edges and quarter arcs, cut into dashes along its length.
     let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
     let mut pts: Vec<egui::Pos2> = Vec::new();
     let arc = |c: egui::Pos2, from: f32, pts: &mut Vec<egui::Pos2>| {
@@ -100,23 +82,15 @@ pub fn dashed(p: &egui::Painter, rect: Rect, radius: f32, stroke: egui::Stroke, 
     p.extend(egui::Shape::dashed_line(&pts, stroke, dash, gap));
 }
 
-/// How a drop zone lays out its words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
-    /// Glyph over bold words over a note, centered.
     Column,
-    /// Glyph left of bold words over a note (the compact zone on the records page).
     Row,
-    /// Only the words, one line, centered (small slots).
     Line,
 }
 
-/// A drop zone. `glyph` goes above (or before) the words; `lines` are the bold title and the note; `chosen`
-/// names the file once chosen (with `change` under it). `accept` false draws without taking drops; of the
-/// zones that accept, one per frame receives (see `is_receiver`).
 #[allow(clippy::too_many_arguments)]
 pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&str], chosen: Option<(&str, &str, &str)>, height: f32, shape: Shape, accept: bool) -> Drop {
-    // Under an open sheet only the sheet's own zones take drops.
     let in_sheet = ui.layer_id().order == egui::Order::Foreground;
     let accept = accept && (in_sheet || !crate::sheet::up(ui.ctx()));
     let me = ui.id().with(("zikaron-drop", id_salt));
@@ -133,7 +107,6 @@ pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&st
     let press = motion::to(ui.ctx(), resp.id.with("press"), if resp.is_pointer_button_down_on() { 0.995 } else { 1.0 }, tokens::FAST, Curve::Ease);
     let r = paint::scaled(rect, press);
     let p = ui.painter();
-    // A drop zone's corners are a card's; a one-line drop (as tall as a row) takes a tag's.
     let round = if shape == Shape::Line { Radius::Tag } else { Radius::Card };
     match chosen {
         Some((name, size, change)) => {
@@ -196,8 +169,6 @@ pub fn zone(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, lines: &[&st
     Drop { dropped, hovering, clicked }
 }
 
-/// A file row: a small file tile, the name (and a second line, red when it says why the file is out), and
-/// a key at the right. Returns whether the key was pressed.
 pub fn file_row(ui: &mut egui::Ui, id_salt: &str, name: &str, sub: &str, bad: bool, key: &str) -> bool {
     let id = ui.id().with(("zikaron-file-row", id_salt));
     let enter = motion::enter(ui.ctx(), id, motion::key_of(&name), 0.0, tokens::MID, Curve::Ease);
@@ -233,9 +204,6 @@ pub fn file_row(ui: &mut egui::Ui, id_salt: &str, name: &str, sub: &str, bad: bo
     hit
 }
 
-/// What was chosen, in a box as tall as a field (a record, a terms file): a glyph, its name, quiet words at the
-/// right end (a size); with nothing chosen (`chosen` false) the name is a quiet hint. A name too long for the box
-/// is elided and shows whole on hover. The key that changes it stands beside the box, the caller's.
 pub fn chosen(ui: &mut egui::Ui, w: f32, glyph: Glyph, name: &str, aside: &str, chosen: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
     let enter = motion::enter(ui.ctx(), resp.id, motion::key_of(&name), 0.0, tokens::MID, Curve::Ease);
@@ -260,8 +228,6 @@ pub fn chosen(ui: &mut egui::Ui, w: f32, glyph: Glyph, name: &str, aside: &str, 
     }
 }
 
-/// The drag veil: a dimming layer over the whole window with a dashed blue frame 32 in, a glyph, a bold line
-/// and a note. Fades in over 120 ms; the frame settles from 0.98 over 200 ms.
 pub fn veil(ctx: &egui::Context, on: bool, title: &str, note: &str) {
     let id = egui::Id::new("zikaron-veil");
     let a = motion::flag(ctx, id.with("a"), on, tokens::FAST);

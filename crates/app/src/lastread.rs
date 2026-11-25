@@ -1,68 +1,45 @@
-//! On-disk caches of the last audit and the last grant checks:
-//!
-//! 1. The `anchored` set from the self-audit report, in the home's `settings/` directory ([`ANCHORED_FILE`]);
-//! 2. Each held grant's six-check verdict and verification time, at `grants-held/<id>.verdict.json`
-//! ([`verdict_path`]).
-//!
-//! Without them, every startup would show all entries as "confirming" and all grants as "not verified" until
-//! the background checks finish, which looks like failure. Startup hydrates from these caches first, the UI
-//! shows "confirmed · verified hh:mm", and fresh results replace them as they arrive.
-//!
-//! They are caches, not proof. A cached anchoring shows as `Lamp::Remembered`, never as `Lamp::Anchored`,
-//! which only the current session's audit report produces; anything that requires "anchored" (granting to
-//! others, starting a relicense…) accepts only the current report. Staleness only turns the status dot gray
-//! instead of green, never yellow (yellow means "in progress").
-//!
-//! Times are always passed in by the caller (Unix seconds): the app uses `Shell::clock` (default
-//! [`now_secs`]); tests inject fixed times.
-
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
 use zikaron::json::{self, Value};
 
-/// The file name of the `anchored` set in `settings/`.
-pub const ANCHORED_FILE: &str = "last-audit.json";
+pub const ANCHORED_FILE: &str = zikaron_seal::lastaudit::FILE;
 
-/// The suffix of verdict file names (`grants-held/<id>.verdict.json`).
 pub const VERDICT_SUFFIX: &str = zikaron_seal::envelope::VERDICT_SUFFIX;
 
-/// A cache older than this (seconds) is stale: the status dot turns gray (never yellow). The background check
-/// runs either way.
 pub const STALE_SECS: u64 = 24 * 3600;
 
-/// The cached `anchored` set: each entry id with its chain id and transaction, and the audit time.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Anchored {
     pub rows: Vec<(String, (u64, String))>,
     pub at: u64,
-    /// Whether that audit was complete (`auditx::whole`, recorded when saved; required).
     pub whole: bool,
 }
 
 impl Anchored {
-    /// Whether this entry is in the cached set.
     pub fn has(&self, id: &str) -> bool {
         self.rows.iter().any(|(x, _)| x.eq_ignore_ascii_case(id))
     }
 }
 
-/// A cached grant verdict: the kit crate's overall verdict, the six checks (raw token/state pairs) and the
-/// verification time; plus the upstream ledger audit label and chain time (shown as "upstream" and
-/// "remaining" on the vault detail card), and the block time the grant was anchored at in its issuer's ledger
-/// (used by the vault's date filter after a restart, before any re-check). The upstream label is required; the
-/// two times are absent when not known yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
     pub verdict: String,
     pub checks: Vec<(String, String)>,
     pub at: u64,
-    pub upstream_label: String,
     pub chain_now: Option<u64>,
     pub anchored_at: Option<u64>,
+    pub undecided: Option<zikaron_glue::book::Undecided>,
 }
 
-/// Whether a cache time is more than [`STALE_SECS`] old. A cache time in the future (clock set back) also
-/// counts as stale.
+pub fn of_card(c: &crate::vaultx::Card, at: u64, chain_now: Option<u64>) -> Verdict {
+    Verdict { verdict: c.verdict.clone(), checks: crate::vaultx::states(&c.checks), at, chain_now, anchored_at: c.anchored_at, undecided: c.undecided }
+}
+
+fn undecided_of(code: &str) -> Option<zikaron_glue::book::Undecided> {
+    use zikaron_glue::book::Undecided;
+    [Undecided::OldLaw, Undecided::Continued].into_iter().find(|u| u.code() == code)
+}
+
 pub fn stale(at: u64, now: u64) -> bool {
     now < at || now - at > STALE_SECS
 }
@@ -97,61 +74,26 @@ fn arr_of<'a>(v: &'a Value, k: &str) -> Option<&'a Vec<Value>> {
     }
 }
 
-/// Save the `anchored` set when a new audit arrives, overwriting the previous one. Written as canonical JSON.
 pub fn save_anchored(home: &Home, rows: &[(String, (u64, String))], at: u64, whole: bool) -> Result<(), Fault> {
-    let arr: Vec<Value> = rows
-        .iter()
-        .map(|(id, (chain, tx))| {
-            Value::Obj(vec![
-                ("chain".to_string(), Value::Int(*chain)),
-                ("id".to_string(), Value::Str(id.clone())),
-                ("tx".to_string(), Value::Str(tx.clone())),
-            ])
-        })
-        .collect();
-    let v = Value::Obj(vec![("anchored".to_string(), Value::Arr(arr)), ("at".to_string(), Value::Int(at)), ("whole".to_string(), Value::Bool(whole))]);
-    crate::local::put(&home.dir(Slot::Settings), ANCHORED_FILE, crate::local::Doc::LastAudit, &json::canon_bytes(&v))
+    let bytes = zikaron_seal::lastaudit::bytes(&zikaron_seal::lastaudit::Anchored { rows: rows.to_vec(), at, whole });
+    crate::local::put(&home.dir(Slot::Settings), ANCHORED_FILE, crate::local::Doc::LastAudit, &bytes)
 }
 
-/// Read the `anchored` set. No file gives `None` ("never audited" is not an error); a malformed file is an
-/// error, never silently treated as an empty set.
 pub fn load_anchored(home: &Home) -> Result<Option<Anchored>, Fault> {
     let p = home.dir(Slot::Settings).join(ANCHORED_FILE);
     let Some(bytes) = crate::local::read(&p, crate::local::Doc::LastAudit)? else { return Ok(None) };
-    let v = json::parse(&bytes).map_err(|t| Fault::known(Known::SettingsShape, format!("{}: {t:?}", p.display())))?;
-    let (Some(rows), Some(at)) = (arr_of(&v, "anchored"), int_of(&v, "at")) else {
-        return Err(Fault::known(Known::SettingsShape, p.display().to_string()));
-    };
-    let mut out = Vec::new();
-    for r in rows {
-        let (Some(id), Some(chain), Some(tx)) = (str_of(r, "id"), int_of(r, "chain"), str_of(r, "tx")) else {
-            return Err(Fault::known(Known::SettingsShape, p.display().to_string()));
-        };
-        out.push((id, (chain, tx)));
-    }
-    // "whole" is required: a file without it is not one this version wrote, refused by name rather than read as
-    // either answer.
-    let whole = match v.member("whole") {
-        Some(Value::Bool(b)) => *b,
-        _ => return Err(Fault::known(Known::SettingsShape, p.display().to_string())),
-    };
-    Ok(Some(Anchored { rows: out, at, whole }))
+    let a = zikaron_seal::lastaudit::parse(&bytes).map_err(|w| Fault::known(Known::SettingsShape, format!("{}: {w}", p.display())))?;
+    Ok(Some(Anchored { rows: a.rows, at: a.at, whole: a.whole }))
 }
 
-/// Whether this file is a verdict cache (by file name). Code that wants the vault's contents (such as
-/// `vaultx::held_rows`) skips it: the cache changes with every re-check and is not a received grant, and in a
-/// backup it would collide on restore with the re-checked home's copy ("exists with different bytes").
 pub fn is_cache(name: &str) -> bool {
     name.ends_with(VERDICT_SUFFIX)
 }
 
-/// Where a grant's verdict file lives.
 pub fn verdict_path(home: &Home, id: &str) -> Result<std::path::PathBuf, Fault> {
-    // Same keyed stem as the held grant it belongs to (`vaultx::held_stem`).
     Ok(home.dir(Slot::GrantsHeld).join(format!("{}{VERDICT_SUFFIX}", crate::vaultx::held_stem(id)?)))
 }
 
-/// Save a verdict when a re-check arrives, overwriting the previous one.
 pub fn save_verdict(home: &Home, id: &str, v: &Verdict) -> Result<(), Fault> {
     let (verdict, checks, at) = (&v.verdict, &v.checks, v.at);
     let arr: Vec<Value> = checks
@@ -167,9 +109,10 @@ pub fn save_verdict(home: &Home, id: &str, v: &Verdict) -> Result<(), Fault> {
         m.push(("chain_now".to_string(), Value::Int(n)));
     }
     m.push(("checks".to_string(), Value::Arr(arr)));
-    // Name the grant inside the sealed file, since the file name is a keyed hash that reveals nothing.
+    if let Some(u) = v.undecided {
+        m.push(("undecided".to_string(), Value::Str(u.code().to_string())));
+    }
     m.push(("grant".to_string(), Value::Str(grant_form(id))));
-    m.push(("upstream_label".to_string(), Value::Str(v.upstream_label.clone())));
     m.push(("verdict".to_string(), Value::Str(verdict.to_string())));
     let v = Value::Obj(m);
     let p = verdict_path(home, id)?;
@@ -177,19 +120,14 @@ pub fn save_verdict(home: &Home, id: &str, v: &Verdict) -> Result<(), Fault> {
     crate::local::put(&home.dir(Slot::GrantsHeld), &name, crate::local::Doc::Verdict, &json::canon_bytes(&v))
 }
 
-/// Normal form of a grant id in verdict caches and `load_verdicts` results: `0x` and lowercase, as
-/// `Entry::id_hex` writes it (callers compare against that).
 pub fn grant_form(id: &str) -> String {
     format!("0x{}", id.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase())
 }
 
-/// Normal form of an issuer address used as the key of the user's note about it (written by the vault, read
-/// by the window): `0x` and lowercase, as [`grant_form`].
 pub fn issuer_form(author: &str) -> String {
     grant_form(author)
 }
 
-/// Read a verdict. `None` when absent; a malformed file is an error.
 pub fn load_verdict(home: &Home, id: &str) -> Result<Option<Verdict>, Fault> {
     let p = verdict_path(home, id)?;
     let Some(bytes) = crate::local::read(&p, crate::local::Doc::Verdict)? else { return Ok(None) };
@@ -204,11 +142,13 @@ pub fn load_verdict(home: &Home, id: &str) -> Result<Option<Verdict>, Fault> {
         };
         checks.push((tok, st));
     }
-    Ok(Some(Verdict { verdict, checks, at, upstream_label: str_of(&v, "upstream_label").ok_or_else(|| Fault::known(Known::SettingsShape, p.display().to_string()))?, chain_now: int_of(&v, "chain_now"), anchored_at: int_of(&v, "anchored_at") }))
+    let undecided = match str_of(&v, "undecided") {
+        None => None,
+        Some(code) => Some(undecided_of(&code).ok_or_else(|| Fault::known(Known::SettingsShape, p.display().to_string()))?),
+    };
+    Ok(Some(Verdict { verdict, checks, at, chain_now: int_of(&v, "chain_now"), anchored_at: int_of(&v, "anchored_at"), undecided }))
 }
 
-/// Read every verdict in the vault (for startup hydration): files under `grants-held/` ending in
-/// [`VERDICT_SUFFIX`]. A malformed one goes into the error list without blocking the others.
 pub fn load_verdicts(home: &Home) -> (Vec<(String, Verdict)>, Vec<Fault>) {
     let mut out = Vec::new();
     let mut bad = Vec::new();
@@ -219,7 +159,6 @@ pub fn load_verdicts(home: &Home) -> (Vec<(String, Verdict)>, Vec<Fault>) {
         if !n.ends_with(VERDICT_SUFFIX) {
             continue;
         }
-        // The grant id is inside the file; the file name is keyed.
         let p = home.dir(Slot::GrantsHeld).join(&n);
         let read = crate::local::read(&p, crate::local::Doc::Verdict).and_then(|b| {
             b.ok_or_else(|| Fault::known(Known::FileMissing, p.display().to_string())).and_then(|b| {
@@ -239,7 +178,6 @@ pub fn load_verdicts(home: &Home) -> (Vec<(String, Verdict)>, Vec<Fault>) {
     (out, bad)
 }
 
-/// The system clock in Unix seconds. The default `Shell::clock`; tests replace it with a fixed value.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

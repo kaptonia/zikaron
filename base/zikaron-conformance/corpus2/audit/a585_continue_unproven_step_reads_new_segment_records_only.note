@@ -1,0 +1,1 @@
+sec 8.6 item 15 rule 2 with sec 12.6: the counted record of bytes nobody holds at T+1 is an old record, MISSING in the old report; the UNPROVEN record at T+60 is a new record whose hash no byte string carries and no counted record of the new segment matches, so the label is UNPROVEN, and a reading that counts the old record would say GAPS.

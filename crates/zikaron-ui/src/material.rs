@@ -1,15 +1,3 @@
-//! The material: one language of surfaces by elevation, which every raised thing in the kit is painted with.
-//!
-//! The page ground is the lowest level and takes no surface; a faint accent wash lies in its top left corner
-//! ([`ground_tint`]). Above it: a card, a float (menus, search pickers and the date picker open over the page
-//! beside what opened them), a toast, and a sheet over everything. Every surface has a half-point rim instead of a
-//! line. A card is the plain surface with a short and a long soft shadow. A float, a toast and a sheet are glass:
-//! a translucent ground with a faint accent wash at the top, a thread of light along the top edge, and the longer
-//! shadow of their height. Small raised parts (keys, the segment thumb, the switch knob) take their own rim and
-//! drops ([`drop`], [`rim`], [`inset_edge`]); solid keys are never haloed in their own colour.
-//!
-//! Painting only: no surface here changes where anything lies.
-
 use crate::palette::{blend, c, mix, C};
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::tokens::Radius;
@@ -17,8 +5,6 @@ use egui::{pos2, Color32, Rect, Shape};
 
 static GLASS: AtomicBool = AtomicBool::new(false);
 
-/// Say whether the system's own material lies under the window (set once the window has it): the rail's ground
-/// then lets it through.
 pub fn set_glass(on: bool) {
     GLASS.store(on, Ordering::Relaxed);
 }
@@ -27,13 +13,8 @@ pub fn glass() -> bool {
     GLASS.load(Ordering::Relaxed)
 }
 
-/// How much of the rail's tint lies over the system's glass, light and dark: the system's glass stands for the
-/// whole-machine preview's blurred, saturated wallpaper and its sheen, and this tint for the preview's glass fill
-/// over them (`--lg-fill`: light 0.38, dark 0.42), so the rail reads as clear as the preview's.
 pub const RAIL_GLASS_TINT: (f32, f32) = (0.38, 0.42);
 
-/// The rail's ground (the side rail, the first-run wizard's steps): over the system's material a translucent
-/// tint of it ([`RAIL_GLASS_TINT`], light to dark as the theme blends), else the tint itself, opaque.
 pub fn rail_ground() -> Color32 {
     if glass() {
         let (light, dark) = RAIL_GLASS_TINT;
@@ -43,7 +24,6 @@ pub fn rail_ground() -> Color32 {
     }
 }
 
-/// A raised surface's level above the page ground.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Level {
     Card,
@@ -55,19 +35,15 @@ pub enum Level {
 impl Level {
     pub const ALL: [Level; 4] = [Level::Card, Level::Float, Level::Toast, Level::Sheet];
 
-    /// Glass: a translucent ground with an accent wash at the top and a thread of light along the top edge.
     fn glass(self) -> bool {
         !matches!(self, Level::Card)
     }
 
-    /// How far down the glass wash runs before it is gone (a sheet's stops 120 below its top; the others run
-    /// their whole height).
     fn wash_reach(self) -> f32 {
         if self == Level::Sheet { 120.0 } else { f32::INFINITY }
     }
 }
 
-/// One soft shadow: y offset, blur, alpha (of the shadow ink).
 #[derive(Clone, Copy)]
 struct Soft {
     y: f32,
@@ -81,7 +57,6 @@ const fn soft(y: f32, blur: f32, a: u8) -> Soft {
 
 const NONE: Soft = soft(0.0, 0.0, 0);
 
-/// A level's two shadows in one appearance; a card lifted under the pointer takes `LIFT`.
 fn shadows(level: Level, dark: bool) -> [Soft; 2] {
     match (level, dark) {
         (Level::Card, false) => [soft(1.0, 2.0, 8), soft(6.0, 20.0, 11)],
@@ -95,10 +70,8 @@ fn shadows(level: Level, dark: bool) -> [Soft; 2] {
     }
 }
 
-/// A card lifted under the pointer, in both appearances.
 const LIFT: [Soft; 2] = [soft(2.0, 4.0, 10), soft(12.0, 28.0, 20)];
 
-/// The shadow ink at alpha `a` (0 to 255): a cool near-black in the light appearance, black in the dark.
 pub fn ink(a: f32) -> Color32 {
     let t = blend();
     let light = Color32::from_rgba_unmultiplied(16, 24, 40, a.round().clamp(0.0, 255.0) as u8);
@@ -106,7 +79,6 @@ pub fn ink(a: f32) -> Color32 {
     mix(light, dark, t)
 }
 
-/// The shapes of a surface at `level` over `rect`, a card's hover (`hover` 0 to 1) lifting it.
 pub fn shapes(rect: Rect, radius: Radius, level: Level, hover: f32) -> Vec<Shape> {
     let t = blend();
     let lerp = |a: f32, b: f32| a + (b - a) * t;
@@ -128,7 +100,6 @@ pub fn shapes(rect: Rect, radius: Radius, level: Level, hover: f32) -> Vec<Shape
         if alpha < 0.5 {
             continue;
         }
-        // A shadow that is there in one appearance only keeps the other's offset and blur while it fades.
         let (ay, ab) = if a.a == 0 { (b.y, b.blur) } else { (a.y, a.blur) };
         let (by, bb) = if b.a == 0 { (a.y, a.blur) } else { (b.y, b.blur) };
         out.push(drop(rect, r, lerp(ay, by), lerp(ab, bb), ink(alpha)));
@@ -148,35 +119,26 @@ pub fn shapes(rect: Rect, radius: Radius, level: Level, hover: f32) -> Vec<Shape
     out
 }
 
-/// A plate whose ground is `ground` exactly, in both appearances, inside a key's half-point edge (a QR code's
-/// white plate: any reader must find pure white behind the modules).
 pub fn plate(p: &egui::Painter, rect: Rect, radius: Radius, ground: Color32) {
     p.add(egui::epaint::RectShape::filled(rect, radius.egui(), ground));
     p.add(rim(rect, radius.egui(), c(C::KeyEdge)));
 }
 
-/// Paint a surface at `level`.
 pub fn paint(p: &egui::Painter, rect: Rect, radius: Radius, level: Level, hover: f32) {
     p.extend(shapes(rect, radius, level, hover));
 }
 
-/// One soft drop shadow under `rect`: `y` down, blurred over `blur`.
 pub fn drop(rect: Rect, radius: egui::CornerRadius, y: f32, blur: f32, colour: Color32) -> Shape {
     egui::epaint::RectShape::filled(rect.translate(egui::vec2(0.0, y)), radius, colour).with_blur_width(blur.max(0.0)).into()
 }
 
-/// A half-point rim just outside `rect`.
 pub fn rim(rect: Rect, radius: egui::CornerRadius, colour: Color32) -> Shape {
     egui::epaint::RectShape::stroke(rect, radius, egui::Stroke::new(0.5_f32, colour), egui::StrokeKind::Outside).into()
 }
 
-/// A one-point shade inside the edge of a rounded `rect`, as a shape shifted by `dy` would leave it: `dy` below
-/// zero shades the foot (thickest at the bottom, thinning to nothing up the sides), above zero the top. `soft`
-/// fades it inward over its depth (a blurred shade) instead of a hard band.
 pub fn inset_edge(rect: Rect, radius: f32, dy: f32, colour: Color32, soft: bool) -> Shape {
     let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0).max(0.0);
     let (cy, s) = if dy < 0.0 { (rect.bottom() - r, 1.0) } else { (rect.top() + r, -1.0) };
-    // The half of the outline on the shaded side, left to right.
     let mut line = Vec::new();
     for k in 0..=12 {
         let a = (180.0 - 180.0 * k as f32 / 12.0_f32).to_radians();
@@ -200,21 +162,15 @@ pub fn inset_edge(rect: Rect, radius: f32, dy: f32, colour: Color32, soft: bool)
     Shape::mesh(mesh)
 }
 
-/// A solid key's ground: its colour, flat.
 pub fn solid(rect: Rect, radius: f32, fill: Color32) -> Shape {
     egui::epaint::RectShape::filled(rect, egui::CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8), fill).into()
 }
 
-/// A rounded rectangle of `ground` (one layer, its rim smoothed as every rectangle's), with a wash laid over it
-/// from `top` at the top edge to `foot` `reach` below it (and `foot` on down from there): the ground keeps the
-/// opacity it was given.
 pub fn ground_with_run(rect: Rect, radius: f32, ground: Color32, top: Color32, foot: Color32, reach: f32) -> Shape {
     let base: Shape = egui::epaint::RectShape::filled(rect, egui::CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8), ground).into();
     Shape::Vec(vec![base, run(rect, radius, top, foot, reach)])
 }
 
-/// The wash: bands across the rounded rectangle, at every point of its corners and where the wash ends, each band
-/// as wide as the shape is there, so the colour runs exactly between the knots.
 fn run(rect: Rect, radius: f32, top: Color32, foot: Color32, reach: f32) -> Shape {
     let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0).max(0.0);
     let reach = reach.max(f32::EPSILON).min(rect.height().max(f32::EPSILON));
@@ -247,8 +203,6 @@ fn run(rect: Rect, radius: f32, top: Color32, foot: Color32, reach: f32) -> Shap
     Shape::mesh(mesh)
 }
 
-/// The page ground's faint accent wash: an ellipse 1100 across and 520 down around the top left corner of
-/// `rect`, fading out at 62 % of the way to its edge.
 pub fn ground_tint(p: &egui::Painter, rect: Rect) {
     let tint = c(C::GroundTint);
     if tint.a() == 0 {
@@ -276,31 +230,24 @@ pub fn ground_tint(p: &egui::Painter, rect: Rect) {
     p.add(Shape::mesh(mesh));
 }
 
-/// How far the light under the pointer reaches.
 pub const GLOW_R: f32 = 64.0;
 
-/// The soft light under the pointer on a key, a rail item or a clickable row ([`GLOW_R`] across): `colour` at the
-/// pointer, fading to nothing at the edge of its reach, inside `rect` with corners `radius`. A white key takes the
-/// accent at 4 %, a solid key white at 10 % (the caller's colour carries it).
 pub fn glow(p: &egui::Painter, rect: Rect, radius: f32, at: egui::Pos2, colour: Color32) {
     if let Some(s) = glow_shape(rect, radius, at, colour) {
         p.add(s);
     }
 }
 
-/// [`glow`] as a shape (for a block that lays its grounds in a slot under its content).
 pub fn glow_shape(rect: Rect, radius: f32, at: egui::Pos2, colour: Color32) -> Option<Shape> {
     let r = radius.clamp(0.0, 255.0).round() as u8;
     glow_shape_corners(rect, egui::CornerRadius::same(r), at, colour)
 }
 
-/// [`glow_shape`] over a block whose corners differ (a lit row's block, square where it meets a line).
 pub fn glow_shape_corners(rect: Rect, corners: egui::CornerRadius, at: egui::Pos2, colour: Color32) -> Option<Shape> {
     if colour.a() == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
     let most = (rect.width() / 2.0).min(rect.height() / 2.0);
-    // A point of the grid held inside the rounded rectangle, by the corner of its quarter.
     let inside = |q: egui::Pos2| {
         let left = q.x < rect.center().x;
         let up = q.y < rect.center().y;
@@ -338,13 +285,10 @@ pub fn glow_shape_corners(rect: Rect, corners: egui::CornerRadius, at: egui::Pos
     Some(Shape::mesh(mesh))
 }
 
-/// How strongly the light under the pointer shows on `id` now (0.18 s in and out; none while a list scrolls),
-/// and where the pointer is.
 pub fn glow_at(ui: &egui::Ui, id: egui::Id, rect: Rect, live: bool) -> (f32, egui::Pos2) {
     let at = ui.ctx().pointer_hover_pos();
     let on = live && at.map(|p| rect.contains(p)).unwrap_or(false) && !crate::scroll::moving(ui.ctx()) && crate::layer::on_top(ui, rect);
     let k = crate::motion::flag(ui.ctx(), id.with("glow"), on, 0.18 * crate::tokens::PACE);
-    // Fading out, the light stays where the pointer left it.
     let last = id.with("glow-at");
     let pos = match at.filter(|_| on) {
         Some(p) => {
@@ -360,9 +304,6 @@ pub fn glow_at(ui: &egui::Ui, id: egui::Id, rect: Rect, live: bool) -> (f32, egu
 mod tests {
     use super::*;
 
-    /// A card is one opaque ground; a float, a toast and a sheet are glass: one ground layer at 97 % (the design
-    /// draws 93 % over a blur this toolkit has not; at 97 % the page under it stays unreadable), with the accent
-    /// wash at its top edge (nothing is stacked under or over to make the surface opaque).
     #[test]
     fn glass_keeps_its_translucency() {
         let rect = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(200.0, 160.0));
@@ -390,7 +331,6 @@ mod tests {
         }
     }
 
-    /// A sheet's wash is gone 120 below its top; a menu's runs its whole height.
     #[test]
     fn a_sheets_wash_stops_short() {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(300.0, 400.0));
@@ -404,7 +344,6 @@ mod tests {
         assert!(m.vertices.iter().any(|vx| (vx.pos.y - 60.0).abs() < 30.0 && vx.color.a() > 0) || m.vertices.iter().any(|vx| vx.pos.y < 30.0 && vx.color.a() > 0));
     }
 
-    /// A solid key is its colour, opaque and flat: no halo, nothing beneath.
     #[test]
     fn a_solid_key_is_one_opaque_ground() {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(80.0, 34.0));

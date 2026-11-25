@@ -1,6 +1,3 @@
-//! Reach and anchoring (kit law §8) and the depth reading (§9). Audits go through the public API of
-//! `zikaron`.
-
 use crate::tokens::{self as t, Key};
 use zikaron::tokens::EntryType;
 use zikaron::audit::Outcome;
@@ -8,8 +5,6 @@ use zikaron::entry::Entry;
 use zikaron::json::Value;
 use zikaron::trace;
 
-/// An index of the ledger: each entry_id computed once and located by entry_id, so a step along prev does not
-/// rescan the ledger.
 pub struct Lines {
     ids: Vec<String>,
     at: std::collections::HashMap<String, usize>,
@@ -32,12 +27,6 @@ impl Lines {
     }
 }
 
-/// Kit law §8.1: `F → F'` when `F.prev` is the entry_id of ledger entry `F'`; `E` is reachable from `F` when
-/// `E = F` or `(F, E)` is in the transitive closure of `→`. The walk follows prev through ledger entries and
-/// stops where none matches.
-///
-/// Direction: `from` is the start F (the later entry), walked back along prev; `target` is E (earlier).
-/// Callers pass the entry an anchor points to as `from` and the entry asked about as `target`.
 pub fn reachable_at(ledger: &[Entry], lines: &Lines, from: usize, target: usize) -> bool {
     let mut cur = from;
     let mut walked = 0usize;
@@ -60,9 +49,6 @@ pub fn reachable_at(ledger: &[Entry], lines: &Lines, from: usize, target: usize)
     }
 }
 
-/// The same predicate building its own index, for single calls. `from` need not be a ledger entry (§8.1 only
-/// asks that each step along prev be one), so it is compared first, then the walk enters the ledger at its
-/// prev.
 pub fn reachable(ledger: &[Entry], from: &Entry, target_id: &str) -> bool {
     if from.id_hex() == target_id {
         return true;
@@ -82,10 +68,6 @@ pub fn reachable(ledger: &[Entry], from: &Entry, target_id: &str) -> bool {
     reachable_at(ledger, &lines, start, tgt)
 }
 
-/// Kit law §8.2: the bound of every ledger entry in one pass. From the entry each counted anchor points to,
-/// walk back along prev keeping the smaller blockTimestamp; stop where the bound is already no greater than
-/// this anchor's time, since an earlier walk covered those ancestors. (A walk per entry per anchor would cost
-/// anchors × entries × chain length.)
 pub fn bounds(o: &Outcome, lines: &Lines) -> Vec<Option<u64>> {
     let n = o.ledger.len();
     let mut best: Vec<Option<u64>> = vec![None; n];
@@ -117,7 +99,6 @@ pub fn bounds(o: &Outcome, lines: &Lines) -> Vec<Option<u64>> {
     best
 }
 
-/// Whether each ledger entry reaches `target`, memoized in one pass (§8.1 reach).
 fn reaches(o: &Outcome, lines: &Lines, target: usize) -> Vec<bool> {
     let n = o.ledger.len();
     let mut memo: Vec<Option<bool>> = vec![None; n];
@@ -167,22 +148,16 @@ fn reaches(o: &Outcome, lines: &Lines, target: usize) -> Vec<bool> {
     memo.into_iter().map(|x| x.unwrap_or(false)).collect()
 }
 
-/// Kit law §8.2: the bound of `E` is the smallest blockTimestamp among records whose hash is the entry_id of
-/// a ledger entry F with E reachable from F; with no such record E is not anchored.
 pub fn bound_of(o: &Outcome, e: &Entry) -> Option<u64> {
     let lines = Lines::of(&o.ledger);
     let pos = lines.position(&e.id_hex())?;
     bounds(o, &lines)[pos]
 }
 
-/// Kit law §8.2: anchored means it has a bound.
 pub fn is_anchored(o: &Outcome, e: &Entry) -> bool {
     bound_of(o, e).is_some()
 }
 
-/// Check 4 of kit law §10.2 (§8.2 with `counted` read as UNPROVEN): whether some retained UNPROVEN record's
-/// hash is the entry_id of a ledger entry F from which e is reachable. Same direction as `bounds`: from F
-/// (later) back along prev to e (earlier); e being F itself is the `E = F` case.
 pub fn unproven_reaches(o: &Outcome, e: &Entry) -> bool {
     let lines = Lines::of(&o.ledger);
     let target = match lines.position(&e.id_hex()) {
@@ -195,13 +170,10 @@ pub fn unproven_reaches(o: &Outcome, e: &Entry) -> bool {
         .any(|from| reachable_at(&o.ledger, &lines, from, target))
 }
 
-/// Builds every reading object; keys come from [`Key`] (the six §9.2 members and the two continuity members
-/// are in the closed table).
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }
 
-/// The entry with the smallest seq in a group (ties to the smallest entry_id).
 fn pick<'a>(h: &[&'a Entry], largest: bool) -> &'a Entry {
     let mut best = h[0];
     for e in h.iter().skip(1) {
@@ -217,8 +189,6 @@ fn pick<'a>(h: &[&'a Entry], largest: bool) -> &'a Entry {
     best
 }
 
-/// Kit law §9.2: the depth reading of an audit input and a work digest. An invalid input yields only
-/// `{"valid": false}`.
 pub fn depth(outcome: Option<&Outcome>, work: &str) -> Value {
     trace::mark(t::K2);
     let o = match outcome {
@@ -269,8 +239,6 @@ pub fn depth(outcome: Option<&Outcome>, work: &str) -> Value {
     let h0 = pick(&h, false);
     let hmax = pick(&h, true);
     let span = hmax.seq - h0.seq + 1;
-    // Positions from H0 within [H0.seq, Hmax.seq] whose entry_id is the hash of a counted anchor: direct
-    // anchors on H0's own line, excluding bounds and twins off the fork.
     let counted: std::collections::HashSet<&str> =
         o.counted.iter().map(|a| a.hash.as_str()).collect();
     let h0_pos = lines.position(&h0.id_hex());

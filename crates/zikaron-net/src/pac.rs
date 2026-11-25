@@ -1,49 +1,17 @@
-//! The system's automatic proxy settings: the proxy auto-configuration script (PAC) at the address the system
-//! names, run as browsers run it. Automatic discovery (WPAD, a script looked for by the name `wpad` on whatever
-//! network the machine is on) is not followed: only a script at an address the person set runs here.
-//!
-//! The script is fetched directly (never through a proxy), within [`FETCH_LIMIT`] and up to [`SCRIPT_MAX`] bytes,
-//! following up to [`REDIRECTS`] redirects (each `Location` resolved against the address it came from, RFC 3986
-//! §5.2). It is fetched only from this machine over `http` or from anywhere over `https` ([`script_source`], the
-//! address and every redirect judged alike): someone else on the network can hand no script in. A `file:` script is
-//! not read, as browsers do not. Each fetch has its whole limit on a thread of its own, whatever the exchange that
-//! wanted it has left (it waits within its own deadline); what the fetch found, a script or none, is kept by the
-//! address for [`SCRIPT_FRESH`]. It runs in QuickJS (through `rquickjs`) in a sandbox that holds the language's own
-//! objects and the standard PAC functions ([`PAC_FUNCTIONS`]) and nothing else: no network, no files, no modules, no
-//! timers. Each run gets a fresh engine with a memory limit ([`MEMORY_LIMIT`]), a stack limit ([`STACK_LIMIT`]) and
-//! one time limit for the whole run ([`RUN_LIMIT`], the engine's own interrupt); the name lookups a script asks for
-//! (`dnsResolve`, `isResolvable`, `myIpAddress` and their `Ex` forms) are answered outside the sandbox by the
-//! transport's resolver, each within [`DNS_LIMIT`] and the run's time left.
-//!
-//! The script is asked once per node address and script (each run with its whole limit on a thread of its own,
-//! its answer kept for [`ANSWER_FRESH`]), with the node's scheme, host and port only (`https://node.example/`),
-//! never its path or query, where a key may live. A script that cannot be used is named by [`PacTrouble`]; the
-//! connection then goes as if the system named no script.
-
 use crate::route::{proxy_of, Kind, SystemProxies, Way};
 use crate::{keep, Target};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The engine's memory limit for one run.
 pub const MEMORY_LIMIT: usize = 8 << 20;
-/// The engine's stack limit for one run.
 pub const STACK_LIMIT: usize = 512 << 10;
-/// One run's time limit, the name lookups it asks for included.
 pub const RUN_LIMIT: Duration = Duration::from_secs(2);
-/// One name lookup's limit, within the run's time left.
 pub const DNS_LIMIT: Duration = Duration::from_secs(1);
-/// Fetching the script, within the exchange's time left.
 pub const FETCH_LIMIT: Duration = Duration::from_secs(5);
-/// The largest script fetched.
 pub const SCRIPT_MAX: usize = 1 << 20;
-/// How long a fetched script (or the trouble fetching it) is kept before it is fetched again.
 pub const SCRIPT_FRESH: Duration = Duration::from_secs(300);
-/// How long the script's answer for one node address is kept.
 pub const ANSWER_FRESH: Duration = Duration::from_secs(60);
-/// The functions the sandbox holds besides the language's own objects: the standard PAC functions and the
-/// `Ex` family as Chromium has them. Closed set.
 pub const PAC_FUNCTIONS: [&str; 21] = [
     "isPlainHostName",
     "dnsDomainIs",
@@ -68,8 +36,6 @@ pub const PAC_FUNCTIONS: [&str; 21] = [
     "alert",
 ];
 
-/// The language's own objects the sandbox keeps (everything else the engine defines is removed before the
-/// script runs). Closed set.
 pub const LANGUAGE_GLOBALS: [&str; 34] = [
     "Object",
     "Function",
@@ -107,27 +73,16 @@ pub const LANGUAGE_GLOBALS: [&str; 34] = [
     "globalThis",
 ];
 
-/// Why the system's script could not be used. Closed set; each has a name ([`PacTrouble::code`]).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum PacTrouble {
-    /// It could not be fetched (no answer, not found, refused, an answer other than 200).
     Unfetched,
-    /// Its address is not `http` or `https` (a `file:` script is not read).
     Scheme,
-    /// Its address, or a redirect on the way, is `http` on another machine: not fetched (only this machine's
-    /// `http`, or `https` from anywhere).
     RemoteHttp,
-    /// It is longer than [`SCRIPT_MAX`].
     TooLarge,
-    /// It threw, or does not parse.
     Failed,
-    /// It ran past [`RUN_LIMIT`].
     Timeout,
-    /// It ran past [`MEMORY_LIMIT`] or [`STACK_LIMIT`].
     Memory,
-    /// It defines neither `FindProxyForURL` nor `FindProxyForURLEx`.
     NoFunction,
-    /// Its answer is not text, or names no way that reads.
     Answer,
 }
 
@@ -144,7 +99,6 @@ impl PacTrouble {
         PacTrouble::Answer,
     ];
 
-    /// The trouble's name, as said to the user.
     pub fn code(self) -> &'static str {
         match self {
             PacTrouble::Unfetched => "PAC_UNFETCHED",
@@ -160,25 +114,14 @@ impl PacTrouble {
     }
 }
 
-/// What the system's automatic settings give for one node. Closed set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Auto {
-    /// No automatic settings in force (no script named).
     None,
-    /// The script's ways, in order (never empty).
     Ways(Vec<Way>),
-    /// For display: the answer for this node is not known yet (asked when a connection opens).
     Pending,
-    /// The named script could not be used.
     Trouble(PacTrouble),
 }
 
-// ───────────────────────── The script's answer ─────────────────────────
-
-/// The ways a script's answer names, in order: `DIRECT`, `PROXY host[:port]` (CONNECT, port 80 when left out),
-/// `HTTPS host[:port]` (443), `SOCKS host[:port]` (1080; SOCKS5, then SOCKS4), `SOCKS5 …`, `SOCKS4 …`;
-/// separated by `;`, keywords in any case, credentials (`user:pass@`) kept. Entries that do not read are passed
-/// over, and a way named twice is tried once. No entry that reads is [`PacTrouble::Answer`].
 pub fn ways_of(answer: &str) -> Result<Vec<Way>, PacTrouble> {
     let mut out: Vec<Way> = Vec::new();
     for entry in answer.split(';') {
@@ -210,11 +153,9 @@ pub fn ways_of(answer: &str) -> Result<Vec<Way>, PacTrouble> {
                 Kind::Socks5 => "socks5",
                 Kind::Socks4 => "socks4",
             };
-            // A place without a port takes the keyword's.
             let host_part = place.rsplit_once('@').map_or(place, |(_, h)| h);
             let has_port = host_part.rsplit_once(':').is_some_and(|(h, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && (!h.contains(':') || h.ends_with(']')));
             let spelled = if has_port { format!("{scheme}://{place}") } else { format!("{scheme}://{place}:{port}") };
-            // SOCKS4 carries no password: the SOCKS4 way of `SOCKS user:pass@…` keeps the user id only.
             let spelled = match (kind, spelled.split_once("://").and_then(|(_, r)| r.rsplit_once('@'))) {
                 (Kind::Socks4, Some((creds, rest))) if creds.contains(':') => format!("{scheme}://{}@{rest}", creds.split(':').next().unwrap_or("")),
                 _ => spelled,
@@ -233,10 +174,6 @@ pub fn ways_of(answer: &str) -> Result<Vec<Way>, PacTrouble> {
     Ok(out)
 }
 
-// ───────────────────────── The engine ─────────────────────────
-
-/// What the sandbox asks of the machine, answered outside it: a name's addresses within a limit, and this
-/// machine's own addresses; and whether the run is to stop now (the transport shutting down).
 #[derive(Clone, Copy)]
 pub(crate) struct Host {
     pub resolve: fn(&str, Duration) -> Vec<IpAddr>,
@@ -244,8 +181,6 @@ pub(crate) struct Host {
     pub stop: fn() -> bool,
 }
 
-/// This machine's addresses as browsers find them: the local address a UDP socket would use to reach a public
-/// address (no packet is sent), IPv4 then IPv6; `127.0.0.1` when there is none.
 fn my_ips() -> Vec<IpAddr> {
     let mut out = Vec::new();
     for (bind, to) in [("0.0.0.0:0", "8.8.8.8:80"), ("[::]:0", "[2001:4860:4860::8888]:80")] {
@@ -265,11 +200,8 @@ fn my_ips() -> Vec<IpAddr> {
     out
 }
 
-/// The transport's resolver for the sandbox's lookups.
 const MACHINE: Host = Host { resolve: crate::dial::lookup, my_ips, stop: keep::closing };
 
-/// The PAC functions written in the script's own language (the lookups and `isInNetEx` are given from
-/// outside, as `dnsResolve`, `dnsResolveEx`, `myIpAddress`, `myIpAddressEx`, `isInNetEx`).
 const LIBRARY: &str = r#"
 (function (g) {
   var MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -377,7 +309,6 @@ const LIBRARY: &str = r#"
 })(globalThis);
 "#;
 
-/// Whether `ip` is inside `prefix` (`addr/bits`, IPv4 or IPv6); anything that does not read is outside.
 fn in_net_ex(ip: &str, prefix: &str) -> bool {
     let (Ok(a), Some((net, bits))) = (ip.trim().parse::<IpAddr>(), prefix.trim().split_once('/')) else { return false };
     let (Ok(n), Ok(bits)) = (net.parse::<IpAddr>(), bits.parse::<u32>()) else { return false };
@@ -389,7 +320,6 @@ fn in_net_ex(ip: &str, prefix: &str) -> bool {
     }
 }
 
-/// How one run ended in the engine.
 fn run_in_engine(script: &str, url: &str, host: &str, until: Instant, machine: Host) -> Result<String, PacTrouble> {
     use rquickjs::context::intrinsic;
     use rquickjs::{Coerced, Context, Function, Runtime, Value};
@@ -433,7 +363,6 @@ fn run_in_engine(script: &str, url: &str, host: &str, until: Instant, machine: H
             g.set("myIpAddressEx", Function::new(ctx.clone(), move || joined(mine()))?.with_name("myIpAddressEx")?)?;
             g.set("isInNetEx", Function::new(ctx.clone(), |ip: Coerced<String>, prefix: Coerced<String>| in_net_ex(&ip.0, &prefix.0))?.with_name("isInNetEx")?)?;
             ctx.eval::<(), _>(LIBRARY)?;
-            // Everything the engine defines beyond the closed sets goes before the script runs.
             let names: Vec<String> = ctx.eval("Object.getOwnPropertyNames(globalThis)")?;
             for n in names {
                 if !LANGUAGE_GLOBALS.contains(&n.as_str()) && !PAC_FUNCTIONS.contains(&n.as_str()) {
@@ -451,8 +380,6 @@ fn run_in_engine(script: &str, url: &str, host: &str, until: Instant, machine: H
     outcome
 }
 
-/// Run a script for one node within `limit`, on a thread of its own: the engine stops itself at the limit; the
-/// caller stops waiting a moment after.
 pub(crate) fn run(script: Arc<String>, url: &str, host: &str, limit: Duration, machine: Host) -> Result<String, PacTrouble> {
     let until = Instant::now() + limit;
     let (tx, rx) = std::sync::mpsc::channel();
@@ -467,18 +394,12 @@ pub(crate) fn run(script: Arc<String>, url: &str, host: &str, limit: Duration, m
     rx.recv_timeout(limit + crate::SLICE).unwrap_or(Err(PacTrouble::Timeout))
 }
 
-// ───────────────────────── Fetching and keeping ─────────────────────────
-
-/// What fetching a script found.
 #[derive(Clone)]
 enum Fetched {
     Script(Arc<String>),
     Trouble(PacTrouble),
 }
 
-/// Where a script may be fetched from: over `https` from anywhere (the server's certificate verified), over `http`
-/// only from this machine, a literal loopback address (`127.0.0.0/8`, `::1`) or the name `localhost`, judged by
-/// the address as written and never by a lookup. An `http` address on any other host is refused by name.
 pub fn script_source(t: &Target) -> Result<(), PacTrouble> {
     let host = t.host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     let this_machine = host == "localhost"
@@ -494,8 +415,6 @@ pub fn script_source(t: &Target) -> Result<(), PacTrouble> {
     }
 }
 
-/// A script address as configured: `http`/`https` (else [`PacTrouble::Scheme`]) from where scripts may come
-/// ([`script_source`]).
 fn script_address(url: &str) -> Result<(), PacTrouble> {
     let lower = url.trim().to_ascii_lowercase();
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
@@ -504,15 +423,12 @@ fn script_address(url: &str) -> Result<(), PacTrouble> {
     script_source(&crate::read_address(url.trim()).map_err(|_| PacTrouble::Scheme)?)
 }
 
-/// Fetch a script directly within `limit`, from where scripts may come; every redirect is judged the same way
-/// before it is followed.
 fn fetch(url: &str, limit: Duration) -> Fetched {
     let Ok(mut t) = crate::read_address(url) else { return Fetched::Trouble(PacTrouble::Scheme) };
     if let Err(x) = script_source(&t) {
         return Fetched::Trouble(x);
     }
     let until = Instant::now() + limit.min(FETCH_LIMIT);
-    // Redirects are followed as browsers follow them for a script, within the one fetch limit.
     for _ in 0..=REDIRECTS {
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -537,25 +453,18 @@ fn fetch(url: &str, limit: Duration) -> Fetched {
     Fetched::Trouble(PacTrouble::Unfetched)
 }
 
-/// How many redirects a script fetch follows.
 pub const REDIRECTS: usize = 5;
 
-/// Where a redirect from `from` points: its `Location` resolved against the address it came from as RFC 3986
-/// §5.2 resolves a reference (an absolute address, a network path `//host…`, an absolute path, a relative path
-/// with `.` and `..` segments, a query alone, or nothing), the fragment dropped. Only an `http`/`https` result
-/// is followed.
 fn redirected(from: &Target, location: &str) -> Option<Target> {
     crate::read_address(&resolve_reference(from, location.trim())?).ok()
 }
 
-/// RFC 3986 §5.2.2 (strict): the target of `reference` against `base`, as text.
 fn resolve_reference(base: &Target, reference: &str) -> Option<String> {
     let reference = reference.split_once('#').map_or(reference, |(r, _)| r);
     let (base_path, base_query) = match base.path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (base.path.as_str(), None),
     };
-    // A scheme: letters, digits, `+`, `-`, `.`, starting with a letter, before the first `:`.
     let scheme = reference.split_once(':').map(|(s, _)| s).filter(|s| {
         let mut c = s.chars();
         c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric() || "+-.".contains(x))
@@ -583,7 +492,6 @@ fn resolve_reference(base: &Target, reference: &str) -> Option<String> {
         } else if p.starts_with('/') {
             (remove_dot_segments(&p), q)
         } else {
-            // Merge (§5.2.3): the base has an authority, so an empty base path merges as "/".
             let merged = match base_path.rfind('/') {
                 Some(i) => format!("{}{p}", &base_path[..=i]),
                 None => format!("/{p}"),
@@ -596,7 +504,6 @@ fn resolve_reference(base: &Target, reference: &str) -> Option<String> {
     Some(format!("{scheme}://{authority}{path}{}", query.map(|q| format!("?{q}")).unwrap_or_default()))
 }
 
-/// RFC 3986 §5.2.4: `.` and `..` segments removed from a path.
 fn remove_dot_segments(path: &str) -> String {
     let mut input = path.to_string();
     let mut output = String::new();
@@ -629,9 +536,7 @@ fn remove_dot_segments(path: &str) -> String {
 
 struct Kept {
     scripts: Vec<(String, Instant, Fetched)>,
-    /// (script digest, node address) → answer.
     answers: Vec<((u64, String), Instant, Result<Vec<Way>, PacTrouble>)>,
-    /// Fetches and runs in flight (one each at a time).
     fetching: Vec<String>,
     asking: Vec<(u64, String)>,
 }
@@ -643,14 +548,12 @@ fn kept() -> std::sync::MutexGuard<'static, Kept> {
     KEPT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Forget every kept script and answer (for tests and test harnesses).
 pub fn forget() {
     let mut k = kept();
     k.scripts.clear();
     k.answers.clear();
 }
 
-/// A kept fetch of `url` still fresh.
 fn kept_script(url: &str) -> Option<Fetched> {
     kept().scripts.iter().find(|(u, at, _)| u == url && at.elapsed() < SCRIPT_FRESH).map(|(_, _, f)| f.clone())
 }
@@ -663,9 +566,6 @@ fn fresh_answer(k: &Kept, key: &(u64, String)) -> Option<Result<Vec<Way>, PacTro
     k.answers.iter().find(|(x, at, _)| x == key && at.elapsed() < ANSWER_FRESH).map(|(_, _, a)| a.clone())
 }
 
-/// Wait for something kept, within `until` and while the transport is not shutting down: `found` reads it from
-/// what is kept; `start` starts its work when none is in flight (it lands what it finds and wakes the waiters).
-/// `None` when the time ran out first (the work goes on and lands for the next to ask).
 fn wait_kept<T>(until: Instant, found: impl Fn(&Kept) -> Option<T>, start: impl FnOnce(&mut Kept) -> bool) -> Option<T> {
     let mut k = kept();
     let mut start = Some(start);
@@ -686,9 +586,6 @@ fn wait_kept<T>(until: Instant, found: impl Fn(&Kept) -> Option<T>, start: impl 
     }
 }
 
-/// The script at `url`: kept, or fetched with its whole fetch limit on a thread of its own and waited for within
-/// `limit`. Whatever the fetch found (a script, or the trouble) is its verdict and is kept; an exchange whose time
-/// runs out first is answered as not fetched this once, and the fetch lands for the next.
 fn script_at(url: &str, limit: Duration) -> Fetched {
     let until = Instant::now() + limit;
     let owned = url.to_string();
@@ -726,7 +623,6 @@ fn digest(s: &str) -> u64 {
     h.finish()
 }
 
-/// The address a script is asked about: the node's scheme, host and port, never its path or query.
 fn asked_url(t: &Target) -> String {
     format!("{}/", t.sayable())
 }
@@ -735,9 +631,6 @@ fn kept_answer(key: &(u64, String)) -> Option<Result<Vec<Way>, PacTrouble>> {
     fresh_answer(&kept(), key)
 }
 
-/// The script's ways for a node: kept, or asked with the whole run limit on a thread of its own and waited for
-/// within `limit`. Whatever the run answered is its verdict and is kept; an exchange whose time runs out first is
-/// answered as timed out this once, and the run lands for the next.
 fn answer(script: &Arc<String>, t: &Target, limit: Duration, machine: Host) -> Result<Vec<Way>, PacTrouble> {
     let key = (digest(script), asked_url(t));
     let until = Instant::now() + limit;
@@ -779,8 +672,6 @@ fn auto_of(a: Result<Vec<Way>, PacTrouble>) -> Auto {
     }
 }
 
-/// The system's automatic settings for a node, within `limit`: the script at the address the system names. Only
-/// `http`/`https` script addresses are fetched.
 pub(crate) fn auto_for(t: &Target, s: &SystemProxies, limit: Duration) -> Auto {
     auto_with(t, s, limit, MACHINE)
 }
@@ -798,8 +689,6 @@ pub(crate) fn auto_with(t: &Target, s: &SystemProxies, limit: Duration, machine:
     }
 }
 
-/// For display: what is already known, never fetching or running ([`Auto::Pending`] when the answer for this
-/// node is not known yet).
 pub(crate) fn auto_known(t: &Target, s: &SystemProxies) -> Auto {
     let Some(url) = s.pac_url.as_deref() else { return Auto::None };
     if let Err(x) = script_address(url) {
@@ -847,8 +736,6 @@ mod tests {
         ask(&format!("function FindProxyForURL(url, host) {{ return String({body}); }}"), "https://node.example/", "node.example").expect("runs")
     }
 
-    /// The answer's entries read in order; `SOCKS` is SOCKS5 then SOCKS4; ports fill in; entries that do not read
-    /// are passed over; none that reads is named.
     #[test]
     fn an_answer_reads_into_ways_in_order() {
         let w = ways_of("SOCKS5 127.0.0.1:1080; PROXY p.example; HTTPS h.example:8443;SOCKS s:9; DIRECT; QUIC q:1; PROXY ;direct").expect("reads");
@@ -863,7 +750,6 @@ mod tests {
         }
     }
 
-    /// Each standard function answers as browsers' do.
     #[test]
     fn the_standard_functions_answer() {
         assert_eq!(says("isPlainHostName('intranet') + ',' + isPlainHostName('a.b')"), "true,false");
@@ -886,8 +772,6 @@ mod tests {
         assert_eq!(says("getClientVersion()"), "1.0");
     }
 
-    /// The sandbox holds the language's own objects and the PAC functions, nothing else: no modules, no timers,
-    /// no files, no way to run queued jobs.
     #[test]
     fn the_sandbox_holds_the_closed_sets_and_nothing_else() {
         let names = says("Object.getOwnPropertyNames(globalThis).sort().join(',')");
@@ -900,8 +784,6 @@ mod tests {
         assert_eq!(ask("import x from 'os'; function FindProxyForURL() { return 'DIRECT'; }", "https://n/", "n"), Err(PacTrouble::Failed));
     }
 
-    /// A script that throws, does not parse, loops, eats memory, recurses without end, defines no function or
-    /// answers no text is refused by name, and every refusal comes back within the run's limit.
     #[test]
     fn a_script_that_cannot_be_used_is_named_within_the_limit() {
         let started = Instant::now();
@@ -919,7 +801,6 @@ mod tests {
         assert!(took >= RUN_LIMIT * 2 && took < RUN_LIMIT * 2 + Duration::from_secs(1), "{took:?}");
     }
 
-    /// Lookups share the run's limit: a script that asks for name after slow name still ends within it.
     #[test]
     fn lookups_share_the_runs_limit() {
         let started = Instant::now();
@@ -928,8 +809,6 @@ mod tests {
         assert!(started.elapsed() < RUN_LIMIT + Duration::from_secs(1), "{:?}", started.elapsed());
     }
 
-    /// `FindProxyForURLEx` is asked before `FindProxyForURL`; the script is asked with the node's scheme, host and
-    /// port, never its path.
     #[test]
     fn the_ex_function_comes_first_and_the_path_is_never_asked() {
         assert_eq!(ask("function FindProxyForURLEx(u, h) { return 'PROXY ex:1'; } function FindProxyForURL() { return 'DIRECT'; }", "https://n/", "n").as_deref(), Ok("PROXY ex:1"));
@@ -937,8 +816,6 @@ mod tests {
         assert_eq!(asked_url(&t), "https://node.example:8545/");
     }
 
-    /// A fetch or a run is judged in its own time: an exchange with no time left is answered "not this once"
-    /// at once, and what the fetch or the run then finds with its whole limit is kept for the next.
     #[test]
     fn a_fetch_or_run_is_judged_in_its_own_time_and_kept_once_it_lands() {
         let landed = |f: &dyn Fn() -> bool| {
@@ -960,8 +837,6 @@ mod tests {
         assert_eq!(answer(&script, &t, Duration::ZERO, STAGED).map(|w| w.len()), Ok(1), "its own answer, with no time needed");
     }
 
-    /// A redirect's `Location` resolves as RFC 3986 §5.4 resolves its examples against `http://a/b/c/d;p?q`
-    /// (normal and abnormal), the fragment dropped; a result that is not `http`/`https` is not followed.
     #[test]
     fn a_redirect_resolves_as_rfc_3986_resolves_a_reference() {
         let base = crate::parse("http://a/b/c/d;p?q").expect("base");
@@ -1011,14 +886,12 @@ mod tests {
         }
     }
 
-    /// The sandbox's address test reads IPv4 and IPv6 prefixes and nothing else.
     #[test]
     fn in_net_ex_reads_prefixes() {
         assert!(in_net_ex("10.1.2.3", "10.0.0.0/8") && in_net_ex("fe80::1", "fe80::/10") && in_net_ex("1.2.3.4", "0.0.0.0/0"));
         assert!(!in_net_ex("10.1.2.3", "fe80::/10") && !in_net_ex("x", "10.0.0.0/8") && !in_net_ex("10.1.2.3", "10.0.0.0/33") && !in_net_ex("10.1.2.3", "10.0.0.0"));
     }
 
-    /// A script address other than `http`/`https` is not fetched; the names are the closed set.
     #[test]
     fn a_file_script_is_not_read_and_each_trouble_has_its_name() {
         let t = crate::parse("https://node.example/").expect("address");
@@ -1028,9 +901,6 @@ mod tests {
         assert_eq!(codes, ["PAC_UNFETCHED", "PAC_SCHEME", "PAC_REMOTE_HTTP", "PAC_TOO_LARGE", "PAC_FAILED", "PAC_TIMEOUT", "PAC_MEMORY", "PAC_NO_FUNCTION", "PAC_ANSWER"]);
     }
 
-    /// A script comes over `https` from anywhere and over `http` from this machine only: a literal loopback
-    /// address or the name `localhost`, judged as written (no lookup); `http` from anywhere else is refused by
-    /// name before anything is fetched, as the system's address and as a redirect on the way.
     #[test]
     fn a_script_comes_from_this_machine_or_over_https() {
         let src = |u: &str| script_source(&crate::read_address(u).expect("address"));
@@ -1044,7 +914,6 @@ mod tests {
         let s = SystemProxies { pac_url: Some("http://pac.example/proxy.pac".into()), ..Default::default() };
         assert_eq!(auto_with(&t, &s, Duration::from_secs(1), STAGED), Auto::Trouble(PacTrouble::RemoteHttp));
         assert_eq!(auto_known(&t, &s), Auto::Trouble(PacTrouble::RemoteHttp));
-        // A redirect from this machine to `http` elsewhere is not followed.
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().expect("addr").port();
         std::thread::spawn(move || {

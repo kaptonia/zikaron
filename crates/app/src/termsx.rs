@@ -1,53 +1,24 @@
-//! Terms documents and exclusivity records: written once at signing, read-only afterwards. Both are sealed
-//! local data (`local::Doc::TermsDoc`, `local::Doc::TermsRecord`); record bundles and grant files carry the
-//! document unsealed.
-//!
-//! 1. The terms document: the file given in the issuing form, with its digest (law §6.3's `terms` is its
-//!    sha256). It is stored in this home at `kits/terms/<digest>/<kit name>`, with the kit name
-//!    transliterated (only by `kitx::kit_segment`). Directories are per digest, so one document signed into
-//!    several grants is stored once, and two different documents with the same name do not collide. Record
-//!    bundles and grant files carry it at the same path under `files/terms/…`, so a verifier given the
-//!    document can recompute the digest and read exclusivity themselves (the path law §6.3 points to).
-//! 2. The issuance record: one `kits/terms/grant-<id>.json` per grant, recording exclusivity, the terms
-//!    digest, where the document is and its original file name at signing. Written only once: landing
-//!    refuses when it exists, and the product has no other writer or action to change it (changing
-//!    exclusivity means revoking and issuing again). It is local bookkeeping, not part of the grant bytes (law
-//!    §6.3's grant fields have no exclusivity field); the UI marks it "local record only".
-
 use crate::fault::{Fault, Known};
 use crate::home::{Home, Slot};
 use std::path::{Path, PathBuf};
 
-/// The terms directory inside `kits`, the same directory a grant file carries its terms in (named once, in
-/// `zikaron_glue::grantfile`).
 pub use zikaron_glue::grantfile::TERMS_ROOM as ROOM;
 
-/// A grant's issuance record, its byte form and its file name, defined in the sealed layer (`zikaron_seal::terms`)
-/// so the command line reads it from a home the same way.
 pub use zikaron_seal::terms::{record_bytes, record_of, Record, RECORD_PREFIX, RECORD_SUFFIX};
 
-/// The document's relative path, assembled only here: `terms/<digest without 0x>/<kit name>`. `None` when it
-/// cannot be transliterated.
 pub fn doc_rel(terms: &str, name: &str) -> Option<String> {
     let seg = crate::kitx::kit_segment(name)?;
     Some(format!("{ROOM}/{}/{seg}", terms.trim().trim_start_matches("0x").to_ascii_lowercase()))
 }
 
-/// Where a grant's issuance record lives; the name is keyed by the names key (`zikaron_seal::terms::record_rel`).
 pub fn record_path(home: &Home, grant: &str) -> Result<PathBuf, Fault> {
     Ok(home.root().join(zikaron_seal::terms::record_rel(&crate::names::key()?, grant)))
 }
 
-/// Where a terms document is on disk: one file per digest (same digest, same bytes), both names keyed by the
-/// names key (`zikaron_seal::terms::doc_rel_on_disk`). Records and exports use the document's logical path
-/// (`doc_rel`); only this maps it to disk.
 pub fn doc_path(home: &Home, terms: &str) -> Result<PathBuf, Fault> {
     Ok(home.root().join(zikaron_seal::terms::doc_rel_on_disk(&crate::names::key()?, terms)))
 }
 
-/// Write once at signing. A given document is first checked against the digest signed into the grant
-/// (otherwise `TERMS_MISMATCH` and nothing is written); then the document is stored (skipped if the same one
-/// exists) and the issuance record written (refused if it exists: written once).
 pub fn keep(home: &Home, grant: &str, terms: &str, exclusive: bool, doc: Option<&Path>) -> Result<Record, Fault> {
     let terms = terms.trim().to_ascii_lowercase();
     let mut rel: Option<String> = None;
@@ -79,9 +50,6 @@ pub fn keep(home: &Home, grant: &str, terms: &str, exclusive: bool, doc: Option<
     Ok(rec)
 }
 
-/// Read all issuance records. No directory means none; a file that opens but is not a record of this format
-/// is skipped; one that cannot be opened (locked, sealed under another key, unreadable) is an error, never
-/// read as "no record" (that would drop the exclusivity it carries).
 pub fn records(home: &Home) -> Result<Vec<Record>, crate::fault::Fault> {
     let dir = home.dir(Slot::Kits).join(ROOM);
     let listing = match std::fs::read_dir(&dir) {
@@ -104,27 +72,21 @@ pub fn records(home: &Home) -> Result<Vec<Record>, crate::fault::Fault> {
     Ok(out)
 }
 
-/// A grant's issuance record (`None` when absent: signed by an older version, or not in this home); one that
-/// cannot be opened is an error.
 pub fn record(home: &Home, grant: &str) -> Result<Option<Record>, crate::fault::Fault> {
     Ok(crate::local::read(&record_path(home, grant)?, crate::local::Doc::TermsRecord)?.and_then(|b| record_of(&b)))
 }
 
-/// The document bytes a record points to (relative path, bytes); `None` without a document or when the file
-/// is gone; one that cannot be opened is an error (a kit never leaves it out silently).
 pub fn doc_bytes(home: &Home, r: &Record) -> Result<Option<(String, Vec<u8>)>, crate::fault::Fault> {
     let Some(rel) = r.doc.clone() else { return Ok(None) };
     Ok(crate::local::read(&doc_path(home, &r.terms)?, crate::local::Doc::TermsDoc)?.map(|b| (rel, b)))
 }
 
-/// Whether a grant is exclusive: recorded as exclusive at signing, or not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Exclusive {
     No,
     Signed,
 }
 
-/// Whether a grant is exclusive, read in one place: its issuance record (a grant without one is not).
 pub fn exclusive_of(records: &[Record], grant: &str) -> Exclusive {
     match records.iter().find(|r| r.grant.eq_ignore_ascii_case(grant)) {
         Some(r) if r.exclusive => Exclusive::Signed,

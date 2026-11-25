@@ -1,0 +1,1 @@
+input arrays reversed: sec 7.3/8.2/12.6: k2 names the old root key into the new segment's lineage by a timely succession; that key's genesis at seq 0 is tested against auth(0), the continuation's author k2, and not against the root R it equals: ROOT_MISMATCH beside the EQUIVOCATION with k2's genesis.

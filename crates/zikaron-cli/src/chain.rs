@@ -1,12 +1,3 @@
-//! The chain side: endpoints, scanning, anchoring, audit input. No chain decision is made here: the basis
-//! shape belongs to the core, record reading and the three verdicts to the anchoring crate's `scan`, the
-//! endpoint rule to its `endpoints`, audit-input assembly to its `input::assemble`, the report to the core's
-//! `audit`.
-//!
-//! This layer does three argument jobs: read `--endpoint <chain>=<url>` into a table, read a recording into
-//! replay endpoints, and count which chains have a single source for the endpoint rule (a single source must
-//! be flagged).
-
 use crate::codes::Reason;
 use crate::out;
 use zikaron::json::Value;
@@ -14,28 +5,30 @@ use zikaron_anchor::rpc;
 use zikaron_anchor::scan;
 use zikaron_anchor::wire::{self, Body, W};
 
-/// A declined answer: code and detail, carried up unchanged.
 pub struct Refused {
     pub reason: Reason,
     pub code: String,
     pub detail: String,
-    /// The line for people, when this refusal has one of its own (a window too wide for the node's span).
-    pub line: Option<out::Said>,
 }
 
-/// `--endpoint <chain>=<url>`, several per chain allowed (the endpoint rule), each with its place among the
-/// arguments. Every value is read whole here, before any node is asked: its spelling by the one reader (the
-/// app's too, `rpc::endpoint_spec`) and its address by the transport's (`rpc::read_address`). A value that does
-/// not read is misuse named by its place and length, never echoed ([`out::unechoed_endpoint`]).
 pub fn endpoint_specs(raw: &[(usize, String)]) -> Vec<(u64, String)> {
     crate::seam();
     let mut out_specs = Vec::new();
     for (at, spec) in raw {
         let subject = || out::unechoed_endpoint(*at, spec);
         match zikaron_anchor::rpc::endpoint_spec(spec) {
-            Ok((chain, address)) => match zikaron_anchor::rpc::read_address(&address) {
-                Ok(_) => out_specs.push((chain, address)),
-                Err(_) => out::misuse(Reason::Args, subject(), out::address_said(&address)),
+            Ok((chain, address)) => match address.rsplit_once(zikaron_anchor::rest::MARK) {
+                Some((base, lane)) => match (lane.parse::<u64>(), zikaron_anchor::rest::base_of(base)) {
+                    (Err(_), _) => out::misuse(Reason::Args, subject(), out::Said::ChainIdNotInt),
+                    (Ok(c), _) if c != chain => out::misuse(Reason::Args, subject(), out::Said::RestRowChain),
+                    (Ok(_), Ok(_)) => out_specs.push((chain, address)),
+                    (Ok(_), Err(zikaron_anchor::rest::NotABase::Address(_))) => out::misuse(Reason::Args, subject(), out::address_said(base)),
+                    (Ok(_), Err(_)) => out::misuse(Reason::Args, subject(), out::Said::RestRowBase),
+                },
+                None => match zikaron_anchor::rpc::read_address(&address) {
+                    Ok(_) => out_specs.push((chain, address)),
+                    Err(_) => out::misuse(Reason::Args, subject(), out::address_said(&address)),
+                },
             },
             Err(zikaron_anchor::rpc::NotAnEndpoint::ChainNotInt) => out::misuse(Reason::Args, subject(), out::Said::ChainIdNotInt),
             Err(_) => out::misuse(Reason::Args, subject(), out::Said::EndpointShape),
@@ -54,46 +47,12 @@ pub fn chains_of(specs: &[(u64, String)]) -> Vec<u64> {
     c
 }
 
-/// How many rounds a scan runs: the largest endpoint count of any chain.
-pub fn rounds(specs: &[(u64, String)]) -> usize {
-    let mut n = 1;
-    for (c, _) in specs {
-        n = n.max(specs.iter().filter(|(x, _)| x == c).count());
-    }
-    n
-}
-
-pub fn nth_for(specs: &[(u64, String)], chain: u64, k: usize) -> String {
-    let mine: Vec<&String> = specs.iter().filter(|(c, _)| *c == chain).map(|(_, u)| u).collect();
-    mine[k.min(mine.len() - 1)].clone()
-}
-
-/// Single-source chains: fewer than two distinct endpoints. Endpoints are counted, not rounds: one endpoint
-/// agreeing with itself corroborates nothing.
-pub fn thin_chains(specs: &[(u64, String)]) -> Vec<u64> {
-    zikaron_anchor::endpoints::thin_chains(specs, &chains_of(specs))
-}
-
 fn wire_of(path: &str) -> (Vec<u8>, W) {
     let b = crate::args::slurp(path);
     match wire::parse(&b) {
         Some(v) => (b, v),
         None => out::misuse(Reason::Unreadable, out::typed(path), out::Said::NotJson),
     }
-}
-
-fn adoptions_of(v: &W) -> Vec<(u64, [u8; 32])> {
-    let mut out_pairs = Vec::new();
-    for e in v.member("adoptions").and_then(|x| x.as_arr()).unwrap_or(&[]) {
-        let (Some(c), Some(t)) = (
-            e.member("chainId").and_then(|x| x.as_u64()),
-            e.member("tx").and_then(|x| x.as_str()),
-        ) else {
-            out::misuse(Reason::Args, out::Subject::flag("adoptions"), out::Said::AdoptionShape)
-        };
-        out_pairs.push((c, h32(t)));
-    }
-    out_pairs
 }
 
 pub fn h32(x: &str) -> [u8; 32] {
@@ -122,7 +81,6 @@ pub fn h20(x: &str) -> [u8; 20] {
     o
 }
 
-/// Replay a recording into a scan fragment (or the core's no-label value). The offline path.
 pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
     crate::seam();
     let (src, fx) = wire_of(path);
@@ -130,7 +88,6 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
         Some(b) => b.raw(&src).to_vec(),
         None => b"null".to_vec(),
     };
-    let adoptions = adoptions_of(&fx);
     let recorded = fx.member("rpc").cloned().unwrap_or(W::of(Body::Obj(Vec::new())));
     let Body::Obj(chains) = &recorded.body else {
         out::misuse(Reason::Args, out::typed(path), out::Said::RpcNotObject)
@@ -149,7 +106,6 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
                     reason: Reason::Scan,
                     code: "E_RECORDING".to_string(),
                     detail: format!("{e:?}"),
-                    line: None,
                 })
             }
         }
@@ -158,61 +114,13 @@ pub fn replay_fragment(path: &str) -> Result<Value, Refused> {
         .iter_mut()
         .map(|(c, r)| (*c, r as &mut dyn rpc::Endpoint))
         .collect();
-    finish(scan::run(&basis_bytes, &adoptions, &mut eps))
+    finish(scan::run(&basis_bytes, &mut eps))
 }
 
-/// A basis file's bytes, read whole (misuse when it is not JSON).
 pub fn basis_bytes(path: &str) -> Vec<u8> {
     wire_of(path).0
 }
 
-/// The lowest head the endpoints of `chain` say (`send::read_head`, each asked once); `None` when none answers.
-pub fn least_head(specs: &[(u64, String)], chain: u64) -> Option<u64> {
-    crate::seam();
-    specs
-        .iter()
-        .filter(|(c, _)| *c == chain)
-        .filter_map(|(_, url)| rpc::Http::new(url).and_then(|mut h| zikaron_anchor::send::read_head(&mut h)))
-        .min()
-}
-
-/// Scan live endpoints once, under the basis given as its bytes.
-pub fn live_fragment(
-    basis_src: &[u8],
-    adoptions_path: Option<&str>,
-    specs: &[(u64, String)],
-    round: usize,
-) -> Result<(String, Value), Refused> {
-    crate::seam();
-    let adoptions = match adoptions_path {
-        Some(p) => adoptions_of(&wire_of(p).1),
-        None => Vec::new(),
-    };
-    let mut https: Vec<(u64, rpc::Http)> = Vec::new();
-    for c in chains_of(specs) {
-        let url = nth_for(specs, c, round);
-        match rpc::Http::new(&url) {
-            Some(h) => https.push((c, h)),
-            // Read whole by `endpoint_specs` before; named, never echoed, all the same.
-            None => out::misuse(Reason::Args, out::Subject::flag("endpoint"), out::address_said(&url)),
-        }
-    }
-    let names: Vec<String> = https
-        .iter()
-        .map(|(c, h)| {
-            use zikaron_anchor::rpc::Endpoint as _;
-            format!("{c}={}", h.name())
-        })
-        .collect();
-    let mut eps: Vec<(u64, &mut dyn rpc::Endpoint)> = https
-        .iter_mut()
-        .map(|(c, h)| (*c, h as &mut dyn rpc::Endpoint))
-        .collect();
-    finish(scan::run(basis_src, &adoptions, &mut eps)).map(|v| (names.join(","), v))
-}
-
-/// The three scan outcomes in one place: a refusal means no answer; no label is the core's answer, passed on
-/// unchanged.
 fn finish(
     r: Result<Result<scan::Scanned, Value>, scan::Refusal>,
 ) -> Result<Value, Refused> {
@@ -221,7 +129,6 @@ fn finish(
             reason: Reason::Scan,
             code: refusal.code().to_string(),
             detail: refusal.detail(),
-            line: matches!(refusal, scan::Refusal::Unanswered { asked: scan::Asked::TooWide { .. }, .. }).then_some(out::Said::ScanTooWide),
         }),
         Ok(Err(no_label)) => Ok(no_label),
         Ok(Ok(s)) => Ok(scan::fragment(&s)),

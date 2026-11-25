@@ -1,91 +1,8 @@
-//! This product's pages in the window shell: the table the shell asks (`zikaron_ui::nav::Pages`), what each
-//! route draws and titles, the toolbar keys of each view's own page, which old page a route stands for, and
-//! the places the shell's own keys go (settings, identity keys, record verification).
-//!
-//! The shell (`chrome`) names no page; every page name of this product is read here or in `crate::nav`.
-
 use super::*;
 use crate::nav::{tab as T, View};
-use zikaron_ui::nav::Pages;
 
-/// The shell's state over this product's table.
-pub(super) type Frame = zikaron_ui::nav::Frame<Place, Route, Stack>;
-
-impl Pages for Win {
-    type Place = Place;
-    type Route = Route;
-    type Stack = Stack;
-    type Word = Key;
-
-    fn frame(&self) -> &Frame {
-        &self.ux.nav
-    }
-
-    fn frame_mut(&mut self) -> &mut Frame {
-        &mut self.ux.nav
-    }
-
-    fn word(&self, w: Key) -> String {
-        t(w).to_string()
-    }
-
-    fn rail(&self) -> &'static [crate::nav::Group] {
-        crate::nav::rail(self.shell.settings.role)
-    }
-
-    fn home(&self) -> Place {
-        Place::Home
-    }
-
-    fn stack_of(&self, place: Place) -> Stack {
-        crate::nav::stack_of(place)
-    }
-
-    /// A view's own page is where its rail item goes.
-    fn root_of(&self, stack: Stack) -> Place {
-        match stack {
-            Stack::Home => Place::Home,
-            Stack::Settings => Place::SettingsHome,
-            Stack::View(v) => crate::nav::rail(self.shell.settings.role)
-                .iter()
-                .flat_map(|g| g.items.iter())
-                .find_map(|i| match i.place {
-                    Place::View(x, t) if x == v => Some(Place::View(x, t)),
-                    _ => None,
-                })
-                .unwrap_or(Place::View(v, 0)),
-        }
-    }
-
-    fn history_of(&self, place: Place) -> (Stack, History) {
-        crate::nav::history_of(place, self.shell.settings.role)
-    }
-
-    fn root(&self, place: Place) -> Route {
-        Route::Root(place)
-    }
-
-    fn root_place(&self, route: &Route) -> Option<Place> {
-        match route {
-            Route::Root(p) => Some(*p),
-            _ => None,
-        }
-    }
-
-    /// Settings pages light the rail's bottom "settings" key, not an item.
-    fn lit(&self) -> Option<Place> {
-        if self.ux.nav.stack == Stack::Settings {
-            return None;
-        }
-        crate::nav::lit(self.ux.nav.place.unwrap_or(Place::Home), self.shell.settings.role)
-    }
-
-    fn same_item(&self, lit: Place, item: Place) -> bool {
-        same_item(lit, item)
-    }
-
-    /// The alerts item counts what is waiting there.
-    fn count(&self, item: Place) -> usize {
+impl Win {
+    pub(super) fn rail_count(&self, item: Place) -> usize {
         if matches!(item, Place::View(View::Alerts, _)) {
             self.alert_count()
         } else {
@@ -93,34 +10,15 @@ impl Pages for Win {
         }
     }
 
-    fn name(&self, route: &Route) -> String {
-        route.name()
-    }
-
-    fn detail(&self, route: &Route) -> bool {
+    pub(super) fn detail_route(&self, route: &Route) -> bool {
         matches!(route, Route::Work(_) | Route::Pending(_) | Route::Grant(_) | Route::Entry(_) | Route::Other(_) | Route::Held(_))
     }
 
-    fn title(&self, route: &Route) -> String {
-        self.title_of(route)
-    }
-
-    fn title_in_bar(&self, route: &Route) -> bool {
+    pub(super) fn bar_title(&self, route: &Route) -> bool {
         matches!(route, Route::Root(Place::Settings(_)) | Route::Section(_))
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
-        self.toolbar_acts(ui, route, now);
-    }
-
-    fn body(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
-        self.banner(ui, now);
-        self.page_body(ui, route, now);
-    }
-
-    /// Drop what belonged to the previous page, sync the shell's page (tests and the trace channel read it),
-    /// and have a detail page read its entry's bytes once, off the frame (the action layer reads the disk).
-    fn entered(&mut self, now: f64) {
+    pub(super) fn page_entered(&mut self, now: f64) {
         self.ux.u3.drop_armed = None;
         let route = self.route();
         let page = route_page(&route, self.shell.settings.role);
@@ -133,92 +31,23 @@ impl Pages for Win {
         match &route {
             Route::Work(id) | Route::Entry(id) | Route::Grant(id) | Route::Pending(id) => {
                 if self.opened.as_ref().map(|d| !d.id.eq_ignore_ascii_case(id)).unwrap_or(true) {
-                    self.auto(Action::OpenEntry { id: id.clone() }, now);
+                    self.open_entry(id);
                 }
             }
             _ => {}
         }
     }
-}
+    pub(super) fn body_before(&mut self, _ui: &mut egui::Ui, _now: f64) {}
 
-impl Win {
-    /// Land on a place with a fresh history (links on pages, gaps, tests): its view becomes current and shows
-    /// that place, with the view's own page behind it when the place is a pushed page. An old page first opens
-    /// what it was folded into.
-    pub(super) fn go(&mut self, place: Place, now: f64) {
-        if let Place::Page(p) = place {
-            self.arrive(p);
-        }
-        zikaron_ui::nav::go(self, place, now);
-    }
+    pub(super) fn follow_extra(&mut self, _now: f64) {}
 
-    /// Where the window stands before anything put it: the shell's page.
-    pub(super) fn start_place(&self) -> Place {
-        Place::Page(self.shell.page)
-    }
-
-    /// Where the rail's "settings" key (and ⌘,) goes.
-    pub(super) fn settings_place(&self) -> Place {
-        Place::SettingsHome
-    }
-
-    /// Where the identity menu's "identity keys" goes.
-    pub(super) fn keys_place(&self) -> Place {
-        Place::Settings(Section::Keys)
-    }
-
-    /// Where a file dropped on the window goes for the user's seat: record verification.
     pub(super) fn record_check_place(&self) -> Place {
         Place::View(View::Verify, T::VERIFY_WORK)
     }
 
-    /// After switching seat, a view that seat lacks lands on home.
-    pub(super) fn settle_seat(&mut self) {
-        if let Some(p) = self.ux.nav.place {
-            let settled = crate::nav::settle(p, self.shell.settings.role);
-            if settled != p && matches!(settled, Place::Home) {
-                self.ux.nav.hist.clear();
-                self.ux.nav.stack = Stack::Home;
-                self.ux.nav.place = Some(Place::Home);
-            }
-        }
-    }
-
-    /// The shell's page is followed: a change to it made from outside the window (`Action::Show` from a link, a
-    /// test, a command-line request) is gone to the next frame; the window's own moves record the page they set
-    /// (`entered`), so this never answers them. The first frame only takes note: the window starts where it was
-    /// put (from the shell's page itself when nothing else put it).
-    pub(super) fn follow_page(&mut self, now: f64) {
-        let page = self.shell.page;
-        match self.ux.page_seen {
-            None => self.ux.page_seen = Some(page),
-            Some(seen) if seen != page => {
-                self.ux.page_seen = Some(page);
-                let here = route_page(&self.route(), self.shell.settings.role);
-                if here != Some(page) {
-                    self.go(Place::Page(page), now);
-                }
-            }
-            Some(_) => {}
-        }
-    }
-
-    /// At start, with the gate down: the wizard opens by itself at its first open step when a test driver
-    /// asked for it or the machine wants it.
-    pub(super) fn wizard_by_itself(&mut self) {
-        let pr = self.progress();
-        if self.ux.wizard_forced || pr.wants_wizard(self.shell.settings.role) {
-            self.wizard_open(pr.first_open().unwrap_or(crate::nav::Step::Pin));
-        }
-    }
-
-    /// The intent of pages folded into a parent item. Exhaustive: each new `Page` makes the compiler ask
-    /// whether it has an intent here.
     pub(super) fn arrive(&mut self, p: Page) {
         match p {
             Page::Audit => self.ux.u3.audit_open = true,
-            Page::Adopt => self.u3_form_open(U3Form::Adopt),
-            Page::Succeed => self.u3_form_open(U3Form::Succeed),
             Page::Upstreams => self.ux.u4.vault_by_issuer = true,
             Page::FirstRun => {
                 let step = self.progress().first_open().unwrap_or(crate::nav::Step::Pin);
@@ -232,7 +61,6 @@ impl Win {
             | Page::Revoke
             | Page::FirstWindow
             | Page::Kit
-            | Page::Depth
             | Page::Reader
             | Page::Check
             | Page::Watch
@@ -247,12 +75,12 @@ impl Win {
             | Page::Archive
             | Page::Mirror
             | Page::Skeleton
-            | Page::About => {}
+            | Page::About
+            | Page::Persona => {}
         }
     }
 
-    /// The page for a route.
-    fn page_body(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
+    pub(super) fn page_body(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
         match route {
             Route::Root(Place::Home) => self.page_home(ui, now),
             Route::Root(Place::View(View::Works, tab)) => tab_body(ui, "works", u64::from(*tab), |ui| {
@@ -267,6 +95,7 @@ impl Win {
             Route::Root(Place::View(View::Log, _)) => self.ledger_page(ui, now),
             Route::Root(Place::View(View::Alerts, _)) => self.alerts_page(ui, now),
             Route::Root(Place::View(View::MyGrants, _)) => self.vault_page(ui, now),
+            Route::Root(Place::View(View::Persona, tab)) => self.persona_page(ui, *tab, now),
             Route::Root(Place::SettingsHome) | Route::Root(Place::Settings(_)) => self.settings_home(ui, now),
             Route::Section(s) => self.settings_section(ui, *s, now),
             Route::Root(Place::Page(_)) => self.page_home(ui, now),
@@ -281,10 +110,10 @@ impl Win {
         }
     }
 
-    /// The toolbar title of a route.
     pub(super) fn title_of(&self, route: &Route) -> String {
+        let chain_now = self.shell.chain_now();
         let rows: &[crate::ledgerx::Row] = self.shell.rows.as_ref().map(|(r, _)| r.as_slice()).unwrap_or(&[]);
-        let entry_title = |id: &str| rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{} \u{b7} {}", r.seq, t(user_kind_key(r.kind))));
+        let entry_title = |id: &str| rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{} \u{b7} {}", r.seq, t(row_kind_key(r))));
         match route {
             Route::Root(Place::Home) | Route::Root(Place::Page(_)) => t(Key::NavHome).to_string(),
             Route::Root(Place::SettingsHome) | Route::Root(Place::Settings(_)) => t(Key::NavSettings).to_string(),
@@ -295,10 +124,11 @@ impl Win {
                 View::Log => Key::NavLogView,
                 View::Alerts => Key::NavAlertsView,
                 View::MyGrants => Key::NavMyGrantsView,
+                View::Persona => Key::PagePersona,
             })
             .to_string(),
             Route::Section(s) => t(s.key()).to_string(),
-            Route::Work(id) => rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(human_summary).unwrap_or_default(),
+            Route::Work(id) => rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|x| human_summary(x, chain_now)).unwrap_or_default(),
             Route::Pending(id) | Route::Entry(id) => entry_title(id).unwrap_or_default(),
             Route::Grant(id) => rows.iter().find(|r| r.id.eq_ignore_ascii_case(id)).map(|r| format!("#{} \u{b7} {}", r.seq, t(Key::KindGrant))).unwrap_or_default(),
             Route::Other(seq) => self.other_title(*seq),
@@ -309,8 +139,7 @@ impl Win {
         }
     }
 
-    /// The buttons at the right of a view's own page's toolbar.
-    fn toolbar_acts(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
+    pub(super) fn toolbar_acts(&mut self, ui: &mut egui::Ui, route: &Route, now: f64) {
         let Route::Root(place) = route else { return };
         if matches!(self.shell.unfetched, Some(crate::restorex::State::NewerElsewhere { .. })) {
             mark::pill(ui, t(Key::NoteReader), PillTone::Warn);
@@ -333,12 +162,12 @@ impl Win {
             }
             Place::View(View::Log, _) => self.ledger_acts(ui, now),
             Place::View(View::MyGrants, _) => self.vault_acts(ui, now),
+            Place::View(View::Persona, tab) => self.persona_acts(ui, *tab, now),
             _ => {}
         }
     }
 }
 
-/// Which old page a route stands for (the shell records it: tests and the trace channel read it).
 pub(super) fn route_page(route: &Route, role: crate::roles::Role) -> Option<Page> {
     Some(match route {
         Route::Kit => Page::Kit,
@@ -358,15 +187,6 @@ pub(super) fn route_page(route: &Route, role: crate::roles::Role) -> Option<Page
     })
 }
 
-/// Whether a rail item is the lit one (views ignore tabs).
-pub(super) fn same_item(lit: Place, item: Place) -> bool {
-    match (lit, item) {
-        (Place::View(a, _), Place::View(b, _)) => a == b,
-        (a, b) => a == b,
-    }
-}
-
-/// The page shell records for a view's tab (`shell.page`: tests and the trace channel read it).
 pub(super) fn view_page(v: View, tab: u8, role: crate::roles::Role) -> Page {
     match v {
         View::Works => match tab {
@@ -392,21 +212,22 @@ pub(super) fn view_page(v: View, tab: u8, role: crate::roles::Role) -> Page {
             T::HELD_RELICENSE => Page::Relicense,
             _ => Page::Vault,
         },
+        View::Persona => Page::Persona,
     }
 }
 
-/// The text of a verify tab.
 pub(super) fn tab_key(v: View, tab: u8) -> Key {
     match (v, tab) {
         (View::Verify, T::VERIFY_WORK) => Key::V2TabVerifyWork,
         (View::Verify, T::VERIFY_OTHERS) => Key::V2TabOthers,
         (View::Verify, _) => Key::V2TabCheckGrant,
+        (View::Persona, T::PERSONA_NAMES) => Key::PsTabNames,
+        (View::Persona, T::PERSONA_HOME) => Key::PsTabHome,
+        (View::Persona, _) => Key::U3Overview,
         (_, _) => v.key(),
     }
 }
 
-/// Where a watch row's "next" leads: an unanswered node goes to network settings; expiring holdings and
-/// missing chains go to my grants.
 pub(super) fn gap_target(g: crate::watchx::Gap) -> Place {
     use crate::watchx::Say;
     match g.say {
@@ -416,7 +237,6 @@ pub(super) fn gap_target(g: crate::watchx::Gap) -> Place {
     }
 }
 
-/// The settled place for [`gap_target`] (the link is named after it).
 pub(super) fn gap_place(g: crate::watchx::Gap, role: crate::roles::Role) -> Place {
     match gap_target(g) {
         Place::Page(p) => crate::nav::home_of(p, role),

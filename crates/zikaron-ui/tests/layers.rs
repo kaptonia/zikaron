@@ -1,14 +1,7 @@
-//! Overlays and small parts, read in headless egui frames: the press outside a floating card; how overlays
-//! come, leave, come back and stack; whose Esc it is; a field's hint and a pill's words in too little room;
-//! the file name of a path written on either system; and every overlay class placed in one place (sheets,
-//! covers, toasts, tips, and a card with no room under its anchor).
-
 use std::path::PathBuf;
 use zikaron_ui::egui::{self, pos2, vec2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::{button, datepick, full, input, layer, mark, menu, pick, sheet, toast, tokens, width};
 
-/// A page's central panel drawn at the top level from the context alone: `show_inside` on a background-layer ui over
-/// the screen's content rect, clipped to it, under the id egui gives its own top-level central panel.
 fn central<R>(ctx: &egui::Context, panel: egui::CentralPanel, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     let mut top = egui::Ui::new(ctx.clone(), egui::Id::new((ctx.viewport_id(), "central_panel")), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()));
     top.set_clip_rect(ctx.content_rect());
@@ -29,11 +22,9 @@ impl Frames {
         Frames { ctx, t: 0.0 }
     }
 
-    /// One frame `dt` after the last, with `events`; overlays that left fade at its end, as in the window.
     fn run(&mut self, dt: f64, events: Vec<Event>, mut ui: impl FnMut(&egui::Context)) -> egui::FullOutput {
         self.t += dt;
         let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)), time: Some(self.t), events, ..Default::default() };
-        // Two pixels a point, as the window has on the screens it ships to (layout rounds to pixels).
         input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(2.0);
         self.ctx.run_ui(input, |root| {
             let ctx = &root.ctx().clone();
@@ -55,7 +46,6 @@ fn esc_key() -> Vec<Event> {
     vec![Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]
 }
 
-/// Every text drawn in a frame, with where.
 fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
     out.shapes
         .iter()
@@ -66,7 +56,6 @@ fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
         .collect()
 }
 
-/// A page with one key under where the menus open; returns whether the key was clicked.
 fn page_key(ctx: &egui::Context) -> bool {
     let mut clicked = false;
     central(ctx, egui::CentralPanel::default(), |ui| {
@@ -82,13 +71,10 @@ fn rows() -> Vec<menu::Item<'static>> {
     vec![menu::row("一"), menu::row("二"), menu::row("三")]
 }
 
-/// A press outside an open menu closes it and reaches nothing under it; with no menu open the same press
-/// presses the key (so the press does land there).
 #[test]
 fn a_press_outside_a_menu_closes_it_and_reaches_nothing_under_it() {
     let id = egui::Id::new("u1-menu");
     let on_key = pos2(420.0, 317.0);
-    // No menu: the press lands on the key.
     let mut f = Frames::new();
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| {
@@ -98,7 +84,6 @@ fn a_press_outside_a_menu_closes_it_and_reaches_nothing_under_it() {
     let mut got = false;
     f.run(0.1, press_at(on_key), |ctx| got = page_key(ctx));
     assert!(got, "with nothing open the press presses the key");
-    // A menu open: the same press only closes it.
     let mut f = Frames::new();
     menu::set(&f.ctx, id, true);
     for _ in 0..3 {
@@ -115,7 +100,6 @@ fn a_press_outside_a_menu_closes_it_and_reaches_nothing_under_it() {
     });
     assert!(!got, "the press that closes the menu reaches nothing under it");
     assert!(!menu::is_open(&f.ctx, id), "the press outside closed the menu");
-    // A press inside the card, off every row (its top inset), keeps it open.
     menu::set(&f.ctx, id, true);
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| {
@@ -125,7 +109,6 @@ fn a_press_outside_a_menu_closes_it_and_reaches_nothing_under_it() {
     let mut picked = Some(9);
     f.run(0.1, press_at(pos2(ANCHOR.left() + 40.0, ANCHOR.bottom() + 6.0 + 2.0)), |ctx| picked = menu::show(ctx, id, ANCHOR, true, 160.0, &rows()));
     assert!(picked.is_none() && menu::is_open(&f.ctx, id), "a press on the card itself neither picks nor closes");
-    // A press on a row still picks it.
     menu::set(&f.ctx, id, true);
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| {
@@ -138,7 +121,6 @@ fn a_press_outside_a_menu_closes_it_and_reaches_nothing_under_it() {
     assert_eq!(picked, Some(0), "a press on a row picks it");
 }
 
-/// The pick list behaves the same: a press outside closes it and reaches nothing under it.
 #[test]
 fn a_press_outside_a_pick_list_reaches_nothing_under_it() {
     let id = egui::Id::new("u1-pick");
@@ -160,8 +142,6 @@ fn a_press_outside_a_pick_list_reaches_nothing_under_it() {
     assert!(!got && !menu::is_open(&f.ctx, id), "closed, and the key under it untouched");
 }
 
-/// Every overlay area is made in one place, with egui's own fade-in off (no second fade over the library's
-/// own entrance): nowhere else in the library or the app opens an area itself.
 #[test]
 fn every_overlay_area_is_made_in_one_place_without_egui_fade_in() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -188,13 +168,10 @@ fn every_overlay_area_is_made_in_one_place_without_egui_fade_in() {
     assert!(body.contains(".fade_in(false)"), "that one place turns egui's fade-in off: {body}");
 }
 
-/// The menu layer's transform this frame.
 fn menu_transform(ctx: &egui::Context, id: egui::Id) -> egui::emath::TSTransform {
     ctx.layer_transform_to_global(egui::LayerId::new(egui::Order::Foreground, id.with("menu"))).unwrap_or_default()
 }
 
-/// A menu leaves back the way it came: its leaving copy, halfway out, is smaller and as far up as its
-/// entrance was at that point (scale and the 4 it came down, played backwards together).
 #[test]
 fn a_menu_leaves_back_up_the_way_it_came_down() {
     let id = egui::Id::new("u6-leave");
@@ -206,7 +183,6 @@ fn a_menu_leaves_back_up_the_way_it_came_down() {
         });
     }
     menu::set(&f.ctx, id, false);
-    // The first frame it is not drawn the leaving starts; then halfway through its time.
     f.run(0.016, vec![], |_| {});
     f.run(f64::from(tokens::FAST) / 2.0, vec![], |_| {});
     let ghost = egui::LayerId::new(egui::Order::Foreground, id.with("menu").with("leaving"));
@@ -218,7 +194,6 @@ fn a_menu_leaves_back_up_the_way_it_came_down() {
     assert!((tr.translation.y - want).abs() < 0.05, "up the 4 it came down, by the same amount: {} vs {want}", tr.translation.y);
 }
 
-/// A menu opened again while it is still leaving comes back from where its leaving stood, not from nothing.
 #[test]
 fn a_menu_opened_again_halfway_out_comes_back_from_halfway() {
     let id = egui::Id::new("u6-resume");
@@ -241,7 +216,6 @@ fn a_menu_opened_again_halfway_out_comes_back_from_halfway() {
     let back = (menu_transform(&f.ctx, id).scaling - 0.97) / 0.03;
     assert!(leaving > 0.2, "it was well on screen when opened again: {leaving}");
     assert!((back - leaving).abs() < 0.03, "the entrance takes up where the leaving stood: {back} vs {leaving}");
-    // A menu opened from nothing starts from nothing.
     let fresh = egui::Id::new("u6-fresh");
     menu::set(&f.ctx, fresh, true);
     f.run(0.0, vec![], |ctx| {
@@ -250,8 +224,6 @@ fn a_menu_opened_again_halfway_out_comes_back_from_halfway() {
     assert!((menu_transform(&f.ctx, fresh).scaling - 0.97).abs() < 0.005, "a fresh opening starts at the entrance's start");
 }
 
-/// A card opened from inside another overlay hangs, with its guard, directly above it: raising that overlay
-/// afterwards does not cover them; the guard is the card's own layer.
 #[test]
 fn a_card_opened_inside_an_overlay_stays_above_it() {
     let mut f = Frames::new();
@@ -276,14 +248,10 @@ fn a_card_opened_inside_an_overlay_stays_above_it() {
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| draw(ctx, true));
     }
-    // Read where each lies on top: over the inner card, the inner card; over the outer one only, the inner
-    // card's guard, which is the inner card's own layer (above the outer overlay).
     assert_eq!(f.ctx.layer_id_at(pos2(200.0, 200.0)), Some(inner), "where both cards lie, the inner one is on top");
     assert_eq!(f.ctx.layer_id_at(pos2(350.0, 350.0)), Some(inner), "over the outer card, the inner card's guard");
 }
 
-/// A menu opened in a sheet, closed by a press outside it, opens again and its rows pick: the press that
-/// closed it raised nothing between the card and its rows.
 #[test]
 fn a_menu_in_a_sheet_closed_by_a_press_outside_works_when_opened_again() {
     let mut f = Frames::new();
@@ -309,14 +277,12 @@ fn a_menu_in_a_sheet_closed_by_a_press_outside_works_when_opened_again() {
         f.run(0.1, vec![], |ctx| draw(ctx, &mut picked));
     }
     let a = anchor.get().expect("drawn");
-    // A press in the sheet, outside the menu: the menu closes.
     let outside = pos2(a.left() + 4.0, a.top() - 8.0);
     f.run(0.1, press_at(outside), |ctx| draw(ctx, &mut picked));
     assert!(!menu::is_open(&f.ctx, id), "the press outside closed the menu");
     for _ in 0..4 {
         f.run(0.1, vec![], |ctx| draw(ctx, &mut picked));
     }
-    // Opened again: a press on its second row picks it.
     menu::set(&f.ctx, id, true);
     for _ in 0..4 {
         f.run(0.1, vec![], |ctx| draw(ctx, &mut picked));
@@ -330,8 +296,6 @@ fn a_menu_in_a_sheet_closed_by_a_press_outside_works_when_opened_again() {
     assert_eq!(got, Some(1), "the menu opened again picks its row");
 }
 
-/// The overlay opened last lies on top, whatever was raised before it: two cards on the page, the second
-/// opened after the first stood a while.
 #[test]
 fn the_overlay_opened_last_lies_on_top() {
     let mut f = Frames::new();
@@ -346,7 +310,6 @@ fn the_overlay_opened_last_lies_on_top() {
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| card(ctx, first, pos2(100.0, 100.0)));
     }
-    // The second drawn before the first in the frame, so frame order would put the first on top.
     for _ in 0..3 {
         f.run(0.1, vec![], |ctx| {
             card(ctx, second, pos2(200.0, 200.0));
@@ -354,7 +317,6 @@ fn the_overlay_opened_last_lies_on_top() {
         });
     }
     assert_eq!(f.ctx.layer_id_at(pos2(250.0, 250.0)), Some(second), "the one opened last is on top");
-    // A press on the first raises it (egui's own: the one pressed comes forward) and it stays there.
     f.run(0.1, press_at(pos2(150.0, 150.0)), |ctx| {
         card(ctx, second, pos2(200.0, 200.0));
         card(ctx, first, pos2(100.0, 100.0));
@@ -368,8 +330,6 @@ fn the_overlay_opened_last_lies_on_top() {
     assert_eq!(f.ctx.layer_id_at(pos2(250.0, 250.0)), Some(first), "the one pressed is on top and stays");
 }
 
-/// One Esc closes one overlay, the one opened last: a calendar opened in a sheet closes on Esc and the sheet
-/// stays; the next Esc is the sheet's.
 #[test]
 fn one_esc_closes_the_calendar_and_not_the_sheet_under_it() {
     let mut f = Frames::new();
@@ -421,7 +381,6 @@ fn one_esc_closes_the_calendar_and_not_the_sheet_under_it() {
     assert!(sheet_esc, "the next Esc is the sheet's");
 }
 
-/// Esc goes to the overlay opened last, whatever order they ask in within a frame.
 #[test]
 fn esc_goes_to_the_overlay_opened_last_whatever_order_they_ask_in() {
     let mut f = Frames::new();
@@ -446,7 +405,6 @@ fn esc_goes_to_the_overlay_opened_last_whatever_order_they_ask_in() {
     });
     f.run(0.1, esc_key(), |ctx| got = (layer::esc(ctx, a), layer::esc(ctx, b)));
     assert_eq!(got, (false, true), "and asked last");
-    // b gone from the screen: the Esc after is a's.
     f.run(0.1, vec![], |ctx| {
         layer::esc(ctx, a);
     });
@@ -456,14 +414,11 @@ fn esc_goes_to_the_overlay_opened_last_whatever_order_they_ask_in() {
     let mut got_a = false;
     f.run(0.1, esc_key(), |ctx| got_a = layer::esc(ctx, a));
     assert!(got_a, "with b gone, a takes Esc");
-    // No Esc pressed: nobody closes.
     let mut none = true;
     f.run(0.1, vec![], |ctx| none = !layer::esc(ctx, a));
     assert!(none);
 }
 
-/// A field's hint fits the room the field gives it: too long, it ends in "…" inside the frame; short, it
-/// shows whole.
 #[test]
 fn a_hint_too_long_for_its_field_ends_in_an_ellipsis_inside_the_frame() {
     let mut f = Frames::new();
@@ -486,13 +441,10 @@ fn a_hint_too_long_for_its_field_ends_in_an_ellipsis_inside_the_frame() {
     }
 }
 
-/// A pill never runs past the room it is given: in a narrow cell its words end in "…" and it takes the
-/// cell's width; with room, it is its natural width with its words whole.
 #[test]
 fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
     let mut f = Frames::new();
     let words = "等待节点确认收据中";
-    // The natural width itself, as a table cell gives it (laid out on whole points): words whole.
     let natural = {
         let mut w = 0.0;
         f.run(0.1, vec![], |ctx| {
@@ -500,7 +452,6 @@ fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
         });
         w
     };
-    // A cell that starts between points (a table's columns do) and is exactly the pill's width.
     for (x, room) in [(100.0, 60.0_f32), (100.4, natural), (100.6, natural), (100.0, 400.0)] {
         let mut r = Rect::NOTHING;
         let out = f.run(0.1, vec![], |ctx| {
@@ -520,9 +471,6 @@ fn a_pill_in_too_little_room_ends_in_an_ellipsis() {
     }
 }
 
-/// A detail page's head draws its pills whole on the title's middle at the right: the room they take is what
-/// they measure (`card::hero`), so the state pill (anchored, in dispute, an old version) is never cut to nothing.
-/// Victim: whoever reads a detail page's state from that one pill. Two pills, one spinning, side by side.
 #[test]
 fn a_detail_heads_pills_are_drawn_whole() {
     use zikaron_ui::card;
@@ -550,8 +498,6 @@ fn a_detail_heads_pills_are_drawn_whole() {
     assert!((first.center().y - title.center().y).abs() < 2.0, "on the title's middle: {first:?} {title:?}");
 }
 
-/// The file name of a path, with either separator: name only, with a path, a trailing separator, the two
-/// mixed, a drive root, separators only, empty, spaces around.
 #[test]
 fn a_file_name_is_read_with_either_separator() {
     for (path, want) in [
@@ -573,8 +519,6 @@ fn a_file_name_is_read_with_either_separator() {
     }
 }
 
-/// A table's status column gives its pill the pill's own width: the words stay whole (a cell laid out on
-/// whole points is not "too little room").
 #[test]
 fn a_pill_in_a_table_cell_its_own_width_stays_whole() {
     use zikaron_ui::table;
@@ -592,8 +536,6 @@ fn a_pill_in_a_table_cell_its_own_width_stays_whole() {
     }
 }
 
-/// Every overlay is placed in one place: outside the layer module nothing raises, nests or attaches a tip to a
-/// layer itself, and every file that opens an overlay area places it there as many times.
 #[test]
 fn every_overlay_is_placed_in_one_place() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -623,8 +565,6 @@ fn every_overlay_is_placed_in_one_place() {
     assert!(uneven.is_empty(), "an overlay area opened without being placed: {uneven:?}");
 }
 
-/// Sheets · A press on a sheet's scrim (outside its card) reaches nothing under it and leaves the sheet open;
-/// with no sheet the same press presses the key.
 #[test]
 fn a_press_on_a_sheets_scrim_reaches_nothing_under_it() {
     let on_key = pos2(410.0, 317.0);
@@ -647,8 +587,6 @@ fn a_press_on_a_sheets_scrim_reaches_nothing_under_it() {
     }
     let card = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("zikaron-sheet", "t-sheet")).with("card"));
     assert!(on_key.x < SCREEN.x / 2.0 - 150.0, "the press lands outside the card (300 wide, centred)");
-    // The scrim is the sheet's own layer: the point under the press is the sheet's for egui too (a wheel there
-    // scrolls nothing on the page).
     assert_eq!(f.ctx.layer_id_at(on_key), Some(card), "the scrim spans the window in the sheet's layer");
     f.run(0.1, press_at(on_key), |ctx| draw(ctx, &mut got));
     f.run(0.1, vec![], |ctx| draw(ctx, &mut got));
@@ -656,7 +594,6 @@ fn a_press_on_a_sheets_scrim_reaches_nothing_under_it() {
     assert_eq!(f.ctx.layer_id_at(pos2(590.0, 400.0)), Some(card), "the card still lies above its scrim after the press");
 }
 
-/// Covers · A press anywhere on a full-window cover reaches nothing under it.
 #[test]
 fn a_press_on_a_cover_reaches_nothing_under_it() {
     let on_key = pos2(410.0, 317.0);
@@ -675,7 +612,6 @@ fn a_press_on_a_cover_reaches_nothing_under_it() {
     assert!(!got, "the key under the cover is untouched");
 }
 
-/// Toasts · A toast lies on nothing: a press beside it reaches the page, and it lies above an open sheet.
 #[test]
 fn a_toast_takes_no_press_beside_it_and_lies_above_a_sheet() {
     let on_key = pos2(410.0, 317.0);
@@ -705,8 +641,6 @@ fn a_toast_takes_no_press_beside_it_and_lies_above_a_sheet() {
     assert_eq!(f.ctx.layer_id_at(on_toast).map(|l| l.order), Some(egui::Order::Tooltip), "the toast lies above the sheet's scrim");
 }
 
-/// Tips · A hover tip does not stay over what lies under it: once the pointer leaves the tipped widget for the
-/// place the tip was drawn, the tip goes and a press there reaches what lies under it.
 #[test]
 fn a_hover_tip_does_not_stay_over_a_press() {
     let mut f = Frames::new();
@@ -732,8 +666,6 @@ fn a_hover_tip_does_not_stay_over_a_press() {
     assert!(under, "the press where the tip was reaches what lies under it");
 }
 
-/// Menus near the window's foot · A menu whose anchor has no room under it opens above the anchor (and still
-/// inside the window); with room under it, under the anchor.
 #[test]
 fn a_menu_with_no_room_under_its_anchor_opens_above_it() {
     let tops = |anchor: Rect| -> Vec<f32> {
@@ -758,7 +690,6 @@ fn a_menu_with_no_room_under_its_anchor_opens_above_it() {
     assert!(down.iter().all(|y| *y > ANCHOR.bottom()), "with room, under the anchor: {down:?}");
 }
 
-/// A pick list and the date card with no room under their anchor open above it, inside the window, as menus do.
 #[test]
 fn a_pick_list_and_the_date_card_with_no_room_under_open_above() {
     let low = Rect::from_min_size(pos2(40.0, SCREEN.y - 50.0), vec2(100.0, 34.0));
@@ -778,7 +709,6 @@ fn a_pick_list_and_the_date_card_with_no_room_under_open_above() {
     let ys: Vec<f32> = texts(&out).into_iter().filter(|(t, _)| ["一", "二", "三"].contains(&t.as_str())).map(|(_, r)| r.top()).collect();
     assert_eq!(ys.len(), 3, "the pick rows are drawn: {ys:?}");
     assert!(ys.iter().all(|y| *y < low.top() && *y > 8.0), "the pick list above its anchor, inside the window: {ys:?}");
-    // The date field at the window's foot: its calendar opens above it.
     let words = datepick::Words { weekdays: ["一", "二", "三", "四", "五", "六", "日"], month: |y, m| format!("{y}年{m}月"), year: |y| format!("{y}年"), month_alone: |m| format!("{m}月"), today: "今天", clear: "清除" };
     let mut f = Frames::new();
     let mut value = String::new();
@@ -802,8 +732,6 @@ fn a_pick_list_and_the_date_card_with_no_room_under_open_above() {
     assert!(month.bottom() < field.top() && month.top() > 8.0, "the calendar above its field, inside the window: {month:?} {field:?}");
 }
 
-/// A card too tall for the room on either side of its anchor opens on the side with more room, held inside the
-/// window: never past an edge.
 #[test]
 fn a_card_with_room_on_neither_side_stays_inside_the_window() {
     let mut f = Frames::new();
@@ -819,8 +747,6 @@ fn a_card_with_room_on_neither_side_stays_inside_the_window() {
     }
 }
 
-/// Key-value tables · The key column widens to the table's widest key: "Ledger description" stands on one
-/// line, and its value starts right of it.
 #[test]
 fn a_key_value_tables_widest_key_stands_whole() {
     let mut f = Frames::new();
@@ -846,17 +772,12 @@ fn a_key_value_tables_widest_key_stands_whole() {
     assert!(val.2.left() >= key.2.right() + tokens::KV_COL_GAP - 0.5, "the value right of the whole key: {rows:?}");
 }
 
-/// A leaving layer's colours: the placeholder a text vertex carries stays the placeholder (the painter then
-/// puts the faded fallback colour there); every other colour is faded by the leaving alpha. A menu with
-/// words, painted and tessellated in the middle of its leaving, keeps no placeholder vertex (a debug build's
-/// painter asserts it) and draws its words in their own colour, faded.
 #[test]
 fn a_leaving_layer_fades_every_colour_but_the_placeholder() {
     let p = egui::Color32::PLACEHOLDER;
     for alpha in [0.0, 0.25, 0.5, 1.0] {
         assert_eq!(layer::leaving_colour(p, alpha), p, "placeholder at {alpha}");
     }
-    // A real colour of the kit's own palette (the kit's colours live only there).
     let c = zikaron_ui::palette::c(zikaron_ui::palette::C::Surface);
     assert_eq!(layer::leaving_colour(c, 0.5), c.gamma_multiply(0.5));
     assert_eq!(layer::leaving_colour(c, 1.0), c);
@@ -883,8 +804,6 @@ fn a_leaving_layer_fades_every_colour_but_the_placeholder() {
     assert!(vertices > 0, "the leaving menu was painted");
 }
 
-/// A banner's sentence is never cut short: at a width far narrower than the sentence, the whole sentence is
-/// drawn (no ellipsis, every character laid out), on more than one row, and within the banner.
 #[test]
 fn a_banner_wraps_a_long_sentence_and_never_cuts_it() {
     use zikaron_ui::states;
@@ -915,9 +834,6 @@ fn a_banner_wraps_a_long_sentence_and_never_cuts_it() {
     assert!(rect.max.x <= 360.0 + 16.0 + 8.0, "within the banner's width: {rect:?}");
 }
 
-/// A floating card stays inside the room its anchor is drawn in: a wide menu opened leftward from a key at the
-/// left edge of a page's content area (its clip, right of a rail) is held inside that area, never drawn over the
-/// rail beside it; the same key with the whole window to draw in may reach further left.
 #[test]
 fn a_floating_card_stays_inside_its_anchors_room() {
     let lefts = |content_left: f32| -> Vec<f32> {
@@ -954,9 +870,6 @@ fn a_floating_card_stays_inside_its_anchors_room() {
     assert!(free.iter().all(|x| *x >= 8.0), "inside the window: {free:?}");
 }
 
-/// A row with nothing under its title is one line, centred: the wizard's radio row is as high as its title's
-/// line and its padding, the title's middle on the row's middle; a large settings row with no note centres its
-/// title too. With a line under it, the title moves up to make room.
 #[test]
 fn a_row_with_no_line_under_its_title_centres_the_title() {
     use zikaron_ui::{card, tokens::Type};
@@ -977,23 +890,15 @@ fn a_row_with_no_line_under_its_title_centres_the_title() {
     for _ in 0..2 {
         out = f.run(0.1, vec![], |ctx| draw(ctx, &mut rows));
     }
-    // Read where the row put each title (the anchor it laid the text at), never the drawn glyphs' own height: that
-    // follows the system's font, which differs from machine to machine.
     let drawn = texts(&out);
     let at = |t: &str| drawn.iter().find(|(x, _)| x == t).map(|(_, r)| *r).unwrap_or_else(|| panic!("{t} drawn"));
     let line = Type::Strong.line();
     assert!((rows[0].height() - (24.0 + line)).abs() < 0.5, "one line high: {:?}", rows[0]);
-    // A choice row lays its title in the first of the lines it has, centred in that line: alone, its middle on
-    // the row's middle.
     assert!((at("Lone title").center().y - rows[0].center().y).abs() < 0.5, "centred: {:?} in {:?}", at("Lone title"), rows[0]);
     assert!(at("Two line title").center().y < rows[1].center().y - 4.0, "with a line under it, the title sits above the middle");
-    // A large row lays a lone title on its middle.
     assert!((at("Big lone title").center().y - rows[2].center().y).abs() < 0.5, "a large row's lone title centred: {:?} in {:?}", at("Big lone title"), rows[2]);
 }
 
-/// A passcode row takes focus and keys only when it lies on top (`layer::on_top`): with a sheet over it, a press
-/// on the sheet's words (no control there) and the characters typed after it never land in the row beneath;
-/// with nothing over it, the row takes them.
 #[test]
 fn a_passcode_row_under_a_sheet_takes_no_keys() {
     use zikaron_ui::{pin, secret::Secret};
@@ -1028,10 +933,6 @@ fn a_passcode_row_under_a_sheet_takes_no_keys() {
     assert_eq!(typed(true), 0, "under the sheet the row takes nothing");
 }
 
-/// A field or row in a sheet named as the sheet is titled draws no name: the title already names it (the
-/// "Published address" sheet's one field). Victim: whoever reads the sheet, one word read twice and a line of
-/// nothing. A field named otherwise keeps its name, and outside a sheet the same name is drawn: the judgement
-/// is the library's one place (`sheet::echoes_title`), asked by fields and rows alike.
 #[test]
 fn a_name_that_says_the_sheet_title_again_is_not_drawn() {
     use zikaron_ui::{card, fields};

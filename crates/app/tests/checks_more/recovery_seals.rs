@@ -1,9 +1,3 @@
-//! The primary identity's recovery seals: one for every secret that derives its signing keys. A recovery-word
-//! primary recovers with its words or with either seat's key (what its key files hold); an existing-key primary
-//! with its key. Another identity's key is refused as not the primary's, an unknown one as matching nothing,
-//! and neither opens the vault. A vault whose seals are not exactly its primary's kind's set, in order, is
-//! refused by name. Each test runs alone in its own process ([`super::alone_in`]).
-
 use app::fault::{Fault, Known};
 use app::keybox::{member as m, PrimaryKind, State};
 use app::roles::Role;
@@ -15,7 +9,6 @@ fn known<T>(r: Result<T, Fault>) -> Option<Known> {
     r.err().and_then(|f| f.which())
 }
 
-/// A seat's key as its key file holds it (the vault open).
 fn key_of(row: &app::identity::Row, seat: Role) -> Vec<u8> {
     let s = app::key::load(row.account(seat).as_deref()).expect("the vault reads").expect("the seat's key");
     let hex = app::key::reveal_once(&mut Some(s)).expect("the key");
@@ -30,7 +23,6 @@ fn put_vault(v: &Value) {
     std::fs::write(app::keybox::path().expect("the vault's place"), zikaron::json::canon_bytes(v)).expect("the vault written");
 }
 
-/// The recovery seals' labels as the file holds them.
 fn labels(v: &Value) -> Vec<String> {
     match v.member(m::RECOVERY) {
         Some(Value::Arr(a)) => a
@@ -79,7 +71,6 @@ fn a_recovery_word_primary_recovers_with_its_words_or_either_seat_key() {
     app::keybox::lock();
     app::identity::recover_with_words(&phrase, &pin).expect("the words");
     assert_eq!(app::keybox::state().ok(), Some(State::Open), "the words open the vault");
-    // Another identity's seat key, and a key of no one here: refused by name, nothing opened or written.
     app::keybox::lock();
     let before = vault();
     assert_eq!(known(app::keybox::recover(&theirs, NEW_PIN)), Some(Known::RecoveryNotPrimary));
@@ -104,8 +95,6 @@ fn an_existing_key_primary_recovers_with_its_key() {
     assert_eq!(app::keybox::state().ok(), Some(State::Open));
 }
 
-/// Seals that are not exactly the primary's kind's set, in order (one missing, one more, two swapped, a label
-/// another kind has, seals without a primary) are refused by name; the file as written reads again.
 #[test]
 fn seals_other_than_the_primarys_set_are_refused() {
     if super::alone_in(module_path!(), "seals_other_than_the_primarys_set_are_refused") {

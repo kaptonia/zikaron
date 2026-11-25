@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s037_key_bare.bin",
+ "note": "HARNESS: the private key spelled as sixty-four digits with no prefix",
+ "predicted": {
+  "digest": "0x31fd5f96b02763efdb6a5c6bbc5fcadaf2bb023dfa250525341048b9cdf16cc3",
+  "presig": "0x0889a715c9438f19c2f734a7d3ab4620371155b86872f85cef95e7a0668d9b18",
+  "sig": "0x2c70a7f4178fa6c5f216d9d90fe5c4b59c5bb3b1fca9daa5f928bd0e5d1c6c6c7e073f316807044fa3ce35c90442c87ec4ed9f295e384b06a594b24ce13130de1b",
+  "signer": "0x36d8cdef88719213be7a90843b14ffe89444898f"
+ },
+ "privkey": "24ec4185ced5ab1a5318d22cff15b8b9f0b55059a4c771e37e7816260bf35ad6"
+}

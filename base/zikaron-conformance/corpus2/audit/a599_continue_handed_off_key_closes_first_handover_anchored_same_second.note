@@ -1,0 +1,1 @@
+sec 12.6: the handover's record is in the closing succession's own second, not earlier, so the stolen key's succession stays a candidate and wins the cut; the old segment holds both seq-1 successions and reads BROKEN_CHAIN.

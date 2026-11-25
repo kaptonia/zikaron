@@ -1,13 +1,6 @@
-//! Skin: install the settled numbers and colors into egui once, and follow the appearance every frame.
-//!
-//! After `dress` no color, corner or font size needs writing again. The appearance (light, dark, or the
-//! system's) blends the two color tables over `THEME` (0.32 s); while it moves, the colors egui itself uses
-//! (panel fill, selection, scroll bars) are installed again each frame.
-
 use crate::palette::{self, c, C};
 use crate::tokens::{self, Radius, Type};
 
-/// The three appearances. Closed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Appearance {
     #[default]
@@ -19,7 +12,6 @@ pub enum Appearance {
 impl Appearance {
     pub const ALL: [Appearance; 3] = [Appearance::Light, Appearance::Dark, Appearance::System];
 
-    /// The name written to disk.
     pub fn as_str(self) -> &'static str {
         match self {
             Appearance::Light => "light",
@@ -33,7 +25,6 @@ impl Appearance {
     }
 }
 
-/// Install everything once: sizes, spacing and the colors of the current blend.
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
     install_colors(&mut style.visuals);
@@ -46,7 +37,6 @@ pub fn apply(ctx: &egui::Context) {
         (T::Monospace, FontId::new(Type::Mono.size(), F::Monospace)),
     ]
     .into();
-    // A row is as tall as what it holds: text keeps its line height, keys and fields size themselves.
     style.spacing.interact_size = egui::vec2(tokens::KEY_H * 2.0, 0.0);
     style.spacing.item_spacing = egui::vec2(tokens::S2, tokens::S3);
     style.spacing.button_padding = egui::vec2(tokens::KEY_PAD_X, 8.0);
@@ -56,9 +46,6 @@ pub fn apply(ctx: &egui::Context) {
     let mut scroll = egui::style::ScrollStyle::thin();
     scroll.bar_width = 10.0;
     scroll.floating_width = 6.0;
-    // Floating bars lie over the content and take no width: a bar appearing when the content just overflows
-    // must not narrow it (a narrower page can lay out taller or shorter, the bar goes, the page widens again,
-    // and a width-chosen layout flips each frame).
     scroll.floating_allocated_width = 0.0;
     scroll.handle_min_length = 28.0;
     scroll.bar_inner_margin = 2.0;
@@ -103,7 +90,6 @@ fn install_colors(v: &mut egui::Visuals) {
         w.expansion = 0.0;
         w.weak_bg_fill = c(C::Surface);
     }
-    // Scroll handles take these grounds: a light line color, darker when held.
     v.widgets.inactive.bg_fill = c(C::Line);
     v.widgets.hovered.bg_fill = c(C::Line);
     v.widgets.active.bg_fill = c(C::Dash);
@@ -111,11 +97,8 @@ fn install_colors(v: &mut egui::Visuals) {
     v.widgets.open.bg_fill = c(C::Hover);
 }
 
-/// How long a change of appearance takes: the whole window cross-fades from one appearance to the other.
 pub const THEME: f32 = 0.32 * crate::tokens::PACE;
 
-/// Follow the appearance this frame: ease the blend toward light (0) or dark (1) over [`THEME`] and install
-/// the blended colors while it moves. Returns the blend.
 pub fn follow(ctx: &egui::Context, a: Appearance) -> f32 {
     let dark = match a {
         Appearance::Light => false,
@@ -134,16 +117,13 @@ pub fn follow(ctx: &egui::Context, a: Appearance) -> f32 {
     b
 }
 
-/// The result of dressing: the found fonts and the roles not found.
 pub struct Dressed {
     pub found: crate::fonts::Found,
     pub missing: Vec<crate::fonts::Role>,
 }
 
-/// Dress: install skin and fonts at once. The window and the test hooks both call it.
 pub fn dress(ctx: &egui::Context) -> Dressed {
     apply(ctx);
-    // The window's words, kept each frame for a change of language to play out (`flow::retext`).
     let _ = ctx.plugin_or_default::<crate::flow::Words>();
     let found = crate::fonts::find();
     let mut missing = crate::fonts::install(ctx, &found);
@@ -152,8 +132,6 @@ pub fn dress(ctx: &egui::Context) -> Dressed {
     Dressed { found, missing }
 }
 
-/// Numbers read back from the installed style (for on-screen diagnostics and measurements), read from egui's
-/// own state, not from the constants just written.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Installed {
     pub body: f32,

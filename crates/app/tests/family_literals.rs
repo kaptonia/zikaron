@@ -1,9 +1,3 @@
-//! The family literals register (`family-literals.json`, public): every fixed literal this product uses that
-//! another product of the family must not reuse, by role. Read here and checked against the code, both ways:
-//! each entry's literal is the value at its place, and each place of the table below has its entry. Within the
-//! register: roles from its own closed list, no literal twice in one role, a literal in two roles only as a
-//! listed pair. (Whether the family's products collide with each other is the gauge's, not this test's.)
-
 use app::roles::Role;
 use zikaron::json::Value;
 
@@ -15,7 +9,23 @@ fn utf8(b: &[u8]) -> String {
     String::from_utf8(b.to_vec()).expect("text")
 }
 
-/// Every place a family literal lives in the code, with its value now.
+fn generations(role: Role) -> String {
+    let family = |g: u32| -> Option<String> {
+        let text = app::family::path_text_at(role, g);
+        let mut segs: Vec<String> = text.split('/').map(str::to_string).collect();
+        (segs.get(4).map(String::as_str) == Some(g.to_string().as_str())).then(|| {
+            segs[4] = "g".into();
+            segs.join("/")
+        })
+    };
+    let first = family(0);
+    if (1..=app::family::GROUPS_SEARCHED).all(|g| family(g) == first) {
+        first.unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
 fn places() -> Vec<(&'static str, String)> {
     vec![
         ("app::home::HOME_STEM", app::home::HOME_STEM.into()),
@@ -34,21 +44,26 @@ fn places() -> Vec<(&'static str, String)> {
         ("app::keybox::SHAPE_V2", app::keybox::SHAPE_V2.into()),
         ("app::keybox::SHAPE_V1", app::keybox::SHAPE_V1.into()),
         ("app::identity::SHAPE", app::identity::SHAPE.into()),
+        ("app::identity::SHAPE_V1", app::identity::SHAPE_V1.into()),
         ("app::machine::SHAPE", app::machine::SHAPE.into()),
         ("app::recordsx::FORM", app::recordsx::FORM.into()),
         ("app::backup::INDEX_FORM", app::backup::INDEX_FORM.into()),
         ("app::verifiedx::FORM", app::verifiedx::FORM.into()),
         ("app::checkedx::FORM", app::checkedx::FORM.into()),
+        ("app::checkx::AUDIT_FORM", app::checkx::AUDIT_FORM.into()),
         ("zikaron_seal::readnets::FORM", zikaron_seal::readnets::FORM.into()),
         ("app::kitsindex::FORM", app::kitsindex::FORM.into()),
+        ("zikaron_glue::anchorproofs::FORM", zikaron_glue::anchorproofs::FORM.into()),
         ("zikaron::tokens::SPEC", zikaron::tokens::SPEC.into()),
+        ("zikaron::v2::tokens::SPEC", zikaron::v2::tokens::SPEC.into()),
         ("zikaron_kit::tokens::SPEC_FPM", zikaron_kit::tokens::SPEC_FPM.into()),
         ("zikaron_kit::tokens::SPEC_ACK", zikaron_kit::tokens::SPEC_ACK.into()),
         ("zikaron_kit::tokens::SPEC_KIT", zikaron_kit::tokens::SPEC_KIT.into()),
+        ("zikaron_kit::v2::tokens::SPEC_KIT", zikaron_kit::v2::tokens::SPEC_KIT.into()),
         ("zikaron::tokens::Domain::Entry", zikaron::tokens::Domain::Entry.as_str().into()),
         ("zikaron::tokens::Domain::Adoption", zikaron::tokens::Domain::Adoption.as_str().into()),
+        ("zikaron::v2::tokens::Domain::Entry", zikaron::v2::tokens::Domain::Entry.as_str().into()),
         ("zikaron_kit::tokens::BADGE_PREFIX", zikaron_kit::tokens::BADGE_PREFIX.into()),
-        ("app::adoptx::CLAIM_PREFIX", app::adoptx::CLAIM_PREFIX.into()),
         ("zikaron_glue::recording::FAMILY", zikaron_glue::recording::FAMILY.into()),
         ("app::keybox::LOCAL_INFO", utf8(app::keybox::LOCAL_INFO)),
         ("app::keybox::NAMES_INFO", utf8(app::keybox::NAMES_INFO)),
@@ -58,10 +73,20 @@ fn places() -> Vec<(&'static str, String)> {
         ("app::local::PLACE_DOMAIN", app::local::PLACE_DOMAIN.into()),
         ("app::local::PLACE_KEY_INFO", app::local::PLACE_KEY_INFO.into()),
         ("zikaron_glue::addressed::INFO", zikaron_glue::addressed::INFO.into()),
+        ("zikaron_send::sent::SEAL_INFO", zikaron_send::sent::SEAL_INFO.into()),
         ("app::family::path_text(Author)", app::family::path_text(Role::Author)),
         ("app::family::path_text(Grantee)", app::family::path_text(Role::Grantee)),
+        ("app::family::path_text_at(Author, g)", generations(Role::Author)),
+        ("app::family::path_text_at(Grantee, g)", generations(Role::Grantee)),
+        ("zikaron_anchor::book::row(11155111)", zikaron_anchor::book::row(11_155_111).unwrap_or_default()),
+        ("zikaron_anchor::book::row(1)", zikaron_anchor::book::row(1).unwrap_or_default()),
+        ("zikaron_anchor::book::row(42161)", zikaron_anchor::book::row(42_161).unwrap_or_default()),
+        ("zikaron_anchor::book::row(10)", zikaron_anchor::book::row(10).unwrap_or_default()),
+        ("zikaron_anchor::book::CODE_HASH", zikaron_anchor::book::CODE_HASH.into()),
+        ("zikaron_anchor::revoke::CODE_HASH", zikaron_anchor::revoke::CODE_HASH.into()),
         ("app::home::HOME_ENV", app::home::HOME_ENV.into()),
         ("app::trace::SINK_ENV", app::trace::SINK_ENV.into()),
+        ("app::chainx::REST_KEYS_ENV", app::chainx::REST_KEYS_ENV.into()),
         ("zikaron_os::door::NAME_HEAD", zikaron_os::door::NAME_HEAD.into()),
         ("zikaron_glue::door::FORM", zikaron_glue::door::FORM.into()),
         ("zikaron_os::cli_path::ENV_DIR", zikaron_os::cli_path::ENV_DIR.into()),
@@ -73,6 +98,14 @@ fn places() -> Vec<(&'static str, String)> {
         ("zikaron_glue::container::EXT_HAND", zikaron_glue::container::EXT_HAND.into()),
         ("zikaron_glue::names::HANDOFF_NOTE", zikaron_glue::names::HANDOFF_NOTE.into()),
         ("zikaron_seal::pens::FILE", zikaron_seal::pens::FILE.into()),
+        ("zikaron_glue::face::ENTRY_TYPE", zikaron_glue::face::ENTRY_TYPE.into()),
+        ("zikaron_glue::face::DOMAIN", zikaron_glue::face::DOMAIN.into()),
+        ("zikaron_glue::face::MARKER_PREFIX", zikaron_glue::face::MARKER_PREFIX.into()),
+        ("zikaron_glue::face::CONSENT_PREFIX", zikaron_glue::face::CONSENT_PREFIX.into()),
+        ("zikaron_seal::places::CREDENTIAL_HEAD", zikaron_seal::places::CREDENTIAL_HEAD.into()),
+        ("zikaron_seal::credential::DOMAIN", utf8(zikaron_seal::credential::DOMAIN)),
+        ("zikaron_seal::credential::PASS_ENV", zikaron_seal::credential::PASS_ENV.into()),
+        ("zikaron_seal::credential::PASS_PREFIX", zikaron_seal::credential::PASS_PREFIX.into()),
     ]
 }
 
@@ -81,7 +114,6 @@ fn the_register_is_the_codes_literals_both_ways() {
     let bytes = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("family-literals.json")).expect("the register");
     let reg = zikaron::json::parse(&bytes).expect("the register reads");
     assert_eq!(text(&reg, "schema"), "zikaron-family-literals/1");
-    // The literals of other products this one reads: none (it reads no other product's files).
     assert!(reg.member("foreign").map(|f| matches!(f, Value::Obj(m) if m.is_empty())).unwrap_or(false), "foreign is an empty object");
     let roles: Vec<String> = reg.member("roles").and_then(|r| r.as_arr()).expect("roles").iter().filter_map(|r| r.as_str().map(str::to_string)).collect();
     let entries = reg.member("entries").and_then(|e| e.as_arr()).expect("entries").clone();
@@ -99,8 +131,6 @@ fn the_register_is_the_codes_literals_both_ways() {
     literals_within_register(&reg);
 }
 
-/// The two rules within a register, on any parsed register: no literal twice in one role, and a literal in two
-/// roles only as a listed pair (each listed pair a literal in exactly those two roles). Fails by assertion.
 fn literals_within_register(reg: &Value) {
     let entries = reg.member("entries").and_then(|e| e.as_arr()).expect("entries").clone();
     let mut seen: Vec<(String, String)> = Vec::new();
@@ -109,7 +139,6 @@ fn literals_within_register(reg: &Value) {
         assert!(!seen.contains(&(role.clone(), literal.clone())), "{literal:?} twice in role {role}");
         seen.push((role, literal));
     }
-    // A literal in two roles only as a listed pair.
     let pairs: Vec<(String, Vec<String>)> = reg
         .member("pairs")
         .and_then(|p| p.as_arr())
@@ -134,14 +163,12 @@ fn literals_within_register(reg: &Value) {
     }
 }
 
-/// Whether the rules within a register fail on it, and with which words.
 fn refused(register: &[u8]) -> Option<String> {
     let reg = zikaron::json::parse(register).expect("a small register reads");
     let r = std::panic::catch_unwind(|| literals_within_register(&reg));
     r.err().map(|p| p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default())
 }
 
-/// A register with one literal twice in one role fails the rules.
 #[test]
 fn a_register_with_a_literal_twice_in_one_role_is_refused() {
     let dup = br#"{"entries":[{"role":"magic","literal":"ZK1"},{"role":"magic","literal":"ZK1"}],"pairs":[]}"#;
@@ -151,8 +178,6 @@ fn a_register_with_a_literal_twice_in_one_role_is_refused() {
     assert_eq!(refused(apart), None, "two literals in one role pass");
 }
 
-/// A register with a literal in two roles and no listed pair fails the rules; the same with the pair listed
-/// passes.
 #[test]
 fn a_register_with_a_cross_role_literal_and_no_pair_is_refused() {
     let unpaired = br#"{"entries":[{"role":"magic","literal":"ZK1"},{"role":"form","literal":"ZK1"}],"pairs":[]}"#;

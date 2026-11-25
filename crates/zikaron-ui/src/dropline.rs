@@ -1,19 +1,12 @@
-//! A drop zone that says its words on one line: the glyph, the bold title and the quiet note side by side,
-//! 12 apart, centred (the compact zone above a list). It is a [`crate::drop::zone`] in every other respect: the
-//! same ground, dashes, lighting and receiving.
-
 use crate::drop::{self, Shape};
 use crate::icons::{self, Glyph};
 use crate::palette::{c, C};
 use crate::tokens::Type;
 use egui::{pos2, vec2, Rect};
 
-/// The gap between the glyph, the title and the note.
 const GAP: f32 = 12.0;
-/// The glyph's size.
 const GLYPH: f32 = 22.0;
 
-/// Draw the one-line zone `height` high; what it received this frame.
 pub fn inline(ui: &mut egui::Ui, id_salt: &str, glyph: Option<Glyph>, title: &str, note: &str, height: f32, accept: bool) -> drop::Drop {
     let top = ui.cursor().min;
     let w = ui.available_width();

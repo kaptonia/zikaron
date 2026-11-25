@@ -1,13 +1,9 @@
-//! Paired icons are one shape turned: back is forward mirrored, down is forward turned a quarter, so the two of a
-//! pair are always one size and one stroke.
-
 use zikaron_ui::icons::{glyph_path, Glyph};
 
 fn points(k: Glyph) -> Vec<(f32, f32)> {
     glyph_path(k).into_iter().flatten().collect()
 }
 
-/// Width and height of a glyph's strokes in the unit square.
 fn extent(k: Glyph) -> (f32, f32) {
     let p = points(k);
     let span = |f: fn(&(f32, f32)) -> f32| p.iter().map(f).fold(f32::MIN, f32::max) - p.iter().map(f).fold(f32::MAX, f32::min);

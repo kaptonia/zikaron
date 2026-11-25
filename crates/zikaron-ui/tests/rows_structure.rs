@@ -1,11 +1,6 @@
-//! A card made of rows says where it is and where each of its rows is (`probe::boxed`, `probe::part`), so a
-//! reading can tell a control laid in a row from one laid loose in the card.
-
 use zikaron_ui::egui::{self, pos2, Pos2, Rect};
 use zikaron_ui::{button, card, probe};
 
-/// Draw one card: two rows with a key each, and (when `loose`) a key laid straight in the card between them. The
-/// controls that lie in the card but in none of its rows.
 fn strays(loose: bool) -> Vec<Rect> {
     let ctx = egui::Context::default();
     let _ = zikaron_ui::skin::dress(&ctx);

@@ -1,9 +1,3 @@
-//! Files a system writes beside this crate's names belong to the system (`layout::SYSTEM_SIDE`, a closed
-//! list): the folder view's `.DS_Store`, and `._` followed by one of this crate's names (an entry's or a
-//! temporary file's), the resource sidecar written on volumes without extended attributes. The strict read
-//! accounts for them and continues; the lenient read lists each as skipped, by name, with that reason. Any
-//! other unknown name still makes the strict read refuse, naming it.
-
 use zikaron_store::{Code, EntryName, LedgerDir, Why};
 
 fn scratch(tag: &str) -> LedgerDir {
@@ -20,8 +14,6 @@ fn name(c: char) -> EntryName {
     EntryName::parse(&c.to_string().repeat(64)).expect("a name")
 }
 
-/// One ledger with one entry and the stray `stray` laid beside it (a file, or a directory when `dir`); the
-/// strict read's answer and the lenient read's skips.
 fn with_stray(tag: &str, stray: &str, dir: bool) -> (Result<Vec<Vec<u8>>, (Code, Vec<String>)>, Vec<(String, Why)>) {
     let l = scratch(tag);
     l.append(&name('a'), b"one").expect("an entry");

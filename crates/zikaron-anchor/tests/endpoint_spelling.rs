@@ -1,9 +1,3 @@
-//! The one reading of an endpoint's spelling, `<chain id>=<address>` (`rpc::endpoint_spec`), which the app's
-//! cells, the command line's `--endpoint` and `zka` all go through. Every form, each with its answer. White
-//! space at either end of the value is not part of it; white space inside it (around the `=`, inside the
-//! address: a space, a tab, a line end) is `InnerSpace`, so a spelling the app splits at white space and one the
-//! command line takes whole never read two ways.
-
 use zikaron_anchor::rpc::{endpoint_spec, NotAnEndpoint};
 
 #[test]
@@ -42,7 +36,6 @@ fn an_endpoint_spelling_is_read_one_way() {
         ("1\n=https://a.example", NotAnEndpoint::InnerSpace),
         ("1=https://a.example/\u{a0}x", NotAnEndpoint::InnerSpace),
         (" 1= https://a.example ", NotAnEndpoint::InnerSpace),
-        // Read left to right: a chain id that does not read is said first.
         ("1 2=https://a.example", NotAnEndpoint::ChainNotInt),
         ("1= ", NotAnEndpoint::NoAddress),
     ] {
@@ -50,7 +43,6 @@ fn an_endpoint_spelling_is_read_one_way() {
     }
 }
 
-/// Two values that differ only in white space at either end read alike; the reading carries none of it.
 #[test]
 fn white_space_at_either_end_is_not_part_of_the_value() {
     let want = Ok((31337, "http://127.0.0.1:8545".to_string()));
@@ -59,10 +51,6 @@ fn white_space_at_either_end_is_not_part_of_the_value() {
     }
 }
 
-/// A node item is its spelling (`endpoint_spec`) and its address (`read_address`), the two readers every side
-/// uses. A spelling that reads may carry an address that does not: `1==https://a` reads as chain 1 and address
-/// `=https://a`, which the address reader refuses (no scheme); an address with a port past 16 bits, a bracket
-/// that is not an IPv6 address, a user in it, or a scheme other than the two is refused there too.
 #[test]
 fn an_item_is_its_spelling_and_its_address() {
     use zikaron_anchor::rpc::{read_address, NotAnAddress};

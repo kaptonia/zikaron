@@ -1,8 +1,3 @@
-//! The system refusing a thread does not take the window down. The task's kind lands at the next drain like any
-//! other outcome, with the failure named (which task, the system's words); nothing is left in flight, and the
-//! next start, once threads are available again, runs. A separate test binary, because the simulated failure
-//! affects the whole process.
-
 use app::fault::{Class, Fault, Known};
 use app::task::{pretend_thread_fails, Kind, Tasks};
 
@@ -25,7 +20,6 @@ fn a_thread_the_system_will_not_start_is_said_and_nothing_is_left_in_flight() {
     assert!(f.tail().contains(Kind::Chain.as_str()) && f.tail().contains("would not start a thread"), "named: which task, the system's words: {}", f.tail());
     assert!(!ran.load(std::sync::atomic::Ordering::SeqCst), "the work never ran");
     assert!(!t.in_flight(Kind::Chain), "nothing left in flight");
-    // Threads to be had again: the next start runs.
     let _ = t.spawn(Kind::Chain, || Err(Fault::known(Known::Unreachable, String::new())));
     let mut landed = false;
     for _ in 0..2000 {

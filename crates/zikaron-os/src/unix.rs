@@ -1,5 +1,3 @@
-//! The unix implementation (macOS, Linux).
-
 use std::io::Read;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -7,7 +5,6 @@ use std::path::Path;
 pub const ENTROPY_SOURCE: &str = "/dev/urandom";
 
 pub fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
-    // Read exactly the requested length: the source never ends, so reading to end would hang.
     std::fs::File::open(ENTROPY_SOURCE)?.read_exact(buf)
 }
 
@@ -28,7 +25,6 @@ pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
     Ok(std::fs::metadata(path)?.permissions().mode() & 0o077 == 0)
 }
 
-/// A unix directory syncs itself; `landed` is not needed.
 pub fn sync_dir(path: &Path, _landed: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.sync_all()
 }
@@ -51,7 +47,6 @@ unsafe extern "C" {
     fn renamex_np(from: *const std::ffi::c_char, to: *const std::ffi::c_char, flags: u32) -> i32;
 }
 
-/// macOS: `renamex_np` with `RENAME_EXCL`.
 #[cfg(target_os = "macos")]
 pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     const RENAME_EXCL: u32 = 0x4;
@@ -68,7 +63,6 @@ unsafe extern "C" {
     fn renameat2(olddir: i32, from: *const std::ffi::c_char, newdir: i32, to: *const std::ffi::c_char, flags: u32) -> i32;
 }
 
-/// Linux: `renameat2` with `RENAME_NOREPLACE`.
 #[cfg(not(target_os = "macos"))]
 pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     const AT_FDCWD: i32 = -100;
@@ -81,30 +75,23 @@ pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The variable that names the user's home.
 pub const HOME_VAR: &str = "HOME";
 
-/// The user's home beyond [`HOME_VAR`]: none (unix names the home only there).
 pub fn home_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// The home directory itself (the default machine directory is a dot-folder there).
 pub fn app_data_dir(user_home: &Path) -> std::path::PathBuf {
     user_home.to_path_buf()
 }
 
-// ───────────────────────── IPC endpoint: a local socket file ─────────────────────────
-
 use std::os::unix::net::{UnixListener, UnixStream};
 
-/// Maximum local socket path length in bytes (the OS `sun_path` size minus the terminating NUL).
 #[cfg(target_os = "macos")]
 pub const DOOR_PATH_MAX: usize = 103;
 #[cfg(not(target_os = "macos"))]
 pub const DOOR_PATH_MAX: usize = 107;
 
-/// On unix the endpoint is a socket file at this path.
 pub fn door_place(machine: &Path, name: &str) -> std::path::PathBuf {
     machine.join(name)
 }
@@ -118,13 +105,10 @@ fn not_open(why: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::NotFound, why.to_string())
 }
 
-/// The listening socket, and a pair whose one end the close writes to so a waiting accept wakes at once.
 pub struct DoorListener {
     l: UnixListener,
     wake: (UnixStream, UnixStream),
 }
-/// One connection, and when its reads and its writes must each be done by (`set_read_deadline`,
-/// `set_write_deadline`).
 pub struct DoorStream(UnixStream, Due, Due);
 
 type Due = std::cell::Cell<Option<std::time::Instant>>;
@@ -133,7 +117,6 @@ fn due(d: Option<std::time::Duration>) -> Due {
     std::cell::Cell::new(d.map(|d| std::time::Instant::now() + d))
 }
 
-/// What is left until `until`, or `TimedOut` once it has passed (`None`: no deadline).
 fn left(until: &Due, late: &str) -> std::io::Result<Option<std::time::Duration>> {
     match until.get().map(|u| u.saturating_duration_since(std::time::Instant::now())) {
         Some(l) if l.is_zero() => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, late.to_string())),
@@ -187,7 +170,6 @@ unsafe extern "C" {
     fn getsockopt(fd: i32, level: i32, name: i32, value: *mut std::ffi::c_void, len: *mut u32) -> i32;
 }
 
-/// Linux: the peer's credentials as the kernel recorded them when it connected (`SO_PEERCRED`).
 #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")))]
 fn peer_uid(s: &UnixStream) -> std::io::Result<u32> {
     use std::os::fd::AsRawFd;
@@ -208,7 +190,6 @@ fn peer_uid(s: &UnixStream) -> std::io::Result<u32> {
     Ok(c.uid)
 }
 
-/// Check that the peer runs as this process's user, per the kernel; anyone else is refused (`PermissionDenied`).
 fn same_user(s: &UnixStream) -> std::io::Result<()> {
     // SAFETY: `getuid` has no failure and no arguments.
     let me = unsafe { getuid() };
@@ -218,9 +199,6 @@ fn same_user(s: &UnixStream) -> std::io::Result<()> {
     }
 }
 
-/// Open an endpoint at `place`. A socket file nobody answers was left by a dead process and is removed first.
-/// One that answers is live (`AddrInUse`); anything else there is never removed (`AddrInUse`). The socket file
-/// is owner-only.
 pub fn door_listen(place: &Path) -> std::io::Result<DoorListener> {
     use std::os::unix::fs::FileTypeExt;
     if too_long(place) {
@@ -249,8 +227,6 @@ pub fn door_listen(place: &Path) -> std::io::Result<DoorListener> {
 }
 
 impl DoorListener {
-    /// The next client; its user is not yet checked ([`DoorStream::same_user`]). Waits for a client or the close,
-    /// whichever comes first; after the close, `NotFound`.
     pub fn accept(&self) -> std::io::Result<DoorStream> {
         use std::os::fd::AsRawFd;
         loop {
@@ -278,8 +254,6 @@ impl DoorListener {
     }
 }
 
-/// Close the endpoint: wake a waiting [`DoorListener::accept`] through the listener's own pair (whatever became
-/// of the path), then remove the socket file, after which a connect finds nothing (`NotFound`).
 pub fn door_close(place: &Path, listener: Option<&DoorListener>) {
     if let Some(l) = listener {
         let _ = std::io::Write::write(&mut &l.wake.1, &[1]);
@@ -287,7 +261,6 @@ pub fn door_close(place: &Path, listener: Option<&DoorListener>) {
     door_remove(place);
 }
 
-/// Remove the endpoint's socket file (only if it is a socket).
 fn door_remove(place: &Path) {
     use std::os::unix::fs::FileTypeExt;
     if std::fs::symlink_metadata(place).map(|m| m.file_type().is_socket()).unwrap_or(false) {
@@ -295,8 +268,6 @@ fn door_remove(place: &Path) {
     }
 }
 
-/// Connect to the endpoint at `place` without checking its user ([`DoorStream::same_user`]); none there, or a
-/// stale one, is `NotFound`.
 pub fn door_connect(place: &Path) -> std::io::Result<DoorStream> {
     if too_long(place) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("longer than a local socket's {DOOR_PATH_MAX} bytes")));
@@ -310,13 +281,10 @@ pub fn door_connect(place: &Path) -> std::io::Result<DoorStream> {
 }
 
 impl DoorStream {
-    /// Whether the other end runs as this process's user, per the kernel; anyone else is refused
-    /// (`PermissionDenied`).
     pub fn same_user(&self) -> std::io::Result<()> {
         same_user(&self.0)
     }
 
-    /// How long all reads from now on may take together.
     pub fn set_read_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
         self.1.set(due(d).get());
         if d.is_none() {
@@ -325,7 +293,6 @@ impl DoorStream {
         Ok(())
     }
 
-    /// How long all writes from now on may take together.
     pub fn set_write_deadline(&self, d: Option<std::time::Duration>) -> std::io::Result<()> {
         self.2.set(due(d).get());
         if d.is_none() {
@@ -336,9 +303,7 @@ impl DoorStream {
 }
 
 impl std::io::Read for DoorStream {
-    /// A read past its deadline returns `TimedOut`.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // A socket whose peer has gone may refuse the option (macOS: `EINVAL`); it does not block then.
         if let Some(l) = left(&self.1, READ_LATE)? {
             let _ = self.0.set_read_timeout(Some(l));
         }
@@ -347,7 +312,6 @@ impl std::io::Read for DoorStream {
 }
 
 impl std::io::Write for DoorStream {
-    /// A write past its deadline returns `TimedOut`.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if let Some(l) = left(&self.2, WRITE_LATE)? {
             let _ = self.0.set_write_timeout(Some(l));
@@ -359,10 +323,6 @@ impl std::io::Write for DoorStream {
     }
 }
 
-// ───────────────────────── "Enable command line": a link on the command path ─────────────────────────
-
-/// Where the link goes: macOS `/usr/local/bin` (created if missing, with administrator rights when needed);
-/// Linux the user's own `~/.local/bin`.
 #[cfg(target_os = "macos")]
 pub fn cli_default_dir() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from("/usr/local/bin"))
@@ -377,21 +337,15 @@ unsafe extern "C" {
     fn access(path: *const std::ffi::c_char, mode: i32) -> i32;
 }
 
-// ───────────────────────── Children and lock descriptors ─────────────────────────
-
 unsafe extern "C" {
     fn close(fd: i32) -> i32;
 }
 
-/// A lock file's descriptor, as listed (`crate::LISTED`).
 pub fn listed_id(file: &std::fs::File) -> i64 {
     use std::os::fd::AsRawFd;
     i64::from(file.as_raw_fd())
 }
 
-/// Start the child; between fork and exec it closes every listed lock descriptor, so it never holds a copy
-/// when its program runs. Descriptors 0-2 are skipped: by then they are the child's own standard streams. With
-/// a `pre_exec` closure the standard library waits for the exec, so this returns only after the close.
 pub fn spawn(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
     // SAFETY: the closure runs in the child between fork and exec; it only reads atomics and calls `close`,
@@ -410,8 +364,6 @@ pub fn spawn(cmd: &mut std::process::Command) -> std::io::Result<std::process::C
     cmd.spawn()
 }
 
-/// A CLI running from a location that will disappear: a read-only volume (an app opened inside its disk
-/// image), or an AppImage (mounted afresh at every start).
 pub fn cli_unsupported(cli: &Path) -> Option<String> {
     const W_OK: i32 = 2;
     const EROFS: i32 = 30;
@@ -427,9 +379,6 @@ pub fn cli_unsupported(cli: &Path) -> Option<String> {
     None
 }
 
-/// The CLI's folder is on this process's command path via a folder other than the switch's link folder (a
-/// package installed it). The link folder itself is on the path by design, so being there counts as the
-/// switch's, not a package's.
 pub fn cli_provided(cli: &Path, _moved: bool) -> bool {
     let Some(dir) = cli.parent() else { return false };
     let Some(path) = std::env::var_os("PATH") else { return false };
@@ -438,7 +387,6 @@ pub fn cli_provided(cli: &Path, _moved: bool) -> bool {
     std::env::split_paths(&path).any(|p| real(&p) == real(dir) && Some(real(&p)) != own)
 }
 
-/// The state of the link location, for the CLI at `cli`.
 pub fn cli_state(cli: &Path, _moved: bool) -> crate::cli_path::State {
     use crate::cli_path::{State, NAME};
     let Some(dir) = crate::cli_path::place_dir() else { return State::Unsupported("no place for the link".into()) };
@@ -457,7 +405,6 @@ pub fn cli_state(cli: &Path, _moved: bool) -> crate::cli_path::State {
     match real(&end) {
         Some(e) if Some(e.clone()) == real(cli) => State::On,
         Some(_) => State::Taken(to.display().to_string()),
-        // A dangling link whose target has the CLI's name: the app has moved; the switch may recreate it.
         None if to.file_name().and_then(|n| n.to_str()) == Some(NAME) => State::Off,
         None => State::Taken(to.display().to_string()),
     }
@@ -467,8 +414,6 @@ fn denied(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::PermissionDenied) || e.raw_os_error() == Some(1)
 }
 
-/// Create the link (and its folder if missing), replacing a dangling link to a moved app. If macOS refuses in
-/// its system folder, retry through the OS administrator dialog.
 pub fn cli_enable(cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refused> {
     use crate::cli_path::{Refused, NAME};
     let dir = crate::cli_path::place_dir().ok_or_else(|| Refused::Unsupported("no place for the link".into()))?;
@@ -490,8 +435,6 @@ pub fn cli_enable(cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refuse
     }
 }
 
-/// Remove the link this switch made (the caller checked it is this app's). If macOS refuses in its system
-/// folder, retry through the OS administrator dialog, removing only a link.
 pub fn cli_disable(_cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refused> {
     use crate::cli_path::{Refused, NAME};
     let dir = crate::cli_path::place_dir().ok_or_else(|| Refused::Unsupported("no place for the link".into()))?;
@@ -505,9 +448,6 @@ pub fn cli_disable(_cli: &Path, moved: bool) -> Result<(), crate::cli_path::Refu
     }
 }
 
-/// Run one command as administrator through the OS's own dialog (the password is typed there, never seen
-/// here). Paths are passed as arguments, quoted by the script, never spliced into the command. Cancellation
-/// (`-128`) is reported as such; any other failure with the OS message.
 fn as_admin(line: &str, paths: &[&Path]) -> Result<(), crate::cli_path::Refused> {
     use crate::cli_path::Refused;
     let mut c = std::process::Command::new("/usr/bin/osascript");
@@ -521,8 +461,6 @@ fn as_admin(line: &str, paths: &[&Path]) -> Result<(), crate::cli_path::Refused>
     Err(admin_refusal(&String::from_utf8_lossy(&out.stderr)))
 }
 
-/// Interpret the script's stderr when the command did not run: cancelled at the dialog (`-128`), or anything
-/// else with its own message (three wrong passwords, not an administrator, the command itself failing).
 pub(crate) fn admin_refusal(stderr: &str) -> crate::cli_path::Refused {
     let said = stderr.trim().to_string();
     if said.contains("(-128)") {
@@ -535,7 +473,6 @@ pub(crate) fn admin_refusal(stderr: &str) -> crate::cli_path::Refused {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    /// A folder reached by a link is the same folder (`same_folder`); a link to another folder is not.
     #[test]
     fn a_folder_reached_by_a_link_is_the_same_folder() {
         let d = std::env::temp_dir().join(format!("zikaron-os-link-{}", std::process::id()));
@@ -549,7 +486,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The dialog's two failure modes map to distinct refusals.
     #[test]
     fn the_administrator_dialog_is_read_by_what_it_said() {
         use crate::cli_path::Refused;
@@ -557,7 +493,6 @@ mod tests {
         assert_eq!(super::admin_refusal("execution error: The administrator user name or password was incorrect. (-60007)"), Refused::NotAllowed("execution error: The administrator user name or password was incorrect. (-60007)".into()));
     }
 
-    /// A file others can read or write is not owner-only, whatever the umask.
     #[test]
     fn a_file_others_may_read_is_not_owner_only() {
         let p = std::env::temp_dir().join(format!("zikaron-os-plain-{}", std::process::id()));
@@ -570,14 +505,12 @@ mod tests {
     }
 }
 
-// Unix tests of `crate::cli_path`, kept here beside the unix interfaces they use.
 #[cfg(test)]
 mod cli_path_tests {
     use crate::cli_path::*;
     use std::path::{Path, PathBuf};
     use std::os::unix::fs::symlink;
 
-    /// The redirected location is process-wide (an environment variable), so these tests run serially.
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct Bench {
@@ -607,8 +540,6 @@ mod cli_path_tests {
         }
     }
 
-    /// Off with nothing there (folder not yet created); enabling creates the folder and the link to this CLI;
-    /// disabling removes the link and keeps the folder; state is re-read each time.
     #[test]
     fn on_and_off_make_and_remove_the_one_link() {
         let (b, _t) = bench("onoff");
@@ -622,8 +553,6 @@ mod cli_path_tests {
         assert_eq!(disable(&b.cli), Ok(State::Off), "off again: nothing more");
     }
 
-    /// Anything else there is named and never overwritten or removed: another install's file, a link to another
-    /// program, a link to another app's existing CLI.
     #[test]
     fn what_another_install_put_there_is_never_touched() {
         let (b, _t) = bench("taken");
@@ -648,8 +577,6 @@ mod cli_path_tests {
         }
     }
 
-    /// A dangling link this switch made (the app has moved) reads as off and is recreated; a dangling link whose
-    /// target has another name belongs to someone else.
     #[test]
     fn a_link_to_a_moved_app_is_off_and_made_again() {
         let (b, _t) = bench("dangling");
@@ -664,8 +591,6 @@ mod cli_path_tests {
         assert!(matches!(state(&b.cli), State::Taken(_)), "a link to nowhere of another kind");
     }
 
-    /// An unwritable location is reported with the OS message and nothing changes; a missing CLI beside the app
-    /// is reported as unsupported.
     #[test]
     fn a_place_not_writable_and_no_command_line_are_named() {
         use std::os::unix::fs::PermissionsExt;
@@ -681,7 +606,6 @@ mod cli_path_tests {
         assert!(matches!(enable(&gone), Err(Refused::Unsupported(_))));
     }
 
-    /// An AppImage is mounted afresh at every start: unsupported, named, nothing created.
     #[test]
     fn an_appimage_is_not_supported() {
         let (b, _t) = bench("appimage");
@@ -692,8 +616,6 @@ mod cli_path_tests {
         assert!(std::fs::symlink_metadata(b.dir.join(NAME)).is_err());
     }
 
-    /// A CLI whose folder is already on the command path (installed by a package) is "provided": nothing to
-    /// switch either way.
     #[test]
     fn a_command_line_on_the_path_where_it_ships_is_provided() {
         let (b, _t) = bench("provided");
@@ -710,8 +632,6 @@ mod cli_path_tests {
         assert!(std::fs::symlink_metadata(b.dir.join(NAME)).is_err(), "nothing made");
     }
 }
-
-// ───────────────────────── The single-writer lock (a kernel lock on an open descriptor) ─────────────────────────
 
 unsafe extern "C" {
     fn flock(fd: i32, op: i32) -> i32;
@@ -736,8 +656,6 @@ pub fn lock_wait(file: &std::fs::File) -> bool {
     unsafe { flock(file.as_raw_fd(), LOCK_EX) == 0 }
 }
 
-// ───────────────────────── The window's backdrop (macOS: the system's glass or vibrancy) ─────────────────────────
-
 #[cfg(target_os = "macos")]
 mod appkit {
     use std::ffi::{c_char, c_void, CString};
@@ -749,11 +667,13 @@ mod appkit {
         fn objc_getClass(name: *const c_char) -> *mut c_void;
         fn sel_registerName(name: *const c_char) -> *mut c_void;
         fn objc_msgSend();
+        fn objc_allocateClassPair(superclass: *mut c_void, name: *const c_char, extra: usize) -> *mut c_void;
+        fn objc_registerClassPair(class: *mut c_void);
+        fn class_addMethod(class: *mut c_void, name: *mut c_void, imp: *const c_void, types: *const c_char) -> i8;
     }
 
     pub type Id = *mut c_void;
 
-    /// NSRect, as AppKit passes it by value.
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct Rect {
@@ -773,55 +693,70 @@ mod appkit {
         unsafe { objc_getClass(c.as_ptr()) }
     }
 
-    /// `[obj sel]` answering an object.
     pub unsafe fn send(obj: Id, s: &str) -> Id {
         let f: unsafe extern "C" fn(Id, Id) -> Id = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s)) }
     }
 
-    /// `[obj sel:arg]` with an object argument.
     pub unsafe fn send_id(obj: Id, s: &str, arg: Id) -> Id {
         let f: unsafe extern "C" fn(Id, Id, Id) -> Id = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s), arg) }
     }
 
-    /// `[obj sel:n]` with an integer argument (NSInteger, NSUInteger, BOOL widened).
     pub unsafe fn send_int(obj: Id, s: &str, n: isize) {
         let f: unsafe extern "C" fn(Id, Id, isize) = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s), n) }
     }
 
-    /// `[obj sel:flag]` with a BOOL argument.
     pub unsafe fn send_bool(obj: Id, s: &str, b: bool) {
         let f: unsafe extern "C" fn(Id, Id, bool) = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s), b) }
     }
 
-    /// `[obj sel]` answering a BOOL.
     pub unsafe fn send_bool_ret(obj: Id, s: &str) -> bool {
         let f: unsafe extern "C" fn(Id, Id) -> i8 = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s)) != 0 }
     }
 
-    /// `[obj sel]` answering an NSRect.
     pub unsafe fn send_rect(obj: Id, s: &str) -> Rect {
         let f: unsafe extern "C" fn(Id, Id) -> Rect = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel(s)) }
     }
 
-    /// `[obj initWithFrame:rect]`.
     pub unsafe fn init_frame(obj: Id, r: Rect) -> Id {
         let f: unsafe extern "C" fn(Id, Id, Rect) -> Id = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(obj, sel("initWithFrame:"), r) }
     }
 
-    /// `[parent addSubview:view positioned:place relativeTo:other]`.
     pub unsafe fn add_subview(parent: Id, view: Id, place: isize, other: Id) {
         let f: unsafe extern "C" fn(Id, Id, Id, isize, Id) = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(parent, sel("addSubview:positioned:relativeTo:"), view, place, other) }
     }
 
-    /// An NSString of `s` (autoreleased).
+    pub unsafe fn make_class(name: &str, superclass: &str, methods: &[(&str, unsafe extern "C" fn(Id, Id, Id))]) -> Option<Id> {
+        let c = CString::new(name).ok()?;
+        let cls = unsafe { objc_allocateClassPair(class(superclass), c.as_ptr(), 0) };
+        if cls.is_null() {
+            return None;
+        }
+        let types = CString::new("v@:@").ok()?;
+        for (s, imp) in methods {
+            unsafe { class_addMethod(cls, sel(s), *imp as *const c_void, types.as_ptr()) };
+        }
+        unsafe { objc_registerClassPair(cls) };
+        Some(cls)
+    }
+
+    pub unsafe fn observe(center: Id, observer: Id, s: &str, name: Id, object: Id) {
+        let f: unsafe extern "C" fn(Id, Id, Id, Id, Id, Id) = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(center, sel("addObserver:selector:name:object:"), observer, sel(s), name, object) }
+    }
+
+    pub unsafe fn send_uint_ret(obj: Id, s: &str) -> usize {
+        let f: unsafe extern "C" fn(Id, Id) -> usize = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(obj, sel(s)) }
+    }
+
     pub unsafe fn string(s: &str) -> Id {
         let c = CString::new(s).unwrap_or_default();
         let f: unsafe extern "C" fn(Id, Id, *const c_char) -> Id = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
@@ -834,9 +769,6 @@ pub fn backdrop_available() -> bool {
     true
 }
 
-/// The window's appearance, so the system's material follows the app's light or dark choice: Aqua or DarkAqua
-/// when the app chose one; none (the system's own) when the app follows the system, so the system goes on telling
-/// the app when its appearance changes (a window given an appearance hears no more of the system's).
 #[cfg(target_os = "macos")]
 fn set_appearance(window: appkit::Id, dark: bool, follows: bool) {
     use appkit::*;
@@ -852,8 +784,6 @@ fn set_appearance(window: appkit::Id, dark: bool, follows: bool) {
     }
 }
 
-/// The appearance a window is given: none (the system's own) when the app follows the system, else the one the
-/// app chose.
 #[cfg(any(target_os = "macos", test))]
 fn appearance_name(dark: bool, follows: bool) -> Option<&'static str> {
     if follows {
@@ -869,14 +799,170 @@ fn appearance_name(dark: bool, follows: bool) -> Option<&'static str> {
 mod appearance_tests {
     use super::appearance_name;
 
-    /// Following the system, the window is given no appearance of its own, whatever the system is showing now:
-    /// it keeps hearing the system's changes. A chosen light or dark is pinned.
     #[test]
     fn a_window_following_the_system_is_given_no_appearance_and_a_chosen_one_is_pinned() {
         assert_eq!(appearance_name(true, true), None);
         assert_eq!(appearance_name(false, true), None);
         assert_eq!(appearance_name(true, false), Some("NSAppearanceNameDarkAqua"));
         assert_eq!(appearance_name(false, false), Some("NSAppearanceNameAqua"));
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Full {
+    Windowed,
+    Entering,
+    Whole,
+    Leaving,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Notice {
+    WillEnter,
+    DidEnter,
+    FailedToEnter,
+    WillExit,
+    DidExit,
+    FailedToExit,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Notice {
+    const ALL: [(Notice, &'static str, &'static str); 6] = [
+        (Notice::WillEnter, "NSWindowWillEnterFullScreenNotification", "zikaronWillEnter:"),
+        (Notice::DidEnter, "NSWindowDidEnterFullScreenNotification", "zikaronDidEnter:"),
+        (Notice::FailedToEnter, "NSWindowDidFailToEnterFullScreenNotification", "zikaronFailedToEnter:"),
+        (Notice::WillExit, "NSWindowWillExitFullScreenNotification", "zikaronWillExit:"),
+        (Notice::DidExit, "NSWindowDidExitFullScreenNotification", "zikaronDidExit:"),
+        (Notice::FailedToExit, "NSWindowDidFailToExitFullScreenNotification", "zikaronFailedToExit:"),
+    ];
+
+    fn then(self) -> Full {
+        match self {
+            Notice::WillEnter => Full::Entering,
+            Notice::DidEnter | Notice::FailedToExit => Full::Whole,
+            Notice::WillExit => Full::Leaving,
+            Notice::DidExit | Notice::FailedToEnter => Full::Windowed,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn toolbar_shows(f: Full) -> bool {
+    f == Full::Windowed
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn on_notice(note: appkit::Id, n: Notice) {
+    use appkit::*;
+    unsafe {
+        let window = send(note, "object");
+        if window.is_null() {
+            return;
+        }
+        let bar = send(window, "toolbar");
+        if !bar.is_null() {
+            send_bool(bar, "setVisible:", toolbar_shows(n.then()));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn will_enter(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::WillEnter) }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn did_enter(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::DidEnter) }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn failed_to_enter(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::FailedToEnter) }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn will_exit(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::WillExit) }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn did_exit(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::DidExit) }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn failed_to_exit(_: appkit::Id, _: appkit::Id, note: appkit::Id) {
+    unsafe { on_notice(note, Notice::FailedToExit) }
+}
+
+#[cfg(target_os = "macos")]
+fn imp_of(n: Notice) -> unsafe extern "C" fn(appkit::Id, appkit::Id, appkit::Id) {
+    match n {
+        Notice::WillEnter => will_enter,
+        Notice::DidEnter => did_enter,
+        Notice::FailedToEnter => failed_to_enter,
+        Notice::WillExit => will_exit,
+        Notice::DidExit => did_exit,
+        Notice::FailedToExit => failed_to_exit,
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn watch_full_screen(window: appkit::Id) {
+    use appkit::*;
+    static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cls = *CLASS.get_or_init(|| {
+        let methods: Vec<(&str, unsafe extern "C" fn(Id, Id, Id))> = Notice::ALL.iter().map(|(n, _, m)| (*m, imp_of(*n))).collect();
+        unsafe { make_class("ZikaronFullScreenWatch", "NSObject", &methods) }.unwrap_or_else(|| class("ZikaronFullScreenWatch")) as usize
+    }) as Id;
+    if cls.is_null() {
+        return;
+    }
+    unsafe {
+        let watcher = send(send(cls, "alloc"), "init");
+        if watcher.is_null() {
+            return;
+        }
+        let center = send(class("NSNotificationCenter"), "defaultCenter");
+        for (_, name, method) in Notice::ALL {
+            observe(center, watcher, method, string(name), window);
+        }
+        let full = send_uint_ret(window, "styleMask") & (1 << 14) != 0;
+        let bar = send(window, "toolbar");
+        if !bar.is_null() {
+            send_bool(bar, "setVisible:", toolbar_shows(if full { Full::Whole } else { Full::Windowed }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod toolbar_tests {
+    use super::{toolbar_shows, Full, Notice};
+
+    #[test]
+    fn the_toolbar_shows_on_the_desktop_alone() {
+        let shown: Vec<(Notice, bool)> = Notice::ALL.iter().map(|(n, _, _)| (*n, toolbar_shows(n.then()))).collect();
+        assert_eq!(
+            shown,
+            vec![
+                (Notice::WillEnter, false),
+                (Notice::DidEnter, false),
+                (Notice::FailedToEnter, true),
+                (Notice::WillExit, false),
+                (Notice::DidExit, true),
+                (Notice::FailedToExit, false),
+            ]
+        );
+        assert!(toolbar_shows(Full::Windowed));
+        assert!(![Full::Entering, Full::Whole, Full::Leaving].into_iter().any(toolbar_shows));
+    }
+
+    #[test]
+    fn each_notice_is_named_once_with_a_method_of_its_own() {
+        let names: std::collections::BTreeSet<&str> = Notice::ALL.iter().map(|(_, n, _)| *n).collect();
+        let methods: std::collections::BTreeSet<&str> = Notice::ALL.iter().map(|(_, _, m)| *m).collect();
+        assert_eq!((names.len(), methods.len()), (6, 6));
+        assert!(names.iter().all(|n| n.starts_with("NSWindow") && n.ends_with("FullScreenNotification")));
+        assert!(methods.iter().all(|m| m.ends_with(':')));
     }
 }
 
@@ -898,7 +984,6 @@ pub fn backdrop(w: crate::Window, dark: bool, follows: bool) -> crate::Backdrop 
             return crate::Backdrop::Tint;
         }
         set_appearance(window, dark, follows);
-        // macOS 26 and later have the system's glass; earlier ones its vibrancy, under the window's sidebar material.
         let glass = class("NSGlassEffectView");
         let (cls, kind) = if glass.is_null() { (class("NSVisualEffectView"), crate::Backdrop::Vibrancy) } else { (glass, crate::Backdrop::Glass) };
         if cls.is_null() {
@@ -909,33 +994,27 @@ pub fn backdrop(w: crate::Window, dark: bool, follows: bool) -> crate::Backdrop 
         if effect.is_null() {
             return crate::Backdrop::Tint;
         }
-        // Width and height follow the window (NSViewWidthSizable | NSViewHeightSizable).
         send_int(effect, "setAutoresizingMask:", 2 | 16);
         if kind == crate::Backdrop::Vibrancy {
-            // Under-window background material, blended behind the window, always active.
             send_int(effect, "setMaterial:", 21);
             send_int(effect, "setBlendingMode:", 0);
             send_int(effect, "setState:", 1);
         }
         send_bool(window, "setOpaque:", false);
         send_id(window, "setBackgroundColor:", send(class("NSColor"), "clearColor"));
-        // macOS 26 gives a window with a toolbar its own, rounder corners: an empty unified toolbar (no items, the
-        // title bar still transparent) makes this window one, so its corners follow that system's measure.
         if kind == crate::Backdrop::Glass {
             let bar = send_id(send(class("NSToolbar"), "alloc"), "initWithIdentifier:", string("zikaron-window"));
             if !bar.is_null() {
                 send_id(window, "setToolbar:", bar);
-                // NSWindowToolbarStyleUnified.
                 send_int(window, "setToolbarStyle:", 3);
+                watch_full_screen(window);
             }
         }
-        // Behind the content view (NSWindowBelow), inside the window's frame view: the app's surfaces lie over it.
         add_subview(frame_view, effect, -1, content);
         kind
     }
 }
 
-/// `[[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceMotion]`.
 #[cfg(target_os = "macos")]
 pub fn reduce_motion() -> bool {
     use appkit::*;
@@ -948,8 +1027,6 @@ pub fn reduce_motion() -> bool {
     }
 }
 
-/// GNOME's `enable-animations` set to false, read once (a process is started for it; a desktop without
-/// `gsettings` reduces nothing).
 #[cfg(not(target_os = "macos"))]
 pub fn reduce_motion() -> bool {
     static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -977,7 +1054,6 @@ pub fn backdrop_appearance(w: crate::Window, dark: bool, follows: bool) {
     }
 }
 
-/// Linux: no system material reaches the window; the app paints its own tinted ground.
 #[cfg(not(target_os = "macos"))]
 pub fn backdrop_available() -> bool {
     false

@@ -1,34 +1,25 @@
-//! Painting shared by every control: raised surfaces, text by role, and single lines that elide instead of
-//! wrapping.
-
 use crate::palette::{self, c, C};
 use crate::tokens::{Radius, Type};
 use egui::{Color32, Painter, Rect};
 
-/// A flat surface: fill and a one-point line.
 pub fn flat(p: &Painter, rect: Rect, radius: Radius, fill: Color32, line: Color32) {
     p.rect(rect, radius.egui(), fill, egui::Stroke::new(1.0_f32, line), egui::StrokeKind::Inside);
 }
 
-/// Lay out one line of text in a role.
 pub fn galley(ui: &egui::Ui, s: &str, t: Type, colour: Color32) -> std::sync::Arc<egui::Galley> {
     ui.painter().layout_no_wrap(s.to_string(), t.font(), colour)
 }
 
-/// Text laid out before it is placed: in `font`, lines `line_h` apart, wrapping at `max_w` where the words allow
-/// (as a wrapping label does). A widget that takes one cell of its caller's layout measures its words with this.
 pub fn wrapped(ui: &egui::Ui, s: &str, font: egui::FontId, colour: Color32, line_h: f32, max_w: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(s.to_string(), egui::TextFormat { font_id: font, color: colour, line_height: Some(line_h), ..Default::default() });
     job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), ..Default::default() };
     ui.painter().layout_job(job)
 }
 
-/// Text in a role, wrapping at the available width.
 pub fn text(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32) -> egui::Response {
     ui.add(egui::Label::new(egui::RichText::new(s).font(t.font()).color(colour).line_height(Some(t.line()))).wrap())
 }
 
-/// Text in a role on one line, elided at the end to fit `max_w` (the whole text shows on hover when cut).
 pub fn line(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32, max_w: f32) -> egui::Response {
     let fit = crate::width::elide_to(ui, s, t.font(), max_w.max(0.0));
     let r = ui.add(egui::Label::new(egui::RichText::new(&fit).font(t.font()).color(colour)).wrap_mode(egui::TextWrapMode::Extend));
@@ -39,15 +30,10 @@ pub fn line(ui: &mut egui::Ui, s: &str, t: Type, colour: Color32, max_w: f32) ->
     }
 }
 
-/// The height of [`lines`]: a row they stand in is at least this tall (`width::then_at`), so they sit on its
-/// middle line rather than hang from its top.
 pub fn lines_height(ui: &egui::Ui, rows: &[(&str, Type, Color32)], gap: f32) -> f32 {
     rows.iter().map(|(s, t, colour)| galley(ui, s, *t, *colour).size().y).sum::<f32>() + gap * rows.len().saturating_sub(1) as f32
 }
 
-/// Lines stacked `gap` apart, each in its role on one line elided to `max_w` (whole on hover when cut), in one cell
-/// of the caller's layout (`width::cell`): two lines stand where a row's words go, centered in the row as one when
-/// the row is as tall as they are ([`lines_height`]).
 pub fn lines(ui: &mut egui::Ui, rows: &[(&str, Type, Color32)], gap: f32, max_w: f32) -> egui::Response {
     let h = lines_height(ui, rows, gap);
     crate::width::cell(ui, egui::vec2(max_w.max(0.0), h), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -59,13 +45,11 @@ pub fn lines(ui: &mut egui::Ui, rows: &[(&str, Type, Color32)], gap: f32, max_w:
     .1
 }
 
-/// Paint text at a point in a role, elided to `max_w`; returns the drawn rectangle.
 pub fn at(p: &Painter, ui: &egui::Ui, pos: egui::Pos2, align: egui::Align2, s: &str, t: Type, colour: Color32, max_w: f32) -> Rect {
     let fit = crate::width::elide_to(ui, s, t.font(), max_w.max(0.0));
     p.text(pos, align, fit, t.font(), colour)
 }
 
-/// Body ink, second ink, quiet ink.
 pub fn ink() -> Color32 {
     c(C::Ink)
 }
@@ -78,24 +62,18 @@ pub fn ink3() -> Color32 {
     c(C::Ink3)
 }
 
-/// A faint full-width rule with `gap` above and below.
 pub fn rule(ui: &mut egui::Ui, gap: f32) {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, gap * 2.0 + 1.0), egui::Sense::hover());
     ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, c(C::Line2)));
 }
 
-/// Scale a rectangle about its center.
 pub fn scaled(r: Rect, k: f32) -> Rect {
     Rect::from_center_size(r.center(), r.size() * k)
 }
 
-/// The white plate's margin around a QR code (the code's quiet zone).
 pub const QR_PAD: f32 = 12.0;
 
-/// A QR matrix of `side` points on a white plate (`QR_PAD` round it): each dark module a dot in `QR_INK`, each
-/// of the three finder patterns a rounded ring round a rounded block in `QR_FINDER`. The same in both
-/// appearances so any reader scans it. Answers the plate's rectangle.
 pub fn qr(ui: &mut egui::Ui, modules: &[Vec<bool>], side: f32) -> Rect {
     let n = modules.len();
     let (plate, _) = ui.allocate_exact_size(egui::vec2(side + 2.0 * QR_PAD, side + 2.0 * QR_PAD), egui::Sense::hover());
@@ -126,9 +104,6 @@ pub fn qr(ui: &mut egui::Ui, modules: &[Vec<bool>], side: f32) -> Rect {
     plate
 }
 
-/// Words that roll when they change (a figure on a tile): the old words rise out of `line` and fade while the
-/// new ones rise in from below (0.3 s); first seen, they are simply there. Drawn left-aligned in `line`,
-/// centred on it, clipped to it.
 pub fn rolling(ui: &egui::Ui, id: egui::Id, line: Rect, s: &str, font: egui::FontId, colour: Color32) {
     let ctx = ui.ctx();
     let now = crate::motion::now(ui.ctx());

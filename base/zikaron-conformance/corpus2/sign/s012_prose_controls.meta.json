@@ -1,0 +1,12 @@
+{
+ "domain": "zikaron/2",
+ "input": "s012_prose_controls.bin",
+ "note": "sec 3.4 item 3: every escape form inside the preimage",
+ "predicted": {
+  "digest": "0xe2a2b516b27b110ea1dd7c4046da9e050aa9a16ba78b1d5b2a107e97e84526d9",
+  "presig": "0xedc4bfbf5dff263c7673f98ffdbe0d5136e1fc175dda2f49eb3a808c9add493b",
+  "sig": "0xcf6ffaceb77c9f1c3671369ccac90c79e597b895528fa311c7163ad3152d9b167eee4358cbe1b06fa4f827bc7fff36db753f7e4f93837116647c5abf091bdd5a1b",
+  "signer": "0x01187a68996839920363a58d942b2c51df0da731"
+ },
+ "privkey": "0x12b726799caec8c088e0e456d9234e34e442da6c61a9e337ac89d490fdd7cdd1"
+}

@@ -1,29 +1,15 @@
-//! The passcode gate: a full-window cover with eight passcode cells and an error line that opens under them
-//! only when there is an error (no toasts on the gate). "Forgot passcode" recovers by the primary identity's
-//! kind (its twelve words, or its key file and that file's password, then a new passcode twice); restoring a
-//! whole-machine backup is a third way.
-//!
-//! The gate only opens the vault; actions that need a key are refused by the action layer either way.
-
 use super::*;
 use zikaron_ui::covers;
 use zikaron_ui::sheetparts as parts;
 
 impl Win {
-    /// The gate is one column in the middle of the window on a soft light: the app's name and the title centred,
-    /// the cells centred under them, the line under the cells, and "forgot passcode" as a small key under it; the
-    /// recovery ways keep their fields in the column, the keys in one row at the bottom (the other ways on the
-    /// left, going back on the right). Once it opens, the window comes back from half its opacity.
     pub(super) fn gate(&mut self, ctx: &egui::Context, now: f64) {
         let state = self.shell.vault.clone();
-        // `Vault::gate_up` decides whether the gate or the shell draws (and when the window comes back under it).
         let up = state.gate_up();
         covers::app_in(ctx, up);
         if !up {
             return;
         }
-        // The store file exists but cannot be read: show the store's refusal and offer nothing that would build a
-        // new store over the keys it holds (no wizard, no passcode cells). The one way on sets the machine directory aside.
         if let crate::shell::Vault::Damaged(f) = &state {
             let mut ask = false;
             let unplanned = self.ux.gate_aside.is_none().then(|| self.ux.gate_aside_trouble.as_ref().map(said)).flatten();
@@ -31,7 +17,7 @@ impl Win {
                 let rect = ui.max_rect();
                 full::centered(ui, "gate", rect, tk::SHEET_W, 0.0, |ui| {
                     let around = gate_head(ui, t(Key::VaultDamagedTitle));
-                    states::err_box(ui, "gate-damaged", f.human(), &f.next(), t(Key::U3RawError), &f.raw());
+                    states::err_box(ui, "gate-damaged", f.human(), &f.next(), t(Key::U3RawError), &f.shown());
                     ui.add_space(around);
                     ask = ui.vertical_centered(|ui| key::key(ui, t(Key::GateAside), Role::Secondary, true).clicked()).inner;
                     if let Some(s) = unplanned.as_deref() {
@@ -56,15 +42,9 @@ impl Win {
         if locked_out {
             self.ux.gate_recover = true;
         }
-        // An empty vault that is locked out (passcode set, no identity) cannot be recovered and holds nothing to
-        // lose, so the only way on is to reset it and run the wizard again.
         let empty_out = locked_out && !self.shell.vault_recoverable;
         let busy = self.shell.tasks.in_flight(crate::task::Kind::Vault);
         let recover = self.ux.gate_recover;
-        // The recovery way follows the primary identity's kind, read from the vault header before unlocking: a
-        // recovery-word primary recovers with its words, or (folded under them) with a key file either of its
-        // roles exported; an imported-key primary with the key file it exported. Without a primary there is no
-        // recovery seal, and only a whole-machine backup remains.
         let (by_words, by_file) = match self.shell.primary.as_ref().map(|(_, k)| *k) {
             Some(crate::keybox::PrimaryKind::Words) => (true, true),
             Some(crate::keybox::PrimaryKind::KeyFile) => (false, true),
@@ -84,13 +64,9 @@ impl Win {
                 } else {
                     Key::PinRecoverTitle
                 };
-                // The cells sit in the middle of the group: what comes under them stands as far below them as the
-                // title's strokes stand above them.
                 let around = gate_head(ui, t(title));
                 if !recover {
                     let row = ui.vertical_centered(|ui| parts::pins(ui, "gate-pin", &mut self.ux.pin, len, self.ux.pin_shake, !busy)).inner;
-                    // Typing again clears the last refusal, except on the reseal path, whose sentence says what
-                    // the next passcode will do.
                     if row.changed && !self.ux.gate_reseal {
                         self.ux.gate_trouble = None;
                     }
@@ -110,7 +86,6 @@ impl Win {
                     centred_note(ui, t(Key::PinEmptySay));
                     gate_message(ui, false, self.ux.gate_trouble.as_deref(), around);
                     ui.add_space(around);
-                    // The one key, centred under the words as the unlock gate's is.
                     if ui.vertical_centered(|ui| key::key(ui, t(Key::PinDoReset), Role::Secondary, true).clicked()).inner {
                         act = Some(Action::ResetEmptyKeybox);
                     }
@@ -124,7 +99,6 @@ impl Win {
                 }
                 ui.spacing_mut().item_spacing.y = tk::S3;
                 if by_words {
-                    // The two ways exclude each other: touching the key file fold makes it the active one.
                     let by_file = !self.ux.pin_ks_path.trim().is_empty() || !self.ux.pin_ks_pw.is_empty();
                     let title = t(if self.ux.pin_again.is_empty() { Key::WizPinTitle } else { Key::PinAgain });
                     let again = self.ux.row_turn(now);
@@ -138,8 +112,6 @@ impl Win {
                     }
                     gate_message(ui, busy, self.ux.gate_trouble.as_deref(), 4.0);
                 }
-                // An imported-key primary recovers with the key file it exported and that file's password (shown
-                // open); a recovery-word primary's key files are folded under its words.
                 let by_key_file = |me: &mut Self, ui: &mut egui::Ui, first_pin: &mut bool, act: &mut Option<Action>| {
                     let title = t(if me.ux.pin_again.is_empty() { Key::WizPinTitle } else { Key::PinAgain });
                     let again = me.ux.row_turn(now);
@@ -162,8 +134,6 @@ impl Win {
                 if by_file && by_words {
                     fold::fold(ui, "gate-keystore", t(Key::PinByFile), |ui| by_key_file(self, ui, &mut first_pin, &mut act));
                 }
-                // The third way, restoring a whole-machine backup (new passcode, everything resealed), at the left of
-                // the bottom row; going back to the passcode at its right.
                 gate_keys(ui, around, |ui| {
                     if !locked_out && key::key(ui, t(Key::CfBack), Role::Secondary, true).clicked() {
                         self.ux.gate_back();
@@ -176,7 +146,7 @@ impl Win {
             self.bk_open(Bk::Restore(RestoreFrom::Locked));
         }
         if first_pin {
-            self.take_first_pin(now, true);
+            self.take_first_pin(now, PinSaid::Gate);
         }
         if let Some(a) = act {
             let r = self.act(a, now);
@@ -186,8 +156,6 @@ impl Win {
 }
 
 impl Win {
-    /// The sheet confirming the machine directory set aside: what moves, what stays, and the way back; a refusal is
-    /// said on it.
     fn gate_aside_sheet(&mut self, ctx: &egui::Context, now: f64) {
         let Some(plan) = self.ux.gate_aside.clone() else { return };
         let (mut go, mut cancel) = (false, false);
@@ -230,7 +198,6 @@ impl Win {
     }
 }
 
-/// A refusal of setting the machine directory aside, as the gate says it.
 fn said(f: &crate::fault::Fault) -> String {
     format!("{} {}", f.human(), f.next())
 }
@@ -239,8 +206,6 @@ fn path_words(ui: &mut egui::Ui, path: &str) {
     ui.add(egui::Label::new(egui::RichText::new(path).font(Type::Mono.font()).color(c(C::Ink))).wrap());
 }
 
-/// The gate's head, centred: the app's name small, the title under it, then the column's room. Returns the gap
-/// from the title's strokes to what comes next, the one the group keeps under it too.
 fn gate_head(ui: &mut egui::Ui, title: &str) -> f32 {
     ui.spacing_mut().item_spacing.y = 0.0;
     let strokes_end = covers::lock_head(ui, t(Key::AppName), title);
@@ -248,8 +213,6 @@ fn gate_head(ui: &mut egui::Ui, title: &str) -> f32 {
     ui.cursor().min.y - strokes_end
 }
 
-/// The gate's bottom row of keys, `gap` under what is above it, laid from the right (`add` draws them;
-/// [`lead_key`] puts one at the left).
 fn gate_keys(ui: &mut egui::Ui, gap: f32, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(gap);
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tk::KEY_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -258,22 +221,10 @@ fn gate_keys(ui: &mut egui::Ui, gap: f32, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// A key at the left end of the gate's bottom row; whether it was pressed.
 fn lead_key(ui: &mut egui::Ui, text: &str, role: Role, enabled: bool) -> bool {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| key::key(ui, text, role, enabled).clicked()).inner
 }
 
-/// The twelve recovery word cells and, once all twelve are filled, the new passcode row under `title` (taking
-/// keys when `row_on`); the row's reading when it is drawn. The cells are always masked, a pasted phrase fills
-/// them all and an unknown word turns red without being shown.
-///
-/// Focus goes to the passcode row only when the user says so, never because of what the cells hold (a word may be
-/// the start of another, `act` of `action`, and a cell holding one is not done): Enter in a cell lets it go and the
-/// row, enabled once all twelve are filled, takes it; Tab moves on to the row; a click on the row takes it; one
-/// pasted phrase that fills the twelve hands it over here; and the row takes it back while its own turn goes on
-/// (`again`: its second entry, or a retry the moment its entry is refused). Nothing else hands focus over: a click
-/// elsewhere leaves it where the user put it.
-/// `was_full` is whether the cells were all filled the frame before.
 fn words_way(ui: &mut egui::Ui, words: &mut [crate::secret::Secret; 12], was_full: &mut bool, pin: &mut crate::secret::Secret, len: usize, shake: Option<f64>, title: &str, row_on: bool, again: bool) -> Option<pin::PinRow> {
     ui.spacing_mut().item_spacing.y = tk::S3;
     let bad = crate::cryptx::strangers(words);
@@ -291,13 +242,6 @@ fn words_way(ui: &mut egui::Ui, words: &mut [crate::secret::Secret; 12], was_ful
     full.then(|| field(ui, title, None, |ui| parts::pins(ui, "gate-new-pin", pin, len, shake, row_on && hand)))
 }
 
-/// The key file way: the file (`file_title`), its password (`password_title`), and the new passcode row under
-/// `title`, enabled only once file and password are both filled (only one row may hold focus, or the two entries
-/// would split between rows and never match); `ready` keeps whether they are. Focus goes to the row only when the
-/// user says so, never because the password field holds something (its length says nothing of being done): Enter
-/// in the password field lets it go and the enabled row takes it, Tab moves on to the row, a click on the row takes
-/// it, and the row takes it back while its own turn goes on (`again`, as in [`words_way`]). A file chosen or a click
-/// elsewhere hands nothing over.
 fn file_way(ui: &mut egui::Ui, path: &mut String, password: &mut crate::secret::Secret, ready: &mut bool, pin: &mut crate::secret::Secret, len: usize, shake: Option<f64>, file_title: &str, password_title: &str, title: &str, busy: bool, again: bool) -> pin::PinRow {
     ui.spacing_mut().item_spacing.y = tk::S3;
     field(ui, file_title, None, |ui| pick_path(ui, path, crate::platform::Pick::File));
@@ -307,8 +251,6 @@ fn file_way(ui: &mut egui::Ui, path: &mut String, password: &mut crate::secret::
     field(ui, title, None, |ui| parts::pins(ui, "gate-file-pin", pin, len, shake, *ready && !busy && hand))
 }
 
-/// The line under the gate's cells: nothing (no height), "verifying…", or the refusal in a grey box, at the
-/// column's left. It opens and closes by animating its height.
 fn gate_message(ui: &mut egui::Ui, busy: bool, trouble: Option<&str>, gap: f32) {
     let id = ui.id().with("gate-message");
     let on = busy || trouble.is_some();
@@ -335,20 +277,15 @@ fn gate_message(ui: &mut egui::Ui, busy: bool, trouble: Option<&str>, gap: f32) 
     let got = r.response.rect.height();
     if on && (got - full_h).abs() > 0.5 {
         ui.ctx().data_mut(|d| d.insert_temp(h_id, got));
-        // Lay out again at once with the new size so no frame is drawn with the old one.
         ui.ctx().request_discard("gate message height changed");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! The recovery cells hand focus to the passcode row only when the user says so (Enter, Tab, a click, one
-    //! pasted phrase that fills the twelve), never because of what a cell holds. Driven over the gate's own two
-    //! ways in windowless frames: keys typed one frame each, as a keyboard sends them.
     use super::*;
     use crate::secret::Secret;
 
-    /// Eleven words of the list and a twelfth that a shorter word of the list begins (`act`, `action`).
     const WORDS: [&str; 12] = ["abandon"; 12];
     const LAST: &str = "action";
 
@@ -397,7 +334,6 @@ mod tests {
         }
     }
 
-    /// Type the twelve words cell by cell (Tab between cells), the twelfth one key at a time.
     fn type_twelve(d: &mut Drive, w: &mut Words) {
         for _ in 0..2 {
             d.frame(Vec::new(), &mut words_draw(w));
@@ -411,8 +347,6 @@ mod tests {
         }
     }
 
-    /// Typing the twelfth word key by key, a word of the list that is the start of it does not move focus: the
-    /// whole word lands in the twelfth cell and nothing in the passcode row.
     #[test]
     fn the_twelfth_word_typed_key_by_key_keeps_the_focus() {
         let (mut d, mut w) = (Drive::new(), Words::default());
@@ -420,13 +354,11 @@ mod tests {
         assert_eq!(w.words[11].expose(), LAST);
         assert!(w.words[..11].iter().all(|x| x.expose() == "abandon"));
         assert!(w.pin.is_empty(), "nothing reached the passcode row");
-        // More keys still go to the cell.
         d.typed("s", &mut words_draw(&mut w));
         assert_eq!(w.words[11].expose(), "actions");
         assert!(w.pin.is_empty());
     }
 
-    /// Enter in the twelfth cell, or Tab, moves focus to the passcode row: the next keys are the passcode's.
     #[test]
     fn enter_or_tab_in_the_last_cell_moves_to_the_passcode_row() {
         for k in [egui::Key::Enter, egui::Key::Tab] {
@@ -439,7 +371,6 @@ mod tests {
         }
     }
 
-    /// One pasted phrase that fills the twelve moves focus to the passcode row; a phrase that fills fewer does not.
     #[test]
     fn a_pasted_phrase_that_fills_the_twelve_moves_to_the_passcode_row() {
         let phrase = format!("{} {LAST}", WORDS[..11].join(" "));
@@ -477,8 +408,6 @@ mod tests {
         }
     }
 
-    /// With the key file chosen, the password typed key by key stays in the password field (no key of it hands
-    /// focus over); Enter, or Tab, then moves focus to the passcode row.
     #[test]
     fn the_key_file_password_typed_keeps_the_focus_until_enter_or_tab() {
         for k in [egui::Key::Enter, egui::Key::Tab] {
@@ -487,7 +416,6 @@ mod tests {
             for _ in 0..2 {
                 d.frame(Vec::new(), &mut file_draw(&mut f));
             }
-            // Tab on to the password field (past the choose key), then type it.
             for _ in 0..3 {
                 d.frame(vec![key(egui::Key::Tab)], &mut file_draw(&mut f));
                 d.typed("h", &mut file_draw(&mut f));
@@ -505,8 +433,6 @@ mod tests {
         }
     }
 
-    /// The password typed first and the file chosen after it (focus nowhere, as when a dialog took the click):
-    /// the row is ready but takes no keys until the user hands focus over.
     #[test]
     fn a_file_chosen_after_the_password_hands_nothing_over() {
         let mut d = Drive::new();
@@ -535,7 +461,6 @@ mod tests {
     }
 }
 
-/// A note under the gate's centred title, centred too, each wrapped line on the column's middle.
 fn centred_note(ui: &mut egui::Ui, s: &str) {
     let w = ui.available_width();
     let mut job = egui::text::LayoutJob::single_section(s.to_string(), egui::TextFormat { font_id: Type::Note.font(), color: c(C::Ink2), line_height: Some(Type::Note.line()), ..Default::default() });

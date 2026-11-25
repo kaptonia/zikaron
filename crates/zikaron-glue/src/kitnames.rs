@@ -1,20 +1,7 @@
-//! How names go into a kit: a name segment and a path made kit-legal (kit law §7.2), and the table of items
-//! renamed on the way in (`files/zikaron-names.json`). The desktop's record package and the command line's both
-//! name by these.
-
-/// The table mapping original names to kit names, stored in the kit (under `files/`) and listed in the
-/// manifest.
 pub const NAMES_FILE: &str = "zikaron-names.json";
 
-/// How many hex digits of the original name's digest are appended when transliterating.
 pub const DIGEST_HEX: usize = 8;
 
-/// Convert one name segment to a valid kit name segment, as defined by the kit crate's `is_kit_path`
-/// (kit law §7.2: lowercase letters, digits, `.` `_` `-`, not starting with `-`, at most 255 bytes).
-/// A valid segment is kept as is. Otherwise: lowercase, replace each run of other characters with one `-`,
-/// append the first 8 hex digits of the sha256 of the original name (UTF-8) for uniqueness, and keep the
-/// extension when valid. `None` when the result is still invalid (too long, for example); the UI then marks
-/// it red and disables export.
 pub fn kit_segment(orig: &str) -> Option<String> {
     if zikaron_kit::kitdir::is_kit_path(orig) && !orig.contains('/') {
         return Some(orig.to_string());
@@ -49,23 +36,18 @@ pub fn kit_segment(orig: &str) -> Option<String> {
     if zikaron_kit::kitdir::is_kit_path(&name) { Some(name) } else { None }
 }
 
-/// Transliterate a relative path segment by segment. The whole path must still pass `is_kit_path`, which
-/// also enforces the 1024-byte total length.
 pub fn kit_rel(orig: &str) -> Option<String> {
     let segs: Option<Vec<String>> = orig.split('/').map(kit_segment).collect();
     let rel = segs?.join("/");
     if zikaron_kit::kitdir::is_kit_path(&rel) { Some(rel) } else { None }
 }
 
-/// Member names of the name table.
 pub mod names_member {
     pub const NAMES: &str = "names";
     pub const FROM: &str = "from";
     pub const TO: &str = "to";
 }
 
-/// The table read back ([`names_table`]'s shape): (original name, kit name) per row. A table that does not read,
-/// and any row not of the shape, gives nothing: an item it does not name keeps its kit name.
 pub fn names_read(bytes: &[u8]) -> Vec<(String, String)> {
     use zikaron::json::Value;
     let Ok(v) = zikaron::json::parse(bytes) else { return Vec::new() };
@@ -78,8 +60,6 @@ pub fn names_read(bytes: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The table of original names to kit names: canonical JSON `{"names":[{"from":original,"to":kit name},…]}`,
-/// sorted by kit name.
 pub fn names_table(names: &[(String, String)]) -> Vec<u8> {
     use zikaron::json::Value;
     let mut rows: Vec<&(String, String)> = names.iter().collect();
@@ -91,17 +71,37 @@ pub fn names_table(names: &[(String, String)]) -> Vec<u8> {
     zikaron::json::canon_bytes(&Value::Obj(vec![(names_member::NAMES.to_string(), Value::Arr(arr))]))
 }
 
-
-/// Put one original file into a kit under its kit name ([`kit_rel`] of `name`), as a work content of the kit
-/// (kit law §7.3); a renamed item is added to `names` (original name, kit name). A name that cannot be made
-/// kit-legal is refused (the name), and nothing is put. Whether the bytes are an original of a chosen record is
-/// the caller's to have judged first (their digest is that record's `content`).
-pub fn put_original(name: &str, bytes: Vec<u8>, into: &mut crate::pack::Bundle, names: &mut Vec<(String, String)>) -> Result<String, String> {
-    let inside = kit_rel(name).ok_or_else(|| name.to_string())?;
+pub fn put_original(name: &str, bytes: Vec<u8>, into: &mut crate::pack::Bundle) -> Result<String, String> {
+    let inside = if name.contains('/') { None } else { kit_rel(name) }.ok_or_else(|| name.to_string())?;
     if inside != name {
-        names.push((name.to_string(), inside.clone()));
+        into.names.push((inside.clone(), name.to_string()));
     }
     into.files.push((inside.clone(), bytes));
     into.contents.push(inside.clone());
     Ok(inside)
+}
+
+pub fn put_directory(dir_name: &str, files: Vec<(String, Vec<u8>)>, into: &mut crate::pack::Bundle) -> Result<String, String> {
+    let top = kit_segment(dir_name).ok_or_else(|| dir_name.to_string())?;
+    let mut laid: Vec<(String, String, Vec<u8>)> = Vec::new();
+    for (rel, bytes) in files {
+        let inside = kit_rel(&rel).ok_or_else(|| rel.clone())?;
+        let path = format!("{top}/{inside}");
+        if !zikaron_kit::kitdir::is_kit_path(&path) {
+            return Err(rel);
+        }
+        laid.push((rel, path, bytes));
+    }
+    let mut members = Vec::with_capacity(laid.len());
+    for (rel, path, bytes) in laid {
+        if path[top.len() + 1..] != rel {
+            into.names.push((path.clone(), rel));
+        }
+        members.push(path.clone());
+        into.files.push((path, bytes));
+    }
+    into.dir_members.push((top.clone(), members));
+    into.dir_names.push((top.clone(), dir_name.to_string()));
+    into.contents.push(top.clone());
+    Ok(top)
 }

@@ -1,6 +1,3 @@
-//! The six grant checks (kit law §10.2, §10.3), the ledger link (§10.4) and the chain check (§10.5). Audit
-//! and acceptance go through the public API of `zikaron`; this crate judges no syntax of its own.
-
 use crate::badge;
 use crate::reading;
 use crate::tokens::{self as t, ChainToken, Check, CheckVerdict, FailKind, Key, Reason, State};
@@ -11,7 +8,6 @@ use zikaron::hexfmt;
 use zikaron::json::Value;
 use zikaron::trace;
 
-/// Builds every result object; keys come from [`Key`].
 fn obj(members: Vec<(Key, Value)>) -> Value {
     Value::Obj(members.into_iter().map(|(k, v)| (k.as_str().to_string(), v)).collect())
 }
@@ -20,17 +16,13 @@ fn s(x: &str) -> Value {
     Value::Str(x.to_string())
 }
 
-/// What one run of the six checks yields: the §10.3 result object plus what the chain check needs.
 pub struct Checked {
     pub value: Value,
     pub verdict: CheckVerdict,
-    /// Whether check 1 passed (it decides an undetermined link in the chain check).
     pub check1_pass: bool,
-    /// The grant entry when check 1 passed.
     pub grant: Option<Entry>,
 }
 
-/// Kit law §10.1: the audit runs on `I'`, the input with `g` added to the pile of `I`.
 pub fn with_grant_in_pile(input: &Value, g: &[u8]) -> Value {
     match input {
         Value::Obj(ms) => {
@@ -57,8 +49,6 @@ fn window_of(g: &Entry) -> Option<(u64, u64)> {
     Some((from, to))
 }
 
-/// Coverage in check 4 of kit law §10.2: `chains` is non-empty, and every chains object has non-empty
-/// registries and senders containing every key of the ledger's whole-set lineage.
 fn covering(o: &Outcome) -> bool {
     let chains = match o.basis.member("chains").and_then(|x| x.as_arr()) {
         Some(c) => c,
@@ -90,7 +80,6 @@ fn findings_on(o: &Outcome, id: &str, name: FindingName) -> bool {
     o.findings.iter().any(|f| f.entry_id == id && f.name == name)
 }
 
-/// Kit law §10.2: the six checks in the written order; §10.3: the result object.
 pub fn grant_check(g: &[u8], input: Option<&Value>, now: Option<u64>) -> Checked {
     let outcome: Option<Outcome> = match input {
         Some(v) => audit::audit_full(&with_grant_in_pile(v, g)),
@@ -99,13 +88,11 @@ pub fn grant_check(g: &[u8], input: Option<&Value>, now: Option<u64>) -> Checked
     grant_check_with(g, outcome.as_ref(), now)
 }
 
-/// The same six checks on an existing audit outcome, so one chain-check hop audits once.
 pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -> Checked {
     trace::mark(t::K2);
     let mut state: [State; 6] = [State::Unknown; 6];
     let mut reason1: Option<Reason> = None;
 
-    // Check 1: BAD_SIG.
     let accepted = entry::check(g);
     let grant: Option<Entry> = match &accepted {
         Ok(e) if e.kind == EntryType::Grant => Some(e.clone()),
@@ -128,7 +115,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
         let g_entry = grant.as_ref().unwrap();
         let g_id = g_entry.id_hex();
 
-        // Check 2: BROKEN_LEDGER.
         match outcome {
             None => state[1] = State::Unknown,
             Some(o) => {
@@ -140,7 +126,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
             }
         }
 
-        // Check 3: NOT_IN_LEDGER. With check 2 FAIL, checks 3, 4 and 6 are unknown.
         if let (Some(o), true) = (outcome, state[1] == State::Pass) {
             let in_ledger = o.ledger.iter().any(|e| e.id_hex() == g_id);
             state[2] = if !in_ledger {
@@ -152,10 +137,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
             };
         }
 
-        // Check 4: UNANCHORED. Anchored is PASS; a non-covering basis is unknown; a retained UNPROVEN record
-        // whose hash is the entry_id of a ledger entry from which g is reachable (§8.2 with `counted` read as
-        // UNPROVEN) is unknown, since that anchor is undecided; only a COMPLETE report FAILs; anything else is
-        // unknown.
         if let (Some(o), true, true) = (outcome, state[1] == State::Pass, state[2] != State::Fail) {
             let e = o.ledger.iter().find(|e| e.id_hex() == g_id);
             state[3] = match e {
@@ -175,7 +156,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
             };
         }
 
-        // Check 5: EXPIRED. Reads only now, not the ledger.
         state[4] = match window_of(g_entry) {
             None => State::Pass,
             Some((from, to)) => match now {
@@ -190,7 +170,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
             },
         };
 
-        // Check 6: REVOKED.
         if let (Some(o), true, true) = (outcome, state[1] == State::Pass, state[2] != State::Fail) {
             let revoked = o.ledger.iter().any(|e| {
                 e.kind == EntryType::Revocation
@@ -255,8 +234,6 @@ pub fn grant_check_with(g: &[u8], outcome: Option<&Outcome>, now: Option<u64>) -
     }
 }
 
-/// Kit law §10.4: the ledger link. No byte link is false; an invalid downstream input is unknown; a
-/// downstream root other than the upstream grantee is false; otherwise true.
 pub fn ledger_link(u: &Entry, d: &Entry, d_outcome: Option<&Outcome>) -> Option<bool> {
     if !badge::byte_link(u, d) {
         return Some(false);
@@ -269,13 +246,11 @@ pub fn ledger_link(u: &Entry, d: &Entry, d_outcome: Option<&Outcome>) -> Option<
     Some(o.root == grantee)
 }
 
-/// One chain-check hop: a grant and its optional audit input.
 pub struct Hop<'a> {
     pub grant: &'a [u8],
     pub input: Option<Value>,
 }
 
-/// Kit law §10.5: the check of a whole chain.
 pub fn chain_check(hops: &[Hop], now: Option<u64>) -> Value {
     trace::mark(t::K2);
     if hops.is_empty() {
@@ -316,7 +291,6 @@ pub fn chain_check(hops: &[Hop], now: Option<u64>) -> Value {
         });
     }
 
-    // The failing point: the first that applies, in order.
     let mut failing: Option<(FailKind, u64)> = None;
     let mut token: Option<ChainToken> = None;
     if results[0].check1_pass

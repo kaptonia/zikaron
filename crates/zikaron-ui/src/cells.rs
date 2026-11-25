@@ -1,25 +1,16 @@
-//! Number cells in one box: a few short number cells side by side inside one field frame, each followed by its
-//! unit in the second ink (a span of time typed as days, hours and minutes). The box is one control: one frame,
-//! blue while any cell is typed in, red while any cell is wrong; the wrong cell's digits turn red too. Turned
-//! off, the whole box is faint and takes nothing.
-
 use crate::input::{self, Edge};
 use crate::palette::{c, C};
 use crate::tokens::{self, Type};
 use egui::{pos2, vec2, Rect};
 
-/// The room before the first cell, after each unit and after the last unit.
 const LEAD: f32 = 4.0;
 const AFTER_UNIT: f32 = tokens::S3;
 
-/// How wide the box is for `units` in cells `cell_w` wide.
 pub fn width(ui: &egui::Ui, units: &[&str], cell_w: f32) -> f32 {
     let words: f32 = units.iter().map(|u| crate::paint::galley(ui, u, Type::Body, c(C::Ink2)).size().x).sum();
     LEAD + (cell_w + tokens::S2) * units.len() as f32 + words + AFTER_UNIT * units.len() as f32
 }
 
-/// The box: one cell per unit (`values[i]` typed in the cell before `units[i]`), each `cell_w` wide with its
-/// number centred and `hint` in it while empty. `bad[i]` marks a wrong cell. Returns each cell's response.
 pub fn cells(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&str], cell_w: f32, hint: &str, bad: &[bool], enabled: bool) -> Vec<egui::Response> {
     let w = width(ui, units, cell_w);
     let (rect, _) = ui.allocate_exact_size(vec2(w, tokens::INPUT_H), egui::Sense::hover());
@@ -60,7 +51,7 @@ pub fn cells(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&
         x += gw + AFTER_UNIT;
         out.push(r);
     }
-    let edge = if bad.iter().any(|b| *b) {
+    let edge = if bad.iter().any(|b| *b) || input::told(ui) {
         Edge::Bad
     } else if out.iter().any(|r| r.has_focus()) {
         Edge::Focus
@@ -74,7 +65,6 @@ pub fn cells(ui: &mut egui::Ui, id_salt: &str, values: &mut [String], units: &[&
     out
 }
 
-/// A frame shape at the faint strength of a control that is off.
 fn fade(s: egui::Shape) -> egui::Shape {
     match s {
         egui::Shape::Vec(v) => egui::Shape::Vec(v.into_iter().map(fade).collect()),

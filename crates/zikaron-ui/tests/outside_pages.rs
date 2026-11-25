@@ -1,8 +1,3 @@
-//! The window shell's navigation knows no product's pages: a page table of two pages and one rail group,
-//! written here and nowhere in the shell, is drawn through the same rail list and page area, moved through by
-//! pressing what they draw (into a page, back with the toolbar's key, the rail's item from a pushed page), and
-//! read through the same probes.
-
 use zikaron_ui::egui::{self, pos2, Event, PointerButton, Pos2, Rect};
 use zikaron_ui::icons::Glyph;
 use zikaron_ui::nav::{self, Frame, Group, History, Item, Pages};
@@ -30,12 +25,10 @@ enum Word {
 
 const RAIL: [Group<Place, Word>; 1] = [Group { title: Some(Word::Reading), items: &[Item { place: Place::Shelf, name: Word::Shelf, glyph: Glyph::Ledger }] }];
 
-/// The outside product: its table, and the shell's state over it.
 #[derive(Default)]
 struct Outside {
     frame: Frame<Place, Route, Only>,
     open: bool,
-    /// How many times the product's part of a landing ran.
     landings: usize,
 }
 
@@ -126,8 +119,6 @@ impl Bench {
         Bench { ctx, t: 0.0, o: Outside::default() }
     }
 
-    /// One frame of the shell over the outside table: the rail's list and the page area; a press on the shelf's
-    /// key goes into the book.
     fn frame(&mut self, events: Vec<Event>) -> egui::FullOutput {
         self.t += 0.1;
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(self.t), events, ..Default::default() };
@@ -166,7 +157,6 @@ impl Bench {
         let _ = self.frame(vec![Event::PointerGone]);
     }
 
-    /// The route drawn and whether back and forward were shown.
     fn said(&self) -> (String, bool, bool) {
         let (b, f) = probe::history_shown(&self.ctx);
         (probe::route_drawn(&self.ctx), b, f)
@@ -202,7 +192,6 @@ fn an_outside_page_table_is_drawn_moved_through_and_backed_out_of_by_the_same_sh
     assert!(probe::inner_shown(&b.ctx), "the book is a detail");
     assert!(text_at(&out, "Its pages", None).is_some());
 
-    // The toolbar's back key, where the toolbar draws it.
     let back = pos2(RAIL_W + 22.0 + 14.0, 10.0 + (tokens::TOOLBAR_H - 10.0) / 2.0);
     b.press(back);
     let out = b.settle();
@@ -218,8 +207,6 @@ fn an_outside_page_table_is_drawn_moved_through_and_backed_out_of_by_the_same_sh
     assert_eq!(b.said(), ("Shelf".into(), false, false), "the current item back to its own page, history forgotten");
 }
 
-/// The shell's source names no page of any product: the outside table's names and the home product's page
-/// and view names are nowhere in it.
 #[test]
 fn the_shell_names_no_page() {
     let src = include_str!("../src/nav.rs");
@@ -228,10 +215,6 @@ fn the_shell_names_no_page() {
     }
 }
 
-/// A segment picked on its page stands the history on that page's own place, history behind and ahead dropped and the
-/// product's part of the landing run, while the page keeps its entrance and its scroll; a tab set the other way enters
-/// anew from the top. Victim: whoever switches between a page's segments and sees the whole page play in again, the
-/// list jumping to its top, unlike every other segment.
 #[test]
 fn a_segment_picked_on_its_page_keeps_the_page() {
     let mut o = Outside::default();

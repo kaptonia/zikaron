@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Arc-level branch witnessing of a criterion program over its corpus (a measure,
 never a criterion; see BOUNDARY-AUDIT.md).
-Usage: bcov.py core|kit|scan <out.json>
+Usage: bcov.py core|kit|core2|kit2|face|scan <out.json>
 Records every (prev_line -> line) arc executed inside the criterion files, then
 lists every branch point (if/elif, while, for, try-handler) whose arms were not
 both taken. Tooling only; the criterion is never modified."""
@@ -13,6 +13,15 @@ if mode == 'core':
 elif mode == 'kit':
     FILES = [os.path.join(ROOT, 'kit-py', f) for f in ('zkk.py','zkkdoc.py','zkkkit.py','zkkread.py')] + \
             [os.path.join(ROOT, 'impl-py', f) for f in ('zkcanon.py','zkcrypto.py','zkentry.py','zkaudit.py')]
+elif mode == 'core2':
+    FILES = [os.path.join(ROOT, 'impl2-py', f) for f in ('zk2.py','zk2entry.py','zk2audit.py')] + \
+            [os.path.join(ROOT, 'impl-py', f) for f in ('zkcanon.py','zkcrypto.py','zkentry.py','zkaudit.py')]
+elif mode == 'kit2':
+    FILES = [os.path.join(ROOT, 'kit2-py', f) for f in ('zkk2.py','zkk2doc.py','zkk2kit.py','zkk2read.py')] + \
+            [os.path.join(ROOT, 'impl2-py', f) for f in ('zk2entry.py','zk2audit.py')] + \
+            [os.path.join(ROOT, 'impl-py', f) for f in ('zkcanon.py','zkcrypto.py','zkentry.py','zkaudit.py')]
+elif mode == 'face':
+    FILES = [os.path.join(ROOT, 'face-py', f) for f in ('zkf.py','zkfentry.py','zkftable.py')]
 else:
     FILES = [os.path.join(ROOT, 'scan-py', 'scan_replay.py')]
 TARGET = set(FILES)
@@ -58,6 +67,54 @@ elif mode == 'kit':
     sys.settrace(tracer)
     for c in m['cases']:
         run_main(zkk.main, ['zkk'] + c['args']); cases += 1
+    sys.settrace(None)
+elif mode == 'core2':
+    sys.path.insert(0, os.path.join(ROOT, 'impl2-py')); import zk2
+    C = os.path.join(ROOT, 'corpus2')
+    def files(sub):
+        d = os.path.join(C, sub)
+        return [os.path.join(d, n) for n in sorted(os.listdir(d)) if os.path.isfile(os.path.join(d, n)) and not n.endswith(('.note', '.md'))]
+    # the same argument vectors compare2.py runs: canon (check and canon), sign as the meta
+    # spells it (no domain where it has none), audit, and the misuse cases
+    man = json.load(open(os.path.join(C, 'manifest.json')))
+    sys.settrace(tracer)
+    for c in man['cases']:
+        cat = c.get('category')
+        if cat == 'canon':
+            p = os.path.join(C, c['path'])
+            run_main(zk2.main, ['zk2', 'check', p]); run_main(zk2.main, ['zk2', 'canon', p]); cases += 2
+        elif cat == 'sign':
+            m = json.load(open(os.path.join(C, c['meta'])))
+            args = ['zk2', 'sign', m['privkey'], os.path.join(C, 'sign', m['input'])]
+            if 'domain' in m:
+                args.append(m['domain'])
+            run_main(zk2.main, args); cases += 1
+        elif cat == 'audit':
+            run_main(zk2.main, ['zk2', 'audit', os.path.join(C, c['path'])]); cases += 1
+        elif cat == 'misuse':
+            args = ['zk2']
+            for i, tok in enumerate(c['args']):
+                if i > 0 and isinstance(tok, str) and '/' in tok and os.path.lexists(os.path.join(C, tok)):
+                    args.append(os.path.join(C, tok))
+                else:
+                    args.append(tok)
+            run_main(zk2.main, args); cases += 1
+    sys.settrace(None)
+elif mode == 'kit2':
+    sys.path.insert(0, os.path.join(ROOT, 'kit2-py')); import zkk2
+    C = os.path.join(ROOT, 'kit-corpus2'); os.chdir(C)
+    m = json.load(open('manifest.json'))
+    sys.settrace(tracer)
+    for c in m['cases']:
+        run_main(zkk2.main, ['zkk2'] + c['args']); cases += 1
+    sys.settrace(None)
+elif mode == 'face':
+    sys.path.insert(0, os.path.join(ROOT, 'face-py')); import zkf
+    C = os.path.join(ROOT, 'face-corpus'); os.chdir(C)
+    m = json.load(open('manifest.json'))
+    sys.settrace(tracer)
+    for c in m['cases']:
+        run_main(zkf.main, ['zkf'] + c['args']); cases += 1
     sys.settrace(None)
 else:
     sys.path.insert(0, os.path.join(ROOT, 'scan-py')); import scan_replay

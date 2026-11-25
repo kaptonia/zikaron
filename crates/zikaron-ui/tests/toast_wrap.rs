@@ -1,18 +1,12 @@
-//! A toast's sentence breaks where its words allow: English at the spaces between words (only a single word
-//! longer than the line is cut inside itself), Chinese between any two characters. Read from the shapes a
-//! real toast draws.
-
 use zikaron_ui::egui;
 use zikaron_ui::toast::{Toasts, Tone};
 
-/// The rows of the first text a toast draws whose words are `text`, each row's characters.
 fn rows_of(text: &str) -> Vec<String> {
     let ctx = egui::Context::default();
     let _ = zikaron_ui::skin::dress(&ctx);
     let mut t = Toasts::new();
     t.set_labels("Details", "Hide details", "Close");
     t.say(text, Tone::Note, 0.0);
-    // A few frames: the toast is on screen and settled by the last one.
     let mut out = egui::FullOutput::default();
     for time in [0.1, 0.5, 1.0] {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 800.0))), time: Some(time), ..Default::default() };
@@ -52,7 +46,6 @@ fn rows_of(text: &str) -> Vec<String> {
 
 #[test]
 fn an_english_toast_breaks_between_words_and_a_chinese_one_anywhere() {
-    // English, long enough for several rows: every row but the last ends at a space, so no word is split.
     let english = "The nodes could not be reached: check the network or choose another node in Settings, then try again from this window when the connection is back.";
     let rows = rows_of(english);
     assert!(rows.len() > 1, "wrapped: {rows:?}");
@@ -60,11 +53,9 @@ fn an_english_toast_breaks_between_words_and_a_chinese_one_anywhere() {
         assert!(r.ends_with(char::is_whitespace), "a row ends inside a word: {rows:?}");
     }
     assert_eq!(rows.concat(), english, "every character laid out once");
-    // A single word longer than the line is the one thing cut inside itself (nothing else to break at).
     let long_word = "x".repeat(400);
     let rows = rows_of(&long_word);
     assert!(rows.len() > 1, "an overlong word is still wrapped: {} rows", rows.len());
-    // Chinese, no spaces: broken between characters.
     let chinese = "配的节点一处也连不上,请检查网络,或在设置里换一处节点,然后在这一个窗口里再试一次;连接恢复之前,这一页上的读数都还是上一次读到的那一份,不是现在的。".repeat(2);
     let rows = rows_of(&chinese);
     assert!(rows.len() > 1, "wrapped: {rows:?}");
@@ -72,8 +63,6 @@ fn an_english_toast_breaks_between_words_and_a_chinese_one_anywhere() {
     assert_eq!(rows.concat(), chinese);
 }
 
-/// The rows of the text a key-value table's value draws, the table laid out as a page lays it (`width::body`, a
-/// page `width` wide; `kv::kv` with one row), each row's characters.
 fn value_rows(text: &str, mark: bool, width: f32) -> Vec<String> {
     use zikaron_ui::kv::Val;
     let ctx = egui::Context::default();
@@ -101,9 +90,6 @@ fn value_rows(text: &str, mark: bool, width: f32) -> Vec<String> {
     got.unwrap_or_else(|| panic!("the value draws {text:?}"))
 }
 
-/// A key-value table's value breaks where its words allow, as a toast does: an English value (plain, and
-/// with its status mark) ends every row but the last at a space; a Chinese value breaks between characters;
-/// every character is laid out once.
 #[test]
 fn an_english_value_breaks_between_words_and_a_chinese_one_anywhere() {
     let english = "Only 1 node responded; no cross-check · 1 node(s) did not answer; see What each said under the details below";
@@ -124,8 +110,6 @@ fn an_english_value_breaks_between_words_and_a_chinese_one_anywhere() {
     }
 }
 
-/// A two-line toast's keys sit on its first line, with the icon: opening the details below (the toast grows
-/// downward) moves neither the keys nor the icon. Read from where a real toast draws its key's words.
 #[test]
 fn opening_a_toasts_details_moves_none_of_its_keys() {
     let ctx = egui::Context::default();
