@@ -6,10 +6,12 @@ Version 0.2.0
 
 Decentralized Infrastructure of Right: <https://kaptonia.github.io/>
 
-A desktop workbench for the zikaron/2 ledger law (zikaron/1 ledgers are read and upgrade with one confirmation). It keeps a signed, append-only ledger of content
-hashes, anchors the ledger on an Ethereum chain, issues and checks grants on recorded evidence and works,
-and verifies what others hand over. One app serves two roles: the recorder, who records evidence and
-works and grants rights, and the user, who holds grants and checks what they received.
+A desktop workbench built on the zikaron/2 ledger law. It can create one unique identity; the platform accounts,
+on-chain addresses and display name are signed into the ledger by the identity itself, and anyone can read and
+check them from the chain alone. Under that identity it keeps a signed, append-only ledger of content hashes,
+anchors the ledger on an Ethereum chain, issues and checks grants on recorded evidence and works, and verifies
+what others hand over. One app serves two roles: the recorder, who creates an identity, records evidence and
+works, and grants rights; and the user, who holds grants and checks the files they receive.
 
 The command line `zikaron` offers the same ledger actions as the window, one verb per action. It works on plain
 ledger folders and on the ledger mirrors and record kits the app exports; the local data the app keeps sealed it
