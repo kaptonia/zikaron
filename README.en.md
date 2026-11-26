@@ -1,4 +1,4 @@
-# ZIKARON Desk
+# Zikaron
 
 [中文](README.md) | English
 
